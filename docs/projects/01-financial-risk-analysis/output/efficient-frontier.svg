@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+<rect x="0" y="0" width="800" height="600" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="500" fill="#ffffff" stroke="#000" />
+<polyline fill="none" stroke="#2196f3" stroke-width="2" points="121.05,527.27 111.31,520.47 96.17,493.34 112.30,428.88 194.02,350.19 319.83,269.48 471.69,188.76 639.24,108.05 703.86,78.56 718.18,72.73" />
+<circle cx="81.82" cy="498.41" r="12" fill="#4caf50" />
+<circle cx="497.56" cy="175.89" r="12" fill="#ff5722" />
+<line class="x-tick" x1="118.58" y1="550.00" x2="118.58" y2="555.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="118.58" y="557.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="273.57" y1="550.00" x2="273.57" y2="555.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="273.57" y="557.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="x-tick" x1="428.57" y1="550.00" x2="428.57" y2="555.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="428.57" y="557.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">6</text>
+<line class="x-tick" x1="583.56" y1="550.00" x2="583.56" y2="555.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="583.56" y="557.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">7</text>
+<line class="x-tick" x1="738.55" y1="550.00" x2="738.55" y2="555.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="738.55" y="557.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">8</text>
+<line class="y-tick" x1="50.00" y1="529.30" x2="45.00" y2="529.30" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="529.30" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">6</text>
+<line class="y-tick" x1="50.00" y1="459.19" x2="45.00" y2="459.19" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="459.19" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">8</text>
+<line class="y-tick" x1="50.00" y1="389.08" x2="45.00" y2="389.08" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="389.08" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">10</text>
+<line class="y-tick" x1="50.00" y1="318.98" x2="45.00" y2="318.98" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="318.98" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">12</text>
+<line class="y-tick" x1="50.00" y1="248.87" x2="45.00" y2="248.87" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="248.87" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">14</text>
+<line class="y-tick" x1="50.00" y1="178.76" x2="45.00" y2="178.76" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="178.76" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">16</text>
+<line class="y-tick" x1="50.00" y1="108.66" x2="45.00" y2="108.66" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="108.66" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">18</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Efficient Frontier</text>
+<text x="400" y="585" text-anchor="middle" font-size="12" fill="#000">Volatility (%)</text>
+<text x="15" y="300" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 300)">Expected Return (%)</text>
+</svg>

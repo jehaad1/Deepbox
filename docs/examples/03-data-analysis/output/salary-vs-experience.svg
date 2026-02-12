@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect x="0" y="0" width="640" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<circle cx="221.82" cy="182.42" r="8" fill="#1f77b4" />
+<circle cx="123.64" cy="355.15" r="8" fill="#1f77b4" />
+<circle cx="369.09" cy="124.85" r="8" fill="#1f77b4" />
+<circle cx="74.55" cy="412.73" r="8" fill="#1f77b4" />
+<circle cx="270.91" cy="165.15" r="8" fill="#1f77b4" />
+<circle cx="172.73" cy="314.85" r="8" fill="#1f77b4" />
+<circle cx="123.64" cy="337.88" r="8" fill="#1f77b4" />
+<circle cx="467.27" cy="96.06" r="8" fill="#1f77b4" />
+<circle cx="74.55" cy="395.45" r="8" fill="#1f77b4" />
+<circle cx="221.82" cy="326.36" r="8" fill="#1f77b4" />
+<circle cx="320.00" cy="142.12" r="8" fill="#1f77b4" />
+<circle cx="172.73" cy="320.61" r="8" fill="#1f77b4" />
+<circle cx="123.64" cy="343.64" r="8" fill="#1f77b4" />
+<circle cx="565.45" cy="67.27" r="8" fill="#1f77b4" />
+<circle cx="123.64" cy="383.94" r="8" fill="#1f77b4" />
+<circle cx="172.73" cy="332.12" r="8" fill="#1f77b4" />
+<circle cx="418.18" cy="107.58" r="8" fill="#1f77b4" />
+<circle cx="221.82" cy="309.09" r="8" fill="#1f77b4" />
+<circle cx="516.36" cy="84.55" r="8" fill="#1f77b4" />
+<circle cx="123.64" cy="349.39" r="8" fill="#1f77b4" />
+<line class="x-tick" x1="99.09" y1="430.00" x2="99.09" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="99.09" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="221.82" y1="430.00" x2="221.82" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="221.82" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="x-tick" x1="344.55" y1="430.00" x2="344.55" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="344.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">8</text>
+<line class="x-tick" x1="467.27" y1="430.00" x2="467.27" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="467.27" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">10</text>
+<line class="x-tick" x1="590.00" y1="430.00" x2="590.00" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="590.00" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">13</text>
+<line class="y-tick" x1="50.00" y1="383.94" x2="45.00" y2="383.94" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="383.94" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60000</text>
+<line class="y-tick" x1="50.00" y1="268.79" x2="45.00" y2="268.79" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="268.79" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">80000</text>
+<line class="y-tick" x1="50.00" y1="153.64" x2="45.00" y2="153.64" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="153.64" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">100000</text>
+<text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Salary vs Experience</text>
+<text x="320" y="465" text-anchor="middle" font-size="12" fill="#000">Years of Experience</text>
+<text x="15" y="240" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 240)">Salary ($)</text>
+</svg>

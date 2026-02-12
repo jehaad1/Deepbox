@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect x="0" y="0" width="640" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<rect x="74.55" y="310.86" width="81.82" height="101.86" fill="#d62728" stroke="#000000" />
+<rect x="176.82" y="213.43" width="81.82" height="199.30" fill="#d62728" stroke="#000000" />
+<rect x="279.09" y="164.71" width="81.82" height="248.02" fill="#d62728" stroke="#000000" />
+<rect x="381.36" y="67.27" width="81.82" height="345.45" fill="#d62728" stroke="#000000" />
+<rect x="483.64" y="271.00" width="81.82" height="141.72" fill="#d62728" stroke="#000000" />
+<line class="x-tick" x1="115.45" y1="430.00" x2="115.45" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="115.45" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="320.00" y1="430.00" x2="320.00" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="320.00" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="524.55" y1="430.00" x2="524.55" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="524.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="y-tick" x1="50.00" y1="412.73" x2="45.00" y2="412.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="412.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="324.15" x2="45.00" y2="324.15" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="324.15" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
+<line class="y-tick" x1="50.00" y1="235.57" x2="45.00" y2="235.57" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="235.57" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
+<line class="y-tick" x1="50.00" y1="146.99" x2="45.00" y2="146.99" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="146.99" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
+<line class="y-tick" x1="50.00" y1="58.41" x2="45.00" y2="58.41" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="58.41" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">80</text>
+<text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Bar Chart Example</text>
+<text x="320" y="465" text-anchor="middle" font-size="12" fill="#000">Categories</text>
+<text x="15" y="240" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 240)">Values</text>
+</svg>

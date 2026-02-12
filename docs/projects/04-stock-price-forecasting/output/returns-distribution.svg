@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+<rect x="0" y="0" width="800" height="400" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
+<rect x="81.82" y="320.63" width="39.12" height="15.73" fill="#4caf50" stroke="#000000" />
+<rect x="102.41" y="336.36" width="39.12" height="0.00" fill="#4caf50" stroke="#000000" />
+<rect x="123.01" y="336.36" width="39.12" height="0.00" fill="#4caf50" stroke="#000000" />
+<rect x="143.60" y="310.14" width="39.12" height="26.22" fill="#4caf50" stroke="#000000" />
+<rect x="164.20" y="310.14" width="39.12" height="26.22" fill="#4caf50" stroke="#000000" />
+<rect x="184.79" y="310.14" width="39.12" height="26.22" fill="#4caf50" stroke="#000000" />
+<rect x="205.39" y="299.65" width="39.12" height="36.71" fill="#4caf50" stroke="#000000" />
+<rect x="225.98" y="268.18" width="39.12" height="68.18" fill="#4caf50" stroke="#000000" />
+<rect x="246.57" y="236.71" width="39.12" height="99.65" fill="#4caf50" stroke="#000000" />
+<rect x="267.17" y="252.45" width="39.12" height="83.92" fill="#4caf50" stroke="#000000" />
+<rect x="287.76" y="268.18" width="39.12" height="68.18" fill="#4caf50" stroke="#000000" />
+<rect x="308.36" y="173.78" width="39.12" height="162.59" fill="#4caf50" stroke="#000000" />
+<rect x="328.95" y="121.33" width="39.12" height="215.03" fill="#4caf50" stroke="#000000" />
+<rect x="349.55" y="137.06" width="39.12" height="199.30" fill="#4caf50" stroke="#000000" />
+<rect x="370.14" y="147.55" width="39.12" height="188.81" fill="#4caf50" stroke="#000000" />
+<rect x="390.74" y="63.64" width="39.12" height="272.73" fill="#4caf50" stroke="#000000" />
+<rect x="411.33" y="121.33" width="39.12" height="215.03" fill="#4caf50" stroke="#000000" />
+<rect x="431.92" y="179.02" width="39.12" height="157.34" fill="#4caf50" stroke="#000000" />
+<rect x="452.52" y="131.82" width="39.12" height="204.55" fill="#4caf50" stroke="#000000" />
+<rect x="473.11" y="163.29" width="39.12" height="173.08" fill="#4caf50" stroke="#000000" />
+<rect x="493.71" y="200.00" width="39.12" height="136.36" fill="#4caf50" stroke="#000000" />
+<rect x="514.30" y="241.96" width="39.12" height="94.41" fill="#4caf50" stroke="#000000" />
+<rect x="534.90" y="299.65" width="39.12" height="36.71" fill="#4caf50" stroke="#000000" />
+<rect x="555.49" y="310.14" width="39.12" height="26.22" fill="#4caf50" stroke="#000000" />
+<rect x="576.09" y="304.90" width="39.12" height="31.47" fill="#4caf50" stroke="#000000" />
+<rect x="596.68" y="299.65" width="39.12" height="36.71" fill="#4caf50" stroke="#000000" />
+<rect x="617.28" y="325.87" width="39.12" height="10.49" fill="#4caf50" stroke="#000000" />
+<rect x="637.87" y="331.12" width="39.12" height="5.24" fill="#4caf50" stroke="#000000" />
+<rect x="658.46" y="336.36" width="39.12" height="0.00" fill="#4caf50" stroke="#000000" />
+<rect x="679.06" y="331.12" width="39.12" height="5.24" fill="#4caf50" stroke="#000000" />
+<line class="x-tick" x1="109.66" y1="350.00" x2="109.66" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="109.66" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-6</text>
+<line class="x-tick" x1="207.47" y1="350.00" x2="207.47" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="207.47" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-4</text>
+<line class="x-tick" x1="305.28" y1="350.00" x2="305.28" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="305.28" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-2</text>
+<line class="x-tick" x1="403.09" y1="350.00" x2="403.09" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="403.09" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="500.89" y1="350.00" x2="500.89" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="500.89" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="598.70" y1="350.00" x2="598.70" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="598.70" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="696.51" y1="350.00" x2="696.51" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="696.51" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">6</text>
+<line class="y-tick" x1="50.00" y1="336.36" x2="45.00" y2="336.36" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="336.36" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="231.47" x2="45.00" y2="231.47" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="231.47" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
+<line class="y-tick" x1="50.00" y1="126.57" x2="45.00" y2="126.57" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="126.57" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Daily Returns Distribution</text>
+<text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Return (%)</text>
+<text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Frequency</text>
+</svg>

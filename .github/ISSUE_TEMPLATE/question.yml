@@ -1,0 +1,70 @@
+name: Question
+description: Ask a question about using Deepbox
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? We're here to help! Please provide details below.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: How do I...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Which module is this about?
+      options:
+        - ndarray (tensors)
+        - linalg (linear algebra)
+        - dataframe (tabular data)
+        - stats (statistics)
+        - metrics (evaluation)
+        - preprocess (preprocessing)
+        - ml (machine learning)
+        - nn (neural networks)
+        - optim (optimizers)
+        - random (random generation)
+        - plot (visualization)
+        - datasets (data loading)
+        - General usage
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish?
+      placeholder: I'm working on...
+    validations:
+      required: false
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code Sample (if applicable)
+      description: Share relevant code
+      render: typescript
+      placeholder: |
+        import { tensor } from 'deepbox/ndarray';
+        // ...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've checked the documentation
+        - label: I've searched existing issues
+        - label: I've looked at the examples

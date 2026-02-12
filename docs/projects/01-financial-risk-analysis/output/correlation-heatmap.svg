@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="700" viewBox="0 0 800 700">
+<rect x="0" y="0" width="800" height="700" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="600" fill="#ffffff" stroke="#000" />
+<rect x="81.82" y="554.55" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="161.36" y="554.55" width="79.55" height="68.18" fill="rgb(64,65,133)" />
+<rect x="240.91" y="554.55" width="79.55" height="68.18" fill="rgb(64,66,133)" />
+<rect x="320.45" y="554.55" width="79.55" height="68.18" fill="rgb(61,77,138)" />
+<rect x="400.00" y="554.55" width="79.55" height="68.18" fill="rgb(67,57,129)" />
+<rect x="479.55" y="554.55" width="79.55" height="68.18" fill="rgb(55,90,140)" />
+<rect x="559.09" y="554.55" width="79.55" height="68.18" fill="rgb(72,37,117)" />
+<rect x="638.64" y="554.55" width="79.55" height="68.18" fill="rgb(60,78,138)" />
+<rect x="81.82" y="486.36" width="79.55" height="68.18" fill="rgb(64,65,133)" />
+<rect x="161.36" y="486.36" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="240.91" y="486.36" width="79.55" height="68.18" fill="rgb(69,51,126)" />
+<rect x="320.45" y="486.36" width="79.55" height="68.18" fill="rgb(70,18,99)" />
+<rect x="400.00" y="486.36" width="79.55" height="68.18" fill="rgb(56,87,139)" />
+<rect x="479.55" y="486.36" width="79.55" height="68.18" fill="rgb(56,87,139)" />
+<rect x="559.09" y="486.36" width="79.55" height="68.18" fill="rgb(48,107,142)" />
+<rect x="638.64" y="486.36" width="79.55" height="68.18" fill="rgb(61,76,137)" />
+<rect x="81.82" y="418.18" width="79.55" height="68.18" fill="rgb(64,66,133)" />
+<rect x="161.36" y="418.18" width="79.55" height="68.18" fill="rgb(69,51,126)" />
+<rect x="240.91" y="418.18" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="320.45" y="418.18" width="79.55" height="68.18" fill="rgb(63,70,135)" />
+<rect x="400.00" y="418.18" width="79.55" height="68.18" fill="rgb(63,71,136)" />
+<rect x="479.55" y="418.18" width="79.55" height="68.18" fill="rgb(70,45,123)" />
+<rect x="559.09" y="418.18" width="79.55" height="68.18" fill="rgb(68,1,84)" />
+<rect x="638.64" y="418.18" width="79.55" height="68.18" fill="rgb(60,78,138)" />
+<rect x="81.82" y="350.00" width="79.55" height="68.18" fill="rgb(61,77,138)" />
+<rect x="161.36" y="350.00" width="79.55" height="68.18" fill="rgb(70,18,99)" />
+<rect x="240.91" y="350.00" width="79.55" height="68.18" fill="rgb(63,70,135)" />
+<rect x="320.45" y="350.00" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="400.00" y="350.00" width="79.55" height="68.18" fill="rgb(61,76,138)" />
+<rect x="479.55" y="350.00" width="79.55" height="68.18" fill="rgb(47,108,142)" />
+<rect x="559.09" y="350.00" width="79.55" height="68.18" fill="rgb(49,104,142)" />
+<rect x="638.64" y="350.00" width="79.55" height="68.18" fill="rgb(62,74,137)" />
+<rect x="81.82" y="281.82" width="79.55" height="68.18" fill="rgb(67,57,129)" />
+<rect x="161.36" y="281.82" width="79.55" height="68.18" fill="rgb(56,87,139)" />
+<rect x="240.91" y="281.82" width="79.55" height="68.18" fill="rgb(63,71,136)" />
+<rect x="320.45" y="281.82" width="79.55" height="68.18" fill="rgb(61,76,138)" />
+<rect x="400.00" y="281.82" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="479.55" y="281.82" width="79.55" height="68.18" fill="rgb(70,48,124)" />
+<rect x="559.09" y="281.82" width="79.55" height="68.18" fill="rgb(59,80,138)" />
+<rect x="638.64" y="281.82" width="79.55" height="68.18" fill="rgb(64,66,133)" />
+<rect x="81.82" y="213.64" width="79.55" height="68.18" fill="rgb(55,90,140)" />
+<rect x="161.36" y="213.64" width="79.55" height="68.18" fill="rgb(56,87,139)" />
+<rect x="240.91" y="213.64" width="79.55" height="68.18" fill="rgb(70,45,123)" />
+<rect x="320.45" y="213.64" width="79.55" height="68.18" fill="rgb(47,108,142)" />
+<rect x="400.00" y="213.64" width="79.55" height="68.18" fill="rgb(70,48,124)" />
+<rect x="479.55" y="213.64" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="559.09" y="213.64" width="79.55" height="68.18" fill="rgb(65,62,131)" />
+<rect x="638.64" y="213.64" width="79.55" height="68.18" fill="rgb(37,132,142)" />
+<rect x="81.82" y="145.45" width="79.55" height="68.18" fill="rgb(72,37,117)" />
+<rect x="161.36" y="145.45" width="79.55" height="68.18" fill="rgb(48,107,142)" />
+<rect x="240.91" y="145.45" width="79.55" height="68.18" fill="rgb(68,1,84)" />
+<rect x="320.45" y="145.45" width="79.55" height="68.18" fill="rgb(49,104,142)" />
+<rect x="400.00" y="145.45" width="79.55" height="68.18" fill="rgb(59,80,138)" />
+<rect x="479.55" y="145.45" width="79.55" height="68.18" fill="rgb(65,62,131)" />
+<rect x="559.09" y="145.45" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<rect x="638.64" y="145.45" width="79.55" height="68.18" fill="rgb(47,109,142)" />
+<rect x="81.82" y="77.27" width="79.55" height="68.18" fill="rgb(60,78,138)" />
+<rect x="161.36" y="77.27" width="79.55" height="68.18" fill="rgb(61,76,137)" />
+<rect x="240.91" y="77.27" width="79.55" height="68.18" fill="rgb(60,78,138)" />
+<rect x="320.45" y="77.27" width="79.55" height="68.18" fill="rgb(62,74,137)" />
+<rect x="400.00" y="77.27" width="79.55" height="68.18" fill="rgb(64,66,133)" />
+<rect x="479.55" y="77.27" width="79.55" height="68.18" fill="rgb(37,132,142)" />
+<rect x="559.09" y="77.27" width="79.55" height="68.18" fill="rgb(47,109,142)" />
+<rect x="638.64" y="77.27" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+<line class="x-tick" x1="81.82" y1="650.00" x2="81.82" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="81.82" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="161.36" y1="650.00" x2="161.36" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="161.36" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="240.91" y1="650.00" x2="240.91" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="240.91" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="320.45" y1="650.00" x2="320.45" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="320.45" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="400.00" y1="650.00" x2="400.00" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="400.00" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="479.55" y1="650.00" x2="479.55" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="479.55" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="x-tick" x1="559.09" y1="650.00" x2="559.09" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="559.09" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">6</text>
+<line class="x-tick" x1="638.64" y1="650.00" x2="638.64" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="638.64" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">7</text>
+<line class="x-tick" x1="718.18" y1="650.00" x2="718.18" y2="655.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="718.18" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">8</text>
+<line class="y-tick" x1="50.00" y1="622.73" x2="45.00" y2="622.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="622.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="554.55" x2="45.00" y2="554.55" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="554.55" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1</text>
+<line class="y-tick" x1="50.00" y1="486.36" x2="45.00" y2="486.36" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="486.36" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">2</text>
+<line class="y-tick" x1="50.00" y1="418.18" x2="45.00" y2="418.18" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="418.18" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3</text>
+<line class="y-tick" x1="50.00" y1="350.00" x2="45.00" y2="350.00" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="350.00" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">4</text>
+<line class="y-tick" x1="50.00" y1="281.82" x2="45.00" y2="281.82" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="281.82" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">5</text>
+<line class="y-tick" x1="50.00" y1="213.64" x2="45.00" y2="213.64" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="213.64" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">6</text>
+<line class="y-tick" x1="50.00" y1="145.45" x2="45.00" y2="145.45" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="145.45" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">7</text>
+<line class="y-tick" x1="50.00" y1="77.27" x2="45.00" y2="77.27" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="77.27" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">8</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Asset Correlation Matrix</text>
+</svg>

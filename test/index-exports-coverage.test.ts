@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+
+describe("Index exports coverage", () => {
+  it("exposes root module exports", async () => {
+    const root = await import("../src/index");
+    expect(root).toBeDefined();
+    expect(root.ndarray).toBeDefined();
+    expect(root.linalg).toBeDefined();
+  }, 20000);
+
+  it("exposes submodule indices", async () => {
+    const core = await import("../src/core/index");
+    const coreConfig = await import("../src/core/config/index");
+    const coreErrors = await import("../src/core/errors/index");
+    const coreTypes = await import("../src/core/types/index");
+    const coreUtils = await import("../src/core/utils/index");
+    const dataframe = await import("../src/dataframe/index");
+    const datasets = await import("../src/datasets/index");
+    const linalg = await import("../src/linalg/index");
+    const linalgDecomp = await import("../src/linalg/decomposition/index");
+    const linalgSolvers = await import("../src/linalg/solvers/index");
+    const metrics = await import("../src/metrics/index");
+    const ml = await import("../src/ml/index");
+    const mlEnsemble = await import("../src/ml/ensemble/index");
+    const mlManifold = await import("../src/ml/manifold/index");
+    const mlSvm = await import("../src/ml/svm/index");
+    const mlTree = await import("../src/ml/tree/index");
+    const ndarray = await import("../src/ndarray/index");
+    const ndarrayAutograd = await import("../src/ndarray/autograd/index");
+    const ndarrayLinalg = await import("../src/ndarray/linalg/index");
+    const ndarrayOps = await import("../src/ndarray/ops/index");
+    const ndarraySparse = await import("../src/ndarray/sparse/index");
+    const ndarrayTensor = await import("../src/ndarray/tensor/index");
+    const nn = await import("../src/nn/index");
+    const nnLosses = await import("../src/nn/losses/index");
+    const optim = await import("../src/optim/index");
+    const plot = await import("../src/plot/index");
+    const preprocess = await import("../src/preprocess/index");
+    const random = await import("../src/random/index");
+    const stats = await import("../src/stats/index");
+
+    expect(typeof core.validateShape).toBe("function");
+    expect(typeof coreConfig.getConfig).toBe("function");
+    expect(typeof coreErrors.ShapeError).toBe("function");
+    expect(coreTypes.DTYPES.length).toBeGreaterThan(0);
+    expect(typeof coreUtils.shapeToSize).toBe("function");
+    expect(typeof dataframe.DataFrame).toBe("function");
+    const dfInstance = new dataframe.DataFrame({ a: [1], b: [2] });
+    const renamed = dfInstance.rename({ a: "x" }, 1);
+    expect(renamed.columns).toEqual(["x", "b"]);
+    expect(renamed.toArray()).toEqual([[1, 2]]);
+    expect(typeof datasets.loadIris).toBe("function");
+    expect(typeof linalg.svd).toBe("function");
+    expect(typeof linalgDecomp.qr).toBe("function");
+    expect(typeof linalgSolvers.solve).toBe("function");
+    expect(typeof metrics.accuracy).toBe("function");
+    expect(typeof ml.LinearRegression).toBe("function");
+    expect(typeof mlEnsemble.GradientBoostingClassifier).toBe("function");
+    expect(typeof mlManifold.TSNE).toBe("function");
+    expect(typeof mlSvm.LinearSVC).toBe("function");
+    expect(typeof mlTree.DecisionTreeClassifier).toBe("function");
+    expect(typeof ndarray.tensor).toBe("function");
+    expect(typeof ndarrayAutograd.GradTensor).toBe("function");
+    expect(typeof ndarrayLinalg.dot).toBe("function");
+    expect(typeof ndarrayOps.add).toBe("function");
+    expect(typeof ndarraySparse.CSRMatrix).toBe("function");
+    expect(typeof ndarrayTensor.Tensor).toBe("function");
+    expect(typeof nn.Linear).toBe("function");
+    expect(typeof nnLosses.mseLoss).toBe("function");
+    expect(typeof optim.Adam).toBe("function");
+    expect(typeof plot.figure).toBe("function");
+    expect(typeof preprocess.StandardScaler).toBe("function");
+    expect(typeof random.rand).toBe("function");
+    expect(typeof stats.mean).toBe("function");
+  });
+});

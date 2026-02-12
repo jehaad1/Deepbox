@@ -1,0 +1,92 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide as much detail as possible.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem? Please describe.
+      placeholder: I'm frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like
+      placeholder: I would like to see...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe alternatives you've considered
+      placeholder: I've also thought about...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Which module does this relate to?
+      options:
+        - ndarray (tensors)
+        - linalg (linear algebra)
+        - dataframe (tabular data)
+        - stats (statistics)
+        - metrics (evaluation)
+        - preprocess (preprocessing)
+        - ml (machine learning)
+        - nn (neural networks)
+        - optim (optimizers)
+        - random (random generation)
+        - plot (visualization)
+        - datasets (data loading)
+        - core (core utilities)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example Usage
+      description: Show how you'd like to use this feature
+      render: typescript
+      placeholder: |
+        import { newFeature } from 'deepbox/module';
+
+        const result = newFeature(...);
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: compatibility
+    attributes:
+      label: API Compatibility
+      description: Should this be compatible with existing Python libraries?
+      options:
+        - label: NumPy
+        - label: Pandas
+        - label: PyTorch
+        - label: scikit-learn
+        - label: Not applicable
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context or screenshots
+      placeholder: Add any other context...
+    validations:
+      required: false

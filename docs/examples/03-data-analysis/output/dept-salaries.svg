@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect x="0" y="0" width="640" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<rect x="74.55" y="67.27" width="103.35" height="345.45" fill="#ff7f0e" stroke="#000000" />
+<rect x="203.73" y="189.78" width="103.35" height="222.94" fill="#ff7f0e" stroke="#000000" />
+<rect x="332.92" y="181.61" width="103.35" height="231.12" fill="#ff7f0e" stroke="#000000" />
+<rect x="462.11" y="224.12" width="103.35" height="188.60" fill="#ff7f0e" stroke="#000000" />
+<line class="x-tick" x1="126.22" y1="430.00" x2="126.22" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="126.22" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="255.41" y1="430.00" x2="255.41" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="255.41" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="384.59" y1="430.00" x2="384.59" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="384.59" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="513.78" y1="430.00" x2="513.78" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="513.78" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="y-tick" x1="50.00" y1="412.73" x2="45.00" y2="412.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="412.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="330.96" x2="45.00" y2="330.96" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="330.96" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">25000</text>
+<line class="y-tick" x1="50.00" y1="249.20" x2="45.00" y2="249.20" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="249.20" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">50000</text>
+<line class="y-tick" x1="50.00" y1="167.43" x2="45.00" y2="167.43" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="167.43" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">75000</text>
+<line class="y-tick" x1="50.00" y1="85.67" x2="45.00" y2="85.67" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="85.67" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">100000</text>
+<text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Average Salary by Department</text>
+<text x="320" y="465" text-anchor="middle" font-size="12" fill="#000">Department</text>
+<text x="15" y="240" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 240)">Average Salary ($)</text>
+</svg>

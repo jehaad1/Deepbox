@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+<rect x="0" y="0" width="800" height="400" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
+<rect x="81.82" y="100.55" width="106.06" height="235.82" fill="#2196f3" stroke="#000000" />
+<rect x="214.39" y="94.40" width="106.06" height="241.97" fill="#2196f3" stroke="#000000" />
+<rect x="346.97" y="96.45" width="106.06" height="239.92" fill="#2196f3" stroke="#000000" />
+<rect x="479.55" y="63.64" width="106.06" height="272.73" fill="#2196f3" stroke="#000000" />
+<rect x="612.12" y="77.99" width="106.06" height="258.37" fill="#2196f3" stroke="#000000" />
+<line class="x-tick" x1="134.85" y1="350.00" x2="134.85" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="134.85" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="267.42" y1="350.00" x2="267.42" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="267.42" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="400.00" y1="350.00" x2="400.00" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="400.00" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="532.58" y1="350.00" x2="532.58" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="532.58" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="665.15" y1="350.00" x2="665.15" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="665.15" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="y-tick" x1="50.00" y1="336.36" x2="45.00" y2="336.36" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="336.36" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="254.34" x2="45.00" y2="254.34" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="254.34" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
+<line class="y-tick" x1="50.00" y1="172.32" x2="45.00" y2="172.32" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="172.32" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
+<line class="y-tick" x1="50.00" y1="90.29" x2="45.00" y2="90.29" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="90.29" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Cross-Validation Scores</text>
+<text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Fold</text>
+<text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Accuracy (%)</text>
+</svg>

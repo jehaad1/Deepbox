@@ -1,0 +1,335 @@
+/**
+ * Benchmark Comparison Tool
+ *
+ * Reads Deepbox and Python JSON results from benchmarks/results/
+ * and generates RESULTS.md with side-by-side comparison tables.
+ *
+ * Usage: npm run bench:compare
+ */
+
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+interface Result {
+  operation: string;
+  size: string;
+  mean_ms: number;
+  ops_per_sec: number;
+}
+
+interface Suite {
+  benchmark: string;
+  platform: string;
+  results: Result[];
+}
+
+interface Row {
+  operation: string;
+  size: string;
+  deepbox_ms: number;
+  python_ms: number;
+  speedup: number;
+  winner: "Deepbox" | "lib";
+}
+
+const BENCHMARKS = [
+  {
+    name: "DataFrame Operations",
+    deepbox: "deepbox-dataframe.json",
+    python: "pandas-dataframe.json",
+    lib: "Pandas",
+  },
+  {
+    name: "Dataset Loading",
+    deepbox: "deepbox-datasets.json",
+    python: "sklearn-datasets.json",
+    lib: "scikit-learn",
+  },
+  {
+    name: "Linear Algebra",
+    deepbox: "deepbox-linalg.json",
+    python: "numpy-linalg.json",
+    lib: "NumPy/SciPy",
+  },
+  {
+    name: "Metrics",
+    deepbox: "deepbox-metrics.json",
+    python: "sklearn-metrics.json",
+    lib: "scikit-learn",
+  },
+  {
+    name: "ML Training",
+    deepbox: "deepbox-ml.json",
+    python: "sklearn-ml.json",
+    lib: "scikit-learn",
+  },
+  {
+    name: "NDArray Operations",
+    deepbox: "deepbox-ndarray.json",
+    python: "numpy-ndarray.json",
+    lib: "NumPy",
+  },
+  {
+    name: "Neural Networks",
+    deepbox: "deepbox-nn.json",
+    python: "pytorch-nn.json",
+    lib: "PyTorch",
+  },
+  {
+    name: "Optimizers",
+    deepbox: "deepbox-optim.json",
+    python: "pytorch-optim.json",
+    lib: "PyTorch",
+  },
+  {
+    name: "Plotting",
+    deepbox: "deepbox-plot.json",
+    python: "matplotlib-plot.json",
+    lib: "Matplotlib",
+  },
+  {
+    name: "Preprocessing",
+    deepbox: "deepbox-preprocess.json",
+    python: "sklearn-preprocess.json",
+    lib: "scikit-learn",
+  },
+  {
+    name: "Random Generation",
+    deepbox: "deepbox-random.json",
+    python: "numpy-random.json",
+    lib: "NumPy",
+  },
+  {
+    name: "Statistical Analysis",
+    deepbox: "deepbox-stats.json",
+    python: "scipy-stats.json",
+    lib: "SciPy",
+  },
+];
+
+function load(file: string): Suite | null {
+  const path = `benchmarks/results/${file}`;
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, "utf-8"));
+}
+
+function compare(ds: Result[], py: Result[]): Row[] {
+  const pyMap = new Map(py.map((r) => [`${r.operation}|${r.size}`, r]));
+  const rows: Row[] = [];
+  for (const d of ds) {
+    const p = pyMap.get(`${d.operation}|${d.size}`);
+    if (!p) continue;
+    const speedup = p.mean_ms / d.mean_ms;
+    const winner: Row["winner"] = speedup >= 1 ? "Deepbox" : "lib";
+    rows.push({
+      operation: d.operation,
+      size: d.size,
+      deepbox_ms: d.mean_ms,
+      python_ms: p.mean_ms,
+      speedup,
+      winner,
+    });
+  }
+  return rows;
+}
+
+function fmtMs(ms: number): string {
+  if (ms < 0.001) return `${(ms * 1000).toFixed(2)} µs`;
+  if (ms < 1) return `${ms.toFixed(3)} ms`;
+  if (ms < 1000) return `${ms.toFixed(1)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function fmtSpeed(s: number): string {
+  return s >= 1 ? `${s.toFixed(1)}x faster` : `${(1 / s).toFixed(1)}x slower`;
+}
+
+const BLUE = "\u{1F535}";
+const GREEN = "\u{1F7E2}";
+
+// ── Run ───────────────────────────────────────────────────
+
+let totalDs = 0,
+  totalLib = 0;
+const sections: { name: string; lib: string; rows: Row[] }[] = [];
+
+console.log(`\n${"=".repeat(100)}`);
+console.log("  DEEPBOX vs PYTHON PACKAGES — BENCHMARK COMPARISON");
+console.log(`${"=".repeat(100)}\n`);
+
+for (const b of BENCHMARKS) {
+  const ds = load(b.deepbox);
+  const py = load(b.python);
+  if (!ds) {
+    console.log(`  ⚠ Missing: ${b.deepbox}`);
+    sections.push({ name: b.name, lib: b.lib, rows: [] });
+    continue;
+  }
+  if (!py) {
+    console.log(
+      `  ⚠ Missing: ${b.python} — run: python3 benchmarks/python/${b.python.replace(/.*-/, "").replace(".json", ".py")}`
+    );
+    sections.push({ name: b.name, lib: b.lib, rows: [] });
+    continue;
+  }
+
+  const rows = compare(ds.results, py.results);
+  sections.push({ name: b.name, lib: b.lib, rows });
+
+  const dw = rows.filter((r) => r.winner === "Deepbox").length;
+  const lw = rows.filter((r) => r.winner === "lib").length;
+  totalDs += dw;
+  totalLib += lw;
+
+  console.log(`  ${b.name}: Deepbox ${dw} | ${b.lib} ${lw}`);
+}
+
+const total = totalDs + totalLib;
+const pct = (n: number) => (total > 0 ? `${((n / total) * 100).toFixed(1)}%` : "—");
+
+console.log(`\n${"-".repeat(60)}`);
+console.log(`  TOTAL: ${total} comparisons`);
+console.log(`  ${BLUE} Deepbox wins:         ${totalDs} (${pct(totalDs)})`);
+console.log(`  ${GREEN} Python packages win:  ${totalLib} (${pct(totalLib)})`);
+console.log(`${"=".repeat(100)}\n`);
+
+// ── Generate RESULTS.md ───────────────────────────────────
+
+let md = `# Benchmark Results — Deepbox vs Python Packages\n\n`;
+md += `> Auto-generated by \`benchmarks/compare.ts\` on ${new Date().toISOString().split("T")[0]}\n\n`;
+
+md += `## Summary\n\n`;
+md += `| | Count | % |\n`;
+md += `| --- | ---: | ---: |\n`;
+md += `| ${BLUE} Deepbox wins | ${totalDs} | ${pct(totalDs)} |\n`;
+md += `| ${GREEN} Python packages win | ${totalLib} | ${pct(totalLib)} |\n`;
+md += `| **Total** | **${total}** | |\n\n`;
+
+for (const sec of sections) {
+  md += `---\n\n## ${sec.name} (vs ${sec.lib})\n\n`;
+  if (sec.rows.length === 0) {
+    md += `> No results yet. Run both Deepbox and ${sec.lib} benchmarks first.\n\n`;
+    continue;
+  }
+
+  const dw = sec.rows.filter((r) => r.winner === "Deepbox").length;
+  const lw = sec.rows.filter((r) => r.winner === "lib").length;
+  md += `**Deepbox ${dw} — ${sec.lib} ${lw}**\n\n`;
+  md += `| Operation | Size | Deepbox | ${sec.lib} | Speedup | Winner |\n`;
+  md += `| --- | --- | ---: | ---: | --- | --- |\n`;
+  for (const r of sec.rows) {
+    const icon = r.winner === "Deepbox" ? BLUE : GREEN;
+    const label = r.winner === "Deepbox" ? "Deepbox" : sec.lib;
+    md += `| ${r.operation} | ${r.size} | ${fmtMs(r.deepbox_ms)} | ${fmtMs(r.python_ms)} | ${fmtSpeed(r.speedup)} | ${icon} ${label} |\n`;
+  }
+  md += `\n`;
+}
+
+md += `---\n\n## Notes\n\n`;
+md += `- **Speedup > 1x** = Deepbox is faster\n`;
+md += `- **Speedup < 1x** = Python package is faster\n`;
+md += `- NumPy/SciPy use C/Fortran BLAS backends; Deepbox is pure TypeScript on V8\n`;
+md += `- PyTorch uses C++ ATen backend; CPU-only measurements\n`;
+md += `- scikit-learn uses Cython/C extensions for core algorithms\n`;
+md += `- Results are hardware-dependent — always compare on the same machine\n`;
+
+writeFileSync("benchmarks/RESULTS.md", md);
+console.log(`\n  ✓ Written → benchmarks/RESULTS.md`);
+
+// ── Auto-update root README.md performance section ──────
+
+const readmePath = "README.md";
+if (existsSync(readmePath)) {
+  let readme = readFileSync(readmePath, "utf-8");
+
+  const perfStart = readme.indexOf("## Performance");
+  const nextH2 = readme.indexOf("\n## ", perfStart + 15);
+  if (perfStart !== -1 && nextH2 !== -1) {
+    const TABLE_MAP: Record<string, { category: string; against: string }> = {
+      "DataFrame Operations": {
+        category: "DataFrames",
+        against: "Pandas (C / Cython)",
+      },
+      "Dataset Loading": { category: "Datasets", against: "scikit-learn" },
+      "Linear Algebra": {
+        category: "Linear Algebra",
+        against: "NumPy + SciPy (LAPACK)",
+      },
+      Metrics: { category: "Metrics", against: "scikit-learn (C / Cython)" },
+      "ML Training": {
+        category: "ML Training",
+        against: "scikit-learn (C / Cython)",
+      },
+      "NDArray Operations": {
+        category: "NDArray Ops",
+        against: "NumPy (C / BLAS)",
+      },
+      "Neural Networks": {
+        category: "Neural Networks",
+        against: "PyTorch (C++ ATen)",
+      },
+      Optimizers: { category: "Optimizers", against: "PyTorch (C++ ATen)" },
+      Plotting: { category: "Plotting", against: "Matplotlib (C / Agg)" },
+      Preprocessing: {
+        category: "Preprocessing",
+        against: "scikit-learn (C / Cython)",
+      },
+      "Random Generation": { category: "Random", against: "NumPy (C)" },
+      "Statistical Analysis": {
+        category: "Statistics",
+        against: "SciPy (C / Fortran)",
+      },
+    };
+
+    const bestPerCat = new Map<string, { op: string; size: string; speed: number; cat: string }>();
+    let tableRows = "";
+    for (const sec of sections) {
+      const info = TABLE_MAP[sec.name];
+      if (!info || sec.rows.length === 0) continue;
+      const dw = sec.rows.filter((r) => r.winner === "Deepbox").length;
+      const lw = sec.rows.filter((r) => r.winner === "lib").length;
+      tableRows += `| ${info.category} | ${dw} | ${lw} | ${info.against} |\n`;
+      for (const r of sec.rows) {
+        if (r.winner === "Deepbox" && r.speedup > 1.5) {
+          const prev = bestPerCat.get(info.category);
+          if (!prev || r.speedup > prev.speed) {
+            bestPerCat.set(info.category, {
+              op: r.operation,
+              size: r.size,
+              speed: r.speedup,
+              cat: info.category,
+            });
+          }
+        }
+      }
+    }
+    const topWins = [...bestPerCat.values()].sort((a, b) => b.speed - a.speed).slice(0, 8);
+    let highlights = "";
+    for (const w of topWins) {
+      highlights += `- **${w.op}** (${w.size}) \u2014 ${w.speed.toFixed(1)}x faster *(${w.cat})*\n`;
+    }
+
+    const activeCount = sections.filter((s) => s.rows.length > 0).length;
+    let perfSection = `## Performance\n\n`;
+    perfSection += `Deepbox is pure TypeScript \u2014 no native addons, no WebAssembly, no C bindings. Every operation runs on V8\u2019s JIT compiler with \`TypedArray\` backing. Despite competing against Python libraries that use hand-tuned C and Fortran backends (BLAS, LAPACK, ATen), Deepbox delivers competitive or superior performance in several areas.\n\n`;
+    perfSection += `**${total} head-to-head benchmarks** across ${activeCount} categories, tested on the same machine with identical data sizes and iteration counts:\n\n`;
+    perfSection += `| Category | Deepbox Wins | Python Package Wins | Competing Against |\n`;
+    perfSection += `| --- | ---: | ---: | --- |\n`;
+    perfSection += tableRows;
+    perfSection += `| **Total** | **${totalDs}** | **${totalLib}** | |\n\n`;
+    perfSection += `### Where Deepbox shines\n\n`;
+    perfSection += highlights;
+    perfSection += `\n### Context\n\n`;
+    perfSection += `Python\u2019s numerical libraries delegate heavy lifting to compiled C/Fortran code (OpenBLAS, MKL, LAPACK). Deepbox implements everything in TypeScript, relying on V8\u2019s TurboFan JIT and \`Float64Array\` for performance. The gap is largest for BLAS-bound operations (matmul, decompositions) and smallest for memory-layout operations (transpose, reshape, indexing) where Deepbox\u2019s lazy-view architecture has an advantage.\n\n`;
+    perfSection += `> Run \`npm run bench:all\` to reproduce. Full results in [\`benchmarks/RESULTS.md\`](benchmarks/RESULTS.md).\n`;
+
+    const before = readme.slice(0, perfStart);
+    const after = readme.slice(nextH2 + 1);
+    readme = `${before}${perfSection}\n${after}`;
+    writeFileSync(readmePath, readme);
+    console.log(`  \u2713 Updated \u2192 README.md (Performance section)\n`);
+  } else {
+    console.log(`  \u26a0 Could not locate ## Performance section in README.md\n`);
+  }
+} else {
+  console.log(`  \u26a0 README.md not found\n`);
+}

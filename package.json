@@ -1,0 +1,226 @@
+{
+  "name": "deepbox",
+  "version": "0.1.0",
+  "description": "The TypeScript Toolkit for AI & Numerical Computing",
+  "author": "Jehaad Aljohani",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jehaad1/Deepbox.git"
+  },
+  "homepage": "https://github.com/jehaad1/Deepbox#readme",
+  "bugs": {
+    "url": "https://github.com/jehaad1/Deepbox/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "lint:check": "biome check .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepack": "npm run build",
+    "all": "npm run format:check && npm run lint:check && npm run typecheck && npm run build && npm run test && npm run test:coverage",
+    "all:fix": "npm run format && npm run lint:fix && npm run typecheck && npm run build && npm run test && npm run test:coverage",
+    "project:01": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/01-financial-risk-analysis/index.ts",
+    "project:02": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/02-neural-image-classifier/index.ts",
+    "project:03": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/03-customer-churn-prediction/index.ts",
+    "project:04": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/04-stock-price-forecasting/index.ts",
+    "project:05": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/05-recommendation-engine/index.ts",
+    "project:06": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/06-sentiment-analysis/index.ts",
+    "projects:all": "npm run project:01 && npm run project:02 && npm run project:03 && npm run project:04 && npm run project:05 && npm run project:06",
+    "example:00": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/00-quick-start/index.ts",
+    "example:01": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/01-tensor-basics/index.ts",
+    "example:02": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/02-tensor-operations/index.ts",
+    "example:03": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/03-data-analysis/index.ts",
+    "example:04": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/04-dataframe-basics/index.ts",
+    "example:05": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/05-dataframe-groupby/index.ts",
+    "example:06": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/06-ml-pipeline/index.ts",
+    "example:07": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/07-linear-regression/index.ts",
+    "example:08": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/08-logistic-regression/index.ts",
+    "example:09": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/09-ridge-lasso/index.ts",
+    "example:10": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/10-advanced-ml-models/index.ts",
+    "example:11": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/11-tree-ensemble-models/index.ts",
+    "example:12": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/12-complete-pipeline/index.ts",
+    "example:13": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/13-neural-network-training/index.ts",
+    "example:14": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/14-autograd/index.ts",
+    "example:15": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/15-activation-functions/index.ts",
+    "example:16": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/16-lr-schedulers/index.ts",
+    "example:17": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/17-preprocessing-encoders/index.ts",
+    "example:18": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/18-preprocessing-scalers/index.ts",
+    "example:19": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/19-statistics/index.ts",
+    "example:20": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/20-linear-algebra/index.ts",
+    "example:21": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/21-random-sampling/index.ts",
+    "example:22": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/22-datasets/index.ts",
+    "example:23": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/23-cross-validation/index.ts",
+    "example:24": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/24-metrics/index.ts",
+    "example:25": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/25-plotting/index.ts",
+    "example:26": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/26-sparse-matrices/index.ts",
+    "example:27": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/27-cnn-layers/index.ts",
+    "example:28": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/28-rnn-lstm-gru/index.ts",
+    "example:29": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/29-attention-transformer/index.ts",
+    "example:30": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/30-normalization-dropout/index.ts",
+    "example:31": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/31-dataloader/index.ts",
+    "example:32": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/32-module-system/index.ts",
+    "examples:all": "npm run example:00 && npm run example:01 && npm run example:02 && npm run example:03 && npm run example:04 && npm run example:05 && npm run example:06 && npm run example:07 && npm run example:08 && npm run example:09 && npm run example:10 && npm run example:11 && npm run example:12 && npm run example:13 && npm run example:14 && npm run example:15 && npm run example:16 && npm run example:17 && npm run example:18 && npm run example:19 && npm run example:20 && npm run example:21 && npm run example:22 && npm run example:23 && npm run example:24 && npm run example:25 && npm run example:26 && npm run example:27 && npm run example:28 && npm run example:29 && npm run example:30 && npm run example:31 && npm run example:32",
+    "bench:dataframe": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/01-dataframe.ts",
+    "bench:datasets": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/02-datasets.ts",
+    "bench:linalg": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/03-linalg.ts",
+    "bench:metrics": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/04-metrics.ts",
+    "bench:ml": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/05-ml.ts",
+    "bench:ndarray": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/06-ndarray.ts",
+    "bench:nn": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/07-nn.ts",
+    "bench:optim": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/08-optim.ts",
+    "bench:plot": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/09-plot.ts",
+    "bench:preprocess": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/10-preprocess.ts",
+    "bench:random": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts",
+    "bench:stats": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/12-stats.ts",
+    "bench:compare": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/compare.ts",
+    "bench:deepbox": "npm run bench:dataframe && npm run bench:datasets && npm run bench:linalg && npm run bench:metrics && npm run bench:ml && npm run bench:ndarray && npm run bench:nn && npm run bench:optim && npm run bench:plot && npm run bench:preprocess && npm run bench:random && npm run bench:stats",
+    "bench:python": "python3 benchmarks/python/01_dataframe.py && python3 benchmarks/python/02_datasets.py && python3 benchmarks/python/03_linalg.py && python3 benchmarks/python/04_metrics.py && python3 benchmarks/python/05_ml.py && python3 benchmarks/python/06_ndarray.py && python3 benchmarks/python/07_nn.py && python3 benchmarks/python/08_optim.py && python3 benchmarks/python/09_plot.py && python3 benchmarks/python/10_preprocess.py && python3 benchmarks/python/11_random.py && python3 benchmarks/python/12_stats.py",
+    "bench:all": "npm run bench:deepbox && npm run bench:python && npm run bench:compare"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.cjs"
+    },
+    "./ndarray": {
+      "types": "./dist/ndarray/index.d.ts",
+      "import": "./dist/ndarray/index.js",
+      "require": "./dist/ndarray/index.cjs"
+    },
+    "./linalg": {
+      "types": "./dist/linalg/index.d.ts",
+      "import": "./dist/linalg/index.js",
+      "require": "./dist/linalg/index.cjs"
+    },
+    "./dataframe": {
+      "types": "./dist/dataframe/index.d.ts",
+      "import": "./dist/dataframe/index.js",
+      "require": "./dist/dataframe/index.cjs"
+    },
+    "./stats": {
+      "types": "./dist/stats/index.d.ts",
+      "import": "./dist/stats/index.js",
+      "require": "./dist/stats/index.cjs"
+    },
+    "./metrics": {
+      "types": "./dist/metrics/index.d.ts",
+      "import": "./dist/metrics/index.js",
+      "require": "./dist/metrics/index.cjs"
+    },
+    "./preprocess": {
+      "types": "./dist/preprocess/index.d.ts",
+      "import": "./dist/preprocess/index.js",
+      "require": "./dist/preprocess/index.cjs"
+    },
+    "./ml": {
+      "types": "./dist/ml/index.d.ts",
+      "import": "./dist/ml/index.js",
+      "require": "./dist/ml/index.cjs"
+    },
+    "./nn": {
+      "types": "./dist/nn/index.d.ts",
+      "import": "./dist/nn/index.js",
+      "require": "./dist/nn/index.cjs"
+    },
+    "./optim": {
+      "types": "./dist/optim/index.d.ts",
+      "import": "./dist/optim/index.js",
+      "require": "./dist/optim/index.cjs"
+    },
+    "./random": {
+      "types": "./dist/random/index.d.ts",
+      "import": "./dist/random/index.js",
+      "require": "./dist/random/index.cjs"
+    },
+    "./plot": {
+      "types": "./dist/plot/index.d.ts",
+      "import": "./dist/plot/index.js",
+      "require": "./dist/plot/index.cjs"
+    },
+    "./datasets": {
+      "types": "./dist/datasets/index.d.ts",
+      "import": "./dist/datasets/index.js",
+      "require": "./dist/datasets/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "tsx": "^4.7.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.0.18"
+  },
+  "keywords": [
+    "deepbox",
+    "machine-learning",
+    "deep-learning",
+    "data-science",
+    "data-analysis",
+    "data-mining",
+    "ml",
+    "ai",
+    "numpy",
+    "pandas",
+    "pytorch",
+    "scikit-learn",
+    "tensor",
+    "ndarray",
+    "dataframe",
+    "linear-algebra",
+    "statistics",
+    "statistical-learning",
+    "probability",
+    "numerical",
+    "numerical-computing",
+    "scientific-computing",
+    "math",
+    "optimization",
+    "neural-network",
+    "regression",
+    "classification",
+    "clustering",
+    "dimensionality-reduction",
+    "preprocessing",
+    "feature-engineering",
+    "standardization",
+    "normalization",
+    "scaling",
+    "encoding",
+    "metrics",
+    "cross-validation",
+    "time-series"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=24.13.0"
+  }
+}

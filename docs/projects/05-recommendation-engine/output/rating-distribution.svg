@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+<rect x="0" y="0" width="800" height="400" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
+<rect x="81.82" y="336.36" width="106.06" height="0.00" fill="#ff9800" stroke="#000000" />
+<rect x="214.39" y="231.45" width="106.06" height="104.91" fill="#ff9800" stroke="#000000" />
+<rect x="346.97" y="140.37" width="106.06" height="195.99" fill="#ff9800" stroke="#000000" />
+<rect x="479.55" y="167.29" width="106.06" height="169.07" fill="#ff9800" stroke="#000000" />
+<rect x="612.12" y="63.64" width="106.06" height="272.73" fill="#ff9800" stroke="#000000" />
+<line class="x-tick" x1="134.85" y1="350.00" x2="134.85" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="134.85" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="267.42" y1="350.00" x2="267.42" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="267.42" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="400.00" y1="350.00" x2="400.00" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="400.00" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="532.58" y1="350.00" x2="532.58" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="532.58" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="665.15" y1="350.00" x2="665.15" y2="355.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="665.15" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="y-tick" x1="50.00" y1="336.36" x2="45.00" y2="336.36" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="336.36" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="210.57" x2="45.00" y2="210.57" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="210.57" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">500</text>
+<line class="y-tick" x1="50.00" y1="84.77" x2="45.00" y2="84.77" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="84.77" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1000</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Rating Distribution</text>
+<text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Rating</text>
+<text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Count</text>
+</svg>

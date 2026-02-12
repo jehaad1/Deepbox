@@ -1,0 +1,495 @@
+# Deepbox - LLM Context File
+
+Slogan: The TypeScript Toolkit for AI & Numerical Computing
+
+This file provides comprehensive context about Deepbox for Large Language Models.
+
+## Project Overview
+
+Deepbox is a comprehensive TypeScript library for Data Science and Machine Learning, inspired by Python's NumPy, Pandas, PyTorch, and scikit-learn. It provides type-safe implementations of numerical computing primitives, data manipulation tools, and machine learning algorithms with automatic differentiation support.
+
+**Key Features:**
+- 90+ tensor operations with NumPy-compatible broadcasting
+- Automatic differentiation (autograd) with slice, gather, transpose backward support
+- Sparse matrix support (CSR format) with arithmetic operations
+- Comprehensive linear algebra (SVD, QR, LU, Cholesky, eigenvalues)
+- DataFrames and Series with 50+ operations
+- Classical ML models (Linear, Ridge, Lasso, Logistic, Trees, Random Forest, Gradient Boosting, SVM, KNN, Naive Bayes)
+- Neural network modules (Linear, Conv, RNN/LSTM/GRU, Attention, Normalization, Dropout)
+- Loss functions (MSE, MAE, CrossEntropy, Huber)
+- Optimizers with learning rate schedulers (StepLR, CosineAnnealingLR, OneCycleLR, etc.)
+- 40+ evaluation metrics
+- Statistical tests and correlations including variance equality tests (Levene, Bartlett)
+- SVG/PNG plotting capabilities with browser-compatible fallback
+- Random distributions (uniform, normal, binomial, gamma, beta, etc.)
+
+## Repository Structure
+
+```
+deepbox/
+├── src/                          # Source code
+│   ├── core/                     # Core types, errors, config, validation
+│   │   ├── config/               # Global configuration
+│   │   ├── errors/               # Custom error classes
+│   │   ├── types/                # Core type definitions
+│   │   └── utils/                # Validation utilities
+│   ├── ndarray/                  # N-dimensional arrays
+│   │   ├── autograd/             # Automatic differentiation (GradTensor)
+│   │   ├── linalg/               # Linear algebra ops (dot product)
+│   │   ├── ops/                  # Tensor operations
+│   │   │   ├── activation.ts     # ReLU, Sigmoid, Softmax, GELU, etc.
+│   │   │   ├── arithmetic.ts     # Add, sub, mul, div, pow, etc.
+│   │   │   ├── comparison.ts     # Greater, less, equal, etc.
+│   │   │   ├── logical.ts        # AND, OR, NOT, XOR
+│   │   │   ├── reduction.ts      # Sum, mean, max, min, std, etc.
+│   │   │   └── trigonometry.ts   # Sin, cos, tan, etc.
+│   │   ├── sparse/               # Sparse matrix (CSR format)
+│   │   └── tensor/               # Tensor class and creation functions
+│   ├── linalg/                   # Linear algebra module
+│   │   ├── decomposition/        # SVD, QR, LU, Cholesky, Eigen
+│   │   ├── solvers/              # Linear system solvers
+│   │   ├── inverse.ts            # Matrix inversion (inv, pinv)
+│   │   ├── norms.ts              # Vector/matrix norms
+│   │   └── properties.ts         # Det, trace, rank, condition number
+│   ├── dataframe/                # DataFrames and Series
+│   ├── stats/                    # Statistical functions
+│   ├── metrics/                  # ML evaluation metrics
+│   ├── preprocess/               # Data preprocessing
+│   ├── ml/                       # Classical ML models
+│   │   ├── base.ts               # Base interfaces
+│   │   ├── linear/               # Linear, Ridge, Lasso, Logistic
+│   │   ├── tree/                 # DecisionTree, RandomForest
+│   │   ├── ensemble/             # GradientBoosting
+│   │   ├── clustering/           # KMeans, DBSCAN
+│   │   ├── decomposition/        # PCA
+│   │   ├── naive_bayes/          # GaussianNB
+│   │   ├── neighbors/            # KNeighborsClassifier, KNeighborsRegressor
+│   │   ├── svm/                  # LinearSVC, LinearSVR
+│   │   └── manifold/             # t-SNE
+│   ├── nn/                       # Neural networks
+│   │   ├── module/               # Module base class
+│   │   ├── containers/           # Sequential
+│   │   ├── layers/               # Linear, Conv, RNN, Attention, Norm, Dropout
+│   │   │   ├── linear.ts         # Linear/Dense layer
+│   │   │   ├── conv.ts           # Conv1d, Conv2d, MaxPool2d, AvgPool2d
+│   │   │   ├── recurrent.ts      # RNN, LSTM, GRU
+│   │   │   ├── attention.ts      # MultiheadAttention, TransformerEncoderLayer
+│   │   │   ├── normalization.ts  # BatchNorm1d, LayerNorm
+│   │   │   ├── dropout.ts        # Dropout
+│   │   │   └── activations.ts    # ReLU, Sigmoid, GELU, etc. as layers
+│   │   └── losses/               # Loss functions
+│   │       └── index.ts          # MSE, MAE, CrossEntropy, Huber
+│   ├── optim/                    # Optimizers
+│   │   ├── Optimizer.ts          # Base optimizer
+│   │   └── optimizers/           # SGD, Adam, AdamW, Nadam, RMSprop, Adagrad, AdaDelta
+│   ├── random/                   # Random number generation
+│   ├── datasets/                 # Dataset loaders and generators
+│   ├── plot/                     # Visualization (SVG/PNG)
+│   └── index.ts                  # Main entry point
+├── test/                         # Test files (245 test files)
+├── .github/workflows/ci.yml      # CI/CD pipeline
+├── biome.json                    # Biome config (linting/formatting)
+├── tsconfig.json                 # TypeScript configuration
+├── tsup.config.ts                # Build configuration
+├── vitest.config.ts              # Test configuration
+└── package.json                  # Package metadata
+```
+
+## Modules (Subpath Exports)
+
+### deepbox/core
+**Purpose**: Core types, errors, configuration, and validation utilities
+**Key exports**: 
+- Types: `DType`, `Device`, `Shape`, `TypedArray`, `TensorLike`, `TensorStorage`
+- Errors: `DeepboxError`, `ShapeError`, `BroadcastError`, `DTypeError`, `IndexError`, `NotFittedError`, etc.
+- Config: `getConfig()`, `setConfig()`, `setDevice()`, `setDtype()`, `setSeed()`
+- Utils: `validateShape()`, `validateDtype()`, `shapeToSize()`, `dtypeToTypedArrayCtor()`
+**Design**: Mixed (types + utility functions)
+
+### deepbox/ndarray
+**Purpose**: N-dimensional array (tensor) operations with automatic differentiation
+**Key exports**: 
+- Core: `Tensor`, `tensor()`, `zeros()`, `ones()`, `arange()`, `linspace()`, `eye()`, `full()`
+- Autograd: `GradTensor`, `parameter()`, `noGrad()` (supports slice, gather, transpose backward)
+- Sparse: `CSRMatrix` (Compressed Sparse Row format with add, sub, scale, multiply, matvec, matmul, transpose)
+- Shape ops: `reshape()`, `transpose()`, `flatten()`, `squeeze()`, `unsqueeze()`, `expandDims()`, `slice()`, `gather()`
+- Arithmetic: `add()`, `sub()`, `mul()`, `div()`, `pow()`, `sqrt()`, `square()`, `neg()`, `abs()`
+- Comparison: `equal()`, `greater()`, `less()`, `greaterEqual()`, `lessEqual()`, `notEqual()`
+- Logical: `logicalAnd()`, `logicalOr()`, `logicalNot()`, `logicalXor()`
+- Reductions: `sum()`, `mean()`, `max()`, `min()`, `std()`, `variance()`, `prod()`, `median()` (with axis support)
+- Trigonometric: `sin()`, `cos()`, `tan()`, `asin()`, `acos()`, `atan()`, `sinh()`, `cosh()`, `tanh()`
+- Activations: `relu()`, `sigmoid()`, `softmax()`, `logSoftmax()`, `gelu()`, `mish()`, `swish()`, `elu()`, `leakyRelu()` (softmax/logSoftmax support arbitrary dimensions)
+- Other: `exp()`, `log()`, `clip()`, `sort()`, `argsort()`, `cumsum()`, `cumprod()`, `diff()`
+**Design**: Functional (stateless operations on immutable tensors) + OOP (GradTensor for autograd)
+**Inspired by**: NumPy, PyTorch
+
+### deepbox/linalg
+**Purpose**: Linear algebra operations
+**Key exports**: 
+- Decompositions: `svd()`, `qr()`, `lu()`, `cholesky()`, `eig()`, `eigh()`, `eigvals()`, `eigvalsh()`
+- Solvers: `solve()`, `lstsq()`, `solveTriangular()`
+- Inverse: `inv()`, `pinv()` (pseudo-inverse)
+- Properties: `det()`, `trace()`, `matrixRank()`, `slogdet()`, `cond()` (condition number)
+- Norms: `norm()` (L1, L2, Frobenius, nuclear, etc.)
+**Design**: Functional
+**Inspired by**: NumPy.linalg, SciPy.linalg
+
+### deepbox/dataframe
+**Purpose**: Tabular data manipulation
+**Key exports**: `DataFrame`, `Series`, `DataFrameOptions`, `SeriesOptions`
+**Features**: 50+ operations including filtering, grouping, joining, merging, pivoting, sorting, CSV I/O
+**Design**: OOP (stateful data structures with methods)
+**Inspired by**: Pandas
+
+### deepbox/stats
+**Purpose**: Statistical functions and hypothesis tests
+**Key exports**: 
+- Descriptive: `mean()`, `median()`, `mode()`, `std()`, `variance()`, `skewness()`, `kurtosis()`, `quantile()`, `percentile()`, `moment()`, `geometricMean()`, `harmonicMean()`, `trimMean()`
+- Correlation: `corrcoef()`, `cov()`, `pearsonr()`, `spearmanr()`, `kendalltau()`
+- Tests: `ttest_1samp()`, `ttest_ind()`, `ttest_rel()`, `f_oneway()`, `chisquare()`, `mannwhitneyu()`, `wilcoxon()`, `kruskal()`, `friedmanchisquare()`, `shapiro()`, `normaltest()`, `kstest()`, `anderson()`
+- Variance tests: `levene()`, `bartlett()` (equality of variances)
+**Design**: Functional
+**Inspired by**: SciPy.stats, statsmodels
+
+### deepbox/metrics
+**Purpose**: Model evaluation metrics
+**Key exports**: 
+- Classification: `accuracy()`, `precision()`, `recall()`, `f1Score()`, `fbetaScore()`, `rocAucScore()`, `rocCurve()`, `precisionRecallCurve()`, `confusionMatrix()`, `classificationReport()`, `logLoss()`, `hammingLoss()`, `jaccardScore()`, `matthewsCorrcoef()`, `cohenKappaScore()`, `balancedAccuracyScore()`, `averagePrecisionScore()`
+- Regression: `mse()`, `rmse()`, `mae()`, `mape()`, `r2Score()`, `adjustedR2Score()`, `explainedVarianceScore()`, `maxError()`, `medianAbsoluteError()`
+- Clustering: `silhouetteScore()`, `silhouetteSamples()`, `daviesBouldinScore()`, `calinskiHarabaszScore()`, `adjustedRandScore()`, `adjustedMutualInfoScore()`, `normalizedMutualInfoScore()`, `homogeneityScore()`, `completenessScore()`, `vMeasureScore()`, `fowlkesMallowsScore()`
+**Design**: Functional
+**Inspired by**: scikit-learn.metrics
+
+### deepbox/preprocess
+**Purpose**: Data preprocessing and transformation
+**Key exports**: 
+- Scalers: `StandardScaler`, `MinMaxScaler`, `RobustScaler`, `MaxAbsScaler`, `Normalizer`, `PowerTransformer`, `QuantileTransformer`
+- Encoders: `LabelEncoder`, `OneHotEncoder`, `OrdinalEncoder`, `LabelBinarizer`, `MultiLabelBinarizer`
+- Splitting: `trainTestSplit()`, `KFold`, `StratifiedKFold`, `GroupKFold`, `LeaveOneOut`, `LeavePOut`
+**Design**: OOP (fit/transform pattern)
+**Inspired by**: scikit-learn.preprocessing
+
+### deepbox/ml
+**Purpose**: Classical machine learning algorithms
+**Key exports**: 
+- Interfaces: `Estimator`, `Regressor`, `Classifier`, `Transformer`, `Clusterer`, `OutlierDetector`
+- Linear models: `LinearRegression`, `Ridge`, `Lasso`, `LogisticRegression`
+- Tree-based: `DecisionTreeClassifier`, `DecisionTreeRegressor`, `RandomForestClassifier`, `RandomForestRegressor`
+- Ensemble: `GradientBoostingClassifier`, `GradientBoostingRegressor`
+- Clustering: `KMeans`, `DBSCAN`
+- Neighbors: `KNeighborsClassifier`, `KNeighborsRegressor`
+- Naive Bayes: `GaussianNB`
+- SVM: `LinearSVC`, `LinearSVR`
+- Dimensionality reduction: `PCA`
+- Manifold learning: `TSNE`
+**Design**: OOP (fit/predict pattern)
+**Inspired by**: scikit-learn
+
+### deepbox/nn
+**Purpose**: Neural network modules with autograd support
+**Key exports**: 
+- Base: `Module` (base class)
+- Containers: `Sequential`
+- Layers: `Linear`, `Conv1d`, `Conv2d`, `MaxPool2d`, `AvgPool2d`
+- Recurrent: `RNN`, `LSTM`, `GRU`
+- Attention: `MultiheadAttention`, `TransformerEncoderLayer`
+- Normalization: `BatchNorm1d`, `LayerNorm`
+- Regularization: `Dropout`
+- Activations: `ReLU`, `Sigmoid`, `Tanh`, `GELU`, `Mish`, `Swish`, `Softmax`, `LogSoftmax`, `ELU`, `LeakyReLU`, `Softplus`
+- Losses: `mseLoss()`, `maeLoss()`, `rmseLoss()`, `crossEntropyLoss()`, `binaryCrossEntropyLoss()`, `binaryCrossEntropyWithLogitsLoss()`, `huberLoss()`
+**Design**: OOP (Module pattern with forward() and parameter management)
+**Inspired by**: PyTorch.nn
+
+### deepbox/datasets
+**Purpose**: Dataset loading and generation
+**Key exports**: 
+- Classic loaders: `loadIris()`, `loadDigits()`, `loadBreastCancer()`, `loadDiabetes()`, `loadLinnerud()`
+- Classification loaders: `loadFlowersExtended()`, `loadLeafShapes()`, `loadFruitQuality()`, `loadSeedMorphology()`, `loadMoonsMulti()`, `loadConcentricRings()`, `loadSpiralArms()`, `loadGaussianIslands()`, `loadPerfectlySeparable()`
+- Regression loaders: `loadPlantGrowth()`, `loadHousingMini()`, `loadEnergyEfficiency()`, `loadCropYield()`
+- Clustering loaders: `loadCustomerSegments()`, `loadSensorStates()`
+- Multi-output loaders: `loadFitnessScores()`, `loadWeatherOutcomes()`
+- Integer-heavy loaders: `loadStudentPerformance()`, `loadTrafficConditions()`
+- Generators: `makeClassification()`, `makeRegression()`, `makeBlobs()`, `makeMoons()`, `makeCircles()`, `makeGaussianQuantiles()`
+- Utils: `DataLoader` (batch iteration with shuffle, dropLast, deterministic seed)
+**Design**: Functional + OOP (DataLoader class)
+**Inspired by**: scikit-learn.datasets, PyTorch.utils.data
+
+### deepbox/optim
+**Purpose**: Optimization algorithms for neural network training
+**Key exports**: 
+- Base: `Optimizer`
+- Optimizers: `SGD` (with momentum), `Adam`, `AdamW`, `Nadam`, `RMSprop`, `Adagrad`, `AdaDelta`
+- LR Schedulers: `StepLR`, `ExponentialLR`, `CosineAnnealingLR`, `MultiStepLR`, `LinearLR`, `ReduceLROnPlateau`, `WarmupLR`, `OneCycleLR`
+**Design**: OOP (stateful optimizers with step() and zeroGrad())
+**Inspired by**: PyTorch.optim
+
+### deepbox/random
+**Purpose**: Random number generation and probability distributions
+**Key exports**: 
+- Basic: `rand()`, `randn()`, `randint()`, `setSeed()`, `getSeed()`
+- Distributions: `uniform()`, `normal()`, `binomial()`, `poisson()`, `exponential()`, `gamma()`, `beta()`
+- Sampling: `choice()`, `shuffle()`, `permutation()`
+**Design**: Functional
+**Inspired by**: NumPy.random
+
+### deepbox/plot
+**Purpose**: Data visualization with SVG and PNG output
+**Key exports**: 
+- Basic plots: `plot()`, `scatter()`, `bar()`, `hist()`, `boxplot()`
+- Advanced: `heatmap()`, `contour()`, `contourf()`, `imshow()`
+- ML plots: `plotConfusionMatrix()`, `plotRocCurve()`, `plotLearningCurve()`, `plotValidationCurve()`, `plotDecisionBoundary()`
+- Figure management: `figure()`, `subplot()`, `gca()`, `saveFig()`, `show()`
+**Output formats**: SVG (browser/Node.js), PNG (Node.js only)
+**Design**: Mixed (functional + stateful figure management)
+**Inspired by**: Matplotlib, Seaborn
+
+## Design Principles
+
+1. **Type Safety**: Full TypeScript with strict mode, no `any` types, `noUncheckedIndexedAccess` enabled
+2. **Immutability**: Tensor operations return new tensors, don't mutate (except shuffle)
+3. **Functional + OOP Hybrid**: 
+   - Functions for stateless math operations
+   - Classes for stateful components (models, scalers, optimizers, GradTensor)
+4. **NumPy/PyTorch/scikit-learn API Compatibility**: Familiar API for Python users
+5. **Performance**: TypedArrays, efficient algorithms, strided views
+6. **Broadcasting**: NumPy-compatible broadcasting semantics
+7. **Autograd**: Automatic differentiation with computational graph
+
+## Key Types
+
+```ts
+// Core types
+type DType = 'float32' | 'float64' | 'int32' | 'int64' | 'uint8' | 'bool' | 'string';
+type Device = 'cpu' | 'webgpu' | 'wasm';
+type Shape = readonly number[];
+type TypedArray = Float32Array | Float64Array | Int32Array | BigInt64Array | Uint8Array;
+
+// Tensor interface
+interface Tensor {
+  readonly shape: Shape;
+  readonly dtype: DType;
+  readonly device: Device;
+  readonly data: TypedArray | readonly string[];
+  readonly strides: readonly number[];
+  readonly offset: number;
+  readonly size: number;
+  readonly ndim: number;
+  toArray(): NestedArray;
+  at(...indices: number[]): number | string | bigint;
+}
+
+// GradTensor for autograd (wraps a Tensor, does not extend it)
+class GradTensor {
+  tensor: Tensor;           // The wrapped tensor
+  requiresGrad: boolean;
+  grad: Tensor | null;
+  backward(): void;
+  // Chainable methods that return GradTensor
+  add(other: GradTensor): GradTensor;
+  mul(other: GradTensor): GradTensor;
+  matmul(other: GradTensor): GradTensor;
+  // ... etc
+}
+```
+
+## Common Patterns
+
+### Creating Tensors
+```ts
+import { tensor, zeros, ones, arange, randn, linspace } from 'deepbox/ndarray';
+
+const t1 = tensor([[1, 2], [3, 4]]);
+const t2 = zeros([3, 3]);
+const t3 = ones([2, 2, 2]);
+const t4 = arange(0, 10, 2);  // [0, 2, 4, 6, 8]
+const t5 = randn([100, 50]);
+const t6 = linspace(0, 1, 11);  // [0, 0.1, 0.2, ..., 1.0]
+```
+
+### Automatic Differentiation
+```ts
+import { parameter } from 'deepbox/ndarray';
+
+const x = parameter([[1, 2], [3, 4]]);
+const w = parameter([[0.5], [0.5]]);
+
+const y = x.matmul(w).sum();
+y.backward();
+
+console.log(x.grad);  // Gradients w.r.t. x
+console.log(w.grad);  // Gradients w.r.t. w
+```
+
+### Neural Networks
+```ts
+import { Sequential, Linear, ReLU, Dropout, mseLoss } from 'deepbox/nn';
+import { Adam } from 'deepbox/optim';
+import { GradTensor } from 'deepbox/ndarray';
+
+// Using Sequential container
+const model = new Sequential(
+  new Linear(10, 64),
+  new ReLU(),
+  new Dropout(0.2),
+  new Linear(64, 32),
+  new ReLU(),
+  new Linear(32, 1)
+);
+
+const optimizer = new Adam(model.parameters(), { lr: 0.001 });
+
+// Training loop
+for (let epoch = 0; epoch < 100; epoch++) {
+  const output = model.forward(X);
+  const loss = mseLoss(output, y);
+  
+  optimizer.zeroGrad();
+  loss.backward();
+  optimizer.step();
+}
+```
+
+### Custom Module
+```ts
+import { Module, Linear, BatchNorm1d } from 'deepbox/nn';
+import { GradTensor } from 'deepbox/ndarray';
+
+class MLP extends Module {
+  fc1: Linear;
+  bn1: BatchNorm1d;
+  fc2: Linear;
+  
+  constructor() {
+    super();
+    this.fc1 = new Linear(10, 64);
+    this.bn1 = new BatchNorm1d(64);
+    this.fc2 = new Linear(64, 1);
+    this.registerModule('fc1', this.fc1);
+    this.registerModule('bn1', this.bn1);
+    this.registerModule('fc2', this.fc2);
+  }
+  
+  forward(x: GradTensor): GradTensor {
+    let out = this.fc1.forward(x);
+    out = this.bn1.forward(out);
+    out = out.relu();
+    return this.fc2.forward(out);
+  }
+}
+```
+
+### Machine Learning Pipeline
+```ts
+import { trainTestSplit, StandardScaler } from 'deepbox/preprocess';
+import { RandomForestClassifier, GradientBoostingClassifier } from 'deepbox/ml';
+import { accuracy, f1Score, confusionMatrix } from 'deepbox/metrics';
+
+const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, {
+  testSize: 0.2,
+  randomState: 42,
+});
+
+const scaler = new StandardScaler();
+scaler.fit(XTrain);
+const XTrainScaled = scaler.transform(XTrain);
+const XTestScaled = scaler.transform(XTest);
+
+// Random Forest
+const rf = new RandomForestClassifier({ nEstimators: 100, maxDepth: 10 });
+rf.fit(XTrainScaled, yTrain);
+
+// Gradient Boosting
+const gb = new GradientBoostingClassifier({ nEstimators: 100, learningRate: 0.1 });
+gb.fit(XTrainScaled, yTrain);
+
+const yPred = rf.predict(XTestScaled);
+console.log('Accuracy:', accuracy(yTest, yPred));
+console.log('F1 Score:', f1Score(yTest, yPred));
+```
+
+### Tree-based & SVM Models
+```ts
+import { DecisionTreeClassifier, LinearSVC, KNeighborsClassifier, PCA } from 'deepbox/ml';
+
+// Decision Tree
+const tree = new DecisionTreeClassifier({ maxDepth: 5 });
+tree.fit(XTrain, yTrain);
+
+// Linear Support Vector Machine
+const svm = new LinearSVC({ C: 1.0 });
+svm.fit(XTrain, yTrain);
+
+// K-Nearest Neighbors
+const knn = new KNeighborsClassifier({ nNeighbors: 5 });
+knn.fit(XTrain, yTrain);
+
+// PCA for dimensionality reduction
+const pca = new PCA({ nComponents: 2 });
+pca.fit(X);
+const XReduced = pca.transform(X);
+```
+
+### Plotting
+```ts
+import { scatter, plot, hist, heatmap, saveFig } from 'deepbox/plot';
+import { tensor } from 'deepbox/ndarray';
+
+const x = tensor([1, 2, 3, 4, 5]);
+const y = tensor([2, 4, 5, 4, 6]);
+
+scatter(x, y, { color: '#1f77b4', size: 50 });
+plot(x, y, { color: '#ff7f0e', linewidth: 2 });
+
+const matrix = tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+heatmap(matrix);
+
+saveFig('output.svg');
+```
+
+## Development Commands
+
+```bash
+npm install         # Install dependencies
+npm run dev         # Watch mode for development
+npm run build       # Build the package
+npm test            # Run tests
+npm run test:coverage  # Run tests with coverage
+npm run typecheck   # Type checking
+npm run lint        # Linting
+npm run lint:fix    # Lint and auto-fix
+npm run format      # Format code
+npm run all         # Run all checks (format, lint, typecheck, build, test, coverage)
+```
+
+## Build Configuration
+
+- **TypeScript**: ES2024 target, ESNext modules, strict mode with all checks
+- **Build tool**: tsup (fast TypeScript bundler)
+- **Output**: ESM + CommonJS with type declarations
+- **Linter/Formatter**: Biome (fast Rust-based tooling)
+- **Test runner**: Vitest with V8 coverage
+- **Coverage threshold**: 89% lines, 90% functions, 88% statements, 72% branches
+
+## Dependencies
+
+- **Runtime**: None (zero dependencies)
+- **Build**: TypeScript 5.8+, tsup 8.4+
+- **Testing**: Vitest 4.0+, @vitest/coverage-v8
+- **Linting**: Biome 2.3+
+- **Node.js**: >= 24.13.0
+
+## Notes for LLMs
+
+- **Package structure**: Single package with subpath exports (e.g., `deepbox/ndarray`, `deepbox/ml`)
+- **Module system**: ES modules with CommonJS fallback
+- **TypeScript config**: Strict mode with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature`
+- **Test location**: `test/` directory (245 test files with 4,009 tests)
+- **Source location**: `src/<module>/` with index.ts exports
+- **Internal imports**: Use relative paths (e.g., `../core`, `../ndarray`)
+- **Immutability**: Tensor operations are pure functions (except shuffle which mutates in-place)
+- **Broadcasting**: Follows NumPy broadcasting rules
+- **Autograd**: GradTensor maintains computational graph for backpropagation
+- **Sparse matrices**: CSR format for memory-efficient sparse operations
+- **Error handling**: Custom error classes from `core/errors` (ShapeError, BroadcastError, etc.)
+- **Validation**: Extensive runtime validation with descriptive error messages
+- **Documentation**: JSDoc comments with links to NumPy/scikit-learn/PyTorch docs

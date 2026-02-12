@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect x="0" y="0" width="640" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<rect x="74.55" y="297.58" width="122.73" height="115.15" fill="rgb(68,1,84)" />
+<rect x="197.27" y="297.58" width="122.73" height="115.15" fill="rgb(71,33,113)" />
+<rect x="320.00" y="297.58" width="122.73" height="115.15" fill="rgb(66,61,131)" />
+<rect x="442.73" y="297.58" width="122.73" height="115.15" fill="rgb(56,87,139)" />
+<rect x="74.55" y="182.42" width="122.73" height="115.15" fill="rgb(46,111,142)" />
+<rect x="197.27" y="182.42" width="122.73" height="115.15" fill="rgb(37,133,142)" />
+<rect x="320.00" y="182.42" width="122.73" height="115.15" fill="rgb(32,155,137)" />
+<rect x="442.73" y="182.42" width="122.73" height="115.15" fill="rgb(47,176,125)" />
+<rect x="74.55" y="67.27" width="122.73" height="115.15" fill="rgb(84,196,103)" />
+<rect x="197.27" y="67.27" width="122.73" height="115.15" fill="rgb(136,212,72)" />
+<rect x="320.00" y="67.27" width="122.73" height="115.15" fill="rgb(194,224,42)" />
+<rect x="442.73" y="67.27" width="122.73" height="115.15" fill="rgb(253,231,37)" />
+<line class="x-tick" x1="74.55" y1="430.00" x2="74.55" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="74.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="197.27" y1="430.00" x2="197.27" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="197.27" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="320.00" y1="430.00" x2="320.00" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="320.00" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="442.73" y1="430.00" x2="442.73" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="442.73" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="565.45" y1="430.00" x2="565.45" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="565.45" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="y-tick" x1="50.00" y1="412.73" x2="45.00" y2="412.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="412.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="297.58" x2="45.00" y2="297.58" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="297.58" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1</text>
+<line class="y-tick" x1="50.00" y1="182.42" x2="45.00" y2="182.42" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="182.42" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">2</text>
+<line class="y-tick" x1="50.00" y1="67.27" x2="45.00" y2="67.27" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="67.27" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3</text>
+<text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Heatmap Example</text>
+</svg>

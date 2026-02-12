@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect x="0" y="0" width="640" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<circle cx="281.31" cy="261.34" r="8" fill="#1f77b4" />
+<circle cx="326.32" cy="246.88" r="8" fill="#1f77b4" />
+<circle cx="372.38" cy="212.10" r="8" fill="#1f77b4" />
+<circle cx="424.55" cy="169.86" r="8" fill="#1f77b4" />
+<circle cx="318.61" cy="250.44" r="8" fill="#1f77b4" />
+<circle cx="410.78" cy="182.57" r="8" fill="#1f77b4" />
+<circle cx="235.71" cy="303.35" r="8" fill="#1f77b4" />
+<circle cx="416.86" cy="174.84" r="8" fill="#1f77b4" />
+<circle cx="361.78" cy="218.64" r="8" fill="#1f77b4" />
+<circle cx="491.00" cy="127.64" r="8" fill="#1f77b4" />
+<circle cx="263.79" cy="292.14" r="8" fill="#1f77b4" />
+<circle cx="274.01" cy="278.24" r="8" fill="#1f77b4" />
+<circle cx="565.45" cy="80.77" r="8" fill="#1f77b4" />
+<circle cx="520.83" cy="98.92" r="8" fill="#1f77b4" />
+<circle cx="316.37" cy="239.77" r="8" fill="#1f77b4" />
+<circle cx="495.64" cy="122.31" r="8" fill="#1f77b4" />
+<circle cx="265.49" cy="274.16" r="8" fill="#1f77b4" />
+<circle cx="358.83" cy="222.69" r="8" fill="#1f77b4" />
+<circle cx="361.95" cy="206.70" r="8" fill="#1f77b4" />
+<circle cx="309.25" cy="252.93" r="8" fill="#1f77b4" />
+<circle cx="441.22" cy="150.25" r="8" fill="#1f77b4" />
+<circle cx="330.94" cy="232.07" r="8" fill="#1f77b4" />
+<circle cx="499.52" cy="120.79" r="8" fill="#1f77b4" />
+<circle cx="392.07" cy="195.47" r="8" fill="#1f77b4" />
+<circle cx="407.29" cy="187.53" r="8" fill="#1f77b4" />
+<circle cx="515.58" cy="102.96" r="8" fill="#1f77b4" />
+<circle cx="461.53" cy="139.78" r="8" fill="#1f77b4" />
+<circle cx="458.23" cy="142.07" r="8" fill="#1f77b4" />
+<circle cx="327.82" cy="230.76" r="8" fill="#1f77b4" />
+<circle cx="247.79" cy="286.26" r="8" fill="#1f77b4" />
+<circle cx="561.69" cy="67.27" r="8" fill="#1f77b4" />
+<circle cx="366.65" cy="216.07" r="8" fill="#1f77b4" />
+<circle cx="262.45" cy="276.89" r="8" fill="#1f77b4" />
+<circle cx="272.64" cy="279.03" r="8" fill="#1f77b4" />
+<circle cx="416.07" cy="168.98" r="8" fill="#1f77b4" />
+<circle cx="363.61" cy="220.48" r="8" fill="#1f77b4" />
+<circle cx="346.04" cy="222.09" r="8" fill="#1f77b4" />
+<circle cx="440.24" cy="159.26" r="8" fill="#1f77b4" />
+<circle cx="533.35" cy="90.87" r="8" fill="#1f77b4" />
+<circle cx="480.35" cy="122.77" r="8" fill="#1f77b4" />
+<polyline fill="none" stroke="#ff0000" stroke-width="2" points="74.55,412.73 75.54,412.04 76.54,411.34" />
+<line class="x-tick" x1="74.55" y1="430.00" x2="74.55" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="74.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="274.34" y1="430.00" x2="274.34" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="274.34" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">200</text>
+<line class="x-tick" x1="474.13" y1="430.00" x2="474.13" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="474.13" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">400</text>
+<line class="y-tick" x1="50.00" y1="412.73" x2="45.00" y2="412.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="412.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="274.33" x2="45.00" y2="274.33" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="274.33" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">200</text>
+<line class="y-tick" x1="50.00" y1="135.93" x2="45.00" y2="135.93" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="135.93" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">400</text>
+<text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Predictions vs Actual Values</text>
+<text x="320" y="465" text-anchor="middle" font-size="12" fill="#000">Actual</text>
+<text x="15" y="240" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 240)">Predicted</text>
+</svg>
