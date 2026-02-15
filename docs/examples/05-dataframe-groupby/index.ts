@@ -2,7 +2,7 @@
  * Example 05: DataFrame GroupBy & Aggregation
  *
  * Learn to group and aggregate data for analysis.
- * Similar to SQL GROUP BY or Pandas groupby operations.
+ * Similar to SQL GROUP BY operations.
  */
 
 import { DataFrame } from "deepbox/dataframe";

@@ -1,5 +1,7 @@
 # Advanced ML Models
 
+> **View online:** https://deepbox.dev/examples/10-advanced-ml-models
+
 Demonstrates advanced ML models: KMeans clustering, K-Nearest Neighbors (classification and regression), PCA dimensionality reduction, and Gaussian Naive Bayes.
 
 ## Deepbox Modules Used

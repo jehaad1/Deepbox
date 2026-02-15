@@ -3,7 +3,7 @@ import { DeepboxError } from "./base";
 /**
  * Error thrown when a model or estimator is used before being fitted.
  *
- * This is analogous to sklearn's NotFittedError.
+ * Thrown when a model is used before calling fit().
  *
  * @example
  * ```ts
@@ -25,7 +25,7 @@ import { DeepboxError } from "./base";
  * ```
  *
  * References:
- * - scikit-learn NotFittedError: https://scikit-learn.org/stable/modules/generated/sklearn.exceptions.NotFittedError.html
+ * - Deepbox NotFittedError: https://deepbox.dev/docs/core-errors
  */
 export class NotFittedError extends DeepboxError {
   override name = "NotFittedError";

@@ -121,7 +121,7 @@ function outputIndex(
 }
 
 function extractTensor(arg: AnyTensor, _name: string): Tensor {
-  if (arg instanceof GradTensor) {
+  if (GradTensor.isGradTensor(arg)) {
     return arg.tensor;
   }
   return arg;
@@ -278,7 +278,7 @@ function packState(
  * const output = rnn.forward(x);
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.RNN.html | PyTorch RNN}
+ * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
  */
 export class RNN extends Module {
   private readonly inputSize: number;
@@ -513,7 +513,7 @@ export class RNN extends Module {
  * - Cell state: c_t = f_t * c_{t-1} + i_t * g_t
  * - Hidden state: h_t = o_t * tanh(c_t)
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html | PyTorch LSTM}
+ * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
  */
 export class LSTM extends Module {
   private readonly inputSize: number;
@@ -778,7 +778,7 @@ export class LSTM extends Module {
  * - New gate: n_t = tanh(W_in * x_t + b_in + r_t * (W_hn * h_{t-1} + b_hn))
  * - Hidden: h_t = (1 - z_t) * n_t + z_t * h_{t-1}
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.GRU.html | PyTorch GRU}
+ * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
  */
 export class GRU extends Module {
   private readonly inputSize: number;

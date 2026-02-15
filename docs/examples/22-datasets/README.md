@@ -1,5 +1,7 @@
 # Built-in Datasets
 
+> **View online:** https://deepbox.dev/examples/22-datasets
+
 Explore Deepbox's 24 built-in datasets and 6 synthetic generators for quick experimentation. Perfect for learning and testing ML algorithms.
 
 ## Deepbox Modules Used

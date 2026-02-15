@@ -34,7 +34,7 @@ import type { Classifier, Regressor } from "../base";
  * const predictions = svm.predict(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.svm.LinearSVC.html | scikit-learn LinearSVC}
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class LinearSVC implements Classifier {
   /** Regularization parameter (inverse of regularization strength) */
@@ -46,16 +46,16 @@ export class LinearSVC implements Classifier {
   /** Tolerance for stopping criterion */
   private readonly tol: number;
 
-  /** Weight vector of shape (n_features,) */
-  private weights: number[] = [];
+  /** Per-class weight vectors (OvR for multiclass, single for binary) */
+  private weightsPerClass: number[][] = [];
 
-  /** Bias term */
-  private bias = 0;
+  /** Per-class bias terms */
+  private biasPerClass: number[] = [];
 
   /** Number of features seen during fit */
   private nFeatures = 0;
 
-  /** Unique class labels [0, 1] mapped from original labels */
+  /** Unique class labels */
   private classLabels: number[] = [];
 
   /** Whether the model has been fitted */
@@ -97,18 +97,84 @@ export class LinearSVC implements Classifier {
   }
 
   /**
+   * Fit a single binary SVM using sub-gradient descent on hinge loss.
+   * Maps labels to {-1, +1} and returns learned weights + bias.
+   */
+  private fitBinary(
+    XData: number[][],
+    yMapped: number[],
+    nSamples: number,
+    nFeatures: number
+  ): { weights: number[]; bias: number } {
+    const weights = new Array<number>(nFeatures).fill(0);
+    let bias = 0;
+    const learningRate = 0.01;
+
+    for (let iter = 0; iter < this.maxIter; iter++) {
+      let maxViolation = 0;
+
+      for (let i = 0; i < nSamples; i++) {
+        const xi = XData[i];
+        const yi = yMapped[i];
+        if (xi === undefined || yi === undefined) continue;
+
+        let decision = bias;
+        for (let j = 0; j < nFeatures; j++) {
+          decision += (weights[j] ?? 0) * (xi[j] ?? 0);
+        }
+
+        const margin = yi * decision;
+        if (margin < 1) {
+          maxViolation = Math.max(maxViolation, 1 - margin);
+        }
+
+        const effectiveLR = Math.min(learningRate, 1.0 / (this.C * 10));
+
+        if (margin < 1) {
+          for (let j = 0; j < nFeatures; j++) {
+            weights[j] =
+              (weights[j] ?? 0) * (1 - effectiveLR) + effectiveLR * this.C * yi * (xi[j] ?? 0);
+          }
+          bias += effectiveLR * this.C * yi;
+        } else {
+          for (let j = 0; j < nFeatures; j++) {
+            weights[j] = (weights[j] ?? 0) * (1 - effectiveLR);
+          }
+        }
+      }
+
+      if (maxViolation < this.tol) break;
+    }
+
+    return { weights, bias };
+  }
+
+  /**
+   * Compute decision value for a single binary classifier.
+   */
+  private decisionBinary(x: number[], classIdx: number): number {
+    const w = this.weightsPerClass[classIdx];
+    let d = this.biasPerClass[classIdx] ?? 0;
+    if (w) {
+      for (let j = 0; j < w.length; j++) {
+        d += (w[j] ?? 0) * (x[j] ?? 0);
+      }
+    }
+    return d;
+  }
+
+  /**
    * Fit the SVM classifier using sub-gradient descent.
    *
-   * Uses a simplified hinge loss optimization with L2 regularization.
-   * Objective: minimize (1/2)||w||² + C * Σmax(0, 1 - y_i(w · x_i + b))
+   * Supports both binary and multiclass classification (via OvR).
    *
    * @param X - Training data of shape (n_samples, n_features)
-   * @param y - Target labels of shape (n_samples,). Must contain exactly 2 classes.
+   * @param y - Target labels of shape (n_samples,). Must contain at least 2 classes.
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
-   * @throws {InvalidParameterError} If y does not contain exactly 2 classes
+   * @throws {InvalidParameterError} If y does not contain at least 2 classes
    */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
@@ -118,7 +184,6 @@ export class LinearSVC implements Classifier {
 
     this.nFeatures = nFeatures;
 
-    // Extract data
     const XData: number[][] = [];
     const yData: number[] = [];
 
@@ -131,87 +196,31 @@ export class LinearSVC implements Classifier {
       yData.push(Number(y.data[y.offset + i]));
     }
 
-    // Get unique classes and map to {-1, 1} for SVM
     this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
-    if (this.classLabels.length !== 2) {
+    if (this.classLabels.length < 2) {
       throw new InvalidParameterError(
-        "LinearSVC requires exactly 2 classes for binary classification",
+        "LinearSVC requires at least 2 classes",
         "y",
         this.classLabels.length
       );
     }
 
-    // Map labels to {-1, 1}
-    const yMapped = yData.map((label) => (label === this.classLabels[0] ? -1 : 1));
+    this.weightsPerClass = [];
+    this.biasPerClass = [];
 
-    // Initialize weights and bias
-    this.weights = new Array(nFeatures).fill(0);
-    this.bias = 0;
-
-    // Sub-gradient descent optimization
-    // We use a constant learning rate schedule for simplicity, scaled by 1/(lambda*n)
-    // Here lambda = 1/C. So eta = C/n.
-    // However, to ensure convergence, usually eta decays as 1/t.
-    // For fixed iterations, small constant rate is often sufficient.
-    // We choose eta such that eta * lambda * n = 1 (approx) implies eta = 1/(lambda*n) = C/n?
-    // Let's use eta = 1 / (nSamples * lambda) = C / nSamples.
-    // But if C is large, eta is large, which might be unstable.
-    // Let's use a safe learning rate.
-    const learningRate = 0.01; // Fixed small learning rate for stability
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let maxViolation = 0;
-
-      for (let i = 0; i < nSamples; i++) {
-        const xi = XData[i];
-        const yi = yMapped[i];
-
-        if (xi === undefined || yi === undefined) continue;
-
-        // Compute decision function: w · x + b
-        let decision = this.bias;
-        for (let j = 0; j < nFeatures; j++) {
-          decision += (this.weights[j] ?? 0) * (xi[j] ?? 0);
-        }
-
-        // Hinge loss margin: y * (w · x + b)
-        const margin = yi * decision;
-
-        // Track constraint violation for convergence check
-        if (margin < 1) {
-          maxViolation = Math.max(maxViolation, 1 - margin);
-        }
-
-        // Sub-gradient update
-        // Objective: 0.5*|w|^2 + C * sum(max(0, 1 - y(wx+b)))
-        // Grad w: w - C*y*x (if margin < 1)
-        // Update: w <- w - eta * (w - C*y*x) = w(1-eta) + eta*C*y*x
-
-        // Regularization part (always applied)
-        // Let's trust the user input C implies hard margin.
-        // We will use: w = w - learningRate * (w - C * y * x)
-        // To prevent explosion, learningRate must be < 1/C.
-        // So we adapt LR.
-        const effectiveLR = Math.min(learningRate, 1.0 / (this.C * 10));
-
-        if (margin < 1) {
-          // Misclassified or within margin
-          for (let j = 0; j < nFeatures; j++) {
-            this.weights[j] =
-              (this.weights[j] ?? 0) * (1 - effectiveLR) + effectiveLR * this.C * yi * (xi[j] ?? 0);
-          }
-          this.bias += effectiveLR * this.C * yi;
-        } else {
-          // Correctly classified outside margin: only apply regularization
-          for (let j = 0; j < nFeatures; j++) {
-            this.weights[j] = (this.weights[j] ?? 0) * (1 - effectiveLR);
-          }
-        }
-      }
-
-      // Check convergence
-      if (maxViolation < this.tol) {
-        break;
+    if (this.classLabels.length === 2) {
+      // Binary: single SVM, map to {-1, +1}
+      const yMapped = yData.map((label) => (label === this.classLabels[0] ? -1 : 1));
+      const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures);
+      this.weightsPerClass.push(weights);
+      this.biasPerClass.push(bias);
+    } else {
+      // Multiclass: One-vs-Rest — one binary SVM per class
+      for (const classLabel of this.classLabels) {
+        const yMapped = yData.map((label) => (label === classLabel ? 1 : -1));
+        const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures);
+        this.weightsPerClass.push(weights);
+        this.biasPerClass.push(bias);
       }
     }
 
@@ -237,19 +246,31 @@ export class LinearSVC implements Classifier {
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-
     const predictions: number[] = [];
 
     for (let i = 0; i < nSamples; i++) {
-      // Compute decision function
-      let decision = this.bias;
+      const xi: number[] = [];
       for (let j = 0; j < nFeatures; j++) {
-        decision += (this.weights[j] ?? 0) * Number(X.data[X.offset + i * nFeatures + j]);
+        xi.push(Number(X.data[X.offset + i * nFeatures + j]));
       }
 
-      // Map back to original labels
-      const predictedClass = decision >= 0 ? this.classLabels[1] : this.classLabels[0];
-      predictions.push(predictedClass ?? 0);
+      if (this.classLabels.length === 2) {
+        // Binary
+        const d = this.decisionBinary(xi, 0);
+        predictions.push(d >= 0 ? (this.classLabels[1] ?? 0) : (this.classLabels[0] ?? 0));
+      } else {
+        // Multiclass OvR: pick class with highest decision value
+        let bestClass = 0;
+        let bestScore = -Infinity;
+        for (let c = 0; c < this.classLabels.length; c++) {
+          const score = this.decisionBinary(xi, c);
+          if (score > bestScore) {
+            bestScore = score;
+            bestClass = c;
+          }
+        }
+        predictions.push(this.classLabels[bestClass] ?? 0);
+      }
     }
 
     return tensor(predictions, { dtype: "int32" });
@@ -273,19 +294,28 @@ export class LinearSVC implements Classifier {
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-
+    const nClasses = this.classLabels.length;
     const proba: number[][] = [];
 
     for (let i = 0; i < nSamples; i++) {
-      // Compute decision function
-      let decision = this.bias;
+      const xi: number[] = [];
       for (let j = 0; j < nFeatures; j++) {
-        decision += (this.weights[j] ?? 0) * Number(X.data[X.offset + i * nFeatures + j]);
+        xi.push(Number(X.data[X.offset + i * nFeatures + j]));
       }
 
-      // Use sigmoid for probability approximation (Platt scaling)
-      const p1 = 1 / (1 + Math.exp(-decision));
-      proba.push([1 - p1, p1]);
+      if (nClasses === 2) {
+        const d = this.decisionBinary(xi, 0);
+        const p1 = 1 / (1 + Math.exp(-d));
+        proba.push([1 - p1, p1]);
+      } else {
+        // Softmax over per-class sigmoid scores
+        const sigScores: number[] = [];
+        for (let c = 0; c < nClasses; c++) {
+          sigScores.push(1 / (1 + Math.exp(-this.decisionBinary(xi, c))));
+        }
+        const total = sigScores.reduce((s, v) => s + v, 0) || 1;
+        proba.push(sigScores.map((v) => v / total));
+      }
     }
 
     return tensor(proba);
@@ -337,20 +367,20 @@ export class LinearSVC implements Classifier {
     if (!this.fitted) {
       throw new NotFittedError("LinearSVC must be fitted to access coefficients");
     }
-    return tensor([this.weights]);
+    return tensor(this.weightsPerClass);
   }
 
   /**
-   * Get the bias term.
+   * Get the bias terms.
    *
-   * @returns Bias value
+   * @returns Bias values as tensor
    * @throws {NotFittedError} If the model has not been fitted
    */
-  get intercept(): number {
+  get intercept(): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("LinearSVC must be fitted to access intercept");
     }
-    return this.bias;
+    return tensor(this.biasPerClass);
   }
 
   /**
@@ -395,7 +425,7 @@ export class LinearSVC implements Classifier {
  * const predictions = svr.predict(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.svm.LinearSVR.html | scikit-learn LinearSVR}
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class LinearSVR implements Regressor {
   /** Regularization parameter */

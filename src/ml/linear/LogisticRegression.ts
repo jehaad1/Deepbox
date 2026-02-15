@@ -467,7 +467,7 @@ export class LogisticRegression implements Classifier {
             z += Number(X.data[rowBase + j] ?? 0) * Number(coef.data[coefRowBase + j] ?? 0);
           }
           // For OvR, we apply sigmoid to get probability of class k vs rest
-          // Then we normalize these probabilities to sum to 1 (scikit-learn approach)
+          // Then we normalize these probabilities to sum to 1
           scores[k] = this.sigmoid(z);
           sumExp += scores[k] ?? 0;
         }

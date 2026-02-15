@@ -46,7 +46,7 @@ import { at, atInt, fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_inter
  * **Note**: Rank-deficient matrices (with zero pivots) are handled gracefully.
  * The factorization will still produce valid P, L, U factors.
  *
- * @see {@link https://en.wikipedia.org/wiki/LU_decomposition | Wikipedia: LU decomposition}
+ * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 3.4.1
  */
 export function lu(a: Tensor): [Tensor, Tensor, Tensor] {

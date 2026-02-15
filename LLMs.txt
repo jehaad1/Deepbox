@@ -86,7 +86,7 @@ deepbox/
 │   ├── datasets/                 # Dataset loaders and generators
 │   ├── plot/                     # Visualization (SVG/PNG)
 │   └── index.ts                  # Main entry point
-├── test/                         # Test files (245 test files)
+├── test/                         # Test files (260 test files)
 ├── .github/workflows/ci.yml      # CI/CD pipeline
 ├── biome.json                    # Biome config (linting/formatting)
 ├── tsconfig.json                 # TypeScript configuration
@@ -468,7 +468,7 @@ npm run all         # Run all checks (format, lint, typecheck, build, test, cove
 - **Output**: ESM + CommonJS with type declarations
 - **Linter/Formatter**: Biome (fast Rust-based tooling)
 - **Test runner**: Vitest with V8 coverage
-- **Coverage threshold**: 89% lines, 90% functions, 88% statements, 72% branches
+- **Coverage threshold**: 89% lines, 90% functions, 72% branches, 88% statements
 
 ## Dependencies
 
@@ -483,7 +483,7 @@ npm run all         # Run all checks (format, lint, typecheck, build, test, cove
 - **Package structure**: Single package with subpath exports (e.g., `deepbox/ndarray`, `deepbox/ml`)
 - **Module system**: ES modules with CommonJS fallback
 - **TypeScript config**: Strict mode with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature`
-- **Test location**: `test/` directory (245 test files with 4,009 tests)
+- **Test location**: `test/` directory (260 test files with 4,344 tests)
 - **Source location**: `src/<module>/` with index.ts exports
 - **Internal imports**: Use relative paths (e.g., `../core`, `../ndarray`)
 - **Immutability**: Tensor operations are pure functions (except shuffle which mutates in-place)

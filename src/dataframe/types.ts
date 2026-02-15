@@ -12,6 +12,8 @@
  * };
  * ```
  */
+export type DataValue = number | string | boolean | null | undefined;
+
 export type DataFrameData = Record<string, unknown[]>;
 
 /**

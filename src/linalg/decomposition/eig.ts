@@ -325,7 +325,7 @@ function hessenbergReduce(
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  * @throws {InvalidParameterError} If matrix has complex eigenvalues
  *
- * @see {@link https://en.wikipedia.org/wiki/Eigendecomposition_of_a_matrix | Wikipedia: Eigendecomposition}
+ * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 7.5.2
  */
 export type EigOptions = {
@@ -645,7 +645,7 @@ export function eigh(a: Tensor): [Tensor, Tensor] {
 
   const { values, vectors } = jacobiEigenSymmetric(A, n);
 
-  // Sort ascending like NumPy eigh
+  // Sort ascending like eigh
   const idx = new Array<number>(n);
   for (let i = 0; i < n; i++) idx[i] = i;
   idx.sort((i, j) => at(values, i) - at(values, j));

@@ -1,15 +1,18 @@
-import type { Device, DType, Shape, TensorLike, TypedArray } from "../../core";
+import type { Device, DType, ElementOf, Shape, TensorLike, TypedArray } from "../../core";
 import {
   DeepboxError,
   DTypeError,
   dtypeToTypedArrayCtor,
+  getBigIntElement,
+  getNumericElement,
   IndexError,
   InvalidParameterError,
   ShapeError,
   shapeToSize,
   validateShape,
 } from "../../core";
-import { isContiguous } from "./strides";
+import { normalizeRange, type SliceRange } from "./sliceHelpers";
+import { isContiguous, offsetFromFlatIndex } from "./strides";
 
 export type TensorOptions = {
   readonly dtype: DType;
@@ -141,7 +144,7 @@ export function isBigIntArray(arr: TypedArray): arr is BigInt64Array {
  * - Memory-efficient strided views
  * - Device abstraction (CPU, WebGPU, WASM)
  *
- * Inspired by NumPy ndarray and PyTorch Tensor.
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensors}
  *
  * @typeParam S - Shape type (readonly number array)
  * @typeParam D - Data type (DType literal)
@@ -342,7 +345,7 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    * Requires a contiguous tensor; non-contiguous views will throw.
    *
    * This is a convenience method that wraps the standalone `reshape` function,
-   * providing a more intuitive API similar to NumPy and PyTorch.
+   * providing a more intuitive API for tensor slicing and indexing.
    *
    * @param newShape - The desired shape for the tensor
    * @returns A new tensor with the specified shape
@@ -359,8 +362,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    * console.log(flat.shape); // [4]
    * ```
    *
-   * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.reshape.html | NumPy reshape}
-   * @see {@link https://pytorch.org/docs/stable/generated/torch.reshape.html | PyTorch reshape}
+   * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
+   * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensors}
    */
   reshape<S2 extends Shape>(this: Tensor<S, "string">, newShape: S2): Tensor<S2, "string">;
   reshape<S2 extends Shape>(
@@ -374,12 +377,24 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
     if (newSize !== this.size) {
       throw new ShapeError(`Cannot reshape tensor of size ${this.size} to shape [${newShape}]`);
     }
-    if (!isContiguous(this.shape, this.strides)) {
-      throw new ShapeError("reshape requires a contiguous tensor");
-    }
+
+    const contiguous = isContiguous(this.shape, this.strides);
 
     if (this.isStringTensor()) {
-      // Safe: this branch only executes when dtype is string, so D is "string".
+      if (!contiguous) {
+        const logicalStrides = computeStrides(this.shape);
+        const out = new Array<string>(this.size);
+        const data = this.data as string[];
+        for (let i = 0; i < this.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, this.strides, this.offset);
+          out[i] = data[off] ?? "";
+        }
+        return Tensor.fromStringArray({
+          data: out,
+          shape: newShape,
+          device: this.device,
+        });
+      }
       return Tensor.fromStringArray({
         data: this.data,
         shape: newShape,
@@ -391,6 +406,43 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
 
     if (!this.isNumericTensor()) {
       throw new DTypeError("reshape is not defined for string dtype");
+    }
+
+    if (!contiguous) {
+      const logicalStrides = computeStrides(this.shape);
+      const data = this.data;
+      if (data instanceof BigInt64Array) {
+        const out = new BigInt64Array(this.size);
+        for (let i = 0; i < this.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, this.strides, this.offset);
+          out[i] = data[off] ?? 0n;
+        }
+        return new Tensor({
+          data: out as TensorData<D>,
+          shape: newShape,
+          dtype: this.dtype,
+          device: this.device,
+          strides: computeStrides(newShape),
+          offset: 0,
+        });
+      }
+      const Ctor = dtypeToTypedArrayCtor(this.dtype);
+      const out = new Ctor(this.size);
+      if (!(out instanceof BigInt64Array)) {
+        const numData = data as Exclude<TypedArray, BigInt64Array>;
+        for (let i = 0; i < this.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, this.strides, this.offset);
+          out[i] = numData[off] ?? 0;
+        }
+      }
+      return new Tensor({
+        data: out as TensorData<D>,
+        shape: newShape,
+        dtype: this.dtype,
+        device: this.device,
+        strides: computeStrides(newShape),
+        offset: 0,
+      });
     }
 
     return Tensor.fromTypedArray({
@@ -424,7 +476,123 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
     return this.reshape([this.size]);
   }
 
-  at(...indices: number[]): unknown {
+  /**
+   * Slice this tensor along one or more axes.
+   *
+   * @param ranges - Per-axis slice specifications (number, or {start?, end?, step?})
+   * @returns New tensor with the sliced data
+   *
+   * @example
+   * ```ts
+   * const t = tensor([[1, 2, 3], [4, 5, 6]]);
+   * t.slice(0);           // tensor([1, 2, 3])
+   * t.slice({ start: 0, end: 1 }, { start: 1 }); // tensor([[2, 3]])
+   * ```
+   */
+  slice(...ranges: SliceRange[]): Tensor {
+    const ndim = this.ndim;
+    if (ranges.length > ndim) {
+      throw new ShapeError(
+        `Too many indices for tensor: got ${ranges.length}, expected <= ${ndim}`
+      );
+    }
+
+    const normalized = new Array<{ start: number; end: number; step: number }>(ndim);
+    const outShape: number[] = [];
+
+    for (let axis = 0; axis < ndim; axis++) {
+      const dim = this.shape[axis] ?? 0;
+      const range = ranges[axis] ?? { start: 0, end: dim, step: 1 };
+      const nr = normalizeRange(range, dim);
+      normalized[axis] = nr;
+      if (typeof range !== "number") {
+        const len =
+          nr.step > 0
+            ? Math.max(0, Math.ceil((nr.end - nr.start) / nr.step))
+            : Math.max(0, Math.ceil((nr.start - nr.end) / -nr.step));
+        outShape.push(len);
+      }
+    }
+
+    const outSize = outShape.length === 0 ? 1 : outShape.reduce((a, b) => a * b, 1);
+    const out =
+      this.dtype === "string"
+        ? new Array<string>(outSize)
+        : new (dtypeToTypedArrayCtor(this.dtype))(outSize);
+
+    const outStrides = new Array<number>(outShape.length);
+    let stride = 1;
+    for (let i = outShape.length - 1; i >= 0; i--) {
+      outStrides[i] = stride;
+      stride *= outShape[i] ?? 0;
+    }
+
+    const outNdim = outShape.length;
+    for (let outFlat = 0; outFlat < outSize; outFlat++) {
+      let rem = outFlat;
+      const outIdx = new Array<number>(outNdim);
+      for (let i = 0; i < outNdim; i++) {
+        const s = outStrides[i] ?? 1;
+        outIdx[i] = Math.floor(rem / s);
+        rem %= s;
+      }
+
+      const inIdx = new Array<number>(ndim);
+      let outAxis = 0;
+      for (let axis = 0; axis < ndim; axis++) {
+        const r = ranges[axis];
+        const nr = normalized[axis];
+        if (nr === undefined) {
+          throw new DeepboxError("Internal error: missing normalized slice range");
+        }
+        if (typeof r === "number") {
+          inIdx[axis] = nr.start;
+        } else {
+          inIdx[axis] = nr.start + (outIdx[outAxis] ?? 0) * nr.step;
+          outAxis++;
+        }
+      }
+
+      let inFlat = this.offset;
+      for (let axis = 0; axis < ndim; axis++) {
+        inFlat += (inIdx[axis] ?? 0) * (this.strides[axis] ?? 0);
+      }
+
+      if (Array.isArray(out) && Array.isArray(this.data)) {
+        out[outFlat] = this.data[inFlat] ?? "";
+      } else if (out instanceof BigInt64Array && this.data instanceof BigInt64Array) {
+        out[outFlat] = getBigIntElement(this.data, inFlat);
+      } else if (
+        !Array.isArray(out) &&
+        !(out instanceof BigInt64Array) &&
+        !Array.isArray(this.data) &&
+        !(this.data instanceof BigInt64Array)
+      ) {
+        out[outFlat] = getNumericElement(this.data, inFlat);
+      }
+    }
+
+    if (Array.isArray(out)) {
+      return Tensor.fromStringArray({
+        data: out,
+        shape: outShape.length === 0 ? [] : outShape,
+        device: this.device,
+      });
+    }
+
+    if (this.dtype === "string") {
+      throw new DeepboxError("Internal error: string dtype but non-array data");
+    }
+
+    return Tensor.fromTypedArray({
+      data: out as TypedArray,
+      shape: outShape.length === 0 ? [] : outShape,
+      dtype: this.dtype as Exclude<DType, "string">,
+      device: this.device,
+    });
+  }
+
+  at(...indices: number[]): ElementOf<D> {
     if (indices.length !== this.ndim) {
       throw new ShapeError(
         `Expected ${this.ndim} indices for a ${this.ndim}D tensor; received ${indices.length}`
@@ -456,7 +624,7 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
     if (v === undefined) {
       throw new DeepboxError("Internal error: computed flat index is out of bounds");
     }
-    return v;
+    return v as ElementOf<D>;
   }
 
   toArray(): unknown {

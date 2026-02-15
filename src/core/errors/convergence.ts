@@ -28,8 +28,8 @@ export type ConvergenceErrorDetails = {
  * ```
  *
  * References:
- * - scikit-learn convergence diagnostics:
- *   https://scikit-learn.org/stable/modules/generated/sklearn.exceptions.ConvergenceWarning.html
+ * - Deepbox convergence diagnostics:
+ *   https://deepbox.dev/docs/core-errors
  */
 export class ConvergenceError extends DeepboxError {
   override name = "ConvergenceError";

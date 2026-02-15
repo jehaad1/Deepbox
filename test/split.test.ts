@@ -41,7 +41,7 @@ describe("KFold", () => {
     const kfold = new KFold({ nSplits: 3 });
     const X = tensor([[1], [2], [3], [4], [5], [6]]);
     const splits = kfold.split(X);
-    for (const [trainIdx, testIdx] of splits) {
+    for (const { trainIndex: trainIdx, testIndex: testIdx } of splits) {
       expect(trainIdx.length + testIdx.length).toBe(6);
     }
   });
@@ -72,7 +72,7 @@ describe("LeaveOneOut", () => {
     expect(loo.getNSplits(X)).toBe(3);
     const splits = loo.split(X);
     expect(splits.length).toBe(3);
-    for (const [trainIdx, testIdx] of splits) {
+    for (const { trainIndex: trainIdx, testIndex: testIdx } of splits) {
       expect(testIdx.length).toBe(1);
       expect(trainIdx.length).toBe(2);
     }

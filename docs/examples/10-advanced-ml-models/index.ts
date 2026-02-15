@@ -186,7 +186,7 @@ console.log("• KMeans: Unsupervised clustering for grouping similar data point
 console.log("• KNN: Instance-based learning for classification and regression");
 console.log("• PCA: Dimensionality reduction while preserving variance");
 console.log("• Naive Bayes: Probabilistic classifier based on Bayes' theorem");
-console.log("• All models follow scikit-learn-like API (fit/predict/score)");
+console.log("• All models follow the fit/predict/score API (fit/predict/score)");
 
 console.log("\n✅ Advanced ML Models Example Complete!");
 console.log("=".repeat(60));

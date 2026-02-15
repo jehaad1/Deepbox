@@ -39,7 +39,7 @@ import {
  * - Infinity is handled according to standard arithmetic rules
  * - Mixed Infinity values (Infinity + -Infinity) result in NaN
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.mean.html | NumPy mean}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function mean(t: Tensor, axis?: AxisLike, _keepdims = false): Tensor {
   return reduceMean(t, axis, _keepdims);
@@ -72,7 +72,7 @@ export function mean(t: Tensor, axis?: AxisLike, _keepdims = false): Tensor {
  * - NaN inputs result in NaN output (NaN sorts to end)
  * - Infinity values are sorted naturally (±Infinity at extremes)
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.median.html | NumPy median}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function median(t: Tensor, axis?: AxisLike, _keepdims = false): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
@@ -201,7 +201,7 @@ export function median(t: Tensor, axis?: AxisLike, _keepdims = false): Tensor {
  * @remarks
  * NaN inputs propagate to NaN output.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.mode.html | SciPy stats.mode}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function mode(t: Tensor, axis?: AxisLike): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
@@ -320,7 +320,7 @@ export function mode(t: Tensor, axis?: AxisLike): Tensor {
  * - NaN inputs propagate to NaN output
  * - Infinity inputs result in NaN (infinite standard deviation)
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.std.html | NumPy std}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function std(t: Tensor, axis?: AxisLike, _keepdims = false, ddof = 0): Tensor {
   const v = reduceVariance(t, axis, _keepdims, ddof);
@@ -363,7 +363,7 @@ export function std(t: Tensor, axis?: AxisLike, _keepdims = false, ddof = 0): Te
  * - NaN inputs propagate to NaN output
  * - Infinity inputs result in NaN (infinite variance)
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.var.html | NumPy var}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function variance(t: Tensor, axis?: AxisLike, _keepdims = false, ddof = 0): Tensor {
   return reduceVariance(t, axis, _keepdims, ddof);
@@ -399,7 +399,7 @@ export function variance(t: Tensor, axis?: AxisLike, _keepdims = false, ddof = 0
  * - Returns NaN for constant input (zero variance)
  * - Unbiased correction requires at least 3 samples; otherwise returns NaN
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.skew.html | SciPy stats.skew}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function skewness(t: Tensor, axis?: AxisLike, bias = true): Tensor {
   const mu = reduceMean(t, axis, false);
@@ -490,7 +490,7 @@ export function skewness(t: Tensor, axis?: AxisLike, bias = true): Tensor {
  * - Returns NaN for constant input (zero variance)
  * - Unbiased correction requires at least 4 samples; otherwise returns NaN
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kurtosis.html | SciPy stats.kurtosis}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function kurtosis(t: Tensor, axis?: AxisLike, fisher = true, bias = true): Tensor {
   const mu = reduceMean(t, axis, false);
@@ -575,7 +575,7 @@ export function kurtosis(t: Tensor, axis?: AxisLike, fisher = true, bias = true)
  * quantile(t, 0.95);       // Returns tensor([4.8]) - 95th percentile
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.quantile.html | NumPy quantile}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tensor {
   const qVals = Array.isArray(q) ? q : [q];
@@ -698,7 +698,7 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
  * percentile(t, 95);       // Returns tensor([4.8]) - 95th percentile
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.percentile.html | NumPy percentile}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function percentile(t: Tensor, q: number | number[], axis?: AxisLike): Tensor {
   const qArr = Array.isArray(q) ? q : [q];
@@ -736,7 +736,7 @@ export function percentile(t: Tensor, q: number | number[], axis?: AxisLike): Te
  * moment(t, 3);  // Returns third moment (related to skewness)
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.moment.html | SciPy stats.moment}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
   if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
@@ -803,7 +803,7 @@ export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
  * geometricMean(growth);  // Returns ~1.149 (average growth rate)
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.gmean.html | SciPy stats.gmean}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function geometricMean(t: Tensor, axis?: AxisLike): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
@@ -880,7 +880,7 @@ export function geometricMean(t: Tensor, axis?: AxisLike): Tensor {
  * harmonicMean(speeds);  // Returns 48 mph (correct average)
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.hmean.html | SciPy stats.hmean}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function harmonicMean(t: Tensor, axis?: AxisLike): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
@@ -952,7 +952,7 @@ export function harmonicMean(t: Tensor, axis?: AxisLike): Tensor {
  * trimMean(t, 0.1);          // Returns ~22.8 (removes only 100)
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.trim_mean.html | SciPy stats.trim_mean}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function trimMean(t: Tensor, proportiontocut: number, axis?: AxisLike): Tensor {
   if (!Number.isFinite(proportiontocut) || proportiontocut < 0 || proportiontocut >= 0.5) {

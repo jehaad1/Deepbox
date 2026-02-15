@@ -290,7 +290,7 @@ export function clearSeed(): void {
  * // a and b are identical
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.rand.html | NumPy random.rand}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function rand(shape: Shape, opts: RandomOptions = {}): Tensor {
   const size = shapeToSize(shape);
@@ -329,7 +329,7 @@ export function rand(shape: Shape, opts: RandomOptions = {}): Tensor {
  * const x = randn([2, 3]);  // 2x3 matrix of normal random values
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.randn.html | NumPy random.randn}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function randn(shape: Shape, opts: RandomOptions = {}): Tensor {
   const size = shapeToSize(shape);
@@ -373,7 +373,7 @@ export function randn(shape: Shape, opts: RandomOptions = {}): Tensor {
  * const x = randint(0, 10, [5]);  // 5 random integers from 0 to 9
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.randint.html | NumPy random.randint}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function randint(low: number, high: number, shape: Shape, opts: RandomOptions = {}): Tensor {
   assertSafeInteger(low, "low");
@@ -436,7 +436,7 @@ export function randint(low: number, high: number, shape: Shape, opts: RandomOpt
  * const x = uniform(-1, 1, [3, 3]);  // Values between -1 and 1
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.uniform.html | NumPy random.uniform}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function uniform(
   low: number = 0,
@@ -495,7 +495,7 @@ export function uniform(
  * const x = normal(0, 2, [100]);  // Mean 0, std 2
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.normal.html | NumPy random.normal}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function normal(
   mean: number = 0,
@@ -607,7 +607,7 @@ function binomialChopDown(n: number, p: number, q: number, mode: number, pmfMode
  * const x = binomial(10, 0.5, [100]);  // 10 coin flips, 100 times
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.binomial.html | NumPy random.binomial}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function binomial(
   n: number,
@@ -731,7 +731,7 @@ export function binomial(
  * const x = poisson(5, [100]);  // Rate = 5 events
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.poisson.html | NumPy random.poisson}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function poisson(lambda: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
   if (!Number.isFinite(lambda) || lambda < 0) {
@@ -845,7 +845,7 @@ export function poisson(lambda: number, shape: Shape = [], opts: RandomOptions =
  * const x = exponential(2, [100]);
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.exponential.html | NumPy random.exponential}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function exponential(
   scale: number = 1,
@@ -898,7 +898,7 @@ export function exponential(
  * const x = gamma(2, 2, [100]);
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.gamma.html | NumPy random.gamma}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function gamma(
   shape_param: number,
@@ -957,7 +957,7 @@ export function gamma(
  * const x = beta(2, 5, [100]);
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.beta.html | NumPy random.beta}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function beta(
   alpha: number,
@@ -1140,7 +1140,7 @@ function sampleFromCdf(cdf: Float64Array): number {
  * const unique = choice(x, 3, false);  // All different elements
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.choice.html | NumPy random.choice}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function choice(
   a: Tensor | number,
@@ -1346,7 +1346,7 @@ export function choice(
  * console.log(x);  // e.g., [3, 1, 5, 2, 4]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.shuffle.html | NumPy random.shuffle}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function shuffle(x: Tensor): void {
   if (x.dtype === "string") {
@@ -1418,7 +1418,7 @@ export function shuffle(x: Tensor): void {
  * // original is unchanged
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.permutation.html | NumPy random.permutation}
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
 export function permutation(x: Tensor | number): Tensor {
   if (typeof x === "number") {

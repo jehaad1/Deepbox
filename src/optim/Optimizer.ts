@@ -44,7 +44,7 @@ import type { GradTensor } from "../ndarray";
  * ```
  *
  * References:
- * - PyTorch Optimizer: https://pytorch.org/docs/stable/optim.html
+ * - Deepbox Optimizers: https://deepbox.dev/docs/optim-optimizers
  *
  * @category Optimization
  */
@@ -130,6 +130,20 @@ export abstract class Optimizer<
     params: GradTensor[];
     options: Options;
   }>;
+
+  /**
+   * Get the current learning rate of the first parameter group.
+   * Convenience property for optimizers with a single group.
+   */
+  get lr(): number {
+    const group = this.paramGroups[0];
+    if (!group) {
+      return 0;
+    }
+    const opts = group.options as Record<string, unknown>;
+    const lrVal = opts["lr"];
+    return typeof lrVal === "number" ? lrVal : 0;
+  }
 
   /**
    * Per-parameter state storage.

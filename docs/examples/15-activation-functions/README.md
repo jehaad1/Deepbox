@@ -1,5 +1,7 @@
 # Activation Functions
 
+> **View online:** https://deepbox.dev/examples/15-activation-functions
+
 Explore different activation functions used in neural networks. Learn when to use each activation function.
 
 ## Deepbox Modules Used

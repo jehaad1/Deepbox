@@ -9,13 +9,15 @@ describe("ndarray shape ops error branches", () => {
     expect(() => reshape(t, [3, 2])).toThrow(/Cannot reshape/);
   });
 
-  it("throws on reshape of non-contiguous tensors", () => {
+  it("reshape of non-contiguous tensors produces contiguous copy", () => {
     const t = tensor([
       [1, 2, 3],
       [4, 5, 6],
     ]);
     const tT = transpose(t);
-    expect(() => reshape(tT, [6])).toThrow(/contiguous/i);
+    const flat = reshape(tT, [6]);
+    expect(flat.shape).toEqual([6]);
+    expect(flat.toArray()).toEqual([1, 4, 2, 5, 3, 6]);
   });
 
   it("throws on transpose invalid axes", () => {

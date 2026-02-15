@@ -407,7 +407,7 @@ const kfold = new KFold({
 const cvScores: number[] = [];
 
 let foldNum = 1;
-for (const [trainIdx, valIdx] of kfold.split(X)) {
+for (const { trainIndex: trainIdx, testIndex: valIdx } of kfold.split(X)) {
   // Extract fold data
   const XTrainFold: number[][] = [];
   const yTrainFold: number[] = [];

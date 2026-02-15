@@ -1,5 +1,7 @@
 # Model Evaluation Metrics
 
+> **View online:** https://deepbox.dev/examples/24-metrics
+
 Learn to evaluate models using various performance metrics. Different metrics for classification, regression, and clustering.
 
 ## Deepbox Modules Used

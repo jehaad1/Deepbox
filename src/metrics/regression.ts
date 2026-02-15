@@ -68,7 +68,7 @@ function readNumeric(
  * const error = mse(yTrue, yPred);  // 0.375
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.mean_squared_error.html | Scikit-learn mean_squared_error}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function mse(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -119,7 +119,7 @@ export function mse(yTrue: Tensor, yPred: Tensor): number {
  * const error = rmse(yTrue, yPred);  // √0.375 ≈ 0.612
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.mean_squared_error.html | Scikit-learn mean_squared_error}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function rmse(yTrue: Tensor, yPred: Tensor): number {
   return Math.sqrt(mse(yTrue, yPred));
@@ -153,7 +153,7 @@ export function rmse(yTrue: Tensor, yPred: Tensor): number {
  * const error = mae(yTrue, yPred);  // 0.5
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.mean_absolute_error.html | Scikit-learn mean_absolute_error}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function mae(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -209,7 +209,7 @@ export function mae(yTrue: Tensor, yPred: Tensor): number {
  * const score = r2Score(yTrue, yPred);  // Close to 1 for good fit
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.r2_score.html | Scikit-learn r2_score}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function r2Score(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -281,7 +281,7 @@ export function r2Score(yTrue: Tensor, yPred: Tensor): number {
  * const score = adjustedR2Score(yTrue, yPred, 2);  // Adjusted for 2 features
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Coefficient_of_determination#Adjusted_R2 | Wikipedia: Adjusted R²}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function adjustedR2Score(yTrue: Tensor, yPred: Tensor, nFeatures: number): number {
   if (!Number.isFinite(nFeatures) || !Number.isInteger(nFeatures) || nFeatures < 0) {
@@ -343,7 +343,7 @@ export function adjustedR2Score(yTrue: Tensor, yPred: Tensor, nFeatures: number)
  * const error = mape(yTrue, yPred);  // Percentage error
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.mean_absolute_percentage_error.html | Scikit-learn MAPE}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function mape(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -400,7 +400,7 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
  * const error = medianAbsoluteError(yTrue, yPred);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.median_absolute_error.html | Scikit-learn median_absolute_error}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -456,7 +456,7 @@ export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
  * const error = maxError(yTrue, yPred);  // 1.0 (worst prediction)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.max_error.html | Scikit-learn max_error}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function maxError(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -508,7 +508,7 @@ export function maxError(yTrue: Tensor, yPred: Tensor): number {
  * const score = explainedVarianceScore(yTrue, yPred);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.explained_variance_score.html | Scikit-learn explained_variance_score}
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function explainedVarianceScore(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");

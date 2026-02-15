@@ -4,7 +4,7 @@
  */
 
 /**
- * Calculates quartiles using the median-of-medians method (same as numpy/Excel).
+ * Calculates quartiles using the median-of-medians method (same as Excel).
  * @internal
  */
 export function calculateQuartiles(sortedData: readonly number[]): {

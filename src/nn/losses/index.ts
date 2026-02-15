@@ -1,13 +1,16 @@
 import { DTypeError, getElementAsNumber, InvalidParameterError, ShapeError } from "../../core";
+import type { AnyTensor } from "../../ndarray";
 import {
   abs,
   add,
   clip,
+  GradTensor,
   log,
   mean,
   mul,
   neg,
   pow,
+  reshape,
   sqrt,
   sub,
   sum,
@@ -34,6 +37,15 @@ function ensureSameShape(a: Tensor, b: Tensor, context: string): void {
   if (!shapesEqual(a.shape, b.shape)) {
     throw new ShapeError(`Shape mismatch in ${context}: [${a.shape}] vs [${b.shape}]`);
   }
+}
+
+function alignShapes(a: Tensor, b: Tensor): [Tensor, Tensor] {
+  if (shapesEqual(a.shape, b.shape)) return [a, b];
+  if (a.size === b.size) {
+    if (a.ndim > b.ndim) return [reshape(a, b.shape), b];
+    if (b.ndim > a.ndim) return [a, reshape(b, a.shape)];
+  }
+  return [a, b];
 }
 
 function ensureNumeric(t: Tensor, context: string): void {
@@ -103,14 +115,42 @@ function readNumericFlat(
 export function mseLoss(
   predictions: Tensor,
   targets: Tensor,
+  reduction?: "mean" | "sum" | "none"
+): Tensor;
+export function mseLoss(
+  predictions: GradTensor,
+  targets: GradTensor,
+  reduction?: "mean" | "sum" | "none"
+): GradTensor;
+export function mseLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
   reduction: "mean" | "sum" | "none" = "mean"
-): Tensor {
+): AnyTensor {
   validateReduction(reduction, "mseLoss");
-  ensureNumeric(predictions, "mseLoss");
-  ensureNumeric(targets, "mseLoss");
-  ensureSameShape(predictions, targets, "mseLoss");
 
-  const diff = sub(predictions, targets);
+  // GradTensor path — preserves computation graph for .backward()
+  if (GradTensor.isGradTensor(predictions)) {
+    const pred = predictions;
+    const tgt = GradTensor.isGradTensor(targets)
+      ? targets
+      : GradTensor.fromTensor(targets as Tensor, { requiresGrad: false });
+    const diff = pred.sub(tgt);
+    const squared = diff.mul(diff);
+    if (reduction === "none") return squared;
+    if (reduction === "sum") return squared.sum();
+    return squared.mean();
+  }
+
+  // Plain Tensor path
+  let preds = predictions as Tensor;
+  let tgts = GradTensor.isGradTensor(targets) ? targets.tensor : (targets as Tensor);
+  ensureNumeric(preds, "mseLoss");
+  ensureNumeric(tgts, "mseLoss");
+  [preds, tgts] = alignShapes(preds, tgts);
+  ensureSameShape(preds, tgts, "mseLoss");
+
+  const diff = sub(preds, tgts);
   const squaredDiff = pow(diff, tensor(2, { dtype: diff.dtype, device: diff.device }));
 
   if (reduction === "none") {
@@ -154,6 +194,7 @@ export function maeLoss(
   validateReduction(reduction, "maeLoss");
   ensureNumeric(predictions, "maeLoss");
   ensureNumeric(targets, "maeLoss");
+  [predictions, targets] = alignShapes(predictions, targets);
   ensureSameShape(predictions, targets, "maeLoss");
 
   const diff = sub(predictions, targets);
@@ -293,6 +334,7 @@ export function huberLoss(
   validateReduction(reduction, "huberLoss");
   ensureNumeric(predictions, "huberLoss");
   ensureNumeric(targets, "huberLoss");
+  [predictions, targets] = alignShapes(predictions, targets);
   ensureSameShape(predictions, targets, "huberLoss");
 
   if (!Number.isFinite(delta) || delta <= 0) {

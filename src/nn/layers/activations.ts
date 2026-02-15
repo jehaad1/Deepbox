@@ -27,7 +27,7 @@ export class ReLU extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.relu();
+    if (GradTensor.isGradTensor(input)) return input.relu();
     return reluOp(input);
   }
 
@@ -47,7 +47,7 @@ export class Sigmoid extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.sigmoid();
+    if (GradTensor.isGradTensor(input)) return input.sigmoid();
     return sigmoidOp(input);
   }
 
@@ -67,7 +67,7 @@ export class Tanh extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.tanh();
+    if (GradTensor.isGradTensor(input)) return input.tanh();
     return tanhOp(input);
   }
 
@@ -94,7 +94,7 @@ export class LeakyReLU extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.leakyRelu(this.alpha);
+    if (GradTensor.isGradTensor(input)) return input.leakyRelu(this.alpha);
     return leakyReluOp(input, this.alpha);
   }
 
@@ -123,7 +123,7 @@ export class ELU extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.elu(this.alpha);
+    if (GradTensor.isGradTensor(input)) return input.elu(this.alpha);
     return eluOp(input, this.alpha);
   }
 
@@ -143,7 +143,7 @@ export class GELU extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) return input.gelu();
+    if (GradTensor.isGradTensor(input)) return input.gelu();
     return geluOp(input);
   }
 
@@ -172,7 +172,7 @@ export class Softmax extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) {
+    if (GradTensor.isGradTensor(input)) {
       return gradSoftmax(input, normalizeAxis(this.axis, input.tensor.ndim));
     }
     return softmaxOp(input, this.axis);
@@ -203,7 +203,7 @@ export class LogSoftmax extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) {
+    if (GradTensor.isGradTensor(input)) {
       return gradLogSoftmax(input, normalizeAxis(this.axis, input.tensor.ndim));
     }
     return logSoftmaxOp(input, this.axis);
@@ -225,10 +225,12 @@ export class Softplus extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) {
-      return GradTensor.fromTensor(softplusOp(input.tensor), {
-        requiresGrad: false,
+    if (GradTensor.isGradTensor(input)) {
+      // softplus(x) = log(1 + exp(x)), composed from autograd primitives
+      const one = GradTensor.scalar(1, {
+        dtype: input.dtype === "float64" ? "float64" : "float32",
       });
+      return one.add(input.exp()).log();
     }
     return softplusOp(input);
   }
@@ -249,10 +251,9 @@ export class Swish extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) {
-      return GradTensor.fromTensor(swishOp(input.tensor), {
-        requiresGrad: false,
-      });
+    if (GradTensor.isGradTensor(input)) {
+      // swish(x) = x * sigmoid(x), composed from autograd primitives
+      return input.mul(input.sigmoid());
     }
     return swishOp(input);
   }
@@ -273,10 +274,13 @@ export class Mish extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    if (input instanceof GradTensor) {
-      return GradTensor.fromTensor(mishOp(input.tensor), {
-        requiresGrad: false,
+    if (GradTensor.isGradTensor(input)) {
+      // mish(x) = x * tanh(softplus(x)), composed from autograd primitives
+      const one = GradTensor.scalar(1, {
+        dtype: input.dtype === "float64" ? "float64" : "float32",
       });
+      const sp = one.add(input.exp()).log(); // softplus
+      return input.mul(sp.tanh());
     }
     return mishOp(input);
   }

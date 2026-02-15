@@ -36,7 +36,7 @@ function normalizePair(
  * const conv = new Conv1d(16, 33, 3); // in_channels=16, out_channels=33, kernel_size=3
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html | PyTorch Conv1d}
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox Layers}
  */
 export class Conv1d extends Module {
   private readonly inChannels: number;
@@ -119,7 +119,7 @@ export class Conv1d extends Module {
 
   forward(x: AnyTensor): GradTensor {
     // Convert to GradTensor if needed
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     // Reject string tensors
     if (input.dtype === "string") {
@@ -195,7 +195,7 @@ export class Conv1d extends Module {
  * const conv = new Conv2d(3, 64, 3); // RGB to 64 channels, 3x3 kernel
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html | PyTorch Conv2d}
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox Layers}
  */
 export class Conv2d extends Module {
   private readonly inChannels: number;
@@ -283,7 +283,7 @@ export class Conv2d extends Module {
   }
 
   forward(x: AnyTensor): GradTensor {
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     if (input.dtype === "string") {
       throw new DTypeError("String tensors are not supported");
@@ -357,7 +357,7 @@ export class Conv2d extends Module {
  * const pool = new MaxPool2d(2); // 2x2 pooling
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html | PyTorch MaxPool2d}
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox Layers}
  */
 export class MaxPool2d extends Module {
   private readonly kernelSizeValue: [number, number];
@@ -399,7 +399,7 @@ export class MaxPool2d extends Module {
   }
 
   forward(x: AnyTensor): GradTensor {
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     if (input.dtype === "string") {
       throw new DTypeError("String tensors are not supported");
@@ -454,7 +454,7 @@ export class MaxPool2d extends Module {
  * const pool = new AvgPool2d(2); // 2x2 pooling
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.AvgPool2d.html | PyTorch AvgPool2d}
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox Layers}
  */
 export class AvgPool2d extends Module {
   private readonly kernelSizeValue: [number, number];
@@ -496,7 +496,7 @@ export class AvgPool2d extends Module {
   }
 
   forward(x: AnyTensor): GradTensor {
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     if (input.dtype === "string") {
       throw new DTypeError("String tensors are not supported");

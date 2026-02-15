@@ -10,6 +10,78 @@ import { CSRMatrix, empty, type Tensor, Tensor as TensorImpl, tensor, zeros } fr
 import { assert2D, assertNumericTensor, getShape2D, getStride1D, getStrides2D } from "./_internal";
 
 /**
+ * Input type accepted by 1D encoder methods (LabelEncoder, LabelBinarizer).
+ * Accepts a Tensor directly or a plain JavaScript array of strings, numbers, or booleans.
+ */
+type EncoderInput1D = Tensor | readonly (string | number | bigint | boolean)[];
+
+/**
+ * Input type accepted by 2D encoder methods (OneHotEncoder, OrdinalEncoder).
+ * Accepts a Tensor directly or a plain JavaScript array of arrays.
+ */
+type EncoderInput2D = Tensor | readonly (readonly (string | number | bigint)[])[];
+
+/**
+ * Coerce a plain 1D array to a Tensor. If already a Tensor, return as-is.
+ */
+function coerceToTensor1D(input: EncoderInput1D): Tensor {
+  if (typeof input === "object" && "shape" in input && "dtype" in input) {
+    return input;
+  }
+  const arr = input as readonly (string | number | bigint | boolean)[];
+  if (arr.length === 0) {
+    return tensor([]);
+  }
+  const first = arr[0];
+  if (typeof first === "string") {
+    const strArr: string[] = [];
+    for (const v of arr) {
+      strArr.push(String(v));
+    }
+    return tensor(strArr);
+  }
+  const numArr: number[] = [];
+  for (const v of arr) {
+    numArr.push(Number(v));
+  }
+  return tensor(numArr, { dtype: "float64" });
+}
+
+/**
+ * Coerce a plain 2D array to a Tensor. If already a Tensor, return as-is.
+ */
+function coerceToTensor2D(input: EncoderInput2D): Tensor {
+  if (typeof input === "object" && "shape" in input && "dtype" in input) {
+    return input;
+  }
+  const arr = input as readonly (readonly (string | number | bigint)[])[];
+  if (arr.length === 0 || (arr[0] && arr[0].length === 0)) {
+    return tensor([[]]);
+  }
+  const first = arr[0]?.[0];
+  if (typeof first === "string") {
+    const strArr: string[][] = [];
+    for (const row of arr) {
+      const strRow: string[] = [];
+      for (const v of row) {
+        strRow.push(String(v));
+      }
+      strArr.push(strRow);
+    }
+    return tensor(strArr);
+  }
+  const numArr: number[][] = [];
+  for (const row of arr) {
+    const numRow: number[] = [];
+    for (const v of row) {
+      numRow.push(Number(v));
+    }
+    numArr.push(numRow);
+  }
+  return tensor(numArr, { dtype: "float64" });
+}
+
+/**
  * Type representing a category value that can be a string, number, or bigint.
  * Used for categorical encoding operations.
  */
@@ -399,7 +471,7 @@ function toCategoryMatrixTensor(values: Category[][], paramName = "X"): Tensor {
  * const yDecoded = encoder.inverseTransform(yEncoded); // ['cat', 'dog', 'cat', 'bird']
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.LabelEncoder.html | Scikit-learn LabelEncoder}
+ * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
  */
 export class LabelEncoder {
   /** Indicates whether the encoder has been fitted to data */
@@ -417,16 +489,17 @@ export class LabelEncoder {
    * @returns this - Returns self for method chaining
    * @throws {InvalidParameterError} If y is empty
    */
-  fit(y: Tensor): this {
-    assert1D(y, "y");
-    if (y.size === 0) {
+  fit(y: EncoderInput1D): this {
+    const t = coerceToTensor1D(y);
+    assert1D(t, "y");
+    if (t.size === 0) {
       throw new InvalidParameterError("Cannot fit LabelEncoder on empty array", "y");
     }
 
     // Collect unique classes using a Set for O(n) complexity
     const uniqueSet = new Set<Category>();
-    for (let i = 0; i < y.size; i++) {
-      uniqueSet.add(read1DValue(y, i));
+    for (let i = 0; i < t.size; i++) {
+      uniqueSet.add(read1DValue(t, i));
     }
 
     // Sort classes for consistent ordering across fits
@@ -451,12 +524,13 @@ export class LabelEncoder {
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If y contains labels not seen during fit
    */
-  transform(y: Tensor): Tensor {
+  transform(y: EncoderInput1D): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("LabelEncoder must be fitted before transform");
     }
-    assert1D(y, "y");
-    if (y.size === 0) {
+    const t = coerceToTensor1D(y);
+    assert1D(t, "y");
+    if (t.size === 0) {
       return tensor([]);
     }
 
@@ -466,11 +540,11 @@ export class LabelEncoder {
     }
 
     // Pre-allocate result array for better performance
-    const result = new Array<number>(y.size);
+    const result = new Array<number>(t.size);
 
     // Transform each label using O(1) map lookup
-    for (let i = 0; i < y.size; i++) {
-      const val = read1DValue(y, i);
+    for (let i = 0; i < t.size; i++) {
+      const val = read1DValue(t, i);
       const idx = lookup.get(val);
       if (idx === undefined) {
         throw new InvalidParameterError(
@@ -492,7 +566,7 @@ export class LabelEncoder {
    * @param y - Target labels (1D tensor)
    * @returns Encoded labels as integer tensor
    */
-  fitTransform(y: Tensor): Tensor {
+  fitTransform(y: EncoderInput1D): Tensor {
     return this.fit(y).transform(y);
   }
 
@@ -500,34 +574,35 @@ export class LabelEncoder {
    * Transform integer labels back to original encoding.
    * Reverses the encoding performed by transform().
    *
-   * @param y - Encoded labels (1D integer tensor)
+   * @param y - Encoded labels (1D integer tensor or number array)
    * @returns Original labels (strings or numbers)
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If y contains invalid indices
    */
-  inverseTransform(y: Tensor): Tensor {
+  inverseTransform(y: EncoderInput1D): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("LabelEncoder must be fitted before inverse_transform");
     }
-    assert1D(y, "y");
-    assertNumericTensor(y, "y");
+    const t = coerceToTensor1D(y);
+    assert1D(t, "y");
+    assertNumericTensor(t, "y");
     const classes = this.classes_;
     if (!classes) {
       throw new DeepboxError("LabelEncoder internal error: missing fitted state");
     }
-    if (y.size === 0) {
+    if (t.size === 0) {
       return emptyCategoryVectorFromClasses(classes, "y");
     }
 
     const classesLen = classes.length;
 
-    const result = new Array<Category>(y.size);
-    const stride = getStride1D(y);
-    const data = getNumericData(y);
+    const result = new Array<Category>(t.size);
+    const stride = getStride1D(t);
+    const data = getNumericData(t);
 
     // Map each encoded index back to its original class
-    for (let i = 0; i < y.size; i++) {
-      const raw = data[y.offset + i * stride];
+    for (let i = 0; i < t.size; i++) {
+      const raw = data[t.offset + i * stride];
       if (raw === undefined) {
         throw new DeepboxError("Internal error: numeric tensor access out of bounds");
       }
@@ -575,7 +650,7 @@ export class LabelEncoder {
  * // Result: [[1,0,1,0,0], [0,1,0,1,0], [1,0,0,0,1]]
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.OneHotEncoder.html | Scikit-learn OneHotEncoder}
+ * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
  */
 export class OneHotEncoder {
   /** Indicates whether the encoder has been fitted to data */
@@ -657,9 +732,10 @@ export class OneHotEncoder {
    * @throws {ShapeError} If X is not a 2D tensor
    * @throws {InvalidParameterError} If X is empty
    */
-  fit(X: Tensor): this {
-    assert2D(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+  fit(X: EncoderInput2D): this {
+    const _X = coerceToTensor2D(X);
+    assert2D(_X, "X");
+    const [nSamples, nFeatures] = getShape2D(_X);
 
     if (nSamples === 0 || nFeatures === 0) {
       throw new InvalidParameterError("Cannot fit OneHotEncoder on empty array", "X");
@@ -697,7 +773,7 @@ export class OneHotEncoder {
 
         // Scan all samples to find unique values in this feature
         for (let i = 0; i < nSamples; i++) {
-          uniqueSet.add(read2DValue(X, i, j));
+          uniqueSet.add(read2DValue(_X, i, j));
         }
 
         // Sort categories for consistent ordering
@@ -720,7 +796,7 @@ export class OneHotEncoder {
       // Validate training data against explicit categories
       if (explicitCategories) {
         for (let i = 0; i < nSamples; i++) {
-          const val = read2DValue(X, i, j);
+          const val = read2DValue(_X, i, j);
           if (!map.has(val)) {
             throw new InvalidParameterError(
               `Unknown category: ${String(val)} in feature ${j}`,
@@ -752,12 +828,13 @@ export class OneHotEncoder {
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If X contains unknown categories
    */
-  transform(X: Tensor): Tensor | CSRMatrix {
+  transform(X: EncoderInput2D): Tensor | CSRMatrix {
     if (!this.fitted) {
       throw new NotFittedError("OneHotEncoder must be fitted before transform");
     }
-    assert2D(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+    const _X = coerceToTensor2D(X);
+    assert2D(_X, "X");
+    const [nSamples, nFeatures] = getShape2D(_X);
 
     const categories = this.categories_;
     const categoryMaps = this.categoryToIndex_;
@@ -811,7 +888,7 @@ export class OneHotEncoder {
             throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
           }
           const outSize = cats.length - (dropIndex === null ? 0 : 1);
-          const val = read2DValue(X, i, j);
+          const val = read2DValue(_X, i, j);
           const idx = map.get(val);
           if (idx === undefined) {
             if (this.handleUnknown === "ignore") {
@@ -855,7 +932,7 @@ export class OneHotEncoder {
           throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
         }
         const outSize = cats.length - (dropIndex === null ? 0 : 1);
-        const val = read2DValue(X, i, j);
+        const val = read2DValue(_X, i, j);
         const idx = map.get(val);
         if (idx === undefined) {
           if (this.handleUnknown === "ignore") {
@@ -878,10 +955,10 @@ export class OneHotEncoder {
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    return tensor(result, { dtype: "float64", device: _X.device });
   }
 
-  fitTransform(X: Tensor): Tensor | CSRMatrix {
+  fitTransform(X: EncoderInput2D): Tensor | CSRMatrix {
     return this.fit(X).transform(X);
   }
 
@@ -1010,7 +1087,7 @@ export class OneHotEncoder {
  * // Result: [[1, 1], [0, 0], [2, 1]] (alphabetically sorted)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.OrdinalEncoder.html | Scikit-learn OrdinalEncoder}
+ * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
  */
 export class OrdinalEncoder {
   /** Indicates whether the encoder has been fitted to data */
@@ -1076,9 +1153,10 @@ export class OrdinalEncoder {
    * @returns this - Returns self for method chaining
    * @throws {InvalidParameterError} If X is empty
    */
-  fit(X: Tensor): this {
-    assert2D(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+  fit(X: EncoderInput2D): this {
+    const _X = coerceToTensor2D(X);
+    assert2D(_X, "X");
+    const [nSamples, nFeatures] = getShape2D(_X);
 
     if (nSamples === 0) {
       throw new InvalidParameterError("Cannot fit OrdinalEncoder on empty array", "X");
@@ -1115,7 +1193,7 @@ export class OrdinalEncoder {
 
         // Collect all unique values in this feature
         for (let i = 0; i < nSamples; i++) {
-          uniqueSet.add(read2DValue(X, i, j));
+          uniqueSet.add(read2DValue(_X, i, j));
         }
 
         // Sort categories for consistent ordering
@@ -1137,7 +1215,7 @@ export class OrdinalEncoder {
 
       if (explicitCategories) {
         for (let i = 0; i < nSamples; i++) {
-          const val = read2DValue(X, i, j);
+          const val = read2DValue(_X, i, j);
           if (!map.has(val)) {
             throw new InvalidParameterError(
               `Unknown category: ${String(val)} in feature ${j}`,
@@ -1176,12 +1254,13 @@ export class OrdinalEncoder {
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If X contains unknown categories
    */
-  transform(X: Tensor): Tensor {
+  transform(X: EncoderInput2D): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("OrdinalEncoder must be fitted before transform");
     }
-    assert2D(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+    const _X = coerceToTensor2D(X);
+    assert2D(_X, "X");
+    const [nSamples, nFeatures] = getShape2D(_X);
     const fittedFeatures = this.categories_?.length ?? 0;
     if (nFeatures !== fittedFeatures) {
       throw new InvalidParameterError(
@@ -1204,7 +1283,7 @@ export class OrdinalEncoder {
     // Transform each value to its ordinal index using O(1) map lookup
     for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        const val = read2DValue(X, i, j);
+        const val = read2DValue(_X, i, j);
         const map = this.categoryToIndex_?.[j];
         if (!map) {
           throw new DeepboxError("OrdinalEncoder internal error: missing fitted categories");
@@ -1242,7 +1321,7 @@ export class OrdinalEncoder {
    * @param X - Training data (2D tensor)
    * @returns Encoded data
    */
-  fitTransform(X: Tensor): Tensor {
+  fitTransform(X: EncoderInput2D): Tensor {
     return this.fit(X).transform(X);
   }
 
@@ -1255,13 +1334,14 @@ export class OrdinalEncoder {
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If X contains invalid indices
    */
-  inverseTransform(X: Tensor): Tensor {
+  inverseTransform(X: EncoderInput2D): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("OrdinalEncoder must be fitted before inverse_transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+    const _X = coerceToTensor2D(X);
+    assert2D(_X, "X");
+    assertNumericTensor(_X, "X");
+    const [nSamples, nFeatures] = getShape2D(_X);
     const fittedFeatures = this.categories_?.length ?? 0;
     if (nFeatures !== fittedFeatures) {
       throw new InvalidParameterError(
@@ -1290,11 +1370,11 @@ export class OrdinalEncoder {
     }
 
     // Map each ordinal index back to its original category
-    const [stride0, stride1] = getStrides2D(X);
-    const data = getNumericData(X);
+    const [stride0, stride1] = getStrides2D(_X);
+    const data = getNumericData(_X);
     for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
+        const raw = data[_X.offset + i * stride0 + j * stride1];
         if (raw === undefined) {
           throw new DeepboxError("Internal error: numeric tensor access out of bounds");
         }
@@ -1357,7 +1437,7 @@ export class OrdinalEncoder {
  * // Result shape: [5, 3] with one-hot encoding
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.LabelBinarizer.html | Scikit-learn LabelBinarizer}
+ * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
  */
 export class LabelBinarizer {
   /** Indicates whether the binarizer has been fitted to data */
@@ -1433,16 +1513,17 @@ export class LabelBinarizer {
    * @returns this - Returns self for method chaining
    * @throws {InvalidParameterError} If y is empty
    */
-  fit(y: Tensor): this {
-    assert1D(y, "y");
-    if (y.size === 0) {
+  fit(y: EncoderInput1D): this {
+    const _y = coerceToTensor1D(y);
+    assert1D(_y, "y");
+    if (_y.size === 0) {
       throw new InvalidParameterError("Cannot fit LabelBinarizer on empty array", "y");
     }
 
     // Collect unique classes
     const uniqueSet = new Set<Category>();
-    for (let i = 0; i < y.size; i++) {
-      uniqueSet.add(read1DValue(y, i));
+    for (let i = 0; i < _y.size; i++) {
+      uniqueSet.add(read1DValue(_y, i));
     }
 
     // Sort classes for consistent ordering
@@ -1465,12 +1546,13 @@ export class LabelBinarizer {
    * @throws {NotFittedError} If binarizer is not fitted
    * @throws {InvalidParameterError} If y contains unknown labels
    */
-  transform(y: Tensor): Tensor | CSRMatrix {
+  transform(y: EncoderInput1D): Tensor | CSRMatrix {
     if (!this.fitted) {
       throw new NotFittedError("LabelBinarizer must be fitted before transform");
     }
-    assert1D(y, "y");
-    if (y.size === 0) {
+    const _y = coerceToTensor1D(y);
+    assert1D(_y, "y");
+    if (_y.size === 0) {
       const nClasses = this.classes_?.length ?? 0;
       return this.sparse
         ? CSRMatrix.fromCOO({
@@ -1483,7 +1565,7 @@ export class LabelBinarizer {
         : zeros([0, nClasses], { dtype: "float64" });
     }
 
-    const nSamples = y.size;
+    const nSamples = _y.size;
     const nClasses = this.classes_?.length ?? 0;
     const lookup = this.classToIndex_;
     if (!lookup) {
@@ -1496,7 +1578,7 @@ export class LabelBinarizer {
       const vals: number[] = [];
 
       for (let i = 0; i < nSamples; i++) {
-        const val = read1DValue(y, i);
+        const val = read1DValue(_y, i);
         const idx = lookup.get(val);
 
         if (idx === undefined) {
@@ -1529,7 +1611,7 @@ export class LabelBinarizer {
 
     // Set appropriate bit for each label
     for (let i = 0; i < nSamples; i++) {
-      const val = read1DValue(y, i);
+      const val = read1DValue(_y, i);
       const idx = lookup.get(val);
 
       if (idx === undefined) {
@@ -1557,7 +1639,7 @@ export class LabelBinarizer {
    * @param y - Target labels (1D tensor)
    * @returns Binary matrix (Tensor or CSRMatrix)
    */
-  fitTransform(y: Tensor): Tensor | CSRMatrix {
+  fitTransform(y: EncoderInput1D): Tensor | CSRMatrix {
     return this.fit(y).transform(y);
   }
 
@@ -1717,7 +1799,7 @@ export class LabelBinarizer {
  * // Each row can have multiple 1s
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.MultiLabelBinarizer.html | Scikit-learn MultiLabelBinarizer}
+ * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
  */
 export class MultiLabelBinarizer {
   /** Indicates whether the binarizer has been fitted to data */

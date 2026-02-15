@@ -43,7 +43,7 @@ import { at, fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
  * @throws {DTypeError} If input has string dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/QR_decomposition | Wikipedia: QR decomposition}
+ * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 5.2.1
  */
 export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor, Tensor] {

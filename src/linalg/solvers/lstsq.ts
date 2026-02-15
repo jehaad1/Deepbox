@@ -54,7 +54,7 @@ import { svd } from "../decomposition/svd";
  * @throws {InvalidParameterError} If rcond is negative or non-finite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Least_squares | Wikipedia: Least squares}
+ * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra Solvers}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 5.5.4
  */
 export function lstsq(

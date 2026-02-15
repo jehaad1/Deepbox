@@ -33,7 +33,7 @@ import { DecisionTreeRegressor } from "../tree/DecisionTree";
  * const predictions = gbr.predict(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingRegressor.html | scikit-learn GradientBoostingRegressor}
+ * @see {@link https://deepbox.dev/docs/ml-ensemble | Deepbox Ensemble Methods}
  */
 export class GradientBoostingRegressor implements Regressor {
   /** Number of boosting stages (trees) */
@@ -275,8 +275,10 @@ export class GradientBoostingRegressor implements Regressor {
 /**
  * Gradient Boosting Classifier.
  *
- * Uses gradient boosting with shallow regression trees for binary classification.
- * Optimizes log loss (cross-entropy) using sigmoid function.
+ * Uses gradient boosting with shallow regression trees for classification.
+ * Supports both binary and multiclass classification.
+ * - Binary: optimizes log loss using sigmoid function.
+ * - Multiclass: uses One-vs-Rest (OvR) strategy, training one binary model per class.
  *
  * @example
  * ```ts
@@ -291,7 +293,7 @@ export class GradientBoostingRegressor implements Regressor {
  * const predictions = gbc.predict(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html | scikit-learn GradientBoostingClassifier}
+ * @see {@link https://deepbox.dev/docs/ml-ensemble | Deepbox Ensemble Methods}
  */
 export class GradientBoostingClassifier implements Classifier {
   /** Number of boosting stages */
@@ -306,11 +308,11 @@ export class GradientBoostingClassifier implements Classifier {
   /** Minimum samples to split */
   private minSamplesSplit: number;
 
-  /** Array of weak learners */
-  private estimators: DecisionTreeRegressor[] = [];
+  /** Per-class arrays of weak learners (OvR for multiclass, single for binary) */
+  private estimatorsPerClass: DecisionTreeRegressor[][] = [];
 
-  /** Initial log-odds prediction */
-  private initPrediction = 0;
+  /** Per-class initial log-odds predictions */
+  private initPredictions: number[] = [];
 
   /** Number of features */
   private nFeatures = 0;
@@ -365,18 +367,77 @@ export class GradientBoostingClassifier implements Classifier {
   }
 
   /**
+   * Fit a single binary boosting ensemble.
+   * Trains nEstimators regression trees to optimize log loss for a binary target.
+   */
+  private fitBinary(
+    X: Tensor,
+    yBinary: number[],
+    nSamples: number
+  ): { estimators: DecisionTreeRegressor[]; initPred: number } {
+    const posCount = yBinary.filter((v) => v === 1).length;
+    const negCount = nSamples - posCount;
+    const initPred = Math.log((posCount + 1) / (negCount + 1));
+
+    const rawScores = new Array<number>(nSamples).fill(initPred);
+    const estimators: DecisionTreeRegressor[] = [];
+
+    for (let m = 0; m < this.nEstimators; m++) {
+      const residuals: number[] = [];
+      for (let i = 0; i < nSamples; i++) {
+        const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0)));
+        residuals.push((yBinary[i] ?? 0) - prob);
+      }
+
+      const tree = new DecisionTreeRegressor({
+        maxDepth: this.maxDepth,
+        minSamplesSplit: this.minSamplesSplit,
+        minSamplesLeaf: 1,
+      });
+      tree.fit(X, tensor(residuals));
+      estimators.push(tree);
+
+      const treePred = tree.predict(X);
+      for (let i = 0; i < nSamples; i++) {
+        rawScores[i] =
+          (rawScores[i] ?? 0) + this.learningRate * Number(treePred.data[treePred.offset + i]);
+      }
+    }
+
+    return { estimators, initPred };
+  }
+
+  /**
+   * Compute raw scores for a single binary ensemble.
+   */
+  private predictRawBinary(X: Tensor, classIdx: number): number[] {
+    const nSamples = X.shape[0] ?? 0;
+    const rawScores = new Array<number>(nSamples).fill(this.initPredictions[classIdx] ?? 0);
+    const estimators = this.estimatorsPerClass[classIdx] ?? [];
+    for (const tree of estimators) {
+      const treePred = tree.predict(X);
+      for (let i = 0; i < nSamples; i++) {
+        rawScores[i] =
+          (rawScores[i] ?? 0) + this.learningRate * Number(treePred.data[treePred.offset + i]);
+      }
+    }
+    return rawScores;
+  }
+
+  /**
    * Fit the gradient boosting classifier on training data.
    *
    * Builds an additive model by sequentially fitting regression trees
    * to the pseudo-residuals (gradient of log loss).
+   * Supports binary (2 classes) and multiclass (>2 classes via OvR).
    *
    * @param X - Training data of shape (n_samples, n_features)
-   * @param y - Target class labels of shape (n_samples,). Must contain exactly 2 classes.
+   * @param y - Target class labels of shape (n_samples,). Must contain at least 2 classes.
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
-   * @throws {InvalidParameterError} If y does not contain exactly 2 classes
+   * @throws {InvalidParameterError} If y does not contain at least 2 classes
    */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
@@ -391,53 +452,31 @@ export class GradientBoostingClassifier implements Classifier {
       yData.push(Number(y.data[y.offset + i]));
     }
 
-    // Get unique classes
     this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
-    if (this.classLabels.length !== 2) {
+    if (this.classLabels.length < 2) {
       throw new InvalidParameterError(
-        "GradientBoostingClassifier requires exactly 2 classes",
+        "GradientBoostingClassifier requires at least 2 classes",
         "y",
         this.classLabels.length
       );
     }
 
-    // Map to {0, 1}
-    const yBinary = yData.map((label) => (label === this.classLabels[0] ? 0 : 1));
+    this.estimatorsPerClass = [];
+    this.initPredictions = [];
 
-    // Initialize with log-odds
-    const posCount = yBinary.filter((v) => v === 1).length;
-    const negCount = nSamples - posCount;
-    this.initPrediction = Math.log((posCount + 1) / (negCount + 1)); // Add smoothing
-
-    // Current raw scores (log-odds)
-    const rawScores = new Array<number>(nSamples).fill(this.initPrediction);
-
-    // Build ensemble
-    this.estimators = [];
-
-    for (let m = 0; m < this.nEstimators; m++) {
-      // Compute pseudo-residuals (gradient of log loss)
-      const residuals: number[] = [];
-      for (let i = 0; i < nSamples; i++) {
-        const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0))); // Sigmoid
-        const y_i = yBinary[i] ?? 0;
-        residuals.push(y_i - prob);
-      }
-
-      // Fit regression tree to residuals
-      const tree = new DecisionTreeRegressor({
-        maxDepth: this.maxDepth,
-        minSamplesSplit: this.minSamplesSplit,
-        minSamplesLeaf: 1,
-      });
-      tree.fit(X, tensor(residuals));
-      this.estimators.push(tree);
-
-      // Update raw scores
-      const treePred = tree.predict(X);
-      for (let i = 0; i < nSamples; i++) {
-        rawScores[i] =
-          (rawScores[i] ?? 0) + this.learningRate * Number(treePred.data[treePred.offset + i]);
+    if (this.classLabels.length === 2) {
+      // Binary: single sigmoid model
+      const yBinary = yData.map((label) => (label === this.classLabels[0] ? 0 : 1));
+      const { estimators, initPred } = this.fitBinary(X, yBinary, nSamples);
+      this.estimatorsPerClass.push(estimators);
+      this.initPredictions.push(initPred);
+    } else {
+      // Multiclass: One-vs-Rest — one binary model per class
+      for (const classLabel of this.classLabels) {
+        const yBinary = yData.map((label) => (label === classLabel ? 1 : 0));
+        const { estimators, initPred } = this.fitBinary(X, yBinary, nSamples);
+        this.estimatorsPerClass.push(estimators);
+        this.initPredictions.push(initPred);
       }
     }
 
@@ -462,21 +501,33 @@ export class GradientBoostingClassifier implements Classifier {
     validatePredictInputs(X, this.nFeatures ?? 0, "GradientBoostingClassifier");
 
     const nSamples = X.shape[0] ?? 0;
-
-    const rawScores = new Array<number>(nSamples).fill(this.initPrediction);
-    for (const tree of this.estimators) {
-      const treePred = tree.predict(X);
-      for (let i = 0; i < nSamples; i++) {
-        rawScores[i] =
-          (rawScores[i] ?? 0) + this.learningRate * Number(treePred.data[treePred.offset + i]);
-      }
-    }
-
     const predictions: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0)));
-      const predictedClass = prob >= 0.5 ? this.classLabels[1] : this.classLabels[0];
-      predictions.push(predictedClass ?? 0);
+
+    if (this.classLabels.length === 2) {
+      // Binary
+      const rawScores = this.predictRawBinary(X, 0);
+      for (let i = 0; i < nSamples; i++) {
+        const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0)));
+        predictions.push(prob >= 0.5 ? (this.classLabels[1] ?? 0) : (this.classLabels[0] ?? 0));
+      }
+    } else {
+      // Multiclass OvR: pick class with highest raw score
+      const allScores: number[][] = [];
+      for (let c = 0; c < this.classLabels.length; c++) {
+        allScores.push(this.predictRawBinary(X, c));
+      }
+      for (let i = 0; i < nSamples; i++) {
+        let bestClass = 0;
+        let bestScore = -Infinity;
+        for (let c = 0; c < this.classLabels.length; c++) {
+          const score = allScores[c]?.[i] ?? 0;
+          if (score > bestScore) {
+            bestScore = score;
+            bestClass = c;
+          }
+        }
+        predictions.push(this.classLabels[bestClass] ?? 0);
+      }
     }
 
     return tensor(predictions, { dtype: "int32" });
@@ -485,11 +536,10 @@ export class GradientBoostingClassifier implements Classifier {
   /**
    * Predict class probabilities for samples in X.
    *
-   * Returns a matrix of shape (n_samples, 2) where columns are
-   * [P(class_0), P(class_1)].
+   * Returns a matrix of shape (n_samples, n_classes).
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Class probability matrix of shape (n_samples, 2)
+   * @returns Class probability matrix of shape (n_samples, n_classes)
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
@@ -502,19 +552,30 @@ export class GradientBoostingClassifier implements Classifier {
     validatePredictInputs(X, this.nFeatures ?? 0, "GradientBoostingClassifier");
 
     const nSamples = X.shape[0] ?? 0;
-    const rawScores = new Array<number>(nSamples).fill(this.initPrediction);
-    for (const tree of this.estimators) {
-      const treePred = tree.predict(X);
-      for (let i = 0; i < nSamples; i++) {
-        rawScores[i] =
-          (rawScores[i] ?? 0) + this.learningRate * Number(treePred.data[treePred.offset + i]);
-      }
-    }
-
+    const nClasses = this.classLabels.length;
     const proba: number[][] = [];
-    for (let i = 0; i < nSamples; i++) {
-      const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0)));
-      proba.push([1 - prob, prob]);
+
+    if (nClasses === 2) {
+      // Binary
+      const rawScores = this.predictRawBinary(X, 0);
+      for (let i = 0; i < nSamples; i++) {
+        const prob = 1 / (1 + Math.exp(-(rawScores[i] ?? 0)));
+        proba.push([1 - prob, prob]);
+      }
+    } else {
+      // Multiclass OvR: softmax over per-class sigmoid scores
+      const allScores: number[][] = [];
+      for (let c = 0; c < nClasses; c++) {
+        allScores.push(this.predictRawBinary(X, c));
+      }
+      for (let i = 0; i < nSamples; i++) {
+        const sigScores: number[] = [];
+        for (let c = 0; c < nClasses; c++) {
+          sigScores.push(1 / (1 + Math.exp(-(allScores[c]?.[i] ?? 0))));
+        }
+        const total = sigScores.reduce((s, v) => s + v, 0) || 1;
+        proba.push(sigScores.map((v) => v / total));
+      }
     }
 
     return tensor(proba);

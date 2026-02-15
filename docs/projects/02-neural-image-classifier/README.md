@@ -1,5 +1,7 @@
 # Neural Network Image Classifier
 
+> **View online:** https://deepbox.dev/projects/02-neural-image-classifier
+
 A neural image classification project built with Deepbox, demonstrating an end-to-end MLP workflow for the digits dataset.
 
 ## Features

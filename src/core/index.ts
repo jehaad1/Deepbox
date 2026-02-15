@@ -46,6 +46,8 @@ export type {
   Axis,
   Device,
   DType,
+  ElementOf,
+  ScalarDType,
   Shape,
   TensorLike,
   TensorStorage,

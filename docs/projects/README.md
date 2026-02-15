@@ -1,5 +1,7 @@
 # Deepbox Real-World Production Projects
 
+> **Browse online:** https://deepbox.dev/projects · **Docs:** https://deepbox.dev/docs
+
 Enterprise-level projects built with Deepbox. Each project demonstrates comprehensive use of Deepbox's modules in real-world scenarios.
 
 ## Projects Overview

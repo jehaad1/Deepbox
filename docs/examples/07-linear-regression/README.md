@@ -1,5 +1,7 @@
 # Linear Regression
 
+> **View online:** https://deepbox.dev/examples/07-linear-regression
+
 Build a simple linear regression model to predict continuous values. Learn the basics of supervised learning with Deepbox.
 
 ## Deepbox Modules Used

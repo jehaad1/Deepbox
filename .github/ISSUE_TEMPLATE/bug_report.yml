@@ -66,7 +66,7 @@ body:
     attributes:
       label: Deepbox Version
       description: What version of Deepbox are you using?
-      placeholder: "0.1.0"
+      placeholder: "0.2.0"
     validations:
       required: true
 

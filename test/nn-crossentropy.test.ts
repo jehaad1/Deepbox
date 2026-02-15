@@ -94,10 +94,11 @@ describe("deepbox/nn - Cross Entropy Losses", () => {
       [1, 2],
       [3, 4],
     ]);
-    const yTrueWrongDim = GradTensor.fromTensor(tensor([0, 1], { dtype: yPred.tensor.dtype }), {
+    // 1D GradTensor targets (class indices) are now accepted — no longer throws
+    const yTrue1D = GradTensor.fromTensor(tensor([0, 1], { dtype: yPred.tensor.dtype }), {
       requiresGrad: false,
     });
-    expect(() => crossEntropyLoss(yPred, yTrueWrongDim)).toThrow(/2-dimensional/i);
+    expect(() => crossEntropyLoss(yPred, yTrue1D)).not.toThrow();
 
     const yTrueWrongShape = GradTensor.fromTensor(tensor([[1, 0]], { dtype: yPred.tensor.dtype }), {
       requiresGrad: false,

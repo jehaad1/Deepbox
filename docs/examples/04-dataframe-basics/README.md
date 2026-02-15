@@ -1,6 +1,8 @@
 # DataFrame Basics
 
-Learn fundamental DataFrame operations for working with tabular data. Covers creation, selection, filtering, and sorting — similar to Pandas DataFrames or spreadsheet tables.
+> **View online:** https://deepbox.dev/examples/04-dataframe-basics
+
+Learn fundamental DataFrame operations for working with tabular data. Covers creation, selection, filtering, and sorting — for tabular data analysis.
 
 ## Deepbox Modules Used
 

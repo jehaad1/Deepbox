@@ -1,5 +1,7 @@
 # Data Analysis & Visualization
 
+> **View online:** https://deepbox.dev/examples/03-data-analysis
+
 Comprehensive data analysis workflow using DataFrames, statistics, and plotting. Explores, analyzes, and visualizes employee data.
 
 ## Deepbox Modules Used

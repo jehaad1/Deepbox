@@ -1,5 +1,7 @@
 # Normalization & Dropout Layers
 
+> **View online:** https://deepbox.dev/examples/30-normalization-dropout
+
 Demonstrates BatchNorm1d, LayerNorm, and Dropout for training stability and regularization.
 
 ## Deepbox Modules Used

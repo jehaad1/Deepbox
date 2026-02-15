@@ -1,5 +1,7 @@
 # Recurrent Neural Network Layers
 
+> **View online:** https://deepbox.dev/examples/28-rnn-lstm-gru
+
 Demonstrates RNN, LSTM, and GRU layers for sequence modeling tasks.
 
 ## Deepbox Modules Used

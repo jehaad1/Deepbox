@@ -1,4 +1,4 @@
-import type { Device, DType, Shape, TypedArray } from "../../core";
+import type { Device, DType, ScalarDType, Shape, TypedArray } from "../../core";
 import {
   DataValidationError,
   DeepboxError,
@@ -26,7 +26,7 @@ import { dtypeToTypedArrayCtor, Tensor } from "./Tensor";
  * const tensor3d: NestedArray = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
  * ```
  */
-export type NestedArray = number | NestedArray[];
+export type NestedArray = number | boolean | NestedArray[];
 
 export type StringNestedArray = string | StringNestedArray[];
 
@@ -91,8 +91,8 @@ function inferShapeFromStringNestedArray(data: unknown): Shape {
 
 function validateRegularNestedArray(data: unknown, shape: Shape, depth = 0): void {
   if (depth === shape.length) {
-    if (typeof data !== "number") {
-      throw new DataValidationError("tensor data leaf values must be numbers");
+    if (typeof data !== "number" && typeof data !== "boolean") {
+      throw new DataValidationError("tensor data leaf values must be numbers or booleans");
     }
     return;
   }
@@ -118,6 +118,11 @@ function flattenNestedArray(data: unknown, out: number[]): void {
     for (const item of data) {
       flattenNestedArray(item, out);
     }
+    return;
+  }
+
+  if (typeof data === "boolean") {
+    out.push(data ? 1 : 0);
     return;
   }
 
@@ -165,7 +170,9 @@ function inferDTypeFromInput(data: NestedArray | StringNestedArray): DType {
     }
     cursor = cursor[0];
   }
-  return typeof cursor === "string" ? "string" : "float32";
+  if (typeof cursor === "string") return "string";
+  if (typeof cursor === "boolean") return "bool";
+  return "float32";
 }
 
 function inferDTypeFromTypedArray(data: TypedArray): DType {
@@ -222,8 +229,13 @@ function isTypedArrayCompatibleWithDType(data: TypedArray, dtype: DType): boolea
  * const t4 = tensor(42);
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.array.html | NumPy array}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
+export function tensor(data: NestedArray, opts?: TensorCreateOptions): Tensor<Shape, ScalarDType>;
+export function tensor(
+  data: NestedArray | StringNestedArray | TypedArray,
+  opts?: TensorCreateOptions
+): Tensor;
 export function tensor(
   data: NestedArray | StringNestedArray | TypedArray,
   opts: TensorCreateOptions = {}
@@ -285,6 +297,8 @@ export function tensor(
         }
       } else if (typeof arr === "number") {
         typed[idx++] = arr;
+      } else if (typeof arr === "boolean") {
+        typed[idx++] = arr ? 1 : 0;
       } else {
         throw new DataValidationError("Expected number");
       }
@@ -513,7 +527,7 @@ export function arange(
  *
  * @throws {RangeError} If num < 0
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.linspace.html | NumPy linspace}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
 export function linspace(
   start: number,
@@ -588,7 +602,7 @@ export function linspace(
  * // [1, 10, 100, 1000]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.logspace.html | NumPy logspace}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
 export function logspace(
   start: number,
@@ -665,7 +679,7 @@ export function logspace(
  * // [1, 10, 100, 1000]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.geomspace.html | NumPy geomspace}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
 export function geomspace(
   start: number,
@@ -767,7 +781,7 @@ export function geomspace(
  * //  [0, 0, 0, 1]]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.eye.html | NumPy eye}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
 export function eye(n: number, m?: number, k = 0, opts: TensorCreateOptions = {}): Tensor {
   const cols = m ?? n;
@@ -813,7 +827,7 @@ export function eye(n: number, m?: number, k = 0, opts: TensorCreateOptions = {}
  * // Random values from N(0, 1)
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/random/generated/numpy.random.randn.html | NumPy randn}
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
 export function randn(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
   const config = getConfig();

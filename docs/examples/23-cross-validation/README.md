@@ -1,5 +1,7 @@
 # Cross-Validation Strategies
 
+> **View online:** https://deepbox.dev/examples/23-cross-validation
+
 Learn different cross-validation techniques for robust model evaluation. Essential for assessing model generalization.
 
 ## Deepbox Modules Used

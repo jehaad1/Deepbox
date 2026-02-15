@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DataFrame, Series } from "../../src/dataframe";
-import { tensor } from "../../src/ndarray";
+import { DataFrame, Series } from "../src/dataframe";
+import { tensor } from "../src/ndarray";
 
 describe("Audit Fixes Verification", () => {
   describe("Series Statistics (n=1)", () => {

@@ -3,7 +3,7 @@
  *
  * Learn fundamental DataFrame operations for working with tabular data.
  * Covers creation, selection, filtering, and sorting.
- * DataFrames are similar to Pandas DataFrames or spreadsheet tables.
+ * DataFrames are for tabular data analysis.
  */
 
 import { DataFrame } from "deepbox/dataframe";

@@ -1,5 +1,7 @@
 # Sparse Matrix Operations
 
+> **View online:** https://deepbox.dev/examples/26-sparse-matrices
+
 Demonstrates CSR (Compressed Sparse Row) matrix operations. Memory-efficient representation for matrices with many zeros.
 
 ## Deepbox Modules Used

@@ -1,5 +1,7 @@
 # DataLoader — Batching & Shuffling
 
+> **View online:** https://deepbox.dev/examples/31-dataloader
+
 Demonstrates the DataLoader class for efficient batch iteration over datasets.
 
 ## Deepbox Modules Used

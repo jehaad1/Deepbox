@@ -2,7 +2,7 @@
  * Example 01: Tensor Basics
  *
  * Learn the fundamentals of creating and manipulating tensors (N-dimensional arrays).
- * Tensors are the core data structure in Deepbox, similar to NumPy arrays.
+ * Tensors are the core data structure in Deepbox, the core data structure in Deepbox.
  */
 
 import { arange, eye, linspace, ones, reshape, tensor, zeros } from "deepbox/ndarray";

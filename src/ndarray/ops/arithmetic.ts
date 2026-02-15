@@ -52,9 +52,9 @@ function outDtypeForTrueDiv(dtype: Exclude<DType, "string">): Exclude<DType, "st
 }
 
 /**
- * Floor division for bigint values (Python/NumPy semantics).
+ * Floor division for bigint values (rounds toward -Infinity).
  *
- * JavaScript bigint division truncates toward zero. NumPy floor division
+ * JavaScript bigint division truncates toward zero. Deepbox floor division
  * rounds toward -Infinity, so negative values with a remainder need
  * an additional decrement.
  */
@@ -74,7 +74,7 @@ function floorDivNumber(a: number, b: number): number {
 }
 
 /**
- * NumPy-compatible modulo: remainder has the same sign as divisor.
+ * Modulo: remainder has the same sign as divisor.
  */
 function modNumber(a: number, b: number): number {
   return a - floorDivNumber(a, b) * b;
@@ -184,7 +184,7 @@ function getOutShape(a: Tensor, b: Tensor): Shape {
  *
  * Computes a - b element by element.
  *
- * Broadcasting: supports standard numpy-style broadcasting.
+ * Broadcasting: supports standard Deepbox-style broadcasting.
  *
  * @param a - First tensor
  * @param b - Second tensor
@@ -199,7 +199,7 @@ function getOutShape(a: Tensor, b: Tensor): Shape {
  * const result = sub(a, b);  // [4, 4, 4]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.subtract.html | NumPy subtract}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function sub(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "sub");
@@ -259,7 +259,7 @@ export function sub(a: Tensor, b: Tensor): Tensor {
  *
  * Computes a * b element by element.
  *
- * Broadcasting: supports standard numpy-style broadcasting.
+ * Broadcasting: supports standard Deepbox-style broadcasting.
  *
  * @param a - First tensor
  * @param b - Second tensor
@@ -274,7 +274,7 @@ export function sub(a: Tensor, b: Tensor): Tensor {
  * const result = mul(a, b);  // [10, 18, 28]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.multiply.html | NumPy multiply}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function mul(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "mul");
@@ -334,7 +334,7 @@ export function mul(a: Tensor, b: Tensor): Tensor {
  *
  * Computes a / b element by element.
  *
- * Broadcasting: supports standard numpy-style broadcasting.
+ * Broadcasting: supports standard Deepbox-style broadcasting.
  *
  * @param a - Numerator tensor
  * @param b - Denominator tensor
@@ -349,7 +349,7 @@ export function mul(a: Tensor, b: Tensor): Tensor {
  * const result = div(a, b);  // [5, 5, 6]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.divide.html | NumPy divide}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function div(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "div");
@@ -533,7 +533,7 @@ export function mulScalar(t: Tensor, s: number): Tensor {
  * const result = floorDiv(a, b);  // [2, 2, 3]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.floor_divide.html | NumPy floor_divide}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function floorDiv(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "floorDiv");
@@ -584,7 +584,7 @@ export function floorDiv(a: Tensor, b: Tensor): Tensor {
  * const result = mod(a, b);  // [1, 2, 0]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.mod.html | NumPy mod}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function mod(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "mod");
@@ -635,7 +635,7 @@ export function mod(a: Tensor, b: Tensor): Tensor {
  * const result = pow(a, b);  // [4, 27, 16]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.power.html | NumPy power}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function pow(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "pow");
@@ -761,7 +761,7 @@ export function neg(t: Tensor): Tensor {
  * const result = abs(x);  // [1, 2, 3]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.absolute.html | NumPy absolute}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function abs(t: Tensor): Tensor {
   ensureNumericDType(t, "abs");
@@ -814,7 +814,7 @@ export function abs(t: Tensor): Tensor {
  * const result = sign(x);  // [-1, 0, 1]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.sign.html | NumPy sign}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function sign(t: Tensor): Tensor {
   ensureNumericDType(t, "sign");
@@ -903,7 +903,7 @@ export function reciprocal(t: Tensor): Tensor {
  * const result = maximum(a, b);  // [4, 5, 6]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.maximum.html | NumPy maximum}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function maximum(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "maximum");
@@ -954,7 +954,7 @@ export function maximum(a: Tensor, b: Tensor): Tensor {
  * const result = minimum(a, b);  // [1, 2, 3]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.minimum.html | NumPy minimum}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function minimum(a: Tensor, b: Tensor): Tensor {
   ensureNumericDType(a, "minimum");
@@ -1014,7 +1014,7 @@ export function minimum(a: Tensor, b: Tensor): Tensor {
  * const result = clip(x, 2, 4);  // [2, 2, 3, 4, 4]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.clip.html | NumPy clip}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function clip(t: Tensor, min?: number, max?: number): Tensor {
   ensureNumericDType(t, "clip");

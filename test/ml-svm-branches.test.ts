@@ -23,13 +23,13 @@ describe("SVM branches", () => {
       )
     ).toThrow(/same number of samples/i);
 
+    // Multiclass now supported via OvR; single-class should still throw
     const X = tensor([
       [1, 2],
       [2, 3],
       [3, 4],
     ]);
-    const y = tensor([0, 1, 2]);
-    expect(() => svc.fit(X, y)).toThrow(/exactly 2 classes/i);
+    expect(() => svc.fit(X, tensor([0, 0, 0]))).toThrow(/at least 2 classes/i);
   });
 
   it("predicts and exposes coef/intercept", () => {
@@ -55,7 +55,7 @@ describe("SVM branches", () => {
     expect(proba.shape).toEqual([1, 2]);
 
     expect(svc.coef.shape).toEqual([1, 2]);
-    expect(typeof svc.intercept).toBe("number");
+    expect(svc.intercept.shape).toEqual([1]);
 
     expect(() => svc.predict(tensor([[1, 2, 3]]))).toThrow(/features/i);
   });

@@ -15,7 +15,7 @@ import {
  * Output dtype:
  * - Always `float64` for now.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.sin.html | NumPy sin}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function sin(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -58,7 +58,7 @@ export function sin(t: Tensor): Tensor {
 /**
  * Element-wise cosine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.cos.html | NumPy cos}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function cos(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -101,7 +101,7 @@ export function cos(t: Tensor): Tensor {
 /**
  * Element-wise tangent.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.tan.html | NumPy tan}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function tan(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -144,7 +144,7 @@ export function tan(t: Tensor): Tensor {
 /**
  * Element-wise inverse sine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arcsin.html | NumPy arcsin}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function asin(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -183,7 +183,7 @@ export function asin(t: Tensor): Tensor {
 /**
  * Element-wise inverse cosine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arccos.html | NumPy arccos}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function acos(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -222,7 +222,7 @@ export function acos(t: Tensor): Tensor {
 /**
  * Element-wise inverse tangent.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arctan.html | NumPy arctan}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function atan(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -261,7 +261,7 @@ export function atan(t: Tensor): Tensor {
 /**
  * Element-wise arctangent of y/x with correct quadrant.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arctan2.html | NumPy arctan2}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function atan2(y: Tensor, x: Tensor): Tensor {
   if (y.dtype === "string" || x.dtype === "string") {
@@ -307,7 +307,7 @@ export function atan2(y: Tensor, x: Tensor): Tensor {
 /**
  * Element-wise hyperbolic sine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.sinh.html | NumPy sinh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function sinh(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -346,7 +346,7 @@ export function sinh(t: Tensor): Tensor {
 /**
  * Element-wise hyperbolic cosine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.cosh.html | NumPy cosh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function cosh(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -385,7 +385,7 @@ export function cosh(t: Tensor): Tensor {
 /**
  * Element-wise hyperbolic tangent.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.tanh.html | NumPy tanh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function tanh(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -424,7 +424,7 @@ export function tanh(t: Tensor): Tensor {
 /**
  * Element-wise inverse hyperbolic sine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arcsinh.html | NumPy arcsinh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function asinh(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -463,7 +463,7 @@ export function asinh(t: Tensor): Tensor {
 /**
  * Element-wise inverse hyperbolic cosine.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arccosh.html | NumPy arccosh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function acosh(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -502,7 +502,7 @@ export function acosh(t: Tensor): Tensor {
 /**
  * Element-wise inverse hyperbolic tangent.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.arctanh.html | NumPy arctanh}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function atanh(t: Tensor): Tensor {
   if (t.dtype === "string") {

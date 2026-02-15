@@ -18,7 +18,7 @@ export type DataLoaderOptions = {
 /**
  * Data loader for batching and shuffling datasets.
  *
- * Similar to PyTorch's DataLoader. Provides efficient iteration over datasets with support for
+ * Provides efficient iteration over datasets with support for
  * batching, shuffling, and deterministic reproducibility.
  *
  * @remarks
@@ -67,7 +67,7 @@ export type DataLoaderOptions = {
  * }
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader | PyTorch DataLoader}
+ * @see {@link https://deepbox.dev/docs/datasets-dataloader | Deepbox DataLoader}
  */
 export class DataLoader<TTarget extends Tensor | undefined = undefined> {
   private X: Tensor;
@@ -153,10 +153,10 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       : Math.ceil(this.nSamples / this.batchSize);
   }
 
-  [Symbol.iterator](this: DataLoader<Tensor>): IterableIterator<[Tensor, Tensor]>;
-  [Symbol.iterator](this: DataLoader<undefined>): IterableIterator<[Tensor]>;
-  [Symbol.iterator](): IterableIterator<[Tensor] | [Tensor, Tensor]> {
-    return this.y === undefined ? this.iterateX() : this.iterateXY();
+  [Symbol.iterator](): IterableIterator<TTarget extends Tensor ? [Tensor, Tensor] : [Tensor]> {
+    return (this.y === undefined ? this.iterateX() : this.iterateXY()) as IterableIterator<
+      TTarget extends Tensor ? [Tensor, Tensor] : [Tensor]
+    >;
   }
 
   private prepareIteration(): { indices: number[]; nBatches: number } {

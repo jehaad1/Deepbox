@@ -112,10 +112,10 @@ function load(file: string): Suite | null {
   return JSON.parse(readFileSync(path, "utf-8"));
 }
 
-function compare(ds: Result[], py: Result[]): Row[] {
+function compare(db: Result[], py: Result[]): Row[] {
   const pyMap = new Map(py.map((r) => [`${r.operation}|${r.size}`, r]));
   const rows: Row[] = [];
-  for (const d of ds) {
+  for (const d of db) {
     const p = pyMap.get(`${d.operation}|${d.size}`);
     if (!p) continue;
     const speedup = p.mean_ms / d.mean_ms;
@@ -157,9 +157,9 @@ console.log("  DEEPBOX vs PYTHON PACKAGES — BENCHMARK COMPARISON");
 console.log(`${"=".repeat(100)}\n`);
 
 for (const b of BENCHMARKS) {
-  const ds = load(b.deepbox);
+  const db = load(b.deepbox);
   const py = load(b.python);
-  if (!ds) {
+  if (!db) {
     console.log(`  ⚠ Missing: ${b.deepbox}`);
     sections.push({ name: b.name, lib: b.lib, rows: [] });
     continue;
@@ -172,7 +172,7 @@ for (const b of BENCHMARKS) {
     continue;
   }
 
-  const rows = compare(ds.results, py.results);
+  const rows = compare(db.results, py.results);
   sections.push({ name: b.name, lib: b.lib, rows });
 
   const dw = rows.filter((r) => r.winner === "Deepbox").length;

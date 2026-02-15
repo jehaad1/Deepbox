@@ -18,9 +18,28 @@
  * const x = tensor([1, 2, 3], { dtype });
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/user/basics.types.html | NumPy Data Types}
+ * @see {@link https://deepbox.dev/docs/core-types | Deepbox Core Types}
  */
 export type DType = "float32" | "float64" | "int32" | "int64" | "uint8" | "bool" | "string";
+
+/**
+ * Numeric DTypes whose JavaScript element type is `number`.
+ * Excludes `int64` (BigInt) and `string`.
+ */
+export type ScalarDType = "float32" | "float64" | "int32" | "uint8" | "bool";
+
+/**
+ * Maps a DType to its JavaScript element type.
+ *
+ * - `string` → `string`
+ * - `int64`  → `bigint`
+ * - all others → `number`
+ */
+export type ElementOf<D extends DType> = D extends "string"
+  ? string
+  : D extends "int64"
+    ? bigint
+    : number;
 
 /**
  * Array of all supported data types.

@@ -1,5 +1,7 @@
 # Deepbox Benchmark Suite
 
+> **Website:** https://deepbox.dev · **Docs:** https://deepbox.dev/docs
+
 Performance benchmarks comparing **Deepbox** (TypeScript) against Python's major data science libraries.
 
 ## Quick Start

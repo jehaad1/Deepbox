@@ -1,5 +1,7 @@
 # Random Sampling & Distributions
 
+> **View online:** https://deepbox.dev/examples/21-random-sampling
+
 Generate random numbers from various probability distributions. Useful for simulations, Monte Carlo methods, and data generation.
 
 ## Deepbox Modules Used

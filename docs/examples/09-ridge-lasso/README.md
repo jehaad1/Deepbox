@@ -1,5 +1,7 @@
 # Ridge & Lasso Regression
 
+> **View online:** https://deepbox.dev/examples/09-ridge-lasso
+
 Compare L1 (Lasso) and L2 (Ridge) regularization techniques. Learn when to use each regularization method.
 
 ## Deepbox Modules Used

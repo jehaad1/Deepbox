@@ -41,8 +41,8 @@ import type { Transformer } from "../base";
  * console.log('Explained variance ratio:', pca.explainedVarianceRatio);
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Principal_component_analysis | Wikipedia: PCA}
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.decomposition.PCA.html | scikit-learn PCA}
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class PCA implements Transformer {
   private readonly nComponents?: number;

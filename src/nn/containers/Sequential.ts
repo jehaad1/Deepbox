@@ -44,7 +44,7 @@ import { Module } from "../module/Module";
  * ```
  *
  * References:
- * - PyTorch Sequential: https://pytorch.org/docs/stable/generated/torch.nn.Sequential.html
+ * - Deepbox Sequential: https://deepbox.dev/docs/nn-module
  * - Keras Sequential: https://keras.io/guides/sequential_model/
  *
  * @category Neural Network Containers

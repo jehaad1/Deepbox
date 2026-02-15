@@ -7,6 +7,6 @@
 export type { Axis, Shape, TensorStorage, TypedArray } from "./common";
 export type { Device } from "./device";
 export { DEVICES, isDevice } from "./device";
-export type { DType } from "./dtype";
+export type { DType, ElementOf, ScalarDType } from "./dtype";
 export { DTYPES, isDType } from "./dtype";
 export type { TensorLike } from "./tensor";

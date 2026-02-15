@@ -24,6 +24,7 @@ export {
   KFold,
   LeaveOneOut,
   LeavePOut,
+  type SplitResult,
   StratifiedKFold,
   trainTestSplit,
 } from "./split";

@@ -277,7 +277,71 @@ export function dot(a: Tensor, b: Tensor): Tensor {
     });
   }
 
-  // Case 4: Higher dimensional tensors (batched matmul)
+  // Case 4: Vector-matrix multiplication (1-D x 2-D)
+  if (a.ndim === 1 && b.ndim === 2) {
+    const k1 = a.shape[0] ?? 0;
+    const k2 = b.shape[0] ?? 0;
+    const n = b.shape[1] ?? 0;
+
+    if (k1 !== k2) {
+      throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
+    }
+
+    const Ctor = dtypeToTypedArrayCtor(outDtype);
+    const result = new Ctor(n);
+
+    if (isBigInt) {
+      if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
+        throw new DTypeError("dot requires int64 dtype");
+      }
+      if (!(result instanceof BigInt64Array)) {
+        throw new DTypeError("Internal error: expected int64 output buffer");
+      }
+      for (let j = 0; j < n; j++) {
+        let sum = 0n;
+        for (let k = 0; k < k1; k++) {
+          const aVal = getBigIntElement(aData, a.offset + k * (a.strides[0] ?? 0));
+          const bVal = getBigIntElement(
+            bData,
+            b.offset + k * (b.strides[0] ?? 0) + j * (b.strides[1] ?? 0)
+          );
+          sum += aVal * bVal;
+        }
+        if (sum < INT64_MIN || sum > INT64_MAX) {
+          throw new DataValidationError("int64 dot overflow");
+        }
+        result[j] = sum;
+      }
+    } else {
+      if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
+        throw new DTypeError("dot requires non-int64 dtype");
+      }
+      if (result instanceof BigInt64Array) {
+        throw new DTypeError("Internal error: unexpected int64 output buffer");
+      }
+      for (let j = 0; j < n; j++) {
+        let sum = 0;
+        for (let k = 0; k < k1; k++) {
+          const aVal = getNumericElement(aData, a.offset + k * (a.strides[0] ?? 0));
+          const bVal = getNumericElement(
+            bData,
+            b.offset + k * (b.strides[0] ?? 0) + j * (b.strides[1] ?? 0)
+          );
+          sum += aVal * bVal;
+        }
+        result[j] = sum;
+      }
+    }
+
+    return TensorClass.fromTypedArray({
+      data: result,
+      shape: [n],
+      dtype: outDtype,
+      device: a.device,
+    });
+  }
+
+  // Case 5: Higher dimensional tensors (batched matmul)
   if (a.ndim >= 3 || b.ndim >= 3) {
     if (a.ndim < 2 || b.ndim < 2) {
       throw new ShapeError(`dot not implemented for shapes ${a.shape} and ${b.shape}`);

@@ -8,6 +8,7 @@ import {
   parameter,
   randn,
   reshape,
+  tensor,
   transpose,
   zeros,
 } from "../../ndarray";
@@ -67,7 +68,7 @@ import { Module } from "../module/Module";
  * ```
  *
  * References:
- * - PyTorch Linear: https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
+ * - Deepbox Linear: https://deepbox.dev/docs/nn-layers
  * - Xavier/Glorot initialization: http://proceedings.mlr.press/v9/glorot10a.html
  *
  * @category Neural Network Layers
@@ -181,10 +182,21 @@ export class Linear extends Module {
   forward(input: GradTensor): GradTensor;
   forward(input: Tensor): Tensor;
   forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    const inputTensor = input instanceof GradTensor ? input.tensor : input;
+    let inputTensor = GradTensor.isGradTensor(input) ? input.tensor : input;
 
     if (inputTensor.dtype === "string") {
       throw new DTypeError("Linear layer does not support string dtype");
+    }
+
+    if (inputTensor.dtype !== this.weight.dtype && inputTensor.dtype !== "int64") {
+      const castData = new Float32Array(
+        inputTensor.data as Float64Array | Float32Array | Int32Array | Uint8Array
+      );
+      const castTensor = reshape(tensor(castData), inputTensor.shape);
+      inputTensor = castTensor;
+      if (GradTensor.isGradTensor(input)) {
+        input = parameter(castTensor);
+      }
     }
 
     // Validate input dimensionality - must be at least 1D
@@ -220,7 +232,7 @@ export class Linear extends Module {
       ? [this.outFeatures]
       : [...inputTensor.shape.slice(0, -1), this.outFeatures];
 
-    if (input instanceof GradTensor) {
+    if (GradTensor.isGradTensor(input)) {
       const input2d = input.reshape([batchSize, this.inFeatures]);
       const output2d = input2d.matmul(this.weightParam.transpose());
       let output = output2d.reshape(outputShape);

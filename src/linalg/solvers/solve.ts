@@ -48,7 +48,7 @@ import {
  * @throws {DataValidationError} If A is singular
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/System_of_linear_equations | Wikipedia: Linear systems}
+ * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra Solvers}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 3.4.1
  */
 export function solve(a: Tensor, b: Tensor): Tensor {
@@ -111,7 +111,7 @@ export function solve(a: Tensor, b: Tensor): Tensor {
  * @throws {DataValidationError} If A is singular (zero diagonal)
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Triangular_matrix | Wikipedia: Triangular matrix}
+ * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra Solvers}
  */
 export function solveTriangular(a: Tensor, b: Tensor, lower = true): Tensor {
   if (a.ndim !== 2) throw new ShapeError("A must be a 2D matrix");

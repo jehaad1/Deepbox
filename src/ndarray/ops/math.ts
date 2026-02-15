@@ -336,7 +336,7 @@ export function cbrt(t: Tensor): Tensor {
  *
  * More accurate than exp(x) - 1 for small x.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.expm1.html | NumPy expm1}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function expm1(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -379,7 +379,7 @@ export function expm1(t: Tensor): Tensor {
 /**
  * Element-wise base-2 exponential.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.exp2.html | NumPy exp2}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function exp2(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -426,7 +426,7 @@ export function exp2(t: Tensor): Tensor {
  *
  * More accurate than log(1 + x) for small x.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.log1p.html | NumPy log1p}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function log1p(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -469,7 +469,7 @@ export function log1p(t: Tensor): Tensor {
 /**
  * Element-wise base-2 logarithm.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.log2.html | NumPy log2}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function log2(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -512,7 +512,7 @@ export function log2(t: Tensor): Tensor {
 /**
  * Element-wise base-10 logarithm.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.log10.html | NumPy log10}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function log10(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -555,7 +555,7 @@ export function log10(t: Tensor): Tensor {
 /**
  * Element-wise floor (round down).
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.floor.html | NumPy floor}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function floor(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -598,7 +598,7 @@ export function floor(t: Tensor): Tensor {
 /**
  * Element-wise ceil (round up).
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.ceil.html | NumPy ceil}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function ceil(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -641,7 +641,7 @@ export function ceil(t: Tensor): Tensor {
 /**
  * Element-wise round to nearest integer.
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.round.html | NumPy round}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function round(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -684,7 +684,7 @@ export function round(t: Tensor): Tensor {
 /**
  * Element-wise truncate (round toward zero).
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.trunc.html | NumPy trunc}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function trunc(t: Tensor): Tensor {
   if (t.dtype === "string") {

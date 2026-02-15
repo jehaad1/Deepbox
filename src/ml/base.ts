@@ -4,12 +4,12 @@ import type { Tensor } from "../ndarray";
 /**
  * Base type for all estimators (models) in Deepbox.
  *
- * This follows the scikit-learn estimator type design.
+ * Base estimator type for all ML models.
  *
  * @template FitParams - Type of parameters passed to fit method
  *
  * References:
- * - scikit-learn API: https://scikit-learn.org/stable/developers/develop.html
+ * - Deepbox ML: https://deepbox.dev/docs/ml-linear
  */
 export type Estimator<FitParams = void> = {
   /**

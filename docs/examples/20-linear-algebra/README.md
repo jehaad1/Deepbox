@@ -1,5 +1,7 @@
 # Linear Algebra Operations
 
+> **View online:** https://deepbox.dev/examples/20-linear-algebra
+
 Explore matrix decompositions and linear system solving. Essential for understanding ML algorithms under the hood.
 
 ## Deepbox Modules Used

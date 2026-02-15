@@ -368,7 +368,7 @@ function buildSvdFromJacobiTransposed(
  * @throws {DTypeError} If input has string dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Singular_value_decomposition | Wikipedia: SVD}
+ * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 8.6.2
  */
 export function svd(a: Tensor, fullMatrices: boolean = true): [Tensor, Tensor, Tensor] {

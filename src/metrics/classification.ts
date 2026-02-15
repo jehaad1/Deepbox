@@ -51,6 +51,21 @@ function ensureBinaryValue(value: number, name: string, index: number): void {
   }
 }
 
+function isMulticlass(yTrue: Tensor, yPred: Tensor): boolean {
+  if (yTrue.dtype === "string" || yPred.dtype === "string") return true;
+  const yTrueData = getNumericLabelData(yTrue);
+  const yPredData = getNumericLabelData(yPred);
+  const trueOffset = createFlatOffsetter(yTrue);
+  const predOffset = createFlatOffsetter(yPred);
+  const unique = new Set<number>();
+  for (let i = 0; i < yTrue.size; i++) {
+    unique.add(getNumericElement(yTrueData, trueOffset(i)));
+    unique.add(getNumericElement(yPredData, predOffset(i)));
+    if (unique.size > 2) return true;
+  }
+  return unique.size > 2;
+}
+
 function assertBinaryLabels(yTrue: Tensor, yPred: Tensor): void {
   if (yTrue.dtype === "string" || yPred.dtype === "string") {
     throw new InvalidParameterError(
@@ -192,7 +207,7 @@ function buildClassStats(yTrue: Tensor, yPred: Tensor) {
  * const acc = accuracy(yTrue, yPred); // 0.8 (4 out of 5 correct)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.accuracy_score.html | Scikit-learn accuracy_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function accuracy(yTrue: Tensor, yPred: Tensor): number {
   // Validate input tensors have same size
@@ -261,7 +276,7 @@ export function accuracy(yTrue: Tensor, yPred: Tensor): number {
  * const precMacro = precision(yTrueMulti, yPredMulti, 'macro');
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.precision_score.html | Scikit-learn precision_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function precision(yTrue: Tensor, yPred: Tensor): number;
 export function precision(
@@ -273,8 +288,11 @@ export function precision(yTrue: Tensor, yPred: Tensor, average: null): number[]
 export function precision(
   yTrue: Tensor,
   yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted" | null = "binary"
+  average?: "binary" | "micro" | "macro" | "weighted" | null
 ): number | number[] {
+  if (average === undefined) {
+    average = isMulticlass(yTrue, yPred) ? "weighted" : "binary";
+  }
   // Validate input tensors have same size
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
 
@@ -390,7 +408,7 @@ export function precision(
  * const rec = recall(yTrue, yPred); // 0.667 (2 out of 3 positives found)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.recall_score.html | Scikit-learn recall_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function recall(yTrue: Tensor, yPred: Tensor): number;
 export function recall(
@@ -402,8 +420,11 @@ export function recall(yTrue: Tensor, yPred: Tensor, average: null): number[];
 export function recall(
   yTrue: Tensor,
   yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted" | null = "binary"
+  average?: "binary" | "micro" | "macro" | "weighted" | null
 ): number | number[] {
+  if (average === undefined) {
+    average = isMulticlass(yTrue, yPred) ? "weighted" : "binary";
+  }
   // Validate input tensors have same size
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
 
@@ -519,7 +540,7 @@ export function recall(
  * const f1 = f1Score(yTrue, yPred); // 0.8
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.f1_score.html | Scikit-learn f1_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function f1Score(yTrue: Tensor, yPred: Tensor): number;
 export function f1Score(
@@ -531,8 +552,25 @@ export function f1Score(yTrue: Tensor, yPred: Tensor, average: null): number[];
 export function f1Score(
   yTrue: Tensor,
   yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted" | null = "binary"
+  average: { average: "binary" | "micro" | "macro" | "weighted" }
+): number;
+export function f1Score(
+  yTrue: Tensor,
+  yPred: Tensor,
+  average?:
+    | "binary"
+    | "micro"
+    | "macro"
+    | "weighted"
+    | null
+    | { average: "binary" | "micro" | "macro" | "weighted" }
 ): number | number[] {
+  if (average !== null && typeof average === "object") {
+    average = average.average;
+  }
+  if (average === undefined) {
+    average = isMulticlass(yTrue, yPred) ? "weighted" : "binary";
+  }
   // For binary and micro, computing F1 from scalar P and R is correct.
   // For macro and weighted, we must compute per-class F1 first, then average,
   // because the harmonic mean is non-linear: avg(F1_i) ≠ F1(avg(P_i), avg(R_i)).
@@ -619,7 +657,7 @@ export function f1Score(
  * const fb05 = fbetaScore(yTrue, yPred, 0.5); // Favors precision
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.fbeta_score.html | Scikit-learn fbeta_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function fbetaScore(yTrue: Tensor, yPred: Tensor, beta: number): number;
 export function fbetaScore(
@@ -722,7 +760,7 @@ export function fbetaScore(
  * //  [1, 2]]
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.confusion_matrix.html | Scikit-learn confusion_matrix}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function confusionMatrix(yTrue: Tensor, yPred: Tensor): Tensor {
   // Validate input tensors have same size
@@ -814,7 +852,7 @@ export function confusionMatrix(yTrue: Tensor, yPred: Tensor): Tensor {
  * //   Accuracy:  0.8000
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.classification_report.html | Scikit-learn classification_report}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
   // Validate input tensors have same size
@@ -945,7 +983,7 @@ export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
  * @throws {InvalidParameterError} If yTrue contains non-binary values
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_curve.html | Scikit-learn roc_curve}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function rocCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Tensor, Tensor] {
   assertSameSizeVectors(yTrue, yScore, "yTrue", "yScore");
@@ -1033,7 +1071,7 @@ export function rocCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Tensor, Tensor
  * const auc = rocAucScore(yTrue, yScore); // ~0.75
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_auc_score.html | Scikit-learn roc_auc_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function rocAucScore(yTrue: Tensor, yScore: Tensor): number {
   const curves = rocCurve(yTrue, yScore);
@@ -1093,7 +1131,7 @@ export function rocAucScore(yTrue: Tensor, yScore: Tensor): number {
  * const [prec, rec, thresh] = precisionRecallCurve(yTrue, yScore);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.precision_recall_curve.html | Scikit-learn precision_recall_curve}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function precisionRecallCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Tensor, Tensor] {
   assertSameSizeVectors(yTrue, yScore, "yTrue", "yScore");
@@ -1180,7 +1218,7 @@ export function precisionRecallCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Te
  * const ap = averagePrecisionScore(yTrue, yScore);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.average_precision_score.html | Scikit-learn average_precision_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function averagePrecisionScore(yTrue: Tensor, yScore: Tensor): number {
   const curves = precisionRecallCurve(yTrue, yScore);
@@ -1229,7 +1267,7 @@ export function averagePrecisionScore(yTrue: Tensor, yScore: Tensor): number {
  * @throws {InvalidParameterError} If yTrue is not binary or yPred is outside [0, 1]
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.log_loss.html | Scikit-learn log_loss}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function logLoss(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -1292,7 +1330,7 @@ export function logLoss(yTrue: Tensor, yPred: Tensor): number {
  * const loss = hammingLoss(yTrue, yPred); // 0.2
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.hamming_loss.html | Scikit-learn hamming_loss}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -1350,7 +1388,7 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
  * const score = jaccardScore(yTrue, yPred); // 0.667
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.jaccard_score.html | Scikit-learn jaccard_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function jaccardScore(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -1411,7 +1449,7 @@ export function jaccardScore(yTrue: Tensor, yPred: Tensor): number {
  * const mcc = matthewsCorrcoef(yTrue, yPred); // ~0.667
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.matthews_corrcoef.html | Scikit-learn matthews_corrcoef}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function matthewsCorrcoef(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -1479,7 +1517,7 @@ export function matthewsCorrcoef(yTrue: Tensor, yPred: Tensor): number {
  * const kappa = cohenKappaScore(yTrue, yPred); // ~0.615
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.cohen_kappa_score.html | Scikit-learn cohen_kappa_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function cohenKappaScore(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
@@ -1553,7 +1591,7 @@ export function cohenKappaScore(yTrue: Tensor, yPred: Tensor): number {
  * const bacc = balancedAccuracyScore(yTrue, yPred); // 0.5 (not 0.8!)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.balanced_accuracy_score.html | Scikit-learn balanced_accuracy_score}
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function balancedAccuracyScore(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");

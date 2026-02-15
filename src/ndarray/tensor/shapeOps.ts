@@ -46,7 +46,7 @@ function isNumericTensor(t: Tensor): t is Tensor<Shape, NumericDType> {
  *
  * @throws {Error} If axis is specified and dimension is not 1
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.squeeze.html | NumPy squeeze}
+ * @see {@link https://deepbox.dev/docs/ndarray-shape | Deepbox Shape & Indexing}
  */
 export function squeeze(t: Tensor, axis?: Axis | Axis[]): Tensor {
   let axesToSqueeze: Set<number>;
@@ -145,7 +145,7 @@ export function squeeze(t: Tensor, axis?: Axis | Axis[]): Tensor {
  * const w = unsqueeze(x, -1);      // shape: (3, 1)
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.expand_dims.html | NumPy expand_dims}
+ * @see {@link https://deepbox.dev/docs/ndarray-shape | Deepbox Shape & Indexing}
  */
 export function unsqueeze(t: Tensor, axis: number): Tensor {
   // New ndim will be one more than current

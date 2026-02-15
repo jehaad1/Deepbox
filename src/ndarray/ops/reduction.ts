@@ -266,7 +266,7 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
  * Compute the arithmetic mean along the specified axis.
  *
  * Returns NaN for empty reductions (when the number of elements along the
- * reduction axis is 0), matching NumPy's behavior of returning NaN with a
+ * reduction axis is 0), matching Deepbox's behavior of returning NaN with a
  * "mean of empty slice" warning.
  *
  * @param t - Input tensor
@@ -284,12 +284,12 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
  * const m3 = mean(x, 1);        // [1.5, 3.5]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.mean.html | NumPy mean}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function mean(t: Tensor, axis?: Axis, keepdims = false): Tensor {
   ensureNumericTensor(t, "mean");
 
-  // Empty full-reduction: return NaN scalar (matches NumPy behavior)
+  // Empty full-reduction: return NaN scalar (matches Deepbox behavior)
   if (axis === undefined && t.size === 0) {
     const out = new Float64Array(1);
     out[0] = NaN;
@@ -302,7 +302,7 @@ export function mean(t: Tensor, axis?: Axis, keepdims = false): Tensor {
     });
   }
 
-  // Empty axis-reduction: return NaN-filled tensor (matches NumPy behavior)
+  // Empty axis-reduction: return NaN-filled tensor (matches Deepbox behavior)
   if (axis !== undefined) {
     const ax = normalizeAxis(axis, t.ndim);
     const axisDim = getShapeDim(t.shape, ax);
@@ -397,7 +397,7 @@ export function mean(t: Tensor, axis?: Axis, keepdims = false): Tensor {
  * prod(t2);  // tensor(10.0)
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.prod.html | NumPy prod}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function prod(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   ensureNumericTensor(t, "prod");
@@ -640,7 +640,7 @@ export function prod(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor 
  * std(t2, 1);  // [0.5, 0.5] - std along columns
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.std.html | NumPy std}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function std(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Tensor {
   // Compute variance first, then take square root
@@ -689,7 +689,7 @@ export function std(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Tensor 
  * variance(t2, 1);  // [0.25, 0.25] - variance along columns
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.var.html | NumPy var}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function variance(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Tensor {
   ensureNumericTensor(t, "variance");
@@ -940,7 +940,7 @@ export function variance(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Te
  * min(t);  // tensor(1)
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.amin.html | NumPy amin}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   ensureNumericTensor(t, "min");
@@ -1122,7 +1122,7 @@ export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
       numericData,
       flatOffset(0, t.offset, contiguous, logicalStrides, t.strides)
     );
-    // Find minimum value (propagate NaN to match NumPy amin behavior)
+    // Find minimum value (propagate NaN to match Deepbox min behavior)
     for (let i = 1; i < t.size; i++) {
       const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
       const val = getNumericElement(numericData, srcOffset);
@@ -1166,7 +1166,7 @@ export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
  * max(t);  // tensor(5)
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.amax.html | NumPy amax}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   ensureNumericTensor(t, "max");
@@ -1345,7 +1345,7 @@ export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
       numericData,
       flatOffset(0, t.offset, contiguous, logicalStrides, t.strides)
     );
-    // Find maximum value (propagate NaN to match NumPy amax behavior)
+    // Find maximum value (propagate NaN to match Deepbox max behavior)
     for (let i = 1; i < t.size; i++) {
       const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
       const val = getNumericElement(numericData, srcOffset);
@@ -1400,7 +1400,7 @@ export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
  * Performance:
  * - This implementation copies and sorts values (O(n log n) time, O(n) memory).
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.median.html | NumPy median}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
   ensureNumericTensor(t, "median");
@@ -1572,7 +1572,7 @@ export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
  * cumsum(t);  // tensor([1, 3, 6, 10])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.cumsum.html | NumPy cumsum}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function cumsum(t: Tensor, axis?: Axis): Tensor {
   // String dtype not supported
@@ -1753,7 +1753,7 @@ export function cumsum(t: Tensor, axis?: Axis): Tensor {
  * cumprod(t);  // tensor([1, 2, 6, 24])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.cumprod.html | NumPy cumprod}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function cumprod(t: Tensor, axis?: Axis): Tensor {
   // String dtype not supported
@@ -1936,7 +1936,7 @@ export function cumprod(t: Tensor, axis?: Axis): Tensor {
  * diff(t);  // tensor([2, 3, 4]) - differences between consecutive elements
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.diff.html | NumPy diff}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function diff(t: Tensor, n = 1, axis = -1): Tensor {
   // String dtype not supported
@@ -2088,7 +2088,7 @@ export function diff(t: Tensor, n = 1, axis = -1): Tensor {
  * any(t2);  // tensor(0) - all zeros
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.any.html | NumPy any}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function any(t: Tensor, axis?: number | number[], keepdims = false): Tensor {
   ensureNumericTensor(t, "any");
@@ -2253,7 +2253,7 @@ export function any(t: Tensor, axis?: number | number[], keepdims = false): Tens
  * all(t2);  // tensor(0) - has a zero
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.all.html | NumPy all}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function all(t: Tensor, axis?: number | number[], keepdims = false): Tensor {
   ensureNumericTensor(t, "all");

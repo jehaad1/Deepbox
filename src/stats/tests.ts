@@ -212,7 +212,7 @@ function shapiroWilk(x: Float64Array): TestResult {
  *
  * Tests whether mean of sample differs from population mean.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.ttest_1samp.html | SciPy stats.ttest_1samp}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function ttest_1samp(a: Tensor, popmean: number): TestResult {
   const x = toDenseSortedArray1D(a);
@@ -249,7 +249,7 @@ export function ttest_1samp(a: Tensor, popmean: number): TestResult {
  *
  * Tests whether means of two independent samples are equal.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.ttest_ind.html | SciPy stats.ttest_ind}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function ttest_ind(a: Tensor, b: Tensor, equalVar = true): TestResult {
   const xa = toDenseSortedArray1D(a);
@@ -318,7 +318,7 @@ export function ttest_ind(a: Tensor, b: Tensor, equalVar = true): TestResult {
  *
  * Tests whether means of two related samples are equal.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.ttest_rel.html | SciPy stats.ttest_rel}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function ttest_rel(a: Tensor, b: Tensor): TestResult {
   if (a.size !== b.size) {
@@ -381,7 +381,7 @@ export function ttest_rel(a: Tensor, b: Tensor): TestResult {
  * Observed and expected frequencies must be non-negative and sum to the same total
  * (within floating-point tolerance).
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.chisquare.html | SciPy stats.chisquare}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function chisquare(f_obs: Tensor, f_exp?: Tensor): TestResult {
   const obs = toDenseArray1D(f_obs);
@@ -474,7 +474,7 @@ export function chisquare(f_obs: Tensor, f_exp?: Tensor): TestResult {
 /**
  * Kolmogorov-Smirnov test for goodness of fit.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kstest.html | SciPy stats.kstest}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function kstest(data: Tensor, cdf: string | ((x: number) => number)): TestResult {
   const x = toDenseSortedArray1D(data);
@@ -520,7 +520,7 @@ export function kstest(data: Tensor, cdf: string | ((x: number) => number)): Tes
  *
  * Uses D'Agostino-Pearson's omnibus test combining skewness and kurtosis.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.normaltest.html | SciPy stats.normaltest}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function normaltest(a: Tensor): TestResult {
   const x = toDenseSortedArray1D(a);
@@ -577,7 +577,7 @@ export function normaltest(a: Tensor): TestResult {
 /**
  * Shapiro-Wilk test for normality.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.shapiro.html | SciPy stats.shapiro}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function shapiro(x: Tensor): TestResult {
   const sorted = toDenseSortedArray1D(x);
@@ -591,7 +591,7 @@ export function shapiro(x: Tensor): TestResult {
  * For very small samples (n < 10), uses an IQR-based scale estimate to stabilize
  * the statistic.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.anderson.html | SciPy stats.anderson}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function anderson(x: Tensor): {
   statistic: number;
@@ -658,7 +658,7 @@ export function anderson(x: Tensor): {
  * Note: Uses normal approximation for the p-value with tie correction and
  * continuity correction. No exact method selection is available.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.mannwhitneyu.html | SciPy stats.mannwhitneyu}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function mannwhitneyu(x: Tensor, y: Tensor): TestResult {
   const nx = x.size;
@@ -715,7 +715,7 @@ export function mannwhitneyu(x: Tensor, y: Tensor): TestResult {
  * Note: Uses normal approximation for the p-value with tie correction and
  * continuity correction. No exact method selection is available.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.wilcoxon.html | SciPy stats.wilcoxon}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function wilcoxon(x: Tensor, y?: Tensor): TestResult {
   const n = x.size;
@@ -788,7 +788,7 @@ export function wilcoxon(x: Tensor, y?: Tensor): TestResult {
  *
  * Note: Uses chi-square approximation for the p-value with tie correction.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kruskal.html | SciPy stats.kruskal}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function kruskal(...samples: Tensor[]): TestResult {
   const k = samples.length;
@@ -867,7 +867,7 @@ export function kruskal(...samples: Tensor[]): TestResult {
  *
  * Note: Uses chi-square approximation for the p-value with tie correction.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.friedmanchisquare.html | SciPy stats.friedmanchisquare}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function friedmanchisquare(...samples: Tensor[]): TestResult {
   const k = samples.length;
@@ -964,7 +964,7 @@ export function friedmanchisquare(...samples: Tensor[]): TestResult {
  * console.log(result.pvalue);  // p-value for equal variances
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.levene.html | SciPy stats.levene}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function levene(center: "mean" | "median" | "trimmed", ...samples: Tensor[]): TestResult {
   const k = samples.length;
@@ -1098,7 +1098,7 @@ export function levene(center: "mean" | "median" | "trimmed", ...samples: Tensor
  * console.log(result.pvalue);  // p-value for equal variances
  * ```
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.bartlett.html | SciPy stats.bartlett}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function bartlett(...samples: Tensor[]): TestResult {
   const k = samples.length;
@@ -1193,7 +1193,7 @@ export function bartlett(...samples: Tensor[]): TestResult {
 /**
  * One-way ANOVA.
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.f_oneway.html | SciPy stats.f_oneway}
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
  */
 export function f_oneway(...samples: Tensor[]): TestResult {
   const k = samples.length;

@@ -44,8 +44,21 @@ import { svd } from "./decomposition/svd";
  * @throws {InvalidParameterError} If norm order or axis values are invalid
  * @throws {ShapeError} If axis configuration is incompatible with input
  *
- * @see {@link https://en.wikipedia.org/wiki/Matrix_norm | Wikipedia: Matrix norm}
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
  */
+export function norm(x: Tensor, ord?: number | "fro" | "nuc"): number;
+export function norm(
+  x: Tensor,
+  ord: number | "fro" | "nuc" | undefined,
+  axis: Axis | Axis[],
+  keepdims?: boolean
+): Tensor | number;
+export function norm(
+  x: Tensor,
+  ord?: number | "fro" | "nuc",
+  axis?: Axis | Axis[],
+  keepdims?: boolean
+): Tensor | number;
 export function norm(
   x: Tensor,
   ord?: number | "fro" | "nuc",

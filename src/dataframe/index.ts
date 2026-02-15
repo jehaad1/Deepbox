@@ -4,5 +4,6 @@ export type {
   AggregateFunction,
   DataFrameData,
   DataFrameOptions,
+  DataValue,
   SeriesOptions,
 } from "./types.js";

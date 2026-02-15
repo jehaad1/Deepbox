@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/jehaad1/Deepbox#readme
+    url: https://deepbox.dev/docs
     about: Check the documentation for usage guides and API reference
   - name: Examples
-    url: https://github.com/jehaad1/Deepbox/tree/main/docs/examples
+    url: https://deepbox.dev/examples
     about: Browse comprehensive examples demonstrating Deepbox features
   - name: Discussions
     url: https://github.com/jehaad1/Deepbox/discussions

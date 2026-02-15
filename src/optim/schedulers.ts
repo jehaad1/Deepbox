@@ -259,7 +259,7 @@ export abstract class LRScheduler {
  * // lr = 0.001 for epochs 60-89
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.StepLR.html | PyTorch StepLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class StepLR extends LRScheduler {
   private stepSize: number;
@@ -296,7 +296,7 @@ export class StepLR extends LRScheduler {
  * // lr *= 0.95 each epoch
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.ExponentialLR.html | PyTorch ExponentialLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class ExponentialLR extends LRScheduler {
   private gamma: number;
@@ -325,7 +325,7 @@ export class ExponentialLR extends LRScheduler {
  * const scheduler = new CosineAnnealingLR(optimizer, { T_max: 100, etaMin: 0.001 });
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.CosineAnnealingLR.html | PyTorch CosineAnnealingLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class CosineAnnealingLR extends LRScheduler {
   private T_max: number;
@@ -333,9 +333,18 @@ export class CosineAnnealingLR extends LRScheduler {
 
   constructor(
     optimizer: SchedulerOptimizer,
-    options: { T_max: number; etaMin?: number; lastEpoch?: number }
+    options: {
+      T_max?: number;
+      tMax?: number;
+      etaMin?: number;
+      lastEpoch?: number;
+    }
   ) {
-    const tMax = validatePositiveInteger(options.T_max, "T_max");
+    const rawTMax = options.T_max ?? options.tMax;
+    if (rawTMax === undefined) {
+      throw new InvalidParameterError("T_max or tMax must be provided", "T_max");
+    }
+    const tMax = validatePositiveInteger(rawTMax, "T_max");
     const etaMin = validateNonNegativeNumber(options.etaMin ?? 0, "etaMin");
     const lastEpoch = validateLastEpoch(options.lastEpoch ?? -1);
     super(optimizer, -1);
@@ -367,7 +376,7 @@ export class CosineAnnealingLR extends LRScheduler {
  * // lr = 0.001 for epochs 80+
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.MultiStepLR.html | PyTorch MultiStepLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class MultiStepLR extends LRScheduler {
   private sortedMilestones: number[];
@@ -416,7 +425,7 @@ export class MultiStepLR extends LRScheduler {
  * });
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.LinearLR.html | PyTorch LinearLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class LinearLR extends LRScheduler {
   private startFactor: number;
@@ -475,7 +484,7 @@ export class LinearLR extends LRScheduler {
  * }
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.ReduceLROnPlateau.html | PyTorch ReduceLROnPlateau}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class ReduceLROnPlateau {
   private optimizer: SchedulerOptimizer;
@@ -657,7 +666,7 @@ export class WarmupLR extends LRScheduler {
  * });
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.OneCycleLR.html | PyTorch OneCycleLR}
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class OneCycleLR extends LRScheduler {
   private maxLr: number;

@@ -46,7 +46,7 @@ import { svd } from "./decomposition/svd";
  * @throws {DTypeError} If input has string dtype
  * @throws {DataValidationError} If matrix is singular or contains non-finite values
  *
- * @see {@link https://en.wikipedia.org/wiki/Invertible_matrix | Wikipedia: Matrix inverse}
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
  */
 export function inv(a: Tensor): Tensor {
   if (a.ndim !== 2) throw new ShapeError("Input must be 2D matrix");
@@ -109,7 +109,7 @@ export function inv(a: Tensor): Tensor {
  * @throws {InvalidParameterError} If rcond is negative or non-finite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Moore%E2%80%93Penrose_inverse | Wikipedia: Pseudo-inverse}
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
  */
 export function pinv(a: Tensor, rcond?: number): Tensor {
   if (a.ndim !== 2) throw new ShapeError("Input must be 2D matrix");

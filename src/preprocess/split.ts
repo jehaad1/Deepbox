@@ -2,6 +2,14 @@ import { DeepboxError, InvalidParameterError, ShapeError } from "../core/errors"
 import { type Tensor, zeros } from "../ndarray";
 import { createSeededRandom, getShape2D, shuffleIndicesInPlace } from "./_internal";
 
+/**
+ * Represents a single train/test split with named index arrays.
+ */
+export type SplitResult = {
+  readonly trainIndex: number[];
+  readonly testIndex: number[];
+};
+
 function validateNSplits(nSplits: number): void {
   if (!Number.isFinite(nSplits) || !Number.isInteger(nSplits) || nSplits < 2) {
     throw new InvalidParameterError("nSplits must be an integer at least 2", "nSplits", nSplits);
@@ -212,7 +220,7 @@ function takeVector(y: Tensor, sampleIndices: number[]): Tensor {
  * const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, { testSize: 0.25 });
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.train_test_split.html | Scikit-learn train_test_split}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export function trainTestSplit(
   X: Tensor,
@@ -401,7 +409,7 @@ export function trainTestSplit(
  *
  * Provides train/test indices to split data in train/test sets.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.KFold.html | Scikit-learn KFold}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export class KFold {
   private nSplits: number;
@@ -420,7 +428,7 @@ export class KFold {
     this.randomState = options.randomState;
   }
 
-  split(X: Tensor): Array<[number[], number[]]> {
+  split(X: Tensor): SplitResult[] {
     const shape0 = X.shape[0];
     if (shape0 === undefined) {
       throw new ShapeError("X must have valid shape[0]");
@@ -442,7 +450,7 @@ export class KFold {
       shuffleIndicesInPlace(indices, random);
     }
 
-    const splits: Array<[number[], number[]]> = [];
+    const splits: SplitResult[] = [];
     const foldSizes = makeFoldSizes(nSamples, this.nSplits);
     let current = 0;
 
@@ -454,7 +462,7 @@ export class KFold {
       const testIndices = indices.slice(testStart, testEnd);
       const trainIndices = [...indices.slice(0, testStart), ...indices.slice(testEnd)];
 
-      splits.push([trainIndices, testIndices]);
+      splits.push({ trainIndex: trainIndices, testIndex: testIndices });
       current = testEnd;
     }
 
@@ -471,7 +479,7 @@ export class KFold {
  *
  * Provides train/test indices while preserving class distribution.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.StratifiedKFold.html | Scikit-learn StratifiedKFold}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export class StratifiedKFold {
   private nSplits: number;
@@ -490,7 +498,7 @@ export class StratifiedKFold {
     this.randomState = options.randomState;
   }
 
-  split(X: Tensor, y: Tensor): Array<[number[], number[]]> {
+  split(X: Tensor, y: Tensor): SplitResult[] {
     const shape0 = X.shape[0];
     if (shape0 === undefined) {
       throw new ShapeError("X must have valid shape[0]");
@@ -555,7 +563,7 @@ export class StratifiedKFold {
       }
     }
 
-    const splits: Array<[number[], number[]]> = [];
+    const splits: SplitResult[] = [];
 
     for (let fold = 0; fold < this.nSplits; fold++) {
       const testIndices = foldIndices[fold] ?? [];
@@ -564,7 +572,7 @@ export class StratifiedKFold {
         if (other === fold) continue;
         trainIndices.push(...(foldIndices[other] ?? []));
       }
-      splits.push([trainIndices, testIndices]);
+      splits.push({ trainIndex: trainIndices, testIndex: testIndices });
     }
 
     return splits;
@@ -580,7 +588,7 @@ export class StratifiedKFold {
  *
  * Ensures same group is not in both train and test.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.GroupKFold.html | Scikit-learn GroupKFold}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export class GroupKFold {
   private nSplits: number;
@@ -589,7 +597,7 @@ export class GroupKFold {
     this.nSplits = options.nSplits ?? 5;
   }
 
-  split(X: Tensor, _y: Tensor | undefined, groups: Tensor): Array<[number[], number[]]> {
+  split(X: Tensor, _y: Tensor | undefined, groups: Tensor): SplitResult[] {
     const shape0 = X.shape[0];
     if (shape0 === undefined) {
       throw new ShapeError("X must have valid shape[0]");
@@ -657,7 +665,7 @@ export class GroupKFold {
       foldSizes[bestFold] = bestSize + entry.size;
     }
 
-    const splits: Array<[number[], number[]]> = [];
+    const splits: SplitResult[] = [];
     for (let fold = 0; fold < this.nSplits; fold++) {
       const testIndices = foldIndices[fold] ?? [];
       const trainIndices: number[] = [];
@@ -665,7 +673,7 @@ export class GroupKFold {
         if (other === fold) continue;
         trainIndices.push(...(foldIndices[other] ?? []));
       }
-      splits.push([trainIndices, testIndices]);
+      splits.push({ trainIndex: trainIndices, testIndex: testIndices });
     }
 
     return splits;
@@ -679,16 +687,16 @@ export class GroupKFold {
 /**
  * Leave-One-Out cross-validator.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.LeaveOneOut.html | Scikit-learn LeaveOneOut}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export class LeaveOneOut {
-  split(X: Tensor): Array<[number[], number[]]> {
+  split(X: Tensor): SplitResult[] {
     const shape0 = X.shape[0];
     if (shape0 === undefined) {
       throw new ShapeError("X must have valid shape[0]");
     }
     const nSamples = shape0;
-    const splits: Array<[number[], number[]]> = [];
+    const splits: SplitResult[] = [];
 
     for (let i = 0; i < nSamples; i++) {
       const trainIndices = [
@@ -696,7 +704,7 @@ export class LeaveOneOut {
         ...Array.from({ length: nSamples - i - 1 }, (_, j) => i + 1 + j),
       ];
       const testIndices = [i];
-      splits.push([trainIndices, testIndices]);
+      splits.push({ trainIndex: trainIndices, testIndex: testIndices });
     }
 
     return splits;
@@ -714,7 +722,7 @@ export class LeaveOneOut {
 /**
  * Leave-P-Out cross-validator.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.LeavePOut.html | Scikit-learn LeavePOut}
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
  */
 export class LeavePOut {
   private p: number;
@@ -726,7 +734,7 @@ export class LeavePOut {
     this.p = p;
   }
 
-  split(X: Tensor): Array<[number[], number[]]> {
+  split(X: Tensor): SplitResult[] {
     const shape0 = X.shape[0];
     if (shape0 === undefined) {
       throw new ShapeError("X must have valid shape[0]");
@@ -753,7 +761,7 @@ export class LeavePOut {
       );
     }
 
-    const splits: Array<[number[], number[]]> = [];
+    const splits: SplitResult[] = [];
     const allIndices = Array.from({ length: nSamples }, (_, i) => i);
 
     // Iterative combination generator
@@ -762,7 +770,7 @@ export class LeavePOut {
         const testSet = new Set(currentCombo);
         const testIndices = [...currentCombo];
         const trainIndices = allIndices.filter((i) => !testSet.has(i));
-        splits.push([trainIndices, testIndices]);
+        splits.push({ trainIndex: trainIndices, testIndex: testIndices });
         return;
       }
       for (let i = start; i < nSamples; i++) {

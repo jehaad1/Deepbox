@@ -56,7 +56,7 @@ import { at, fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
  * @throws {DataValidationError} If matrix is not positive definite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Cholesky_decomposition | Wikipedia: Cholesky decomposition}
+ * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 4.2.1
  */
 export function cholesky(a: Tensor): Tensor {

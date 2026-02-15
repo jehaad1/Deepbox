@@ -722,7 +722,7 @@ function silhouetteMeanPrecomputed(X: Tensor, labels: Tensor, indices: Int32Arra
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.silhouette_score.html | Scikit-learn silhouette_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function silhouetteScore(
   X: Tensor,
@@ -798,7 +798,7 @@ export function silhouetteScore(
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.silhouette_samples.html | Scikit-learn silhouette_samples}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function silhouetteSamples(
   X: Tensor,
@@ -950,7 +950,7 @@ export function silhouetteSamples(
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.davies_bouldin_score.html | Scikit-learn davies_bouldin_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
   const { data, nSamples, nFeatures, sampleStride, featureStride, offset } = getFeatureAccessor(X);
@@ -1064,7 +1064,7 @@ export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.calinski_harabasz_score.html | Scikit-learn calinski_harabasz_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function calinskiHarabaszScore(X: Tensor, labels: Tensor): number {
   const { data, nSamples, nFeatures, sampleStride, featureStride, offset } = getFeatureAccessor(X);
@@ -1168,7 +1168,7 @@ export function calinskiHarabaszScore(X: Tensor, labels: Tensor): number {
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.adjusted_rand_score.html | Scikit-learn adjusted_rand_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function adjustedRandScore(labelsTrue: Tensor, labelsPred: Tensor): number {
   assertSameSize(labelsTrue, labelsPred, "labelsTrue", "labelsPred");
@@ -1232,7 +1232,7 @@ export function adjustedRandScore(labelsTrue: Tensor, labelsPred: Tensor): numbe
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.adjusted_mutual_info_score.html | Scikit-learn adjusted_mutual_info_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function adjustedMutualInfoScore(
   labelsTrue: Tensor,
@@ -1279,7 +1279,7 @@ export function adjustedMutualInfoScore(
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.normalized_mutual_info_score.html | Scikit-learn normalized_mutual_info_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function normalizedMutualInfoScore(
   labelsTrue: Tensor,
@@ -1323,7 +1323,7 @@ export function normalizedMutualInfoScore(
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.fowlkes_mallows_score.html | Scikit-learn fowlkes_mallows_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function fowlkesMallowsScore(labelsTrue: Tensor, labelsPred: Tensor): number {
   const stats = buildContingencyStats(labelsTrue, labelsPred);
@@ -1371,7 +1371,7 @@ export function fowlkesMallowsScore(labelsTrue: Tensor, labelsPred: Tensor): num
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.homogeneity_score.html | Scikit-learn homogeneity_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function homogeneityScore(labelsTrue: Tensor, labelsPred: Tensor): number {
   const stats = buildContingencyStats(labelsTrue, labelsPred);
@@ -1422,7 +1422,7 @@ export function homogeneityScore(labelsTrue: Tensor, labelsPred: Tensor): number
  * @throws {DTypeError} If labels are string
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.completeness_score.html | Scikit-learn completeness_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function completenessScore(labelsTrue: Tensor, labelsPred: Tensor): number {
   const stats = buildContingencyStats(labelsTrue, labelsPred);
@@ -1477,7 +1477,7 @@ export function completenessScore(labelsTrue: Tensor, labelsPred: Tensor): numbe
  * @throws {InvalidParameterError} If beta is not a positive finite number
  * @throws {DataValidationError} If labels contain non-finite or non-integer values
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.metrics.v_measure_score.html | Scikit-learn v_measure_score}
+ * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function vMeasureScore(labelsTrue: Tensor, labelsPred: Tensor, beta = 1.0): number {
   if (!Number.isFinite(beta) || beta <= 0) {

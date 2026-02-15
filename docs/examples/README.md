@@ -1,5 +1,7 @@
 # Deepbox Examples
 
+> **Browse online:** https://deepbox.dev/examples · **Docs:** https://deepbox.dev/docs
+
 Comprehensive examples demonstrating the full capabilities of Deepbox. Each example is self-contained with its own directory, entry point, and documentation.
 
 ## Examples Overview
@@ -119,7 +121,7 @@ Each example demonstrates specific Deepbox modules:
 
 - **Beginners** — Start with 00–05: tensors, DataFrames, basic operations
 - **Intermediate** — Move to 06–18: ML pipelines, neural networks, preprocessing
-- **Advanced** — Explore 19–26: statistics, linear algebra, visualization, sparse matrices
+- **Advanced** — Explore 19–32: statistics, linear algebra, visualization, sparse matrices, deep learning layers
 
 ## License
 

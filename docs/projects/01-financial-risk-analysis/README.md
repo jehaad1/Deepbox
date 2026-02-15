@@ -1,5 +1,7 @@
 # Financial Portfolio Risk Analysis System
 
+> **View online:** https://deepbox.dev/projects/01-financial-risk-analysis
+
 A production-grade financial risk analysis system built with Deepbox, demonstrating comprehensive use of statistics, linear algebra, and DataFrame operations.
 
 ## Features

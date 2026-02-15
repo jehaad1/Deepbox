@@ -39,10 +39,10 @@ const kfold = new KFold({ nSplits: 5, shuffle: true, randomState: 42 });
 let foldNum = 1;
 
 // Iterate through each fold
-for (const [trainIdx, testIdx] of kfold.split(X)) {
+for (const { trainIndex, testIndex } of kfold.split(X)) {
   // Note: In a real scenario, you'd use gather() to index the data
   // For this example, we'll just count the splits
-  console.log(`Fold ${foldNum}: Train=${trainIdx.length}, Test=${testIdx.length}`);
+  console.log(`Fold ${foldNum}: Train=${trainIndex.length}, Test=${testIndex.length}`);
   foldNum++;
 }
 
@@ -73,8 +73,8 @@ const stratified = new StratifiedKFold({
 foldNum = 1;
 
 // Iterate through each fold
-for (const [trainIdx, testIdx] of stratified.split(X_class, y_class)) {
-  console.log(`Fold ${foldNum}: Train=${trainIdx.length}, Test=${testIdx.length}`);
+for (const { trainIndex, testIndex } of stratified.split(X_class, y_class)) {
+  console.log(`Fold ${foldNum}: Train=${trainIndex.length}, Test=${testIndex.length}`);
   foldNum++;
 }
 

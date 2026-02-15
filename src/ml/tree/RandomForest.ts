@@ -31,7 +31,7 @@ import { DecisionTreeClassifier, DecisionTreeRegressor } from "./DecisionTree";
  * const predictions = clf.predict(X_test);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html | scikit-learn RandomForestClassifier}
+ * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class RandomForestClassifier implements Classifier {
   private readonly nEstimators: number;
@@ -455,7 +455,7 @@ export class RandomForestClassifier implements Classifier {
  * const predictions = reg.predict(X_test);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestRegressor.html | scikit-learn RandomForestRegressor}
+ * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class RandomForestRegressor implements Regressor {
   private readonly nEstimators: number;

@@ -1,5 +1,7 @@
 # Attention & Transformer Layers
 
+> **View online:** https://deepbox.dev/examples/29-attention-transformer
+
 Demonstrates MultiheadAttention and TransformerEncoderLayer for sequence-to-sequence modeling.
 
 ## Deepbox Modules Used

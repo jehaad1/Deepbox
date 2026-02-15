@@ -1,5 +1,7 @@
 # Logistic Regression
 
+> **View online:** https://deepbox.dev/examples/08-logistic-regression
+
 Build a binary classification model using logistic regression. Learn to classify data into two categories using the Iris dataset.
 
 ## Deepbox Modules Used

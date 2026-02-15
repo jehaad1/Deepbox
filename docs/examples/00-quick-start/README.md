@@ -1,5 +1,7 @@
 # Quick Start Guide
 
+> **View online:** https://deepbox.dev/examples/00-quick-start
+
 A rapid introduction to Deepbox's core features — tensors, DataFrames, and machine learning in under 50 lines.
 
 ## Deepbox Modules Used

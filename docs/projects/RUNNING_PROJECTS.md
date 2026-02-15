@@ -1,5 +1,7 @@
 # Running Deepbox Example Projects
 
+> **Browse online:** https://deepbox.dev/projects
+
 This directory contains 6 enterprise-grade projects demonstrating Deepbox capabilities.
 
 ## Prerequisites

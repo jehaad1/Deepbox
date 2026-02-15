@@ -1,6 +1,8 @@
 # DataFrame GroupBy & Aggregation
 
-Learn to group and aggregate data for analysis. Similar to SQL GROUP BY or Pandas groupby operations.
+> **View online:** https://deepbox.dev/examples/05-dataframe-groupby
+
+Learn to group and aggregate data for analysis. Similar to SQL GROUP BY operations.
 
 ## Deepbox Modules Used
 

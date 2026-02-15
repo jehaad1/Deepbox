@@ -45,7 +45,7 @@ import { Module } from "../module/Module";
  *
  * References:
  * - Dropout paper: https://jmlr.org/papers/v15/srivastava14a.html
- * - PyTorch Dropout: https://pytorch.org/docs/stable/generated/torch.nn.Dropout.html
+ * - Deepbox Dropout: https://deepbox.dev/docs/nn-normalization
  *
  * @category Neural Network Layers
  */
@@ -78,7 +78,7 @@ export class Dropout extends Module {
    */
   forward(input: AnyTensor): GradTensor {
     // Convert to GradTensor if needed
-    const inputTensor = input instanceof GradTensor ? input : GradTensor.fromTensor(input);
+    const inputTensor = GradTensor.isGradTensor(input) ? input : GradTensor.fromTensor(input);
 
     if (inputTensor.dtype === "string") {
       throw new DTypeError("Dropout does not support string dtype");

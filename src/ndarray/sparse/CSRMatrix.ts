@@ -43,7 +43,7 @@ export type CSRMatrixInit = {
  * const dense = sparse.toDense();
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_row_(CSR,_CRS_or_Yale_format) | Wikipedia: CSR}
+ * @see {@link https://deepbox.dev/docs/ndarray-sparse | Deepbox Sparse Matrices}
  */
 export class CSRMatrix {
   readonly data: Float64Array;

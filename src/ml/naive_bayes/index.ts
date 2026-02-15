@@ -39,8 +39,8 @@ import type { Classifier } from "../base";
  * const predictions = nb.predict(tensor([[2.5, 3.5]]));
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Naive_Bayes_classifier | Wikipedia: Naive Bayes}
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.naive_bayes.GaussianNB.html | scikit-learn GaussianNB}
+ * @see {@link https://deepbox.dev/docs/ml-naive-bayes | Deepbox Naive Bayes}
+ * @see {@link https://deepbox.dev/docs/ml-naive-bayes | Deepbox Naive Bayes}
  */
 export class GaussianNB implements Classifier {
   private readonly varSmoothing: number;

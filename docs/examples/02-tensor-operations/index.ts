@@ -2,7 +2,7 @@
  * Example 02: Tensor Operations
  *
  * Explore arithmetic, mathematical, and reduction operations on tensors.
- * Deepbox supports 90+ tensor operations with NumPy-compatible broadcasting.
+ * Deepbox supports 90+ tensor operations with full broadcasting.
  */
 
 import {

@@ -11,7 +11,7 @@ import { createKey } from "./utils.js";
  * - An array of index labels (can be strings or numbers)
  * - An optional name
  *
- * Similar to pandas Series in Python.
+ * A one-dimensional labeled array. @see { https://deepbox.dev/docs/dataframe-series | Deepbox Series}
  *
  * @template T - The type of data stored in the Series
  *
@@ -27,7 +27,7 @@ import { createKey } from "./utils.js";
  * });
  * ```
  *
- * @see {@link https://pandas.pydata.org/docs/reference/api/pandas.Series.html | Pandas Series}
+ * @see {@link https://deepbox.dev/docs/dataframe-series | Deepbox Series}
  */
 export class Series<T = unknown> {
   // Internal storage for the actual data values

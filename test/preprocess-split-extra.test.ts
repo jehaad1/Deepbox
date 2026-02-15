@@ -73,7 +73,7 @@ describe("deepbox/preprocess - Split Extra", () => {
     const skf = new StratifiedKFold({ nSplits: 2 });
     const splits = skf.split(X, y);
     expect(splits.length).toBe(2);
-    for (const [, testIdx] of splits) {
+    for (const { testIndex: testIdx } of splits) {
       const labels = testIdx.map((i) => Number(y.data[y.offset + i]));
       expect(labels).toContain(0);
       expect(labels).toContain(1);
@@ -86,7 +86,7 @@ describe("deepbox/preprocess - Split Extra", () => {
     const gkf = new GroupKFold({ nSplits: 2 });
     const splits = gkf.split(X, undefined, groups);
     expect(splits.length).toBe(2);
-    for (const [trainIdx, testIdx] of splits) {
+    for (const { trainIndex: trainIdx, testIndex: testIdx } of splits) {
       const trainGroups = new Set(trainIdx.map((i) => Number(groups.data[groups.offset + i])));
       const testGroups = new Set(testIdx.map((i) => Number(groups.data[groups.offset + i])));
       for (const g of trainGroups) {
@@ -100,7 +100,7 @@ describe("deepbox/preprocess - Split Extra", () => {
     const groups = tensor(["A", "A", "A", "B", "C"]);
     const gkf = new GroupKFold({ nSplits: 2 });
     const splits = gkf.split(X, undefined, groups);
-    const sizes = splits.map(([, testIdx]) => testIdx.length).sort((a, b) => a - b);
+    const sizes = splits.map(({ testIndex: testIdx }) => testIdx.length).sort((a, b) => a - b);
     expect(sizes).toEqual([2, 3]);
   });
 

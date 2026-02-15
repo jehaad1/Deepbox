@@ -149,8 +149,8 @@ abstract class KNeighborsBase {
  * const predictions = knn.predict(tensor([[1.5, 1.5]]));
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/K-nearest_neighbors_algorithm | Wikipedia: KNN}
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.KNeighborsClassifier.html | scikit-learn KNeighborsClassifier}
+ * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
+ * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
  */
 export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
   /**
@@ -354,7 +354,7 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
  * const predictions = knn.predict(tensor([[1.5]]));
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.KNeighborsRegressor.html | scikit-learn KNeighborsRegressor}
+ * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
  */
 export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
   /**

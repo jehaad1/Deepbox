@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
 <rect x="0" y="0" width="800" height="400" fill="#ffffff" />
 <rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
-<polyline fill="none" stroke="#2196f3" stroke-width="2" points="81.82,220.36 115.31,231.31 148.80,252.13 182.30,196.28 215.79,142.19 249.28,210.83 282.78,230.54 316.27,98.27 349.76,195.38 383.25,88.28 416.75,213.20 450.24,205.23 483.73,336.36 517.22,239.69 550.72,262.55 584.21,63.64 617.70,180.36 651.20,215.37 684.69,161.72 718.18,332.19" />
+<polyline fill="none" stroke="#2196f3" stroke-width="2" points="81.82,63.64 115.31,323.21 148.80,252.49 182.30,204.76 215.79,166.75 249.28,336.36 282.78,149.11 316.27,248.80 349.76,192.51 383.25,138.73 416.75,235.57 450.24,281.38 483.73,293.89 517.22,146.60 550.72,106.24 584.21,225.38 617.70,298.91 651.20,167.45 684.69,268.93 718.18,106.49" />
 <line class="x-tick" x1="132.06" y1="350.00" x2="132.06" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="132.06" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
 <line class="x-tick" x1="215.79" y1="350.00" x2="215.79" y2="355.00" stroke="#000" />
@@ -19,16 +19,14 @@
 <text class="tick-label tick-label-x" x="634.45" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">18</text>
 <line class="x-tick" x1="718.18" y1="350.00" x2="718.18" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="718.18" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">20</text>
-<line class="y-tick" x1="50.00" y1="326.85" x2="45.00" y2="326.85" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="326.85" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.34</text>
-<line class="y-tick" x1="50.00" y1="258.09" x2="45.00" y2="258.09" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="258.09" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.36</text>
-<line class="y-tick" x1="50.00" y1="189.34" x2="45.00" y2="189.34" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="189.34" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.38</text>
-<line class="y-tick" x1="50.00" y1="120.59" x2="45.00" y2="120.59" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="120.59" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.4</text>
-<line class="y-tick" x1="50.00" y1="51.84" x2="45.00" y2="51.84" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="51.84" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.42</text>
+<line class="y-tick" x1="50.00" y1="344.42" x2="45.00" y2="344.42" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="344.42" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.14</text>
+<line class="y-tick" x1="50.00" y1="252.98" x2="45.00" y2="252.98" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="252.98" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.16</text>
+<line class="y-tick" x1="50.00" y1="161.54" x2="45.00" y2="161.54" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="161.54" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.18</text>
+<line class="y-tick" x1="50.00" y1="70.09" x2="45.00" y2="70.09" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="70.09" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3.2</text>
 <text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Training Loss Curve</text>
 <text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Epoch</text>
 <text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Loss</text>

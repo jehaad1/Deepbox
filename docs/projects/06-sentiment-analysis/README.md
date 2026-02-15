@@ -1,5 +1,7 @@
 # Sentiment Analysis System
 
+> **View online:** https://deepbox.dev/projects/06-sentiment-analysis
+
 A text classification system for sentiment analysis demonstrating NLP preprocessing and classification.
 
 ## Features

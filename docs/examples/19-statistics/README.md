@@ -1,5 +1,7 @@
 # Statistical Analysis
 
+> **View online:** https://deepbox.dev/examples/19-statistics
+
 Perform descriptive statistics and hypothesis testing. Analyze data distributions and test hypotheses.
 
 ## Deepbox Modules Used

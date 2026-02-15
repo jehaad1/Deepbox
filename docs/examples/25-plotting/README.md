@@ -1,5 +1,7 @@
 # Data Visualization
 
+> **View online:** https://deepbox.dev/examples/25-plotting
+
 Create various types of plots to visualize data and results. Deepbox supports SVG and PNG output for publication-quality figures.
 
 ## Deepbox Modules Used

@@ -82,7 +82,7 @@ function toContiguousTensor(t: TensorClass): TensorClass {
  * const y = bn.forward(x);
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm1d.html | PyTorch BatchNorm1d}
+ * @see {@link https://deepbox.dev/docs/nn-normalization | Deepbox Normalization & Dropout}
  */
 export class BatchNorm1d extends Module {
   private readonly numFeatures: number;
@@ -157,7 +157,7 @@ export class BatchNorm1d extends Module {
   }
 
   forward(x: AnyTensor): GradTensor {
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     const inputDtype = input.dtype;
     if (inputDtype === "string") {
@@ -208,7 +208,7 @@ export class BatchNorm1d extends Module {
         );
       }
 
-      // Compute batch statistics (biased variance for normalization, per PyTorch convention)
+      // Compute batch statistics (biased variance for normalization)
       mean = inputReshaped.mean(0);
       varVal = varianceGrad(inputReshaped, 0, 0);
 
@@ -310,7 +310,7 @@ export class BatchNorm1d extends Module {
  * const y = ln.forward(x);
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html | PyTorch LayerNorm}
+ * @see {@link https://deepbox.dev/docs/nn-normalization | Deepbox Normalization & Dropout}
  */
 export class LayerNorm extends Module {
   private readonly normalizedShape: readonly number[];
@@ -365,7 +365,7 @@ export class LayerNorm extends Module {
   }
 
   forward(x: AnyTensor): GradTensor {
-    const input = x instanceof GradTensor ? x : GradTensor.fromTensor(x);
+    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 
     const inputDtype = input.dtype;
     if (inputDtype === "string") {

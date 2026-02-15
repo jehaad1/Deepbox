@@ -1,5 +1,7 @@
 # Preprocessing — Encoders
 
+> **View online:** https://deepbox.dev/examples/17-preprocessing-encoders
+
 Transform categorical and label data into numeric representations using Deepbox's encoding utilities.
 
 ## Deepbox Modules Used

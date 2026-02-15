@@ -1,6 +1,8 @@
 # Preprocessing — Scalers
 
-Feature scaling is essential before many ML algorithms. Deepbox provides 7 scalers inspired by scikit-learn.
+> **View online:** https://deepbox.dev/examples/18-preprocessing-scalers
+
+Feature scaling is essential before many ML algorithms. Deepbox provides 7 feature scalers.
 
 ## Deepbox Modules Used
 

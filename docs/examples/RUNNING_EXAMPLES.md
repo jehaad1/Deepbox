@@ -1,5 +1,7 @@
 # Running Deepbox Examples
 
+> **Browse online:** https://deepbox.dev/examples
+
 This directory contains 33 self-contained examples demonstrating Deepbox capabilities.
 
 ## Prerequisites

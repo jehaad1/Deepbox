@@ -96,8 +96,21 @@ export function barh(y: Tensor, width: Tensor, options: PlotOptions = {}): void 
 /**
  * Plot a histogram on the current axes.
  */
-export function hist(x: Tensor, bins = 10, options: PlotOptions = {}): void {
-  gca().hist(x, bins, options);
+export function hist(
+  x: Tensor,
+  bins?: number | (PlotOptions & { bins?: number }),
+  options: PlotOptions = {}
+): void {
+  let resolvedBins = 10;
+  let resolvedOptions = options;
+  if (typeof bins === "object" && bins !== null) {
+    resolvedBins = bins.bins ?? 10;
+    const { bins: _b, ...rest } = bins;
+    resolvedOptions = rest;
+  } else if (typeof bins === "number") {
+    resolvedBins = bins;
+  }
+  gca().hist(x, resolvedBins, resolvedOptions);
 }
 
 /**

@@ -1,15 +1,47 @@
 import {
   type DType,
+  dtypeToTypedArrayCtor,
   InvalidParameterError,
   type Shape,
   ShapeError,
   shapeToSize,
+  type TypedArray,
   validateShape,
 } from "../../core";
-import { isContiguous } from "./strides";
+import { isContiguous, offsetFromFlatIndex } from "./strides";
 import { computeStrides, Tensor } from "./Tensor";
 
 type NumericDType = Exclude<DType, "string">;
+
+/**
+ * Resolve a shape that may contain a single -1 dimension.
+ * Replaces -1 with the inferred size based on total element count.
+ */
+function resolveInferredShape(newShape: Shape, totalSize: number): Shape {
+  let inferIdx = -1;
+  let known = 1;
+  for (let i = 0; i < newShape.length; i++) {
+    const d = newShape[i];
+    if (d === undefined) continue;
+    if (d === -1) {
+      if (inferIdx !== -1) {
+        throw new ShapeError("Only one dimension can be -1 in reshape");
+      }
+      inferIdx = i;
+    } else {
+      known *= d;
+    }
+  }
+  if (inferIdx === -1) return newShape;
+  if (known === 0 || totalSize % known !== 0) {
+    throw new ShapeError(
+      `Cannot infer dimension for shape [${newShape}] with total size ${totalSize}`
+    );
+  }
+  const resolved = [...newShape];
+  resolved[inferIdx] = totalSize / known;
+  return resolved;
+}
 
 function isStringTensor(t: Tensor): t is Tensor<Shape, "string"> {
   return t.dtype === "string";
@@ -26,17 +58,31 @@ function isNumericTensor(t: Tensor): t is Tensor<Shape, NumericDType> {
  * - Currently only supports contiguous tensors.
  * - In the future, reshape should support more view cases using strides.
  */
-export function reshape(t: Tensor, newShape: Shape): Tensor {
+export function reshape(t: Tensor, rawShape: Shape): Tensor {
+  const newShape = resolveInferredShape(rawShape, t.size);
   validateShape(newShape);
   const newSize = shapeToSize(newShape);
   if (newSize !== t.size) {
     throw new ShapeError(`Cannot reshape tensor of size ${t.size} to shape [${newShape}]`);
   }
-  if (!isContiguous(t.shape, t.strides)) {
-    throw new ShapeError("reshape requires a contiguous tensor");
-  }
+
+  const contiguous = isContiguous(t.shape, t.strides);
 
   if (isStringTensor(t)) {
+    if (!contiguous) {
+      const logicalStrides = computeStrides(t.shape);
+      const out = new Array<string>(t.size);
+      const data = t.data as string[];
+      for (let i = 0; i < t.size; i++) {
+        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+        out[i] = data[off] ?? "";
+      }
+      return Tensor.fromStringArray({
+        data: out,
+        shape: newShape,
+        device: t.device,
+      });
+    }
     return Tensor.fromStringArray({
       data: t.data,
       shape: newShape,
@@ -48,6 +94,39 @@ export function reshape(t: Tensor, newShape: Shape): Tensor {
 
   if (!isNumericTensor(t)) {
     throw new ShapeError("reshape is not defined for string dtype");
+  }
+
+  if (!contiguous) {
+    const Ctor = dtypeToTypedArrayCtor(t.dtype);
+    const logicalStrides = computeStrides(t.shape);
+    const data = t.data as TypedArray;
+    if (data instanceof BigInt64Array) {
+      const out = new BigInt64Array(t.size);
+      for (let i = 0; i < t.size; i++) {
+        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+        out[i] = data[off] ?? 0n;
+      }
+      return Tensor.fromTypedArray({
+        data: out,
+        shape: newShape,
+        dtype: t.dtype,
+        device: t.device,
+      });
+    }
+    const out = new Ctor(t.size);
+    if (!(out instanceof BigInt64Array)) {
+      const numData = data as Exclude<TypedArray, BigInt64Array>;
+      for (let i = 0; i < t.size; i++) {
+        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+        out[i] = numData[off] ?? 0;
+      }
+    }
+    return Tensor.fromTypedArray({
+      data: out,
+      shape: newShape,
+      dtype: t.dtype,
+      device: t.device,
+    });
   }
 
   return Tensor.fromTypedArray({
@@ -87,7 +166,7 @@ export function flatten(t: Tensor): Tensor {
  * const w = transpose(z, [2, 0, 1]);   // shape: (2, 2, 2), axes permuted
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.transpose.html | NumPy transpose}
+ * @see {@link https://deepbox.dev/docs/ndarray-shape | Deepbox Shape & Indexing}
  */
 export function transpose(t: Tensor, axes?: readonly number[]): Tensor {
   let axesArr: number[];

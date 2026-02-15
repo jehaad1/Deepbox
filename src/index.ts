@@ -12,8 +12,8 @@
  * import { LinearRegression } from "deepbox/ml";
  *
  * // Or import namespaced modules
- * import * as ds from "deepbox";
- * ds.ndarray.tensor([1, 2, 3]);
+ * import * as db from "deepbox";
+ * db.ndarray.tensor([1, 2, 3]);
  * ```
  */
 

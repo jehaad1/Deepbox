@@ -90,12 +90,14 @@ function toOneHot(indices: Tensor, numClasses: number): Tensor {
  */
 export function crossEntropyLoss(input: Tensor, target: Tensor): number;
 export function crossEntropyLoss(input: GradTensor, target: AnyTensor): GradTensor;
+export function crossEntropyLoss(input: AnyTensor, target: AnyTensor): number | GradTensor;
 export function crossEntropyLoss(input: AnyTensor, target: AnyTensor): number | GradTensor {
-  const yPred = input instanceof GradTensor ? input : GradTensor.fromTensor(input);
-  const targetIsGrad = target instanceof GradTensor;
+  const yPred = GradTensor.isGradTensor(input) ? input : GradTensor.fromTensor(input);
+  const targetIsGrad = GradTensor.isGradTensor(target);
   // Target usually doesn't require grad, but if it's soft labels (distillation), it might.
-  const yTrue =
-    target instanceof GradTensor ? target : GradTensor.fromTensor(target, { requiresGrad: false });
+  const yTrue = GradTensor.isGradTensor(target)
+    ? target
+    : GradTensor.fromTensor(target, { requiresGrad: false });
 
   if (yPred.ndim !== 2) {
     throw new ShapeError(`Input must be 2-dimensional (batch, classes); got ${yPred.ndim}`);
@@ -108,9 +110,8 @@ export function crossEntropyLoss(input: AnyTensor, target: AnyTensor): number | 
 
   // Handle class indices (1D)
   if (yTrue.ndim === 1) {
-    if (targetIsGrad) {
-      throw new ShapeError("Target must be 2-dimensional when provided as GradTensor");
-    }
+    // Class indices are discrete labels — gradients through them are meaningless.
+    // Accept 1D GradTensor by extracting the underlying tensor for one-hot conversion.
     if (yTrue.shape[0] !== nSamples) {
       throw new ShapeError(
         `Target must have same number of samples as input; got ${yTrue.shape[0]} and ${nSamples}`
@@ -148,7 +149,7 @@ export function crossEntropyLoss(input: AnyTensor, target: AnyTensor): number | 
   // And then mean.
 
   const meanLoss = sampleLoss.mean().neg();
-  if (!(input instanceof GradTensor) && !targetIsGrad) {
+  if (!GradTensor.isGradTensor(input) && !targetIsGrad) {
     const data = meanLoss.tensor.data;
     if (Array.isArray(data)) {
       throw new DTypeError("crossEntropyLoss does not support string dtype");
@@ -177,9 +178,10 @@ export function binaryCrossEntropyWithLogitsLoss(
   input: AnyTensor,
   target: AnyTensor
 ): number | GradTensor {
-  const yPred = input instanceof GradTensor ? input : GradTensor.fromTensor(input);
-  const yTrue =
-    target instanceof GradTensor ? target : GradTensor.fromTensor(target, { requiresGrad: false });
+  const yPred = GradTensor.isGradTensor(input) ? input : GradTensor.fromTensor(input);
+  const yTrue = GradTensor.isGradTensor(target)
+    ? target
+    : GradTensor.fromTensor(target, { requiresGrad: false });
 
   // Check shapes
   // Support (N,) and (N, 1)
@@ -240,7 +242,7 @@ export function binaryCrossEntropyWithLogitsLoss(
   // loss = (1-z)*x + softplus(-x)   if x > 0
   // loss = (1-z)*x + x + softplus(-x) ? No.
 
-  // PyTorch uses: max(x, 0) - x*z + log(1 + exp(-abs(x)))
+  // Uses: max(x, 0) - x*z + log(1 + exp(-abs(x)))
   // To implement `abs(x)` without primitive:
   // `x.pow(2).sqrt()` is abs(x) but unstable grad at 0.
   // `relu(x) + relu(-x)` works.
@@ -257,7 +259,7 @@ export function binaryCrossEntropyWithLogitsLoss(
   const term3 = one.add(expNegAbs).log();
 
   const loss = term1.sub(term2).add(term3).mean();
-  if (!(input instanceof GradTensor) && !(target instanceof GradTensor)) {
+  if (!GradTensor.isGradTensor(input) && !GradTensor.isGradTensor(target)) {
     const data = loss.tensor.data;
     if (Array.isArray(data)) {
       throw new DTypeError("binaryCrossEntropyWithLogitsLoss does not support string dtype");

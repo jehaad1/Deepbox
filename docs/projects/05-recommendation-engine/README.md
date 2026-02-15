@@ -1,5 +1,7 @@
 # Movie Recommendation Engine
 
+> **View online:** https://deepbox.dev/projects/05-recommendation-engine
+
 A collaborative filtering recommendation system using user-item ratings, clustering, and dimensionality reduction.
 
 ## Features

@@ -44,7 +44,7 @@ type TreeNode = {
  * const predictions = clf.predict(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.tree.DecisionTreeClassifier.html | scikit-learn DecisionTreeClassifier}
+ * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class DecisionTreeClassifier implements Classifier {
   private maxDepth: number;
@@ -562,7 +562,7 @@ export class DecisionTreeClassifier implements Classifier {
  *
  * Uses MSE reduction to find optimal splits for regression tasks.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.tree.DecisionTreeRegressor.html | scikit-learn DecisionTreeRegressor}
+ * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class DecisionTreeRegressor implements Regressor {
   private maxDepth: number;

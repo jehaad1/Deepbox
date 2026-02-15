@@ -160,11 +160,16 @@ describe("deepbox/ml - Trees, Ensembles, SVM", () => {
       expect(score).toBeGreaterThan(0.5);
     });
 
-    it("throws for non-binary labels", () => {
+    it("supports multiclass via OvR and throws for single-class", () => {
       const X = tensor([[1], [2], [3]]);
       const y = tensor([0, 1, 2], { dtype: "int32" });
       const gbc = new GradientBoostingClassifier({ nEstimators: 3 });
-      expect(() => gbc.fit(X, y)).toThrow();
+      // Multiclass now supported via OvR
+      gbc.fit(X, y);
+      const preds = gbc.predict(X);
+      expect(preds.size).toBe(3);
+      // Single-class should still throw
+      expect(() => gbc.fit(X, tensor([0, 0, 0]))).toThrow(/at least 2 classes/);
     });
   });
 
@@ -181,16 +186,21 @@ describe("deepbox/ml - Trees, Ensembles, SVM", () => {
       const coef = svm.coef;
       expect(coef.shape).toEqual([1, 1]);
       const intercept = svm.intercept;
-      expect(typeof intercept).toBe("number");
+      expect(intercept.shape).toEqual([1]);
       const score = svm.score(X, y);
       expect(score).toBeGreaterThanOrEqual(0.5);
     });
 
-    it("rejects non-binary labels", () => {
+    it("supports multiclass via OvR and rejects single-class", () => {
       const X = tensor([[0], [1], [2]]);
       const y = tensor([0, 1, 2], { dtype: "int32" });
       const svm = new LinearSVC();
-      expect(() => svm.fit(X, y)).toThrow();
+      // Multiclass now supported via OvR
+      svm.fit(X, y);
+      const preds = svm.predict(X);
+      expect(preds.size).toBe(3);
+      // Single-class should still throw
+      expect(() => svm.fit(X, tensor([0, 0, 0]))).toThrow(/at least 2 classes/);
     });
   });
 

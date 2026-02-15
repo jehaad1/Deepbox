@@ -710,12 +710,20 @@ describe("Classification Metrics - Comprehensive Tests", () => {
       expect(() => balancedAccuracyScore(short, long)).toThrow();
     });
 
-    it("should reject string labels for numeric metrics", () => {
+    it("should handle string labels with auto-detected weighted average", () => {
       const yTrue = tensor(["cat", "dog", "cat"]);
       const yPred = tensor(["cat", "cat", "dog"]);
-      expect(() => precision(yTrue, yPred)).toThrow(/string/);
-      expect(() => recall(yTrue, yPred)).toThrow(/string/);
-      expect(() => f1Score(yTrue, yPred)).toThrow(/string/);
+      expect(typeof precision(yTrue, yPred)).toBe("number");
+      expect(typeof recall(yTrue, yPred)).toBe("number");
+      expect(typeof f1Score(yTrue, yPred)).toBe("number");
+    });
+
+    it("should reject string labels for explicit binary average", () => {
+      const yTrue = tensor(["cat", "dog", "cat"]);
+      const yPred = tensor(["cat", "cat", "dog"]);
+      expect(() => precision(yTrue, yPred, "binary")).toThrow(/string/i);
+      expect(() => recall(yTrue, yPred, "binary")).toThrow(/string/i);
+      expect(() => f1Score(yTrue, yPred, "binary")).toThrow(/string/i);
     });
 
     it("should handle very large datasets efficiently", () => {

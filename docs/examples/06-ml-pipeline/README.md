@@ -1,5 +1,7 @@
 # Complete Machine Learning Pipeline
 
+> **View online:** https://deepbox.dev/examples/06-ml-pipeline
+
 End-to-end ML pipeline demonstrating classification with the Iris dataset and regression with the Housing-Mini dataset. Includes data preprocessing, model comparison, cross-validation, and visualization.
 
 ## Deepbox Modules Used

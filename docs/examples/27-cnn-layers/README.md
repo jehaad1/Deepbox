@@ -1,5 +1,7 @@
 # CNN Layers
 
+> **View online:** https://deepbox.dev/examples/27-cnn-layers
+
 Demonstrates convolutional neural network layers: Conv1d, Conv2d, MaxPool2d, and AvgPool2d.
 
 ## Deepbox Modules Used

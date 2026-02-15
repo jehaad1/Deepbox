@@ -1,5 +1,7 @@
 # Neural Network Module System
 
+> **View online:** https://deepbox.dev/examples/32-module-system
+
 Demonstrates the Module base class: custom modules, parameter registration, state serialization,
 train/eval modes, freeze/unfreeze, and Sequential container.
 

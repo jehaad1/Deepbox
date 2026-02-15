@@ -148,9 +148,9 @@ const kfold = new KFold({ nSplits: 5, shuffle: true, randomState: 42 });
 let foldNum = 1;
 
 console.log("Cross-validation fold splits:");
-for (const [trainIdx, testIdx] of kfold.split(housing.data)) {
+for (const { trainIndex, testIndex } of kfold.split(housing.data)) {
   console.log(
-    `  Fold ${foldNum}: Train=${trainIdx.length} samples, Test=${testIdx.length} samples`
+    `  Fold ${foldNum}: Train=${trainIndex.length} samples, Test=${testIndex.length} samples`
   );
   foldNum++;
 }

@@ -45,7 +45,7 @@ function isTruthy(data: TypedArray, offset: number): boolean {
  * logicalAnd(a, b);  // tensor([1, 0, 0])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.logical_and.html | NumPy logical_and}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function logicalAnd(a: Tensor, b: Tensor): Tensor {
   if (a.dtype === "string" || b.dtype === "string") {
@@ -96,7 +96,7 @@ export function logicalAnd(a: Tensor, b: Tensor): Tensor {
  * logicalOr(a, b);  // tensor([1, 1, 0])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.logical_or.html | NumPy logical_or}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function logicalOr(a: Tensor, b: Tensor): Tensor {
   if (a.dtype === "string" || b.dtype === "string") {
@@ -151,7 +151,7 @@ export function logicalOr(a: Tensor, b: Tensor): Tensor {
  * logicalXor(a, b);  // tensor([0, 1, 1, 0])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.logical_xor.html | NumPy logical_xor}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function logicalXor(a: Tensor, b: Tensor): Tensor {
   if (a.dtype === "string" || b.dtype === "string") {
@@ -202,7 +202,7 @@ export function logicalXor(a: Tensor, b: Tensor): Tensor {
  * logicalNot(t);  // tensor([0, 1, 0, 1])
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.logical_not.html | NumPy logical_not}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function logicalNot(t: Tensor): Tensor {
   if (t.dtype === "string") {

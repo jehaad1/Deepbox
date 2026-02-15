@@ -52,7 +52,7 @@ function getRequired<T>(arr: readonly T[], index: number, label: string): T {
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, nFeatures]` and y has shape `[nSamples]` with dtype `int32`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_classification.html | sklearn.datasets.make_classification}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeClassification(
   options: {
@@ -61,6 +61,7 @@ export function makeClassification(
     nInformative?: number;
     nRedundant?: number;
     nClasses?: number;
+    flipY?: number;
     randomState?: number;
   } = {}
 ): [Tensor, Tensor] {
@@ -69,6 +70,7 @@ export function makeClassification(
   const nInformative = options.nInformative ?? 2;
   const nRedundant = options.nRedundant ?? 2;
   const nClasses = options.nClasses ?? 2;
+  const flipY = options.flipY ?? 0.01;
 
   assertPositiveInt("nSamples", nSamples);
   assertPositiveInt("nFeatures", nFeatures);
@@ -159,6 +161,15 @@ export function makeClassification(
     XData[i] = row;
   }
 
+  // Flip a fraction of labels
+  if (flipY > 0) {
+    for (let i = 0; i < nSamples; i++) {
+      if (rng() < flipY) {
+        yData[i] = Math.floor(rng() * nClasses);
+      }
+    }
+  }
+
   return [tensor(XData), tensor(yData, { dtype: "int32" })];
 }
 
@@ -175,7 +186,7 @@ export function makeClassification(
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, nFeatures]` and y has shape `[nSamples]`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_regression.html | sklearn.datasets.make_regression}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeRegression(
   options: { nSamples?: number; nFeatures?: number; noise?: number; randomState?: number } = {}
@@ -240,7 +251,7 @@ export function makeRegression(
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, nFeatures]` and y has shape `[nSamples]` with dtype `int32`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_blobs.html | sklearn.datasets.make_blobs}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeBlobs(
   options: {
@@ -355,7 +366,7 @@ export function makeBlobs(
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, 2]` and y has shape `[nSamples]` with dtype `int32`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_moons.html | sklearn.datasets.make_moons}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeMoons(
   options: { nSamples?: number; noise?: number; randomState?: number; shuffle?: boolean } = {}
@@ -417,7 +428,7 @@ export function makeMoons(
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, 2]` and y has shape `[nSamples]` with dtype `int32`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_circles.html | sklearn.datasets.make_circles}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeCircles(
   options: {
@@ -493,7 +504,7 @@ export function makeCircles(
  * @param options.randomState - Seed for reproducibility.
  * @returns A tuple `[X, y]` where X has shape `[nSamples, nFeatures]` and y has shape `[nSamples]` with dtype `int32`.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.datasets.make_gaussian_quantiles.html | sklearn.datasets.make_gaussian_quantiles}
+ * @see {@link https://deepbox.dev/docs/datasets-synthetic | Deepbox Synthetic Datasets}
  */
 export function makeGaussianQuantiles(
   options: { nSamples?: number; nFeatures?: number; nClasses?: number; randomState?: number } = {}

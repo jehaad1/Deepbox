@@ -32,7 +32,7 @@ type SampleRow = { indices: number[]; qValues: number[] };
  * const embedding = tsne.fitTransform(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.manifold.TSNE.html | scikit-learn TSNE}
+ * @see {@link https://deepbox.dev/docs/ml-manifold | Deepbox Manifold Learning}
  * @see van der Maaten, L.J.P.; Hinton, G.E. (2008). "Visualizing High-Dimensional Data Using t-SNE"
  */
 export class TSNE {
@@ -862,6 +862,20 @@ export class TSNE {
   fit(X: Tensor): this {
     this.fitTransform(X);
     return this;
+  }
+
+  /**
+   * Return the fitted embedding. For t-SNE, transform is equivalent to
+   * returning the already-computed embedding (t-SNE is non-parametric).
+   *
+   * @param _X - Ignored, present for API compatibility
+   * @returns Low-dimensional embedding of shape (n_samples, n_components)
+   */
+  transform(_X?: Tensor): Tensor {
+    if (!this.fitted) {
+      throw new NotFittedError("TSNE must be fitted before transform");
+    }
+    return tensor(this.embedding);
   }
 
   /**

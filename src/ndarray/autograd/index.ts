@@ -18,7 +18,7 @@
  * When multiple elements share the maximum (or minimum) value along the
  * reduced axis, **all** tied positions receive gradient.  This means the
  * gradient is *not* divided among ties — each tied element gets the full
- * upstream gradient.  This matches PyTorch's behaviour and avoids the
+ * upstream gradient.  This matches Deepbox's behaviour and avoids the
  * cost of counting ties, but callers should be aware that the
  * "effective" gradient magnitude is multiplied by the tie count.
  */
@@ -343,16 +343,51 @@ export class GradTensor {
   private readonly _prev: readonly GradTensor[];
   private readonly _backward: BackwardFn;
 
-  private constructor(args: {
+  /** Check if a value is a GradTensor (works across module boundaries). */
+  static isGradTensor(value: unknown): value is GradTensor {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "tensor" in value &&
+      "requiresGrad" in value &&
+      "backward" in value &&
+      typeof (value as { backward: unknown }).backward === "function"
+    );
+  }
+
+  constructor(data: number | number[] | number[][] | number[][][], options?: GradTensorOptions);
+  constructor(args: {
     readonly tensor: Tensor;
     readonly requiresGrad: boolean;
     readonly prev: readonly GradTensor[];
     readonly backward: BackwardFn;
-  }) {
-    this.tensor = args.tensor;
-    this.requiresGrad = args.requiresGrad;
-    this._prev = args.prev;
-    this._backward = args.backward;
+  });
+  constructor(
+    dataOrArgs:
+      | number
+      | number[]
+      | number[][]
+      | number[][][]
+      | {
+          readonly tensor: Tensor;
+          readonly requiresGrad: boolean;
+          readonly prev: readonly GradTensor[];
+          readonly backward: BackwardFn;
+        },
+    options?: GradTensorOptions
+  ) {
+    if (typeof dataOrArgs === "object" && dataOrArgs !== null && "tensor" in dataOrArgs) {
+      this.tensor = dataOrArgs.tensor;
+      this.requiresGrad = dataOrArgs.requiresGrad;
+      this._prev = dataOrArgs.prev;
+      this._backward = dataOrArgs.backward;
+    } else {
+      const t = tensor(dataOrArgs as number | number[] | number[][] | number[][][]);
+      this.tensor = t;
+      this.requiresGrad = (options?.requiresGrad ?? false) && gradEnabled;
+      this._prev = [];
+      this._backward = () => {};
+    }
     this._grad = null;
   }
 

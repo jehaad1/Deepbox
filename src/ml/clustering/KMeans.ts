@@ -35,8 +35,8 @@ import type { Clusterer } from "../base";
  * console.log('Centroids:', kmeans.clusterCenters);
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/K-means_clustering | Wikipedia: K-means}
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.cluster.KMeans.html | scikit-learn KMeans}
+ * @see {@link https://deepbox.dev/docs/ml-clustering | Deepbox Clustering}
+ * @see {@link https://deepbox.dev/docs/ml-clustering | Deepbox Clustering}
  */
 export class KMeans implements Clusterer {
   private nClusters: number;

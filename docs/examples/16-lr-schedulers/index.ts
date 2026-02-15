@@ -2,7 +2,7 @@
  * Example 16: Learning Rate Schedulers
  *
  * Control the learning rate during training for better convergence.
- * Deepbox provides 8 schedulers inspired by PyTorch.
+ * Deepbox provides 8 learning rate schedulers.
  */
 
 import { Linear, ReLU, Sequential } from "deepbox/nn";

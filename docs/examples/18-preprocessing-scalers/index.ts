@@ -2,7 +2,7 @@
  * Example 18: Preprocessing — Scalers
  *
  * Feature scaling is essential before many ML algorithms.
- * Deepbox provides 7 scalers inspired by scikit-learn.
+ * Deepbox provides 7 feature scalers.
  */
 
 import { tensor } from "deepbox/ndarray";

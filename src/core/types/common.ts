@@ -21,7 +21,7 @@ export type Shape = readonly number[];
  * in JavaScript, offering better performance than regular arrays for
  * numerical computations.
  *
- * @see {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray | MDN TypedArray}
+ * @see {@link https://deepbox.dev/docs/core-types | Deepbox Core Types}
  *
  * @example
  * ```ts

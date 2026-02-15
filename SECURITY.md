@@ -6,7 +6,7 @@ We release patches for security vulnerabilities. Currently supported versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.2.x   | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -57,11 +57,11 @@ Deepbox is designed with security in mind:
 
 ## Known Issues
 
-Currently, there are no known security vulnerabilities in Deepbox 0.1.0.
+Currently, there are no known security vulnerabilities in Deepbox 0.2.0.
 
 ## Security Updates
 
-Security updates will be released as patch versions (e.g., 0.1.1, 0.1.2) and documented in the [CHANGELOG.md](CHANGELOG.md).
+Security updates will be released as patch versions (e.g., 0.2.1, 0.2.2) and documented in the [CHANGELOG.md](CHANGELOG.md).
 
 ## Scope
 
@@ -83,6 +83,7 @@ For security concerns, please contact the maintainer:
 
 - **Security Email**: [hi@jehaad.com](mailto:hi@jehaad.com)
 - **Author**: Jehaad Aljohani
+- **Website**: [https://deepbox.dev](https://deepbox.dev)
 - **Repository**: [https://github.com/jehaad1/Deepbox](https://github.com/jehaad1/Deepbox)
 - **Issues**: [https://github.com/jehaad1/Deepbox/issues](https://github.com/jehaad1/Deepbox/issues) (for non-security issues only)
 
@@ -92,4 +93,4 @@ We thank the security researchers and community members who help keep Deepbox se
 
 ---
 
-**Last Updated**: February 12, 2026
+**Last Updated**: February 14, 2026

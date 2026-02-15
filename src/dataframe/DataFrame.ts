@@ -36,7 +36,7 @@ const toNumericValues = (values: readonly unknown[]): number[] => values.filter(
  * - Columns (variables) identified by column names
  * - Data stored in a columnar format for efficient access
  *
- * Similar to pandas DataFrame in Python.
+ * A tabular data structure with labeled columns. @see { https://deepbox.dev/docs/dataframe-overview | Deepbox DataFrame}
  *
  * @example
  * ```ts
@@ -52,7 +52,7 @@ const toNumericValues = (values: readonly unknown[]): number[] => values.filter(
  * console.log(df.columns);  // ['name', 'age', 'score']
  * ```
  *
- * @see {@link https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.html | Pandas DataFrame}
+ * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox DataFrame}
  */
 export class DataFrame {
   // Internal storage: Map of column names to data arrays
@@ -389,7 +389,8 @@ export class DataFrame {
    * // DataFrame with Bob and Carol
    * ```
    */
-  filter(predicate: (row: Record<string, unknown>) => boolean): DataFrame {
+  // biome-ignore lint/suspicious/noExplicitAny: DataFrame rows are dynamically typed
+  filter(predicate: (row: Record<string, any>) => boolean): DataFrame {
     const nCols = this._columns.length;
     const nRows = this._index.length;
 
@@ -401,7 +402,8 @@ export class DataFrame {
 
     // First pass: find matching row indices using a reusable row object
     const matchIndices: number[] = [];
-    const row: Record<string, unknown> = {};
+    // biome-ignore lint/suspicious/noExplicitAny: DataFrame rows are dynamically typed
+    const row: Record<string, any> = {};
     for (let i = 0; i < nRows; i++) {
       for (let c = 0; c < nCols; c++) {
         row[this._columns[c] as string] = (colArrays[c] as unknown[])[i];
@@ -656,7 +658,7 @@ export class DataFrame {
    * // Result: Alice, Bob, Charlie (Charlie has null for product)
    * ```
    *
-   * @see {@link https://en.wikipedia.org/wiki/Hash_join | Hash Join Algorithm}
+   * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox DataFrame}
    */
   join(
     other: DataFrame,
@@ -819,7 +821,7 @@ export class DataFrame {
   }
 
   /**
-   * Merge with another DataFrame using pandas-style merge.
+   * Merge with another DataFrame using SQL-style merge.
    *
    * More flexible than join() - supports different column names for join keys.
    * Uses hash join algorithm for O(n + m) complexity.
@@ -854,7 +856,7 @@ export class DataFrame {
    * });
    * ```
    *
-   * @see {@link https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.merge.html | Pandas merge}
+   * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox DataFrame}
    */
   merge(
     other: DataFrame,
@@ -991,7 +993,7 @@ export class DataFrame {
         while (leftColumnSet.has(candidate)) {
           suffixIndex++;
           // If we already added suffix, append number. If not, append suffix then number?
-          // Pandas strategy: _x, _y. If _x exists, it stays _x.
+          // Suffix strategy: _x, _y. If _x exists, it stays _x.
           // Here we just need to ensure uniqueness.
           candidate = `${resultCol}_${suffixIndex}`;
         }

@@ -31,7 +31,7 @@ import type { Clusterer } from "../base";
  * // labels: [0, 0, 0, 1, 1, -1]  (-1 = noise)
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html | scikit-learn DBSCAN}
+ * @see {@link https://deepbox.dev/docs/ml-clustering | Deepbox Clustering}
  */
 export class DBSCAN implements Clusterer {
   private eps: number;
@@ -239,6 +239,24 @@ export class DBSCAN implements Clusterer {
       throw new NotFittedError("DBSCAN must be fitted to access labels");
     }
     return this.labels_;
+  }
+
+  /**
+   * Number of clusters found (excluding noise).
+   *
+   * @returns Number of distinct clusters (labels >= 0)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nClusters(): number {
+    if (!this.fitted || !this.labels_) {
+      throw new NotFittedError("DBSCAN must be fitted to access nClusters");
+    }
+    const unique = new Set<number>();
+    for (let i = 0; i < this.labels_.size; i++) {
+      const label = Number(this.labels_.data[this.labels_.offset + i]);
+      if (label >= 0) unique.add(label);
+    }
+    return unique.size;
   }
 
   /**

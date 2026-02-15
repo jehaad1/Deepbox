@@ -91,7 +91,8 @@ describe("ml error branch coverage", () => {
       [3, 4],
       [5, 6],
     ]);
-    expect(() => gbc.fit(X3, tensor([0, 1, 2]))).toThrow(/exactly 2 classes/);
+    // Multiclass is now supported via OvR; test that single-class still throws
+    expect(() => gbc.fit(X3, tensor([0, 0, 0]))).toThrow(/at least 2 classes/);
     expect(() => gbc.setParams({})).toThrow(/does not support setParams/);
   });
 

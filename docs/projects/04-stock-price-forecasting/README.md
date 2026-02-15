@@ -1,5 +1,7 @@
 # Time Series Stock Price Forecasting
 
+> **View online:** https://deepbox.dev/projects/04-stock-price-forecasting
+
 A time series forecasting project for stock prices using synthetic market data, feature engineering, and regression baselines.
 
 ## Features

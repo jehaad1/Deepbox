@@ -1,5 +1,7 @@
 # Neural Network Training
 
+> **View online:** https://deepbox.dev/examples/13-neural-network-training
+
 Build and train neural networks using the nn, optim, and autograd modules. Covers Sequential models, custom modules, loss functions, and optimizers.
 
 ## Deepbox Modules Used

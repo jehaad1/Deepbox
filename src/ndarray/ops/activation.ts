@@ -5,6 +5,8 @@ import {
   getBigIntElement,
   getNumericElement,
   normalizeAxis,
+  type ScalarDType,
+  type Shape,
 } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
@@ -65,7 +67,7 @@ function toFloat64Dense(t: Tensor): Float64Array {
  * const result = sigmoid(x);  // [0.268..., 0.5, 0.731...]
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Sigmoid_function | Wikipedia: Sigmoid}
+ * @see {@link https://deepbox.dev/docs/ndarray-activations | Deepbox Activation Functions}
  */
 export function sigmoid(t: Tensor): Tensor {
   if (t.dtype === "string") {
@@ -123,9 +125,9 @@ export function sigmoid(t: Tensor): Tensor {
  * const result = relu(x);  // [0, 0, 1]
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Rectifier_(neural_networks) | Wikipedia: ReLU}
+ * @see {@link https://deepbox.dev/docs/ndarray-activations | Deepbox Activation Functions}
  */
-export function relu(t: Tensor): Tensor {
+export function relu(t: Tensor): Tensor<Shape, ScalarDType> {
   if (t.dtype === "string") {
     throw new DTypeError("relu is not defined for string dtype");
   }
@@ -180,7 +182,7 @@ export function relu(t: Tensor): Tensor {
  * const result = leakyRelu(x, 0.1);  // [-0.1, 0, 1]
  * ```
  */
-export function leakyRelu(t: Tensor, alpha = 0.01): Tensor {
+export function leakyRelu(t: Tensor, alpha = 0.01): Tensor<Shape, ScalarDType> {
   if (t.dtype === "string") {
     throw new DTypeError("leakyRelu is not defined for string dtype");
   }
@@ -237,7 +239,7 @@ export function leakyRelu(t: Tensor, alpha = 0.01): Tensor {
  * const result = elu(x);
  * ```
  */
-export function elu(t: Tensor, alpha: number = 1.0): Tensor {
+export function elu(t: Tensor, alpha: number = 1.0): Tensor<Shape, ScalarDType> {
   if (t.dtype === "string") {
     throw new DTypeError("elu is not defined for string dtype");
   }
@@ -362,7 +364,7 @@ export function gelu(t: Tensor): Tensor {
  * const result3d = softmax(x3d, -1);  // Softmax along last axis
  * ```
  *
- * @see {@link https://en.wikipedia.org/wiki/Softmax_function | Wikipedia: Softmax}
+ * @see {@link https://deepbox.dev/docs/ndarray-activations | Deepbox Activation Functions}
  */
 export function softmax(t: Tensor, axis: Axis = -1): Tensor {
   if (t.dtype === "string") {

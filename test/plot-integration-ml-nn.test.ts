@@ -71,6 +71,7 @@ describe("Plot - Integrations (ML, NN, preprocess, metrics)", () => {
   });
 
   it("renders subplot viewports in grid layout", () => {
+    figure({ width: 320, height: 240 });
     subplot(2, 2, 1, { padding: 0 });
     subplot(2, 2, 2, { padding: 0 });
     const rendered = show({ format: "svg" });

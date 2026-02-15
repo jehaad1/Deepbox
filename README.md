@@ -1,3 +1,5 @@
+<img src="./Banner.png" alt="Deepbox" />
+
 # Deepbox
 
 ## The TypeScript Toolkit for AI & Numerical Computing
@@ -6,9 +8,9 @@
 [![npm version](https://img.shields.io/npm/v/deepbox)](https://www.npmjs.com/package/deepbox)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Deepbox is a comprehensive, type-safe TypeScript library that unifies numerical computing, tabular data workflows, and machine learning into a single modular package. Zero runtime dependencies. 4 009 tests. Production-ready.
+Deepbox is a comprehensive, type-safe TypeScript library that unifies numerical computing, tabular data workflows, and machine learning into a single modular package. Zero runtime dependencies. 4,344 tests. Production-ready.
 
-_Inspired by NumPy, Pandas, PyTorch, scikit-learn, and Matplotlib._
+> **Documentation:** https://deepbox.dev/docs · **Examples:** https://deepbox.dev/examples · **Projects:** https://deepbox.dev/projects
 
 ## Requirements
 
@@ -60,27 +62,27 @@ const predictions = model.predict(XTest);
 Prefer per-module imports for tree-shaking, or use namespaces from the root:
 
 ```ts
-import * as ds from "deepbox";
-const t = ds.ndarray.tensor([1, 2, 3]);
+import * as db from "deepbox";
+const t = db.ndarray.tensor([1, 2, 3]);
 ```
 
 ## Modules
 
-| Module               | What it provides                                                                       | Inspired by          |
-| -------------------- | -------------------------------------------------------------------------------------- | -------------------- |
-| `deepbox/core`       | Types, errors, validation, dtype helpers, configuration                                | -                    |
-| `deepbox/ndarray`    | N-D tensors with autograd, broadcasting, 90+ ops, sparse matrices                      | NumPy, PyTorch       |
-| `deepbox/linalg`     | SVD, QR, LU, Cholesky, eigenvalue decomposition, solvers, norms                        | NumPy/SciPy          |
-| `deepbox/dataframe`  | DataFrame + Series with 50+ operations, CSV I/O                                        | Pandas               |
-| `deepbox/stats`      | Descriptive stats, correlations, hypothesis tests (t-test, ANOVA, chi-square, etc.)    | SciPy/statsmodels    |
-| `deepbox/metrics`    | 40+ ML metrics (classification, regression, clustering)                                | scikit-learn         |
-| `deepbox/preprocess` | Scalers, encoders, normalizers, cross-validation splits                                | scikit-learn         |
-| `deepbox/ml`         | Classical ML (Linear, Ridge, Lasso, Logistic, Trees, SVM, KNN, Naive Bayes, Ensembles) | scikit-learn         |
-| `deepbox/nn`         | Neural networks (Linear, Conv, RNN/LSTM/GRU, Attention, Normalization, Losses)         | PyTorch              |
-| `deepbox/optim`      | Optimizers (SGD, Adam, AdamW, RMSprop, etc.) + LR schedulers                           | PyTorch              |
-| `deepbox/random`     | Distributions (uniform, normal, binomial, gamma, beta, etc.) + sampling                | NumPy.random         |
-| `deepbox/datasets`   | Built-in datasets (Iris, Digits, Breast Cancer, etc.) + synthetic generators           | scikit-learn/PyTorch |
-| `deepbox/plot`       | SVG/PNG plotting (scatter, line, bar, hist, heatmap, contour, ML plots)                | Matplotlib           |
+| Module               | What it provides                                                                       | Docs                                                       |
+| -------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `deepbox/core`       | Types, errors, validation, dtype helpers, configuration                                | [core](https://deepbox.dev/docs/core-types)                |
+| `deepbox/ndarray`    | N-D tensors with autograd, broadcasting, 90+ ops, sparse matrices                      | [ndarray](https://deepbox.dev/docs/ndarray-tensor)         |
+| `deepbox/linalg`     | SVD, QR, LU, Cholesky, eigenvalue decomposition, solvers, norms                        | [linalg](https://deepbox.dev/docs/linalg-decompositions)   |
+| `deepbox/dataframe`  | DataFrame + Series with 50+ operations, CSV I/O                                        | [dataframe](https://deepbox.dev/docs/dataframe-overview)   |
+| `deepbox/stats`      | Descriptive stats, correlations, hypothesis tests (t-test, ANOVA, chi-square, etc.)    | [stats](https://deepbox.dev/docs/stats-descriptive)        |
+| `deepbox/metrics`    | 40+ ML metrics (classification, regression, clustering)                                | [metrics](https://deepbox.dev/docs/metrics-classification) |
+| `deepbox/preprocess` | Scalers, encoders, normalizers, cross-validation splits                                | [preprocess](https://deepbox.dev/docs/preprocess-scalers)  |
+| `deepbox/ml`         | Classical ML (Linear, Ridge, Lasso, Logistic, Trees, SVM, KNN, Naive Bayes, Ensembles) | [ml](https://deepbox.dev/docs/ml-linear)                   |
+| `deepbox/nn`         | Neural networks (Linear, Conv, RNN/LSTM/GRU, Attention, Normalization, Losses)         | [nn](https://deepbox.dev/docs/nn-module)                   |
+| `deepbox/optim`      | Optimizers (SGD, Adam, AdamW, RMSprop, etc.) + LR schedulers                           | [optim](https://deepbox.dev/docs/optim-optimizers)         |
+| `deepbox/random`     | Distributions (uniform, normal, binomial, gamma, beta, etc.) + sampling                | [random](https://deepbox.dev/docs/random-distributions)    |
+| `deepbox/datasets`   | Built-in datasets (Iris, Digits, Breast Cancer, etc.) + synthetic generators           | [datasets](https://deepbox.dev/docs/datasets-builtin)      |
+| `deepbox/plot`       | SVG/PNG plotting (scatter, line, bar, hist, heatmap, contour, ML plots)                | [plot](https://deepbox.dev/docs/plot-basic)                |
 
 ## Features
 
@@ -88,14 +90,14 @@ const t = ds.ndarray.tensor([1, 2, 3]);
 
 - **90+ operations**: arithmetic, trigonometric, logical, reductions, sorting, manipulation
 - **Automatic differentiation**: `GradTensor` with reverse-mode backpropagation
-- **Broadcasting**: NumPy-compatible semantics
+- **Broadcasting**: full broadcasting semantics ([docs](https://deepbox.dev/docs/ndarray-ops))
 - **Sparse matrices**: CSR format with arithmetic and matrix operations
 - **Multiple dtypes**: float32, float64, int32, int64, uint8, bool, string
 - **Activation functions**: ReLU, Sigmoid, Softmax, GELU, Mish, Swish, ELU, LeakyReLU
 
 ### DataFrames & Series
 
-- **Pandas-like API**: filtering, grouping, joining, merging, pivoting, sorting
+- **Tabular API**: filtering, grouping, joining, merging, pivoting, sorting ([docs](https://deepbox.dev/docs/dataframe-overview))
 - **CSV I/O**: read and write CSV files
 - **Descriptive statistics**: `describe()`, value counts, correlation matrices
 
@@ -262,7 +264,7 @@ const df = new DataFrame({
 
 const itDept = df.filter((row) => row.department === "IT");
 const avgSalary = df.groupBy("department").agg({ salary: "mean" });
-const sorted = df.sort("salary", { ascending: false });
+const sorted = df.sort("salary", false);
 ```
 
 ### Plotting
@@ -292,28 +294,28 @@ Deepbox is pure TypeScript — no native addons, no WebAssembly, no C bindings. 
 
 | Category | Deepbox Wins | Python Package Wins | Competing Against |
 | --- | ---: | ---: | --- |
-| DataFrames | 24 | 31 | Pandas (C / Cython) |
+| DataFrames | 23 | 32 | Pandas (C / Cython) |
 | Datasets | 11 | 30 | scikit-learn |
 | Linear Algebra | 0 | 54 | NumPy + SciPy (LAPACK) |
-| Metrics | 45 | 18 | scikit-learn (C / Cython) |
-| ML Training | 16 | 32 | scikit-learn (C / Cython) |
+| Metrics | 46 | 17 | scikit-learn (C / Cython) |
+| ML Training | 15 | 33 | scikit-learn (C / Cython) |
 | NDArray Ops | 6 | 88 | NumPy (C / BLAS) |
 | Plotting | 43 | 0 | Matplotlib (C / Agg) |
-| Preprocessing | 20 | 23 | scikit-learn (C / Cython) |
+| Preprocessing | 19 | 24 | scikit-learn (C / Cython) |
 | Random | 0 | 44 | NumPy (C) |
-| Statistics | 31 | 26 | SciPy (C / Fortran) |
-| **Total** | **196** | **346** | |
+| Statistics | 30 | 27 | SciPy (C / Fortran) |
+| **Total** | **193** | **349** | |
 
 ### Where Deepbox shines
 
-- **bar** (200 bars) — 16488.6x faster *(Plotting)*
-- **KNeighborsClassifier fit** (200x5) — 48.4x faster *(ML Training)*
-- **transpose** (500x500) — 43.9x faster *(NDArray Ops)*
-- **fbetaScore (β=0.5)** (1K) — 34.0x faster *(Metrics)*
-- **describe** (100x5) — 29.4x faster *(DataFrames)*
-- **chisquare** (10 bins) — 18.5x faster *(Statistics)*
-- **loadLinnerud** (20x3) — 15.3x faster *(Datasets)*
-- **PowerTransformer fit** (500x10) — 6.3x faster *(Preprocessing)*
+- **bar** (200 bars) — 9963.3x faster *(Plotting)*
+- **transpose** (500x500) — 54.5x faster *(NDArray Ops)*
+- **KNeighborsRegressor fit** (200x5) — 36.6x faster *(ML Training)*
+- **fbetaScore (β=0.5)** (1K) — 30.9x faster *(Metrics)*
+- **describe** (100x5) — 29.5x faster *(DataFrames)*
+- **chisquare** (10 bins) — 19.3x faster *(Statistics)*
+- **loadLinnerud** (20x3) — 15.1x faster *(Datasets)*
+- **PowerTransformer fit** (500x10) — 6.4x faster *(Preprocessing)*
 
 ### Context
 
@@ -328,7 +330,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 ```bash
 npm install         # Install dependencies
 npm run build       # Build the package
-npm test            # Run 4 009 tests
+npm test            # Run 4,344 tests
 npm run typecheck   # Type checking
 npm run lint        # Lint with Biome
 npm run format      # Format with Biome

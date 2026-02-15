@@ -1,5 +1,7 @@
 # Contributing to Deepbox
 
+> **Website:** https://deepbox.dev · **Docs:** https://deepbox.dev/docs · **Examples:** https://deepbox.dev/examples · **Projects:** https://deepbox.dev/projects
+
 Thanks for helping improve Deepbox! This guide covers the full development workflow.
 
 ## Code of Conduct
@@ -52,9 +54,9 @@ src/
   random/       # Random distributions, sampling
   datasets/     # Built-in datasets, generators, DataLoader
   plot/         # SVG/PNG visualization
-test/           # 245 test files (vitest)
-docs/examples/  # 33 educational examples (00-32)
-docs/projects/  # 6 enterprise-grade projects
+test/           # 260 test files
+docs/examples/  # 33 educational examples (00-32) → https://deepbox.dev/examples
+docs/projects/  # 6 enterprise-grade projects → https://deepbox.dev/projects
 ```
 
 ## Writing Code
@@ -103,7 +105,7 @@ docs/projects/  # 6 enterprise-grade projects
 - Use `vitest` (`describe`, `it`, `expect`)
 - Cover edge cases: empty input, single element, NaN, large values, wrong dtypes
 - Do not use `test.only` or `test.skip` in committed code
-- Run `npm test` to verify all 4 009 tests pass before submitting
+- Run `npm test` to verify all 4,344 tests pass before submitting
 
 ## Pull Request Process
 

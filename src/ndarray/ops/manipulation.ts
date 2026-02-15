@@ -47,7 +47,7 @@ import { computeStrides, Tensor } from "../tensor/Tensor";
  * const c = concatenate([a, b], 0);  // [[1, 2], [3, 4], [5, 6]]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.concatenate.html | NumPy concatenate}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function concatenate(tensors: Tensor[], axis: Axis = 0): Tensor {
   // Validate input: need at least one tensor
@@ -246,7 +246,7 @@ export function concatenate(tensors: Tensor[], axis: Axis = 0): Tensor {
  * const d = stack([a, b], 1);  // [[1, 4], [2, 5], [3, 6]]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.stack.html | NumPy stack}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function stack(tensors: Tensor[], axis: Axis = 0): Tensor {
   // Validate input
@@ -410,7 +410,7 @@ export function stack(tensors: Tensor[], axis: Axis = 0): Tensor {
  * const parts2 = split(t, [2, 4]);  // [tensor([1, 2]), tensor([3, 4]), tensor([5, 6])]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.split.html | NumPy split}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function split(t: Tensor, indices_or_sections: number | number[], axis: Axis = 0): Tensor[] {
   // Normalize axis
@@ -596,7 +596,7 @@ export function split(t: Tensor, indices_or_sections: number | number[], axis: A
  * //  [3, 4, 3, 4, 3, 4]]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.tile.html | NumPy tile}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function tile(t: Tensor, reps: number[]): Tensor {
   // Validate reps
@@ -730,7 +730,7 @@ export function tile(t: Tensor, reps: number[]): Tensor {
  * const r = repeat(t, 2);  // [1, 1, 2, 2, 3, 3]
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.repeat.html | NumPy repeat}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
 export function repeat(t: Tensor, repeats: number, axis?: Axis): Tensor {
   if (!Number.isInteger(repeats) || repeats < 0) {

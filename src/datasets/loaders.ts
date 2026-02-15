@@ -1,5 +1,5 @@
 // ---- loaders.ts ----
-import { type Tensor, tensor } from "../ndarray";
+import { reshape, type Tensor, tensor } from "../ndarray";
 import { createRng, normal01 } from "./utils";
 
 export type Dataset = {
@@ -8,6 +8,7 @@ export type Dataset = {
   featureNames: string[];
   targetNames?: string[];
   description: string;
+  images?: Tensor;
 };
 
 const SYNTHETIC_NOTE =
@@ -107,12 +108,14 @@ function getDigitsData() {
  */
 export function loadDigits(): Dataset {
   const { data, target } = getDigitsData();
+  const dataTensor = tensor(data);
   return {
-    data: tensor(data),
+    data: dataTensor,
     target: tensor(target, { dtype: "int32" }),
     featureNames: Array.from({ length: 64 }, (_, i) => `pixel_${i}`),
     targetNames: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     description: `${SYNTHETIC_NOTE} 1797 samples, 64 features, 10 classes.`,
+    images: reshape(dataTensor, [1797, 8, 8]),
   };
 }
 

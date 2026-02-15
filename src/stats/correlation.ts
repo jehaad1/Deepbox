@@ -95,7 +95,7 @@ function pearsonFromDense(x: Float64Array, y: Float64Array): number {
  * - NaN inputs propagate to NaN correlation
  * - Infinity inputs result in NaN correlation
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.pearsonr.html | SciPy stats.pearsonr}
+ * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
  */
 export function pearsonr(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "pearsonr");
@@ -145,7 +145,7 @@ export function pearsonr(x: Tensor, y: Tensor): [number, number] {
  * NaN values are ranked according to JavaScript sort behavior.
  * Infinity values are sorted naturally (±Infinity at extremes).
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.spearmanr.html | SciPy stats.spearmanr}
+ * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
  */
 export function spearmanr(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "spearmanr");
@@ -198,7 +198,7 @@ export function spearmanr(x: Tensor, y: Tensor): [number, number] {
  *
  * @complexity O(n²) - suitable for moderate sample sizes (n < 10,000)
  *
- * @see {@link https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kendalltau.html | SciPy stats.kendalltau}
+ * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
  */
 export function kendalltau(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "kendalltau");
@@ -260,7 +260,7 @@ export function kendalltau(x: Tensor, y: Tensor): [number, number] {
   const tau = denom === 0 ? NaN : s / denom;
 
   // Normal approximation for p-value with tie correction
-  // Normal approximation variance with tie correction (SciPy-style).
+  // Normal approximation variance with tie correction (standard).
   let varS =
     (n * (n - 1) * (2 * n + 5) - tieX.sumT2 - tieY.sumT2) / 18 +
     (tieX.sumT * tieY.sumT) / (2 * n * (n - 1));
@@ -294,7 +294,7 @@ export function kendalltau(x: Tensor, y: Tensor): [number, number] {
  * corrcoef(data);  // Returns 2x2 correlation matrix for 2 variables
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.corrcoef.html | NumPy corrcoef}
+ * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
  */
 export function corrcoef(x: Tensor, y?: Tensor): Tensor {
   if (y) {
@@ -430,7 +430,7 @@ export function corrcoef(x: Tensor, y?: Tensor): Tensor {
  * cov(data);  // Returns 2x2 covariance matrix for 2 variables
  * ```
  *
- * @see {@link https://numpy.org/doc/stable/reference/generated/numpy.cov.html | NumPy cov}
+ * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
  */
 export function cov(x: Tensor, y?: Tensor, ddof = 1): Tensor {
   if (!Number.isFinite(ddof) || ddof < 0) {

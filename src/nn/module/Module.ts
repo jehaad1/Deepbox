@@ -159,7 +159,7 @@ export type ForwardHook = (
  * All models should subclass this class. Modules can contain other modules,
  * allowing to nest them in a tree structure.
  *
- * This is analogous to PyTorch's nn.Module.
+ *  { https://deepbox.dev/docs/nn-module | Deepbox Module & Sequential}
  *
  * @example
  * ```ts
@@ -191,7 +191,7 @@ export type ForwardHook = (
  * ```
  *
  * References:
- * - PyTorch nn.Module: https://pytorch.org/docs/stable/generated/torch.nn.Module.html
+ * - Deepbox Module: https://deepbox.dev/docs/nn-module
  *
  * @category Neural Networks
  */

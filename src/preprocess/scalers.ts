@@ -147,7 +147,7 @@ function normalQuantile(p: number): number {
  * const XScaled = scaler.transform(X);
  * ```
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.StandardScaler.html | Scikit-learn StandardScaler}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class StandardScaler {
   private fitted = false;
@@ -362,7 +362,7 @@ export class StandardScaler {
  *
  * **Formula**: X_scaled = (X - X.min) / (X.max - X.min) * (max - min) + min
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.MinMaxScaler.html | Scikit-learn MinMaxScaler}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class MinMaxScaler {
   private fitted = false;
@@ -554,7 +554,7 @@ export class MinMaxScaler {
  *
  * Scales to range [-1, 1]. Suitable for data that is already centered at zero.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.MaxAbsScaler.html | Scikit-learn MaxAbsScaler}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class MaxAbsScaler {
   private fitted = false;
@@ -698,7 +698,7 @@ export class MaxAbsScaler {
  *
  * Robust to outliers.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.RobustScaler.html | Scikit-learn RobustScaler}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class RobustScaler {
   private fitted = false;
@@ -963,7 +963,7 @@ export class RobustScaler {
  *
  * Scales each sample (row) to have unit norm.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.Normalizer.html | Scikit-learn Normalizer}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class Normalizer {
   private norm: "l1" | "l2" | "max";
@@ -1056,7 +1056,7 @@ export class Normalizer {
  *
  * Maps to uniform or normal distribution.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.QuantileTransformer.html | Scikit-learn QuantileTransformer}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class QuantileTransformer {
   private fitted = false;
@@ -1481,7 +1481,7 @@ export class QuantileTransformer {
  *
  * Supports Box-Cox and Yeo-Johnson transforms, with optional standardization.
  *
- * @see {@link https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.PowerTransformer.html | Scikit-learn PowerTransformer}
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class PowerTransformer {
   private fitted = false;

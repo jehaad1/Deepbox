@@ -1,5 +1,7 @@
 # Customer Churn Prediction System
 
+> **View online:** https://deepbox.dev/projects/03-customer-churn-prediction
+
 A production-grade customer churn prediction system demonstrating classical machine learning with Deepbox.
 
 ## Features

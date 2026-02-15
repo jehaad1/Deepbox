@@ -51,7 +51,7 @@ import { svd } from "./decomposition/svd";
  * @throws {DTypeError} If input has string dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
- * @see {@link https://en.wikipedia.org/wiki/Determinant | Wikipedia: Determinant}
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
  */
 export function det(a: Tensor): number {
   if (a.ndim !== 2) throw new ShapeError("det requires a 2-D matrix");

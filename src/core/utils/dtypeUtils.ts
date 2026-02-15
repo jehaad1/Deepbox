@@ -11,7 +11,7 @@ export type NumericDType = Exclude<DType, "string">;
  * @returns The same dtype narrowed to numeric types
  * @throws {DTypeError} If dtype is 'string'
  */
-export function ensureNumericDType(dtype: DType, context: string): NumericDType {
+export function ensureNumericDType(dtype: DType, context = "operation"): NumericDType {
   if (dtype === "string") {
     throw new DTypeError(`${context} does not support string dtype`);
   }

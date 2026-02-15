@@ -1,5 +1,7 @@
 # Tree-Based & Ensemble Models
 
+> **View online:** https://deepbox.dev/examples/11-tree-ensemble-models
+
 Decision Trees, Random Forests, Gradient Boosting, and Linear SVM. Covers both classification and regression variants.
 
 ## Deepbox Modules Used

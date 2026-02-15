@@ -1,6 +1,8 @@
 # Learning Rate Schedulers
 
-Control the learning rate during training for better convergence. Deepbox provides 8 schedulers inspired by PyTorch.
+> **View online:** https://deepbox.dev/examples/16-lr-schedulers
+
+Control the learning rate during training for better convergence. Deepbox provides 8 learning rate schedulers.
 
 ## Deepbox Modules Used
 

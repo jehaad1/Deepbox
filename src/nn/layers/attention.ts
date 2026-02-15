@@ -37,7 +37,7 @@ import { LayerNorm } from "./normalization";
  * const output = mha.forward(x, x, x);
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html | PyTorch MultiheadAttention}
+ * @see {@link https://deepbox.dev/docs/nn-attention | Deepbox Attention}
  * @see Vaswani et al. (2017) "Attention Is All You Need"
  */
 export class MultiheadAttention extends Module {
@@ -171,13 +171,17 @@ export class MultiheadAttention extends Module {
     }
 
     // Auto-convert to GradTensor
-    const query = queryInput instanceof GradTensor ? queryInput : GradTensor.fromTensor(queryInput);
+    const query = GradTensor.isGradTensor(queryInput)
+      ? queryInput
+      : GradTensor.fromTensor(queryInput);
 
     const keyInput = inputs[1] ?? queryInput;
-    const key = keyInput instanceof GradTensor ? keyInput : GradTensor.fromTensor(keyInput);
+    const key = GradTensor.isGradTensor(keyInput) ? keyInput : GradTensor.fromTensor(keyInput);
 
     const valueInput = inputs[2] ?? queryInput;
-    const value = valueInput instanceof GradTensor ? valueInput : GradTensor.fromTensor(valueInput);
+    const value = GradTensor.isGradTensor(valueInput)
+      ? valueInput
+      : GradTensor.fromTensor(valueInput);
 
     if (query.dtype === "string") throw new DTypeError("String tensors are not supported");
     if (query.ndim !== key.ndim || query.ndim !== value.ndim) {
@@ -310,7 +314,7 @@ export class MultiheadAttention extends Module {
  * const output = layer.forward(x);
  * ```
  *
- * @see {@link https://pytorch.org/docs/stable/generated/torch.nn.TransformerEncoderLayer.html | PyTorch TransformerEncoderLayer}
+ * @see {@link https://deepbox.dev/docs/nn-attention | Deepbox Attention}
  */
 export class TransformerEncoderLayer extends Module {
   private readonly dModel: number;
@@ -331,9 +335,25 @@ export class TransformerEncoderLayer extends Module {
   private readonly dropout3: Dropout;
 
   constructor(
-    dModel: number,
-    nHead: number,
-    dFF: number,
+    dModelOrOpts:
+      | number
+      | {
+          readonly dModel: number;
+          readonly nHead: number;
+          readonly dimFeedforward?: number;
+          readonly dFF?: number;
+          readonly dropout?: number;
+          readonly eps?: number;
+        },
+    nHead?: number,
+    dFFOrOptions?:
+      | number
+      | {
+          readonly dimFeedforward?: number;
+          readonly dFF?: number;
+          readonly dropout?: number;
+          readonly eps?: number;
+        },
     options: {
       readonly dropout?: number;
       readonly eps?: number;
@@ -341,34 +361,61 @@ export class TransformerEncoderLayer extends Module {
   ) {
     super();
 
+    let resolvedDModel: number;
+    let resolvedNHead: number;
+    let resolvedDFF: number;
+    let resolvedDropout: number | undefined;
+    let resolvedEps: number | undefined;
+
+    if (typeof dModelOrOpts === "object") {
+      resolvedDModel = dModelOrOpts.dModel;
+      resolvedNHead = dModelOrOpts.nHead;
+      resolvedDFF = dModelOrOpts.dFF ?? dModelOrOpts.dimFeedforward ?? 2048;
+      resolvedDropout = dModelOrOpts.dropout;
+      resolvedEps = dModelOrOpts.eps;
+    } else if (typeof dFFOrOptions === "object") {
+      resolvedDModel = dModelOrOpts;
+      resolvedNHead = nHead ?? 1;
+      resolvedDFF = dFFOrOptions.dFF ?? dFFOrOptions.dimFeedforward ?? 2048;
+      resolvedDropout = dFFOrOptions.dropout;
+      resolvedEps = dFFOrOptions.eps;
+    } else {
+      resolvedDModel = dModelOrOpts;
+      resolvedNHead = nHead ?? 1;
+      resolvedDFF = dFFOrOptions ?? 2048;
+      resolvedDropout = options.dropout;
+      resolvedEps = options.eps;
+    }
+
+    const dModel = resolvedDModel;
     if (!Number.isInteger(dModel) || dModel <= 0) {
       throw new InvalidParameterError("dModel must be a positive integer", "dModel", dModel);
     }
-    if (!Number.isInteger(nHead) || nHead <= 0) {
-      throw new InvalidParameterError("nHead must be a positive integer", "nHead", nHead);
+    if (!Number.isInteger(resolvedNHead) || resolvedNHead <= 0) {
+      throw new InvalidParameterError("nHead must be a positive integer", "nHead", resolvedNHead);
     }
-    if (dModel % nHead !== 0) {
+    if (dModel % resolvedNHead !== 0) {
       throw new InvalidParameterError(
-        `dModel (${dModel}) must be divisible by nHead (${nHead})`,
+        `dModel (${dModel}) must be divisible by nHead (${resolvedNHead})`,
         "dModel",
         dModel
       );
     }
-    if (!Number.isInteger(dFF) || dFF <= 0) {
-      throw new InvalidParameterError("dFF must be a positive integer", "dFF", dFF);
+    if (!Number.isInteger(resolvedDFF) || resolvedDFF <= 0) {
+      throw new InvalidParameterError("dFF must be a positive integer", "dFF", resolvedDFF);
     }
 
-    const dropout = options.dropout ?? 0.1;
-    const eps = options.eps ?? 1e-5;
+    const dropout = resolvedDropout ?? 0.1;
+    const eps = resolvedEps ?? 1e-5;
 
     this.dModel = dModel;
-    this.nHead = nHead;
-    this.dFF = dFF;
+    this.nHead = resolvedNHead;
+    this.dFF = resolvedDFF;
     this.dropout = dropout;
 
-    this.selfAttn = new MultiheadAttention(dModel, nHead, { dropout });
-    this.linear1 = new Linear(dModel, dFF);
-    this.linear2 = new Linear(dFF, dModel);
+    this.selfAttn = new MultiheadAttention(dModel, resolvedNHead, { dropout });
+    this.linear1 = new Linear(dModel, resolvedDFF);
+    this.linear2 = new Linear(resolvedDFF, dModel);
     this.norm1 = new LayerNorm(dModel, { eps });
     this.norm2 = new LayerNorm(dModel, { eps });
     this.dropout1 = new Dropout(dropout);
@@ -392,7 +439,7 @@ export class TransformerEncoderLayer extends Module {
    * @returns Output of same shape as input
    */
   forward(src: AnyTensor): GradTensor {
-    const input = src instanceof GradTensor ? src : GradTensor.fromTensor(src);
+    const input = GradTensor.isGradTensor(src) ? src : GradTensor.fromTensor(src);
 
     if (input.dtype === "string") {
       throw new DTypeError("TransformerEncoderLayer does not support string dtype");
