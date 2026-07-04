@@ -1,5 +1,19 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { DeepboxError, InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import {
+  add,
+  addScalar,
+  div,
+  type GradTensor,
+  mulScalar,
+  sqrt,
+  square,
+  sub,
+  type Tensor,
+} from "../../ndarray";
 import {
   assertBufferSize,
   assertFinite,
@@ -7,6 +21,8 @@ import {
   assertFinitePositive,
   assertHasGradFloat,
   assertInRange,
+  deviceMaxTensor,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -43,6 +59,11 @@ type AdamWState = {
   expAvg: Float64Array;
   expAvgSq: Float64Array;
   maxExpAvgSq?: Float64Array;
+  /** Device moment buffers (used when the parameter lives on a kernel device). */
+  expAvgTensor?: Tensor;
+  expAvgSqTensor?: Tensor;
+  maxExpAvgSqTensor?: Tensor;
+  deviceStep?: number;
 };
 
 /**
@@ -204,6 +225,48 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
 
       // Update each parameter in the group
       for (const param of group.params) {
+        // Device path: keep the entire AdamW update resident on the accelerator,
+        // composing it from device-dispatched tensor ops (no host readback).
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let dstate = this.state.get(param);
+          if (!dstate) {
+            dstate = { step: 0, expAvg: new Float64Array(0), expAvgSq: new Float64Array(0) };
+            this.state.set(param, dstate);
+          }
+          const t = (dstate.deviceStep ?? 0) + 1;
+          dstate.deviceStep = t;
+          const mPrev = dstate.expAvgTensor;
+          const vPrev = dstate.expAvgSqTensor;
+          const m = mPrev
+            ? add(mulScalar(mPrev, beta1), mulScalar(g, 1 - beta1))
+            : mulScalar(g, 1 - beta1);
+          const v = vPrev
+            ? add(mulScalar(vPrev, beta2), mulScalar(square(g), 1 - beta2))
+            : mulScalar(square(g), 1 - beta2);
+          dstate.expAvgTensor = m;
+          dstate.expAvgSqTensor = v;
+          let denomSq = v;
+          if (amsgrad) {
+            const maxPrev = dstate.maxExpAvgSqTensor;
+            denomSq = maxPrev ? deviceMaxTensor(maxPrev, v) : v;
+            dstate.maxExpAvgSqTensor = denomSq;
+          }
+          const biasCorrection1 = 1 - beta1 ** t;
+          const biasCorrection2 = 1 - beta2 ** t;
+          const stepSize = lr / biasCorrection1;
+          // denom = sqrt(denomSq / bc2) + eps
+          const denom = addScalar(sqrt(mulScalar(denomSq, 1 / biasCorrection2)), eps);
+          // Decoupled weight decay: theta -= stepSize*(m/denom) - lr*wd*theta
+          let updated = sub(param.tensor, mulScalar(div(m, denom), stepSize));
+          if (weightDecay !== 0) {
+            updated = sub(updated, mulScalar(param.tensor, lr * weightDecay));
+          }
+          replaceParamStorage(param, "tensor", updated);
+          continue;
+        }
+
         // Get gradient and validate
         const {
           grad,

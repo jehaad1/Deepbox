@@ -1,0 +1,29 @@
+{
+  "columns": [
+    "pipeline",
+    "accuracy",
+    "weightedF1"
+  ],
+  "index": [
+    0,
+    1,
+    2
+  ],
+  "data": {
+    "pipeline": [
+      "TF-IDF + GridSearchCV(LogReg)",
+      "Count + MultinomialNB",
+      "Hashing + LogisticRegression"
+    ],
+    "accuracy": [
+      "1.0000",
+      "1.0000",
+      "0.7891"
+    ],
+    "weightedF1": [
+      "1.0000",
+      "1.0000",
+      "0.7475"
+    ]
+  }
+}

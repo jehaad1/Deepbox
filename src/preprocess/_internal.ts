@@ -5,6 +5,7 @@
  * to handle tensor shape validation, seeded RNG, and index shuffling.
  *
  * @internal
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox documentation}
  */
 
 import { DeepboxError, DTypeError, InvalidParameterError, ShapeError } from "../core/errors";

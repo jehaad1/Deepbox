@@ -13,7 +13,6 @@
     "noUnusedParameters": false,
     "noImplicitReturns": true,
     "composite": false,
-    "baseUrl": ".",
     "rootDir": "..",
     "paths": {
       "deepbox": ["../src/index.ts"],

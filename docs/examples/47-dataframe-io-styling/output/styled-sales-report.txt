@@ -1,0 +1,8 @@
+orderDate   region        segment     revenue   supportTickets  activeCampaign
+----------  ------------  ----------  --------  --------------  --------------
+2026-02-28  GCC           Enterprise  $180,000  12              true          
+2026-03-01  North Africa  SMB         $124,000  21              false         
+2026-03-02  GCC           Mid-Market  $155,000  16              true          
+2026-03-03  Levant        Enterprise  $212,000  9               true          
+2026-03-04  North Africa  Enterprise  $167,000  13              false         
+2026-03-05  Levant        SMB         $98,000   24              false         

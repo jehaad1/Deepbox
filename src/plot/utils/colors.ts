@@ -1,3 +1,8 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
+import { InvalidParameterError } from "../../core";
 import type { Color } from "../types";
 
 const colorCache = new Map<
@@ -317,4 +322,146 @@ export function parseHexColorToRGBA(c: Color): {
   const result = { r: 0, g: 0, b: 0, a: 255 };
   colorCache.set(c, result);
   return result;
+}
+
+/**
+ * Named color palettes for plotting.
+ */
+const palettes: Record<string, readonly string[]> = {
+  tab10: [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+  ],
+  Set1: [
+    "#e41a1c",
+    "#377eb8",
+    "#4daf4a",
+    "#984ea3",
+    "#ff7f00",
+    "#ffff33",
+    "#a65628",
+    "#f781bf",
+    "#999999",
+  ],
+  Set2: ["#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3"],
+  Paired: [
+    "#a6cee3",
+    "#1f78b4",
+    "#b2df8a",
+    "#33a02c",
+    "#fb9a99",
+    "#e31a1c",
+    "#fdbf6f",
+    "#ff7f00",
+    "#cab2d6",
+    "#6a3d9a",
+    "#ffff99",
+    "#b15928",
+  ],
+  viridis: [
+    "#440154",
+    "#482777",
+    "#3e4989",
+    "#31688e",
+    "#26828e",
+    "#1f9e89",
+    "#35b779",
+    "#6ece58",
+    "#b5de2b",
+    "#fde725",
+  ],
+  plasma: [
+    "#0d0887",
+    "#46039f",
+    "#7201a8",
+    "#9c179e",
+    "#bd3786",
+    "#d8576b",
+    "#ed7953",
+    "#fb9f3a",
+    "#fdca26",
+    "#f0f921",
+  ],
+  inferno: [
+    "#000004",
+    "#1b0c41",
+    "#4a0c6b",
+    "#781c6d",
+    "#a52c60",
+    "#cf4446",
+    "#ed6925",
+    "#fb9b06",
+    "#f7d13d",
+    "#fcffa4",
+  ],
+  magma: [
+    "#000004",
+    "#180f3d",
+    "#440f76",
+    "#721f81",
+    "#9e2f7f",
+    "#cd4071",
+    "#f1605d",
+    "#fd9668",
+    "#feca8d",
+    "#fcfdbf",
+  ],
+  cividis: [
+    "#00224e",
+    "#123570",
+    "#1f4e79",
+    "#29678a",
+    "#35809e",
+    "#4e9b8e",
+    "#72b474",
+    "#a1c95a",
+    "#d0db48",
+    "#fee838",
+  ],
+};
+
+/**
+ * Get a named color palette.
+ *
+ * @param name - Palette name (tab10, Set1, Set2, Paired, viridis, plasma, inferno, magma, cividis)
+ * @returns Array of hex color strings
+ */
+export function getPalette(name: string): readonly string[] {
+  const p = palettes[name];
+  if (!p) {
+    const available = Object.keys(palettes).join(", ");
+    throw new InvalidParameterError(
+      `Unknown palette '${name}'. Available: ${available}`,
+      "name",
+      name
+    );
+  }
+  return p;
+}
+
+/**
+ * Get a color from a named palette by index (wraps around).
+ *
+ * @param name - Palette name
+ * @param index - Color index (wraps around palette length)
+ * @returns Hex color string
+ */
+export function getPaletteColor(name: string, index: number): string {
+  const p = getPalette(name);
+  return p[index % p.length]!;
+}
+
+/**
+ * List all available palette names.
+ */
+export function listPalettes(): string[] {
+  return Object.keys(palettes);
 }

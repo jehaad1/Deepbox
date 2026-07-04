@@ -124,7 +124,7 @@ describe("Autograd - branch coverage extras", () => {
     expect(x.grad?.shape).toEqual([2, 3]);
   });
 
-  it("pow throws for bigint tensors, relu handles bigint without backward", () => {
+  it("pow and relu both throw for bigint tensors that require gradients", () => {
     const big = Tensor.fromTypedArray({
       data: new BigInt64Array([1n, 2n, 3n]),
       shape: [3],
@@ -133,7 +133,11 @@ describe("Autograd - branch coverage extras", () => {
     });
     const g = GradTensor.fromTensor(big, { requiresGrad: true });
     expect(() => g.pow(2)).toThrow("pow() backward is not supported for int64 tensors");
-    const r = g.relu();
+    // relu must not silently detach the graph — it throws like pow
+    expect(() => g.relu()).toThrow("relu gradients are not supported for int64 tensors");
+    // Without requiresGrad, relu on int64 works and returns int64
+    const noGrad = GradTensor.fromTensor(big, { requiresGrad: false });
+    const r = noGrad.relu();
     expect(r.tensor.dtype).toBe("int64");
   });
 

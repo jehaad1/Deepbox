@@ -1,7 +1,21 @@
 import { DTypeError, getBigIntElement, getNumericElement } from "../../core";
 import { isContiguous, offsetFromFlatIndex } from "../tensor/strides";
 import { computeStrides, dtypeToTypedArrayCtor, Tensor } from "../tensor/Tensor";
-import { bigintToNumberSafe } from "./_internal";
+import { bigintToNumberSafe, readNumericContiguous } from "./_internal";
+import { dispatchUnary } from "./device_dispatch";
+
+/**
+ * Round half to even (banker's rounding), matching NumPy's np.round.
+ * JS Math.round rounds halves toward +Infinity (0.5 -> 1, 2.5 -> 3, -2.5 -> -2).
+ */
+function roundHalfToEven(x: number): number {
+  if (!Number.isFinite(x)) return x;
+  const fl = Math.floor(x);
+  const diff = x - fl;
+  if (diff > 0.5) return fl + 1;
+  if (diff < 0.5) return fl;
+  return fl % 2 === 0 ? fl : fl + 1;
+}
 
 /**
  * Element-wise exponential.
@@ -12,6 +26,11 @@ import { bigintToNumberSafe } from "./_internal";
 export function exp(t: Tensor): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError("exp is not defined for string dtype");
+  }
+
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("exp", t);
+    if (onDevice) return onDevice;
   }
 
   const out = new Float64Array(t.size);
@@ -35,11 +54,12 @@ export function exp(t: Tensor): Tensor {
       out[i] = Math.exp(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.exp(getNumericElement(data, srcOffset));
+      out[i] = Math.exp(src[i] as number);
     }
   }
 
@@ -70,6 +90,11 @@ export function log(t: Tensor): Tensor {
     throw new DTypeError("log is not defined for string dtype");
   }
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("log", t);
+    if (onDevice) return onDevice;
+  }
+
   const dtype = t.dtype === "float32" ? "float32" : "float64";
   const Ctor = dtypeToTypedArrayCtor(dtype);
   const out = new Ctor(t.size);
@@ -93,11 +118,12 @@ export function log(t: Tensor): Tensor {
       out[i] = Math.log(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.log(getNumericElement(data, srcOffset));
+      out[i] = Math.log(src[i] as number);
     }
   }
 
@@ -128,6 +154,11 @@ export function sqrt(t: Tensor): Tensor {
     throw new DTypeError("sqrt is not defined for string dtype");
   }
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("sqrt", t);
+    if (onDevice) return onDevice;
+  }
+
   const out = new Float64Array(t.size);
   const logicalStrides = computeStrides(t.shape);
   const contiguous = isContiguous(t.shape, t.strides);
@@ -149,11 +180,12 @@ export function sqrt(t: Tensor): Tensor {
       out[i] = Math.sqrt(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.sqrt(getNumericElement(data, srcOffset));
+      out[i] = Math.sqrt(src[i] as number);
     }
   }
 
@@ -179,6 +211,11 @@ export function sqrt(t: Tensor): Tensor {
 export function square(t: Tensor): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError("square is not defined for string dtype");
+  }
+
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("square", t);
+    if (onDevice) return onDevice;
   }
 
   const out = new Float64Array(t.size);
@@ -315,11 +352,12 @@ export function cbrt(t: Tensor): Tensor {
       out[i] = Math.cbrt(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.cbrt(getNumericElement(data, srcOffset));
+      out[i] = Math.cbrt(src[i] as number);
     }
   }
 
@@ -360,11 +398,12 @@ export function expm1(t: Tensor): Tensor {
       out[i] = Math.expm1(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.expm1(getNumericElement(data, srcOffset));
+      out[i] = Math.expm1(src[i] as number);
     }
   }
 
@@ -450,11 +489,12 @@ export function log1p(t: Tensor): Tensor {
       out[i] = Math.log1p(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.log1p(getNumericElement(data, srcOffset));
+      out[i] = Math.log1p(src[i] as number);
     }
   }
 
@@ -493,11 +533,12 @@ export function log2(t: Tensor): Tensor {
       out[i] = Math.log2(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.log2(getNumericElement(data, srcOffset));
+      out[i] = Math.log2(src[i] as number);
     }
   }
 
@@ -536,11 +577,12 @@ export function log10(t: Tensor): Tensor {
       out[i] = Math.log10(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.log10(getNumericElement(data, srcOffset));
+      out[i] = Math.log10(src[i] as number);
     }
   }
 
@@ -579,11 +621,12 @@ export function floor(t: Tensor): Tensor {
       out[i] = Math.floor(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.floor(getNumericElement(data, srcOffset));
+      out[i] = Math.floor(src[i] as number);
     }
   }
 
@@ -622,11 +665,12 @@ export function ceil(t: Tensor): Tensor {
       out[i] = Math.ceil(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.ceil(getNumericElement(data, srcOffset));
+      out[i] = Math.ceil(src[i] as number);
     }
   }
 
@@ -662,14 +706,15 @@ export function round(t: Tensor): Tensor {
       const srcOffset = contiguous
         ? t.offset + i
         : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.round(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
+      out[i] = roundHalfToEven(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.round(getNumericElement(data, srcOffset));
+      out[i] = roundHalfToEven(src[i] as number);
     }
   }
 
@@ -708,11 +753,12 @@ export function trunc(t: Tensor): Tensor {
       out[i] = Math.trunc(bigintToNumberSafe(getBigIntElement(data, srcOffset)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("operation is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = contiguous
-        ? t.offset + i
-        : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = Math.trunc(getNumericElement(data, srcOffset));
+      out[i] = Math.trunc(src[i] as number);
     }
   }
 

@@ -49,8 +49,9 @@ describe("linalg norms branch coverage", () => {
     const ninf = asTensor(norm(empty, Number.NEGATIVE_INFINITY, 0));
     expect(ninf.toArray()).toEqual([0, 0]);
 
+    // Negative vector-norm orders are valid (NumPy); an empty vector yields 0.
     const v = zeros([0]);
-    expect(() => norm(v, -1)).toThrow(/Vector norm order/i);
+    expect(norm(v, -1)).toBe(0);
   });
 
   it("rejects >2D when axis is omitted", () => {

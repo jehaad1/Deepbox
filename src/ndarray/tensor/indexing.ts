@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   type Axis,
   DeepboxError,
@@ -8,14 +12,13 @@ import {
   IndexError,
   InvalidParameterError,
   normalizeAxis,
-  ShapeError,
   shapeToSize,
 } from "../../core";
-import { normalizeRange, type SliceRange } from "./sliceHelpers";
+import type { SliceRange } from "./slice_helpers";
 import { offsetFromFlatIndex } from "./strides";
 import { computeStrides, Tensor } from "./Tensor";
 
-export type { SliceRange } from "./sliceHelpers";
+export type { SliceRange } from "./slice_helpers";
 
 /**
  * Slice a tensor.
@@ -25,114 +28,9 @@ export type { SliceRange } from "./sliceHelpers";
  * - `slice(t, 0, { start: 1 })` on a 2D tensor selects row 0 and columns from 1.
  */
 export function slice(t: Tensor, ...ranges: SliceRange[]): Tensor {
-  const ndim = t.ndim;
-
-  if (ranges.length > ndim) {
-    throw new ShapeError(`Too many indices for tensor: got ${ranges.length}, expected <= ${ndim}`);
-  }
-
-  const normalized = new Array<{ start: number; end: number; step: number }>(ndim);
-  const outShape: number[] = [];
-
-  for (let axis = 0; axis < ndim; axis++) {
-    const dim = t.shape[axis] ?? 0;
-    const range = ranges[axis] ?? { start: 0, end: dim, step: 1 };
-    const nr = normalizeRange(range, dim);
-    normalized[axis] = nr;
-
-    // If the user passed a number, that dimension is squeezed out.
-    if (typeof range !== "number") {
-      const len =
-        nr.step > 0
-          ? Math.max(0, Math.ceil((nr.end - nr.start) / nr.step))
-          : Math.max(0, Math.ceil((nr.start - nr.end) / -nr.step));
-      outShape.push(len);
-    }
-  }
-
-  // If all axes were indexed by numbers, the result is a scalar (0D) tensor.
-  const outSize = outShape.length === 0 ? 1 : outShape.reduce((a, b) => a * b, 1);
-  const out =
-    t.dtype === "string"
-      ? new Array<string>(outSize)
-      : new (dtypeToTypedArrayCtor(t.dtype))(outSize);
-
-  // Iterate over output indices and map back to input indices.
-  const outStrides = new Array<number>(outShape.length);
-  let stride = 1;
-  for (let i = outShape.length - 1; i >= 0; i--) {
-    outStrides[i] = stride;
-    stride *= outShape[i] ?? 0;
-  }
-
-  const outNdim = outShape.length;
-
-  for (let outFlat = 0; outFlat < outSize; outFlat++) {
-    // Convert flat to multi-index.
-    let rem = outFlat;
-    const outIdx = new Array<number>(outNdim);
-    for (let i = 0; i < outNdim; i++) {
-      const s = outStrides[i] ?? 1;
-      outIdx[i] = Math.floor(rem / s);
-      rem %= s;
-    }
-
-    // Map to input multi-index.
-    const inIdx = new Array<number>(ndim);
-    let outAxis = 0;
-    for (let axis = 0; axis < ndim; axis++) {
-      const r = ranges[axis];
-      const nr = normalized[axis];
-      if (nr === undefined) {
-        throw new DeepboxError("Internal error: missing normalized slice range");
-      }
-
-      if (typeof r === "number") {
-        inIdx[axis] = nr.start;
-      } else {
-        inIdx[axis] = nr.start + (outIdx[outAxis] ?? 0) * nr.step;
-        outAxis++;
-      }
-    }
-
-    // Compute input flat offset.
-    let inFlat = t.offset;
-    for (let axis = 0; axis < ndim; axis++) {
-      inFlat += (inIdx[axis] ?? 0) * (t.strides[axis] ?? 0);
-    }
-
-    if (Array.isArray(out) && Array.isArray(t.data)) {
-      out[outFlat] = t.data[inFlat] ?? "";
-    } else if (out instanceof BigInt64Array && t.data instanceof BigInt64Array) {
-      out[outFlat] = getBigIntElement(t.data, inFlat);
-    } else if (
-      !Array.isArray(out) &&
-      !(out instanceof BigInt64Array) &&
-      !Array.isArray(t.data) &&
-      !(t.data instanceof BigInt64Array)
-    ) {
-      out[outFlat] = getNumericElement(t.data, inFlat);
-    }
-  }
-
-  if (Array.isArray(out)) {
-    return Tensor.fromStringArray({
-      data: out,
-      shape: outShape.length === 0 ? [] : outShape,
-      device: t.device,
-    });
-  }
-
-  if (t.dtype === "string") {
-    throw new DeepboxError("Internal error: string dtype but non-array data");
-  }
-
-  return Tensor.fromTypedArray({
-    data: out,
-    shape: outShape.length === 0 ? [] : outShape,
-    dtype: t.dtype,
-    device: t.device,
-  });
+  // Same semantics as the method form; Tensor.slice has the optimized
+  // row-blocked copy path.
+  return t.slice(...ranges);
 }
 
 /**

@@ -6,7 +6,7 @@ A neural image classification project built with Deepbox, demonstrating an end-t
 
 ## Features
 
-- **Model Architecture**: Multi-layer perceptron (MLP) with dropout and activation layers
+- **Model Architecture**: Multi-layer perceptron (MLP) with fully connected layers and activations (ReLU, GELU, or LeakyReLU)
 - **Data Pipeline**: Dataset loading, train/test split, feature scaling
 - **Evaluation Metrics**: Precision, recall, F1-score, confusion matrix
 - **Visualizations**: Training loss and accuracy curves

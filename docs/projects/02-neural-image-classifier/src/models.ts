@@ -6,7 +6,7 @@
  */
 
 import { InvalidParameterError } from "deepbox/core";
-import { Dropout, GELU, LeakyReLU, Linear, ReLU, Sequential } from "deepbox/nn";
+import { GELU, LeakyReLU, Linear, ReLU, Sequential } from "deepbox/nn";
 
 /**
  * Model configuration options
@@ -29,7 +29,6 @@ export function createSimpleMLP(
   return new Sequential(
     new Linear(inputSize, hiddenSize),
     new ReLU(),
-    new Dropout(0.2),
     new Linear(hiddenSize, numClasses)
   );
 }
@@ -45,7 +44,6 @@ export function createModel(config: ModelConfig): Sequential {
       return new Sequential(
         new Linear(inputSize, hiddenSize),
         new ReLU(),
-        new Dropout(0.2),
         new Linear(hiddenSize, numClasses)
       );
 
@@ -53,7 +51,6 @@ export function createModel(config: ModelConfig): Sequential {
       return new Sequential(
         new Linear(inputSize, hiddenSize),
         new GELU(),
-        new Dropout(0.2),
         new Linear(hiddenSize, numClasses)
       );
 
@@ -61,7 +58,6 @@ export function createModel(config: ModelConfig): Sequential {
       return new Sequential(
         new Linear(inputSize, hiddenSize),
         new LeakyReLU(0.01),
-        new Dropout(0.2),
         new Linear(hiddenSize, numClasses)
       );
 

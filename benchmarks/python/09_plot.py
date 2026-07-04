@@ -11,6 +11,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from io import BytesIO
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from scipy.cluster.hierarchy import dendrogram
+from scipy.stats import gaussian_kde
 from utils import run, create_suite, header, footer
 
 suite = create_suite("plot", "Matplotlib")
@@ -58,6 +61,31 @@ def do_bar(x, h):
 run(suite, "bar", "10 bars", lambda: do_bar(bx10, bh10))
 run(suite, "bar", "50 bars", lambda: do_bar(bx50, bh50))
 run(suite, "bar", "200 bars", lambda: do_bar(bx200, bh200))
+
+group_x20 = np.arange(20)
+group_h1 = rng.randn(20)
+group_h2 = rng.randn(20)
+group_h3 = rng.randn(20)
+
+def do_stacked_bar(x, h1, h2, h3):
+    fig, ax = plt.subplots()
+    ax.bar(x, h1, label="A")
+    ax.bar(x, h2, bottom=h1, label="B")
+    ax.bar(x, h3, bottom=h1 + h2, label="C")
+    ax.legend()
+    plt.close(fig)
+
+def do_grouped_bar(x, h1, h2, h3):
+    fig, ax = plt.subplots()
+    width = 0.25
+    ax.bar(x - width, h1, width=width, label="A")
+    ax.bar(x, h2, width=width, label="B")
+    ax.bar(x + width, h3, width=width, label="C")
+    ax.legend()
+    plt.close(fig)
+
+run(suite, "stackedBar", "20 bars × 3 series", lambda: do_stacked_bar(group_x20, group_h1, group_h2, group_h3))
+run(suite, "groupedBar", "20 bars × 3 series", lambda: do_grouped_bar(group_x20, group_h1, group_h2, group_h3))
 
 # ── barh ────────────────────────────────────────────────
 
@@ -186,6 +214,83 @@ def do_vc():
 
 run(suite, "plotValidationCurve", "5 pts", do_vc)
 
+# ── v1.0.0 Plotting Additions ───────────────────────────
+
+def do_kde(values, fill=False):
+    xs = np.linspace(values.min() - 1, values.max() + 1, 200)
+    ys = gaussian_kde(values)(xs)
+    fig, ax = plt.subplots()
+    ax.plot(xs, ys)
+    if fill:
+        ax.fill_between(xs, ys, alpha=0.3)
+    plt.close(fig)
+
+run(suite, "kdeplot", "500 pts", lambda: do_kde(x500))
+run(suite, "kdeplot", "2K pts", lambda: do_kde(x2k, fill=True))
+
+def do_stem(x, y):
+    fig, ax = plt.subplots(); ax.stem(x, y); plt.close(fig)
+
+run(suite, "stem", "100 pts", lambda: do_stem(x100, y100))
+run(suite, "stem", "500 pts", lambda: do_stem(x500, y500))
+
+qx = np.array([0, 1, 0, 1])
+qy = np.array([0, 0, 1, 1])
+qu = np.array([1, 0, -1, 0])
+qv = np.array([0, 1, 0, -1])
+qx25 = np.array([i % 5 for i in range(25)])
+qy25 = np.array([i // 5 for i in range(25)])
+qu25 = np.array([np.sin(i / 4) for i in range(25)])
+qv25 = np.array([np.cos(i / 4) for i in range(25)])
+
+def do_quiver(x, y, u, v):
+    fig, ax = plt.subplots(); ax.quiver(x, y, u, v); plt.close(fig)
+
+run(suite, "quiver", "4 vectors", lambda: do_quiver(qx, qy, qu, qv))
+run(suite, "quiver", "25 vectors", lambda: do_quiver(qx25, qy25, qu25, qv25))
+
+polar_theta50 = np.array([(2 * np.pi * i) / 50 for i in range(50)])
+polar_r50 = np.array([1 + 0.5 * np.sin((6 * np.pi * i) / 50) for i in range(50)])
+polar_theta200 = np.array([(2 * np.pi * i) / 200 for i in range(200)])
+polar_r200 = np.array([1 + 0.5 * np.sin((6 * np.pi * i) / 200) for i in range(200)])
+
+def do_polar(theta, r, fill=False):
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+    ax.plot(theta, r)
+    if fill:
+        ax.fill(theta, r, alpha=0.3)
+    plt.close(fig)
+
+run(suite, "polar", "50 pts", lambda: do_polar(polar_theta50, polar_r50))
+run(suite, "polar", "200 pts", lambda: do_polar(polar_theta200, polar_r200, fill=True))
+
+surface_axis20 = np.linspace(-2, 2, 20)
+SX20, SY20 = np.meshgrid(surface_axis20, surface_axis20)
+SZ20 = np.sin(np.sqrt(SX20 ** 2 + SY20 ** 2))
+surface_axis30 = np.linspace(-2, 2, 30)
+SX30, SY30 = np.meshgrid(surface_axis30, surface_axis30)
+SZ30 = np.sin(np.sqrt(SX30 ** 2 + SY30 ** 2))
+
+def do_surface(X, Y, Z):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(X, Y, Z)
+    plt.close(fig)
+
+run(suite, "surface", "20x20", lambda: do_surface(SX20, SY20, SZ20))
+run(suite, "surface", "30x30", lambda: do_surface(SX30, SY30, SZ30))
+
+linkage = np.array([
+    [0, 1, 1.0, 2],
+    [2, 3, 1.5, 2],
+    [4, 5, 3.0, 4],
+], dtype=float)
+
+def do_dendrogram():
+    fig, ax = plt.subplots(); dendrogram(linkage, ax=ax); plt.close(fig)
+
+run(suite, "plotDendrogram", "4 leaves", do_dendrogram)
+
 # ── SVG Rendering ───────────────────────────────────────
 
 def show_svg_scatter():
@@ -203,5 +308,41 @@ def show_svg_line():
 run(suite, "show (SVG) scatter", "100 pts", show_svg_scatter)
 run(suite, "show (SVG) heatmap", "25x25", show_svg_heatmap)
 run(suite, "show (SVG) line", "500 pts", show_svg_line)
+
+def show_png_scatter():
+    fig, ax = plt.subplots(); ax.scatter(x100, y100)
+    buf = BytesIO(); fig.savefig(buf, format="png"); plt.close(fig)
+
+def show_png_heatmap():
+    fig, ax = plt.subplots(); ax.imshow(hm25, aspect="auto")
+    buf = BytesIO(); fig.savefig(buf, format="png"); plt.close(fig)
+
+def save_pdf_line():
+    fig, ax = plt.subplots(); ax.plot(x500, y500)
+    buf = BytesIO(); fig.savefig(buf, format="pdf"); plt.close(fig)
+
+run(suite, "show (PNG) scatter", "100 pts", show_png_scatter)
+run(suite, "show (PNG) heatmap", "25x25", show_png_heatmap)
+run(suite, "saveFig (PDF) line", "500 pts", save_pdf_line)
+
+# ── Extended coverage (v1.1 benchmark expansion) ────────
+x50, y50 = rng.randn(50), rng.randn(50)
+x200, y200 = rng.randn(200), rng.randn(200)
+x1k, y1k = rng.randn(1000), rng.randn(1000)
+x10k, y10k = rng.randn(10000), rng.randn(10000)
+for _sz, _xs, _ys in [
+    ("50 pts", x50, y50),
+    ("200 pts", x200, y200),
+    ("1K pts", x1k, y1k),
+    ("10K pts", x10k, y10k),
+]:
+    run(suite, "scatter", _sz, lambda xs=_xs, ys=_ys: do_scatter(xs, ys))
+    run(suite, "plot (line)", _sz, lambda xs=_xs, ys=_ys: do_plot(xs, ys))
+run(suite, "hist", "1K bins=40", lambda: do_hist(x1k, 40))
+run(suite, "hist", "10K bins=60", lambda: do_hist(x10k, 60))
+run(suite, "bar", "500 bars", lambda: do_bar(np.arange(500), rng.randn(500)))
+run(suite, "barh", "200 bars", lambda: do_barh(np.arange(200), rng.randn(200)))
+run(suite, "boxplot", "1K pts", lambda: do_boxplot(x1k))
+run(suite, "violinplot", "1K pts", lambda: do_violin(x1k))
 
 footer(suite, "matplotlib-plot.json")

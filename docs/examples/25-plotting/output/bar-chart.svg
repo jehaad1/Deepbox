@@ -2,11 +2,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
 <rect x="0" y="0" width="640" height="480" fill="#ffffff" />
 <rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-540-380"><path d="M50 50 L590 50 L590 430 L50 430 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-540-380)">
 <rect x="74.55" y="310.86" width="81.82" height="101.86" fill="#d62728" stroke="#000000" />
 <rect x="176.82" y="213.43" width="81.82" height="199.30" fill="#d62728" stroke="#000000" />
 <rect x="279.09" y="164.71" width="81.82" height="248.02" fill="#d62728" stroke="#000000" />
 <rect x="381.36" y="67.27" width="81.82" height="345.45" fill="#d62728" stroke="#000000" />
 <rect x="483.64" y="271.00" width="81.82" height="141.72" fill="#d62728" stroke="#000000" />
+</g>
 <line class="x-tick" x1="115.45" y1="430.00" x2="115.45" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="115.45" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
 <line class="x-tick" x1="320.00" y1="430.00" x2="320.00" y2="435.00" stroke="#000" />

@@ -1,3 +1,5 @@
+export { Generator } from "./Generator";
+
 import type { Device, DType, Shape } from "../core";
 import {
   DeepboxError,
@@ -12,6 +14,9 @@ import {
 import { arange, type Tensor, Tensor as TensorClass, type TypedArray, tensor } from "../ndarray";
 import {
   __clearSeed,
+  __fillNormal,
+  __fillUint32,
+  __fillUniform,
   __gammaLarge,
   __getSeed,
   __normalRandom,
@@ -98,6 +103,68 @@ function randomIntBelow(maxExclusive: number): number {
     "range",
     maxExclusive
   );
+}
+
+// Largest bound for which Lemire's multiply is exact in float64: the product
+// `uint32 * bound` must stay < 2^53, and uint32 < 2^32, so bound < 2^21.
+const LEMIRE_MAX_BOUND = 1 << 21;
+
+/**
+ * Fill `js[from..0]` (descending) with Fisher–Yates swap targets: `js[i]` is an
+ * unbiased integer in `[0, i]`. All random draws are produced in a single bulk
+ * fill so the hot loop never crosses the RNG module boundary per element, and
+ * Lemire's nearly-divisionless map replaces the per-draw modulo. `js[0]` is 0.
+ *
+ * Falls back to the general rejection sampler when `n` exceeds the range where
+ * the 64-bit product would lose precision.
+ */
+function fisherYatesTargets(n: number): Int32Array {
+  const js = new Int32Array(n);
+  if (n < 2) return js;
+  if (n > LEMIRE_MAX_BOUND) {
+    for (let i = n - 1; i > 0; i--) js[i] = randomIntBelow(i + 1);
+    return js;
+  }
+  const rnd = new Uint32Array(n);
+  __fillUint32(rnd, n);
+  let p = 0;
+  for (let i = n - 1; i > 0; i--) {
+    const s = i + 1;
+    let m = (rnd[p++] as number) * s;
+    let l = m >>> 0;
+    if (l < s) {
+      // Rare rejection region — compute the threshold once and resample.
+      const t = UINT32_RANGE % s;
+      while (l < t) {
+        m = __randomUint32() * s;
+        l = m >>> 0;
+      }
+    }
+    js[i] = Math.floor(m / UINT32_RANGE);
+  }
+  return js;
+}
+
+/**
+ * Fill `out[0..count)` with unbiased integers in `[0, bound)` using one bulk
+ * RNG fill plus Lemire's map. Requires `bound < 2^21` (checked by the caller);
+ * the reject threshold is constant across the whole fill.
+ */
+function fillBoundedInts(out: Int32Array, count: number, bound: number): void {
+  const rnd = new Uint32Array(count);
+  __fillUint32(rnd, count);
+  const t = UINT32_RANGE % bound;
+  for (let i = 0; i < count; i++) {
+    let m = (rnd[i] as number) * bound;
+    let l = m >>> 0;
+    if (l < t) {
+      do {
+        m = __randomUint32() * bound;
+        l = m >>> 0;
+      } while (l < t);
+    }
+    out[i] = Math.floor(m / UINT32_RANGE);
+  }
 }
 
 function allocateFloatBuffer(dtype: FloatDType, size: number): FloatBuffer {
@@ -188,6 +255,42 @@ function logFactorial(n: number): number {
   }
   // Use logGamma for stable, accurate results for large n.
   return logGamma(n + 1);
+}
+
+/**
+ * Sample a single Poisson deviate. Knuth's product method underflows
+ * (exp(-lambda) → 0) for lambda ≳ 745 and silently caps samples; the
+ * transformed-rejection method (Ahrens & Dieter) is used for lambda ≥ 30.
+ */
+function samplePoissonScalar(lambda: number): number {
+  if (!(lambda > 0)) return 0;
+  if (lambda < 30) {
+    const L = Math.exp(-lambda);
+    let k = 0;
+    let p = 1;
+    for (;;) {
+      p *= __random();
+      if (p <= L) break;
+      k++;
+    }
+    return k;
+  }
+  const c = 0.767 - 3.36 / lambda;
+  const beta = Math.PI / Math.sqrt(3 * lambda);
+  const alpha = beta * lambda;
+  const kConst = Math.log(c) - lambda - Math.log(beta);
+  for (;;) {
+    const u = __random();
+    if (u === 0 || u === 1) continue;
+    const x = (alpha - Math.log((1 - u) / u)) / beta;
+    const n = Math.floor(x + 0.5);
+    if (n < 0 || !Number.isFinite(n)) continue;
+    const v = __random();
+    const y = alpha - beta * x;
+    const lhs = y + Math.log(v / (1 + Math.exp(y)) ** 2);
+    const rhs = kConst + n * Math.log(lambda) - logFactorial(n);
+    if (lhs <= rhs) return n;
+  }
 }
 
 function sampleGammaUnit(shape: number): number {
@@ -297,9 +400,7 @@ export function rand(shape: Shape, opts: RandomOptions = {}): Tensor {
   const dtype = resolveFloatDType(opts.dtype, "rand");
   const data = allocateFloatBuffer(dtype, size);
 
-  for (let i = 0; i < size; i++) {
-    data[i] = __random();
-  }
+  __fillUniform(data, size);
 
   return TensorClass.fromTypedArray({
     data,
@@ -336,9 +437,7 @@ export function randn(shape: Shape, opts: RandomOptions = {}): Tensor {
   const dtype = resolveFloatDType(opts.dtype, "randn");
   const data = allocateFloatBuffer(dtype, size);
 
-  for (let i = 0; i < size; i++) {
-    data[i] = __normalRandom();
-  }
+  __fillNormal(data, size);
 
   return TensorClass.fromTypedArray({
     data,
@@ -375,6 +474,57 @@ export function randn(shape: Shape, opts: RandomOptions = {}): Tensor {
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
+const RANDINT_CHUNK = 4096;
+
+function fillRandintNum(data: Int32Array, size: number, range: number, low: number): void {
+  const limit = Math.floor(UINT32_RANGE / range) * range;
+  const invRange = 1 / range;
+  const scratch = new Uint32Array(Math.min(size, RANDINT_CHUNK));
+  let produced = 0;
+  // Draw in bulk; rejected samples (value >= limit) are simply skipped and
+  // redrawn in the next chunk, consuming the seeded stream in exactly the
+  // same order as per-sample rejection.
+  while (produced < size) {
+    const n = Math.min(size - produced, RANDINT_CHUNK);
+    __fillUint32(scratch, n);
+    for (let j = 0; j < n && produced < size; j++) {
+      const value = scratch[j] as number;
+      if (value < limit) {
+        // value % range via reciprocal multiply — integer `%` compiles to
+        // idiv (~20 cycles). The quotient can be off by one from float
+        // rounding; the two fixups make the result exact (all intermediate
+        // products are < 2^53, so f64 arithmetic on them is exact).
+        let m = value - Math.floor(value * invRange) * range;
+        if (m >= range) m -= range;
+        else if (m < 0) m += range;
+        data[produced++] = m + low;
+      }
+    }
+  }
+}
+
+function fillRandintBig(data: BigInt64Array, size: number, range: number, low: number): void {
+  const limit = Math.floor(UINT32_RANGE / range) * range;
+  const hiMod = 2147483648 % range;
+  const lowBig = BigInt(low);
+  const scratch = new Uint32Array(Math.min(size, RANDINT_CHUNK));
+  let produced = 0;
+  while (produced < size) {
+    const n = Math.min(size - produced, RANDINT_CHUNK);
+    __fillUint32(scratch, n);
+    for (let j = 0; j < n && produced < size; j++) {
+      const value = scratch[j]! >>> 0;
+      if (value < limit) {
+        const m =
+          value < 2147483648
+            ? (value | 0) % range
+            : ((((value - 2147483648) | 0) % range) + hiMod) % range;
+        data[produced++] = BigInt(m) + lowBig;
+      }
+    }
+  }
+}
+
 export function randint(low: number, high: number, shape: Shape, opts: RandomOptions = {}): Tensor {
   assertSafeInteger(low, "low");
   assertSafeInteger(high, "high");
@@ -399,9 +549,19 @@ export function randint(low: number, high: number, shape: Shape, opts: RandomOpt
     throw new InvalidParameterError("range must be a positive safe integer", "high", high);
   }
 
-  for (let i = 0; i < size; i++) {
-    const sample = randomIntBelow(range) + low;
-    writeInteger(data, i, sample);
+  // Hot loop, split into monomorphic helpers: mixing the BigInt branch into
+  // this function prevents V8 from optimizing the int32 loop (~6x slower).
+  if (range <= UINT32_RANGE) {
+    if (data instanceof BigInt64Array) {
+      fillRandintBig(data, size, range, low);
+    } else {
+      fillRandintNum(data, size, range, low);
+    }
+  } else {
+    for (let i = 0; i < size; i++) {
+      const sample = randomIntBelow(range) + low;
+      writeInteger(data, i, sample);
+    }
   }
 
   return TensorClass.fromTypedArray({
@@ -458,8 +618,9 @@ export function uniform(
   const data = allocateFloatBuffer(dtype, size);
   const range = high - low;
 
+  __fillUniform(data, size);
   for (let i = 0; i < size; i++) {
-    data[i] = __random() * range + low;
+    data[i] = (data[i] as number) * range + low;
   }
 
   return TensorClass.fromTypedArray({
@@ -516,8 +677,11 @@ export function normal(
   const dtype = resolveFloatDType(opts.dtype, "normal");
   const data = allocateFloatBuffer(dtype, size);
 
-  for (let i = 0; i < size; i++) {
-    data[i] = __normalRandom() * std + mean;
+  __fillNormal(data, size);
+  if (mean !== 0 || std !== 1) {
+    for (let i = 0; i < size; i++) {
+      data[i] = (data[i] as number) * std + mean;
+    }
   }
 
   return TensorClass.fromTypedArray({
@@ -677,9 +841,35 @@ export function binomial(
   const logQ = Math.log(q);
 
   if (mean < 10) {
-    for (let i = 0; i < size; i++) {
-      const sample = binomialSmallMean(n, logQ);
-      writeInteger(data, i, flip ? n - sample : sample);
+    if (n <= 1024) {
+      // Exact CDF inversion: build the cumulative table once, then draw all
+      // uniforms in one bulk pass and invert. Replaces the geometric method's
+      // ~mean module-boundary RNG calls and logs per sample with a single
+      // uniform and a short linear scan (mode sits near 0 since prob <= 0.5).
+      const cdf = new Float64Array(n + 1);
+      const ratio = prob / q;
+      let pmf = Math.exp(n * logQ); // q^n
+      let cum = pmf;
+      cdf[0] = cum;
+      for (let k = 1; k <= n; k++) {
+        pmf *= ((n - k + 1) / k) * ratio;
+        cum += pmf;
+        cdf[k] = cum;
+      }
+      cdf[n] = 1; // guard the tail against floating-point rounding
+      const us = new Float64Array(size);
+      __fillUniform(us, size);
+      for (let i = 0; i < size; i++) {
+        const u = us[i] as number;
+        let k = 0;
+        while (k < n && (cdf[k] as number) < u) k++;
+        writeInteger(data, i, flip ? n - k : k);
+      }
+    } else {
+      for (let i = 0; i < size; i++) {
+        const sample = binomialSmallMean(n, logQ);
+        writeInteger(data, i, flip ? n - sample : sample);
+      }
     }
   } else {
     const mode = Math.floor((n + 1) * prob);
@@ -859,9 +1049,11 @@ export function exponential(
   const dtype = resolveFloatDType(opts.dtype, "exponential");
   const data = allocateFloatBuffer(dtype, size);
 
+  // Bulk uniforms, then transform in place. 1-u maps [0,1) to (0,1], so the
+  // log is always finite (same distribution as -log(u) on the open interval).
+  __fillUniform(data, size);
   for (let i = 0; i < size; i++) {
-    const u = randomOpenUnit();
-    data[i] = -scale * Math.log(u);
+    data[i] = -scale * Math.log(1 - (data[i] as number));
   }
 
   return TensorClass.fromTypedArray({
@@ -1021,9 +1213,13 @@ function readNumericTensorValue(t: Tensor, index: number): number | bigint {
 
 function allocateNumericBuffer(dtype: DType, size: number): TypedArray {
   switch (dtype) {
+    case "float16":
+    case "bfloat16":
     case "float32":
+    case "complex64":
       return new Float32Array(size);
     case "float64":
+    case "complex128":
       return new Float64Array(size);
     case "int32":
       return new Int32Array(size);
@@ -1268,8 +1464,14 @@ export function choice(
       }
     }
   } else if (replace) {
-    for (let i = 0; i < outputSize; i++) {
-      indices[i] = randomIntBelow(n);
+    // Uniform sampling with replacement: one batched RNG fill + Lemire map,
+    // avoiding a per-draw module-boundary call and modulo.
+    if (n <= LEMIRE_MAX_BOUND) {
+      fillBoundedInts(indices, outputSize, n);
+    } else {
+      for (let i = 0; i < outputSize; i++) {
+        indices[i] = randomIntBelow(n);
+      }
     }
   } else {
     if (outputSize > n) {
@@ -1279,20 +1481,33 @@ export function choice(
         outputSize
       );
     }
-    const pool = Array.from({ length: n }, (_, i) => i);
+    // Partial Fisher–Yates over an index pool. Draw all bounds in bulk when the
+    // population is small enough for Lemire's exact multiply.
+    const pool = new Int32Array(n);
+    for (let i = 0; i < n; i++) pool[i] = i;
+    const useBatch = n <= LEMIRE_MAX_BOUND;
+    const rnd = useBatch ? new Uint32Array(outputSize) : null;
+    if (rnd) __fillUint32(rnd, outputSize);
     for (let i = 0; i < outputSize; i++) {
-      const j = randomIntBelow(n - i) + i;
-      const poolI = pool[i];
-      const poolJ = pool[j];
-      if (poolI === undefined || poolJ === undefined) {
-        throw new InvalidParameterError("Internal error: pool index out of bounds", "pool", {
-          i,
-          j,
-          n,
-        });
+      let j: number;
+      const bound = n - i;
+      if (rnd) {
+        let m = (rnd[i] as number) * bound;
+        let l = m >>> 0;
+        if (l < bound) {
+          const t = UINT32_RANGE % bound;
+          while (l < t) {
+            m = __randomUint32() * bound;
+            l = m >>> 0;
+          }
+        }
+        j = Math.floor(m / UINT32_RANGE) + i;
+      } else {
+        j = randomIntBelow(bound) + i;
       }
+      const poolJ = pool[j] as number;
+      pool[j] = pool[i] as number;
       pool[i] = poolJ;
-      pool[j] = poolI;
       indices[i] = poolJ;
     }
   }
@@ -1362,11 +1577,14 @@ export function shuffle(x: Tensor): void {
   }
   const n = data.length;
 
-  // Fisher–Yates shuffle using the same RNG as the rest of the module.
+  // Fisher–Yates shuffle. All swap targets are drawn in one batched pass so the
+  // per-element RNG cost is a table lookup rather than a module-boundary call.
+  const js = fisherYatesTargets(n);
+
   // Split into two branches to maintain type safety without assertions.
   if (data instanceof BigInt64Array) {
     for (let i = n - 1; i > 0; i--) {
-      const j = randomIntBelow(i + 1);
+      const j = js[i] as number;
       const temp = data[i];
       const swap = data[j];
       if (temp === undefined || swap === undefined) {
@@ -1377,7 +1595,7 @@ export function shuffle(x: Tensor): void {
     }
   } else {
     for (let i = n - 1; i > 0; i--) {
-      const j = randomIntBelow(i + 1);
+      const j = js[i] as number;
       const temp = data[i];
       const swap = data[j];
       if (temp === undefined || swap === undefined) {
@@ -1430,24 +1648,24 @@ export function permutation(x: Tensor | number): Tensor {
     if (n > INT32_MAX + 1) {
       throw new InvalidParameterError(`x must be <= ${INT32_MAX + 1} for int32 output`, "x", x);
     }
-    const indices = Array.from({ length: n }, (_, i) => i);
+    const indices = new Int32Array(n);
+    for (let i = 0; i < n; i++) indices[i] = i;
 
+    // Batched Fisher–Yates: swap targets are precomputed in one RNG pass.
+    const js = fisherYatesTargets(n);
     for (let i = n - 1; i > 0; i--) {
-      const j = randomIntBelow(i + 1);
-      const indicesI = indices[i];
-      const indicesJ = indices[j];
-      if (indicesI === undefined || indicesJ === undefined) {
-        throw new InvalidParameterError("Internal error: indices out of bounds", "indices", {
-          i,
-          j,
-          n,
-        });
-      }
-      indices[i] = indicesJ;
-      indices[j] = indicesI;
+      const j = js[i] as number;
+      const tmp = indices[i] as number;
+      indices[i] = indices[j] as number;
+      indices[j] = tmp;
     }
 
-    return tensor(indices, { dtype: "int32" });
+    return TensorClass.fromTypedArray({
+      data: indices,
+      shape: [n],
+      dtype: "int32",
+      device: resolveDevice(),
+    });
   }
 
   if (x.dtype === "string") {
@@ -1467,4 +1685,1193 @@ export function permutation(x: Tensor | number): Tensor {
   });
   shuffle(copy);
   return copy;
+}
+
+/**
+ * Draw samples from a multinomial distribution.
+ *
+ * @param n - Number of trials
+ * @param pvals - Probabilities of each outcome (must sum to 1), 1D tensor of shape (k,)
+ * @param size - Number of samples to draw (default: 1)
+ * @returns Tensor of shape (size, k) with counts for each outcome
+ *
+ * @example
+ * ```ts
+ * import { multinomial } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const probs = tensor([0.2, 0.5, 0.3]);
+ * const samples = multinomial(10, probs, 5); // shape [5, 3]
+ * ```
+ */
+export function multinomial(n: number, pvals: Tensor, size = 1): Tensor {
+  if (!Number.isInteger(n) || n < 0) {
+    throw new InvalidParameterError("n must be a non-negative integer", "n", n);
+  }
+  if (pvals.ndim !== 1) {
+    throw new InvalidParameterError(
+      `pvals must be 1D; got ndim=${pvals.ndim}`,
+      "pvals",
+      pvals.shape
+    );
+  }
+  const k = pvals.size;
+  const probs: number[] = [];
+  let pSum = 0;
+  for (let i = 0; i < k; i++) {
+    const p = Number(pvals.data[pvals.offset + i]);
+    probs.push(p);
+    pSum += p;
+  }
+  // Normalize
+  if (Math.abs(pSum - 1) > 1e-6) {
+    for (let i = 0; i < k; i++) {
+      probs[i] = (probs[i] ?? 0) / pSum;
+    }
+  }
+
+  const result: number[] = [];
+  for (let s = 0; s < size; s++) {
+    const counts = new Array<number>(k).fill(0);
+    for (let trial = 0; trial < n; trial++) {
+      const u = __random();
+      let cumSum = 0;
+      for (let i = 0; i < k; i++) {
+        cumSum += probs[i] ?? 0;
+        if (u < cumSum) {
+          counts[i] = (counts[i] ?? 0) + 1;
+          break;
+        }
+      }
+      // Edge case: if rounding puts us past all probs, assign to last
+      if (counts.reduce((a, b) => a + b, 0) < trial + 1) {
+        counts[k - 1] = (counts[k - 1] ?? 0) + 1;
+      }
+    }
+    result.push(...counts);
+  }
+
+  return tensor(result).reshape([size, k]);
+}
+
+/**
+ * Draw samples from a multivariate normal distribution.
+ *
+ * Uses Cholesky decomposition of the covariance matrix.
+ *
+ * @param mean - Mean vector of shape (d,)
+ * @param cov - Covariance matrix of shape (d, d), must be symmetric positive semi-definite
+ * @param size - Number of samples (default: 1)
+ * @returns Tensor of shape (size, d)
+ *
+ * @example
+ * ```ts
+ * import { multivariate_normal } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const mean = tensor([0, 0]);
+ * const cov = tensor([[1, 0.5], [0.5, 1]]);
+ * const samples = multivariate_normal(mean, cov, 100); // shape [100, 2]
+ * ```
+ */
+export function multivariate_normal(mean: Tensor, cov: Tensor, size = 1): Tensor {
+  if (mean.ndim !== 1) {
+    throw new InvalidParameterError(`mean must be 1D; got ndim=${mean.ndim}`, "mean", mean.shape);
+  }
+  if (cov.ndim !== 2) {
+    throw new InvalidParameterError(`cov must be 2D; got ndim=${cov.ndim}`, "cov", cov.shape);
+  }
+  const d = mean.size;
+  if ((cov.shape[0] ?? 0) !== d || (cov.shape[1] ?? 0) !== d) {
+    throw new InvalidParameterError(
+      `cov must be (${d}, ${d}); got [${cov.shape.join(", ")}]`,
+      "cov",
+      cov.shape
+    );
+  }
+
+  // Extract mean and covariance
+  const mu: number[] = [];
+  for (let i = 0; i < d; i++) {
+    mu.push(Number(mean.data[mean.offset + i]));
+  }
+  const C: number[][] = [];
+  for (let i = 0; i < d; i++) {
+    const row: number[] = [];
+    for (let j = 0; j < d; j++) {
+      row.push(Number(cov.data[cov.offset + i * d + j]));
+    }
+    C.push(row);
+  }
+
+  // Cholesky decomposition: C = L * L^T
+  const L: number[][] = Array.from({ length: d }, () => new Array<number>(d).fill(0));
+  for (let i = 0; i < d; i++) {
+    for (let j = 0; j <= i; j++) {
+      let sum = 0;
+      for (let k = 0; k < j; k++) {
+        sum += L[i]![k]! * L[j]![k]!;
+      }
+      if (i === j) {
+        const val = C[i]![i]! - sum;
+        L[i]![j] = val >= 0 ? Math.sqrt(val) : 0;
+      } else {
+        const diag = L[j]![j]!;
+        L[i]![j] = diag > 0 ? (C[i]![j]! - sum) / diag : 0;
+      }
+    }
+  }
+
+  // Generate samples: x = mu + L * z where z ~ N(0, I)
+  const result: number[] = [];
+  for (let s = 0; s < size; s++) {
+    // Generate standard normal vector
+    const z: number[] = [];
+    for (let i = 0; i < d; i++) {
+      z.push(__normalRandom());
+    }
+    // x = mu + L * z
+    for (let i = 0; i < d; i++) {
+      let val = mu[i]!;
+      for (let j = 0; j <= i; j++) {
+        val += L[i]![j]! * z[j]!;
+      }
+      result.push(val);
+    }
+  }
+
+  return tensor(result).reshape([size, d]);
+}
+
+/**
+ * Draw samples from a Dirichlet distribution.
+ *
+ * @param alpha - Concentration parameters of shape (k,), all must be positive
+ * @param size - Number of samples (default: 1)
+ * @returns Tensor of shape (size, k) where each row sums to 1
+ *
+ * @example
+ * ```ts
+ * import { dirichlet } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const alpha = tensor([1, 1, 1]);
+ * const samples = dirichlet(alpha, 5); // shape [5, 3], each row sums to 1
+ * ```
+ */
+export function dirichlet(alpha: Tensor, size = 1): Tensor {
+  if (alpha.ndim !== 1) {
+    throw new InvalidParameterError(
+      `alpha must be 1D; got ndim=${alpha.ndim}`,
+      "alpha",
+      alpha.shape
+    );
+  }
+  const k = alpha.size;
+  const alphaArr: number[] = [];
+  for (let i = 0; i < k; i++) {
+    const a = Number(alpha.data[alpha.offset + i]);
+    if (a <= 0) {
+      throw new InvalidParameterError(
+        `All alpha values must be > 0; got ${a} at index ${i}`,
+        "alpha",
+        a
+      );
+    }
+    alphaArr.push(a);
+  }
+
+  const result: number[] = [];
+  for (let s = 0; s < size; s++) {
+    // Sample from Gamma(alpha_i, 1) for each component
+    const gammas: number[] = [];
+    let gammaSum = 0;
+    for (let i = 0; i < k; i++) {
+      const g = sampleGamma(alphaArr[i]!, 1);
+      gammas.push(g);
+      gammaSum += g;
+    }
+    // Normalize
+    for (let i = 0; i < k; i++) {
+      result.push(gammaSum > 0 ? gammas[i]! / gammaSum : 1 / k);
+    }
+  }
+
+  return tensor(result).reshape([size, k]);
+}
+
+/**
+ * Sample from a categorical distribution.
+ *
+ * Draws samples from a categorical distribution defined by unnormalized
+ * log-probabilities or probabilities.
+ *
+ * @param probs - 1D tensor of probabilities (will be normalized)
+ * @param numSamples - Number of samples to draw (default: 1)
+ * @param replacement - Whether to sample with replacement (default: true)
+ * @returns 1D int32 tensor of sampled indices
+ */
+export function categorical(
+  probs: Tensor,
+  numSamples: number = 1,
+  replacement: boolean = true
+): Tensor {
+  if (probs.ndim !== 1) {
+    throw new InvalidParameterError(
+      "categorical requires a 1D probability tensor",
+      "probs",
+      probs.ndim
+    );
+  }
+  if (numSamples < 1 || !Number.isInteger(numSamples)) {
+    throw new InvalidParameterError(
+      "numSamples must be a positive integer",
+      "numSamples",
+      numSamples
+    );
+  }
+  const k = probs.size;
+  if (k === 0) {
+    throw new InvalidParameterError("categorical requires at least one category", "probs", k);
+  }
+
+  // Normalize probabilities
+  const p: number[] = [];
+  let total = 0;
+  for (let i = 0; i < k; i++) {
+    const v = Number(probs.data[probs.offset + i]);
+    if (v < 0 || !Number.isFinite(v)) {
+      throw new InvalidParameterError("probs must contain non-negative finite values", "probs", v);
+    }
+    p.push(v);
+    total += v;
+  }
+  if (total <= 0) {
+    throw new InvalidParameterError("probs must sum to a positive value", "probs", total);
+  }
+  for (let i = 0; i < k; i++) p[i] = p[i]! / total;
+
+  if (!replacement && numSamples > k) {
+    throw new InvalidParameterError(
+      `Cannot draw ${numSamples} samples without replacement from ${k} categories`,
+      "numSamples",
+      numSamples
+    );
+  }
+
+  // Build CDF for sampling
+  const cdf: number[] = [p[0]!];
+  for (let i = 1; i < k; i++) cdf.push(cdf[i - 1]! + p[i]!);
+  cdf[k - 1] = 1.0; // Ensure no floating-point gap
+
+  const result = new Int32Array(numSamples);
+  const used = new Set<number>();
+
+  for (let s = 0; s < numSamples; s++) {
+    let idx: number;
+    do {
+      const u = __random();
+      idx = 0;
+      while (idx < k - 1 && u > cdf[idx]!) idx++;
+    } while (!replacement && used.has(idx));
+    result[s] = idx;
+    if (!replacement) used.add(idx);
+  }
+
+  return TensorClass.fromTypedArray({
+    data: result,
+    shape: [numSamples],
+    dtype: "int32",
+    device: resolveDevice(),
+  });
+}
+
+/**
+ * Sample from a categorical distribution using the Gumbel-Softmax trick.
+ *
+ * Produces differentiable approximate one-hot samples from categorical logits.
+ *
+ * @param logits - Unnormalized log-probabilities, shape (n_categories,) or (batch, n_categories)
+ * @param tau - Temperature parameter (default: 1.0). Lower = more discrete.
+ * @param hard - If true, returns hard one-hot vectors (default: false)
+ * @returns Tensor of same shape as logits with softmax probabilities
+ */
+export function gumbel_softmax(logits: Tensor, tau: number = 1.0, hard: boolean = false): Tensor {
+  if (logits.ndim < 1 || logits.ndim > 2) {
+    throw new InvalidParameterError(
+      "gumbel_softmax requires 1D or 2D logits",
+      "logits",
+      logits.ndim
+    );
+  }
+  if (!Number.isFinite(tau) || tau <= 0) {
+    throw new InvalidParameterError("tau must be a positive finite number", "tau", tau);
+  }
+
+  const is1D = logits.ndim === 1;
+  const batchSize = is1D ? 1 : (logits.shape[0] ?? 1);
+  const nCat = is1D ? logits.size : (logits.shape[1] ?? 1);
+  const totalSize = batchSize * nCat;
+
+  const result = new Float64Array(totalSize);
+
+  for (let b = 0; b < batchSize; b++) {
+    // Sample Gumbel noise and add to logits
+    const vals: number[] = [];
+    let maxVal = -Infinity;
+    for (let j = 0; j < nCat; j++) {
+      const logit = Number(logits.data[logits.offset + b * nCat + j]);
+      // Gumbel(0,1) = -log(-log(U))
+      const u = randomOpenUnit();
+      const g = -Math.log(-Math.log(u));
+      const v = (logit + g) / tau;
+      vals.push(v);
+      if (v > maxVal) maxVal = v;
+    }
+
+    // Softmax with numerical stability
+    let sumExp = 0;
+    for (let j = 0; j < nCat; j++) {
+      vals[j] = Math.exp(vals[j]! - maxVal);
+      sumExp += vals[j]!;
+    }
+
+    if (hard) {
+      // Straight-through: argmax as one-hot
+      let argmax = 0;
+      let maxP = vals[0]!;
+      for (let j = 1; j < nCat; j++) {
+        if (vals[j]! > maxP) {
+          maxP = vals[j]!;
+          argmax = j;
+        }
+      }
+      for (let j = 0; j < nCat; j++) {
+        result[b * nCat + j] = j === argmax ? 1 : 0;
+      }
+    } else {
+      for (let j = 0; j < nCat; j++) {
+        result[b * nCat + j] = vals[j]! / sumExp;
+      }
+    }
+  }
+
+  const shape: Shape = is1D ? [nCat] : [batchSize, nCat];
+  return TensorClass.fromTypedArray({
+    data: result,
+    shape,
+    dtype: "float64",
+    device: resolveDevice(),
+  });
+}
+
+/**
+ * Random samples from Bernoulli distribution.
+ *
+ * @param p - Probability of success (in [0, 1])
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of 0s and 1s
+ */
+export function bernoulli(p: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(p) || p < 0 || p > 1) {
+    throw new InvalidParameterError("p must be in [0, 1]", "p", p);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveIntegerDType(opts.dtype, "bernoulli");
+  const data = allocateIntegerBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    writeInteger(data, i, __random() < p ? 1 : 0);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from geometric distribution.
+ *
+ * Number of Bernoulli trials needed to get one success.
+ * P(X=k) = (1-p)^(k-1) * p, k=1,2,...
+ *
+ * @param p - Probability of success per trial (in (0, 1])
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive integers
+ */
+export function geometric(p: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(p) || p <= 0 || p > 1) {
+    throw new InvalidParameterError("p must be in (0, 1]", "p", p);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveIntegerDType(opts.dtype, "geometric");
+  const data = allocateIntegerBuffer(dtype, size);
+
+  if (p === 1) {
+    for (let i = 0; i < size; i++) {
+      writeInteger(data, i, 1);
+    }
+  } else {
+    const logQ = Math.log(1 - p);
+    for (let i = 0; i < size; i++) {
+      const u = randomOpenUnit();
+      writeInteger(data, i, Math.floor(Math.log(u) / logQ) + 1);
+    }
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from log-normal distribution.
+ *
+ * If X ~ Normal(mean, std), then exp(X) ~ LogNormal(mean, std).
+ *
+ * @param mean - Mean of underlying normal distribution (default: 0)
+ * @param std - Std of underlying normal distribution (default: 1, must be >= 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive floats
+ */
+export function lognormal(
+  mean: number = 0,
+  std: number = 1,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(mean) || !Number.isFinite(std)) {
+    throw new InvalidParameterError("mean and std must be finite", "mean/std", {
+      mean,
+      std,
+    });
+  }
+  if (std < 0) {
+    throw new InvalidParameterError("std must be >= 0", "std", std);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "lognormal");
+  const data = allocateFloatBuffer(dtype, size);
+
+  // Draw the underlying normals in one bulk pass (state stays in the RNG
+  // module), then exponentiate in place — avoids a module-boundary call per
+  // element the way randn already does.
+  __fillNormal(data, size);
+  for (let i = 0; i < size; i++) {
+    data[i] = Math.exp((data[i] as number) * std + mean);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from chi-squared distribution.
+ *
+ * Chi-squared with k degrees of freedom is Gamma(k/2, 2).
+ *
+ * @param df - Degrees of freedom (must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive floats
+ *
+ * @example
+ * ```js
+ * import { chi2 } from 'deepbox/random';
+ * const x = chi2(5, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function chi2(df: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(df) || df <= 0) {
+    throw new InvalidParameterError("df must be a finite number > 0", "df", df);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "chi2");
+  const data = allocateFloatBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    data[i] = sampleGamma(df / 2, 2);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from Student's t distribution.
+ *
+ * If Z ~ N(0,1) and V ~ Chi2(df), then Z / sqrt(V/df) ~ t(df).
+ *
+ * @param df - Degrees of freedom (must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of floats
+ *
+ * @example
+ * ```js
+ * import { student_t } from 'deepbox/random';
+ * const x = student_t(10, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function student_t(df: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(df) || df <= 0) {
+    throw new InvalidParameterError("df must be a finite number > 0", "df", df);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "student_t");
+  const data = allocateFloatBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    const z = __normalRandom();
+    const v = sampleGamma(df / 2, 2);
+    data[i] = z / Math.sqrt(v / df);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from F distribution.
+ *
+ * If X1 ~ Chi2(dfn) and X2 ~ Chi2(dfd), then (X1/dfn) / (X2/dfd) ~ F(dfn, dfd).
+ *
+ * @param dfn - Numerator degrees of freedom (must be > 0)
+ * @param dfd - Denominator degrees of freedom (must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive floats
+ *
+ * @example
+ * ```js
+ * import { f_distribution } from 'deepbox/random';
+ * const x = f_distribution(5, 10, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function f_distribution(
+  dfn: number,
+  dfd: number,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(dfn) || dfn <= 0) {
+    throw new InvalidParameterError("dfn must be a finite number > 0", "dfn", dfn);
+  }
+  if (!Number.isFinite(dfd) || dfd <= 0) {
+    throw new InvalidParameterError("dfd must be a finite number > 0", "dfd", dfd);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "f_distribution");
+  const data = allocateFloatBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    const x1 = sampleGamma(dfn / 2, 2);
+    const x2 = sampleGamma(dfd / 2, 2);
+    data[i] = x1 / dfn / (x2 / dfd);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from Laplace distribution.
+ *
+ * Uses inverse CDF: loc - scale * sign(U - 0.5) * ln(1 - 2|U - 0.5|)
+ *
+ * @param loc - Location parameter (default: 0)
+ * @param scale - Scale parameter (default: 1, must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of floats
+ *
+ * @example
+ * ```js
+ * import { laplace } from 'deepbox/random';
+ * const x = laplace(0, 1, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function laplace(
+  loc: number = 0,
+  scale: number = 1,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(loc)) {
+    throw new InvalidParameterError("loc must be finite", "loc", loc);
+  }
+  if (!Number.isFinite(scale) || scale <= 0) {
+    throw new InvalidParameterError("scale must be a finite number > 0", "scale", scale);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "laplace");
+  const data = allocateFloatBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    const u = __random() - 0.5;
+    data[i] = loc - scale * Math.sign(u) * Math.log(1 - 2 * Math.abs(u));
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from Cauchy distribution.
+ *
+ * Uses inverse CDF: loc + scale * tan(π * (U - 0.5))
+ *
+ * @param loc - Location parameter (default: 0)
+ * @param scale - Scale parameter (default: 1, must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of floats
+ *
+ * @example
+ * ```js
+ * import { cauchy } from 'deepbox/random';
+ * const x = cauchy(0, 1, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function cauchy(
+  loc: number = 0,
+  scale: number = 1,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(loc)) {
+    throw new InvalidParameterError("loc must be finite", "loc", loc);
+  }
+  if (!Number.isFinite(scale) || scale <= 0) {
+    throw new InvalidParameterError("scale must be a finite number > 0", "scale", scale);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "cauchy");
+  const data = allocateFloatBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    const u = randomOpenUnit();
+    data[i] = loc + scale * Math.tan(Math.PI * (u - 0.5));
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from Weibull distribution.
+ *
+ * Uses inverse CDF: scale * (-ln(U))^(1/shape_param)
+ *
+ * @param shape_param - Shape parameter (k, must be > 0)
+ * @param scale - Scale parameter (lambda, default: 1, must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive floats
+ *
+ * @example
+ * ```js
+ * import { weibull } from 'deepbox/random';
+ * const x = weibull(1.5, 1, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function weibull(
+  shape_param: number,
+  scale: number = 1,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(shape_param) || shape_param <= 0) {
+    throw new InvalidParameterError(
+      "shape_param must be a finite number > 0",
+      "shape_param",
+      shape_param
+    );
+  }
+  if (!Number.isFinite(scale) || scale <= 0) {
+    throw new InvalidParameterError("scale must be a finite number > 0", "scale", scale);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "weibull");
+  const data = allocateFloatBuffer(dtype, size);
+
+  // Bulk-fill uniforms, then apply the inverse CDF in place. The rare exact-0
+  // draw is nudged into the open interval so log() stays finite.
+  __fillUniform(data, size);
+  const invShape = 1 / shape_param;
+  for (let i = 0; i < size; i++) {
+    let u = data[i] as number;
+    if (u <= 0) u = randomOpenUnit();
+    data[i] = scale * (-Math.log(u)) ** invShape;
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from triangular distribution.
+ *
+ * @param left - Lower limit
+ * @param mode - Mode (peak)
+ * @param right - Upper limit
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of floats in [left, right]
+ *
+ * @throws {InvalidParameterError} When left >= right or mode is out of [left, right]
+ *
+ * @example
+ * ```js
+ * import { triangular } from 'deepbox/random';
+ * const x = triangular(0, 0.5, 1, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function triangular(
+  left: number,
+  mode: number,
+  right: number,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(left) || !Number.isFinite(mode) || !Number.isFinite(right)) {
+    throw new InvalidParameterError("left, mode, and right must be finite", "left/mode/right", {
+      left,
+      mode,
+      right,
+    });
+  }
+  if (left >= right) {
+    throw new InvalidParameterError("left must be < right", "left", left);
+  }
+  if (mode < left || mode > right) {
+    throw new InvalidParameterError("mode must be in [left, right]", "mode", mode);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "triangular");
+  const data = allocateFloatBuffer(dtype, size);
+  const fc = (mode - left) / (right - left);
+
+  for (let i = 0; i < size; i++) {
+    const u = __random();
+    if (u < fc) {
+      data[i] = left + Math.sqrt(u * (right - left) * (mode - left));
+    } else {
+      data[i] = right - Math.sqrt((1 - u) * (right - left) * (right - mode));
+    }
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from negative binomial distribution.
+ *
+ * Number of failures before achieving r successes.
+ * Uses gamma-Poisson mixture: sample lambda ~ Gamma(r, (1-p)/p), then X ~ Poisson(lambda).
+ *
+ * @param r - Number of successes (must be > 0)
+ * @param p - Probability of success per trial (in (0, 1])
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of non-negative integers
+ *
+ * @example
+ * ```js
+ * import { negative_binomial } from 'deepbox/random';
+ * const x = negative_binomial(5, 0.5, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function negative_binomial(
+  r: number,
+  p: number,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(r) || r <= 0) {
+    throw new InvalidParameterError("r must be a finite number > 0", "r", r);
+  }
+  if (!Number.isFinite(p) || p <= 0 || p > 1) {
+    throw new InvalidParameterError("p must be in (0, 1]", "p", p);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveIntegerDType(opts.dtype, "negative_binomial");
+  const data = allocateIntegerBuffer(dtype, size);
+
+  if (p === 1) {
+    // All samples are 0 (0 failures before r successes with certainty)
+    for (let i = 0; i < size; i++) {
+      writeInteger(data, i, 0);
+    }
+  } else {
+    const gammaScale = (1 - p) / p;
+    for (let i = 0; i < size; i++) {
+      // Gamma-Poisson mixture (lambda can be large for small p, so use the
+      // underflow-safe Poisson sampler).
+      const lambda = sampleGamma(r, gammaScale);
+      writeInteger(data, i, samplePoissonScalar(lambda));
+    }
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from hypergeometric distribution.
+ *
+ * Models drawing without replacement from a finite population.
+ *
+ * @param ngood - Number of good (success) items in the population
+ * @param nbad - Number of bad (failure) items in the population
+ * @param nsample - Number of items drawn (without replacement)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of non-negative integers (number of good items drawn)
+ *
+ * @throws {InvalidParameterError} When parameters are invalid
+ *
+ * @example
+ * ```js
+ * import { hypergeometric } from 'deepbox/random';
+ * const x = hypergeometric(10, 5, 7, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export function hypergeometric(
+  ngood: number,
+  nbad: number,
+  nsample: number,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isInteger(ngood) || ngood < 0) {
+    throw new InvalidParameterError("ngood must be a non-negative integer", "ngood", ngood);
+  }
+  if (!Number.isInteger(nbad) || nbad < 0) {
+    throw new InvalidParameterError("nbad must be a non-negative integer", "nbad", nbad);
+  }
+  if (!Number.isInteger(nsample) || nsample < 0) {
+    throw new InvalidParameterError("nsample must be a non-negative integer", "nsample", nsample);
+  }
+  const N = ngood + nbad;
+  if (nsample > N) {
+    throw new InvalidParameterError("nsample must be <= ngood + nbad", "nsample", nsample);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveIntegerDType(opts.dtype, "hypergeometric");
+  const data = allocateIntegerBuffer(dtype, size);
+
+  for (let i = 0; i < size; i++) {
+    // Direct simulation via sequential draws
+    let good = ngood;
+    let total = N;
+    let successes = 0;
+    for (let d = 0; d < nsample; d++) {
+      if (total === 0) break;
+      if (__random() < good / total) {
+        successes++;
+        good--;
+      }
+      total--;
+    }
+    writeInteger(data, i, successes);
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+// Helper: sample from Gamma(shape, scale) using Marsaglia-Tsang method
+function sampleGamma(shape: number, scale: number): number {
+  if (shape < 1) {
+    // Use Ahrens-Dieter for shape < 1
+    const u = __random();
+    return sampleGamma(shape + 1, scale) * u ** (1 / shape);
+  }
+  // Marsaglia and Tsang's method for shape >= 1
+  const d = shape - 1.0 / 3.0;
+  const c = 1.0 / Math.sqrt(9.0 * d);
+  while (true) {
+    let x: number;
+    let v: number;
+    do {
+      x = __normalRandom();
+      v = 1.0 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = __random();
+    if (u < 1.0 - 0.0331 * (x * x) * (x * x)) {
+      return d * v * scale;
+    }
+    if (Math.log(u) < 0.5 * x * x + d * (1.0 - v + Math.log(v))) {
+      return d * v * scale;
+    }
+  }
+}
+
+/**
+ * Random samples from the von Mises distribution (circular normal).
+ *
+ * @param mu - Mean direction in radians
+ * @param kappa - Concentration parameter (must be >= 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ *
+ * @remarks
+ * - Uses Best & Fisher's algorithm for efficient sampling.
+ * - When kappa=0, equivalent to uniform on [-pi, pi).
+ * - Values are in [-pi, pi).
+ * - Deterministic when seed is set via {@link setSeed}.
+ */
+export function vonmises(
+  mu: number,
+  kappa: number,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(mu)) {
+    throw new InvalidParameterError("mu must be finite", "mu", mu);
+  }
+  if (!Number.isFinite(kappa) || kappa < 0) {
+    throw new InvalidParameterError("kappa must be a finite number >= 0", "kappa", kappa);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "vonmises");
+  const data = allocateFloatBuffer(dtype, size);
+
+  if (kappa < 1e-6) {
+    // Effectively uniform on [-pi, pi)
+    for (let i = 0; i < size; i++) {
+      data[i] = __random() * 2 * Math.PI - Math.PI;
+    }
+  } else {
+    // Best & Fisher algorithm
+    const tau = 1 + Math.sqrt(1 + 4 * kappa * kappa);
+    const rho = (tau - Math.sqrt(2 * tau)) / (2 * kappa);
+    const r = (1 + rho * rho) / (2 * rho);
+
+    for (let i = 0; i < size; i++) {
+      let theta: number;
+      while (true) {
+        const u1 = __random();
+        const z = Math.cos(Math.PI * u1);
+        const f = (1 + r * z) / (r + z);
+        const c = kappa * (r - f);
+
+        const u2 = __random();
+        if (c * (2 - c) > u2 || Math.log(c / u2) + 1 >= c) {
+          const u3 = __random();
+          theta = u3 > 0.5 ? Math.acos(f) : -Math.acos(f);
+          break;
+        }
+      }
+      // Shift by mu and wrap to [-pi, pi)
+      let val = theta + mu;
+      val = val - 2 * Math.PI * Math.floor((val + Math.PI) / (2 * Math.PI));
+      data[i] = val;
+    }
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from the Pareto (Type I) distribution.
+ *
+ * @param alpha - Shape parameter (must be > 0)
+ * @param xm - Scale parameter (minimum value, default: 1, must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ *
+ * @remarks
+ * - Uses inverse transform: xm / U^(1/alpha).
+ * - All values are >= xm.
+ * - Mean = alpha*xm/(alpha-1) for alpha > 1.
+ * - Deterministic when seed is set via {@link setSeed}.
+ */
+export function pareto(
+  alpha: number,
+  xm: number = 1,
+  shape: Shape = [],
+  opts: RandomOptions = {}
+): Tensor {
+  if (!Number.isFinite(alpha) || alpha <= 0) {
+    throw new InvalidParameterError("alpha must be a finite number > 0", "alpha", alpha);
+  }
+  if (!Number.isFinite(xm) || xm <= 0) {
+    throw new InvalidParameterError("xm must be a finite number > 0", "xm", xm);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "pareto");
+  const data = allocateFloatBuffer(dtype, size);
+
+  const invAlpha = 1 / alpha;
+  for (let i = 0; i < size; i++) {
+    const u = randomOpenUnit();
+    data[i] = xm / u ** invAlpha;
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from the Rayleigh distribution.
+ *
+ * @param sigma - Scale parameter (default: 1, must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ *
+ * @remarks
+ * - Uses inverse transform: sigma * sqrt(-2 * log(U)).
+ * - All values are positive.
+ * - Mean = sigma * sqrt(pi/2).
+ * - Deterministic when seed is set via {@link setSeed}.
+ */
+export function rayleigh(sigma: number = 1, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(sigma) || sigma <= 0) {
+    throw new InvalidParameterError("sigma must be a finite number > 0", "sigma", sigma);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveFloatDType(opts.dtype, "rayleigh");
+  const data = allocateFloatBuffer(dtype, size);
+
+  // Bulk-fill uniforms, then apply the inverse CDF in place (see weibull).
+  __fillUniform(data, size);
+  for (let i = 0; i < size; i++) {
+    let u = data[i] as number;
+    if (u <= 0) u = randomOpenUnit();
+    data[i] = sigma * Math.sqrt(-2 * Math.log(u));
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
+}
+
+/**
+ * Random samples from the Zipf (zeta) distribution.
+ *
+ * @param s - Exponent parameter (must be > 1)
+ * @param shape - Output shape
+ * @param opts - Options
+ *
+ * @remarks
+ * - Uses rejection sampling method.
+ * - Values are positive integers >= 1.
+ * - P(X=k) proportional to k^(-s).
+ * - Deterministic when seed is set via {@link setSeed}.
+ * - Only int32 and int64 dtypes are supported.
+ */
+export function zipf(s: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
+  if (!Number.isFinite(s) || s <= 1) {
+    throw new InvalidParameterError("s must be a finite number > 1", "s", s);
+  }
+  const size = shapeToSize(shape);
+  const dtype = resolveIntegerDType(opts.dtype, "zipf");
+  const data = allocateIntegerBuffer(dtype, size);
+
+  // Rejection method based on Luc Devroye's algorithm
+  const b = 2 ** (s - 1);
+
+  for (let i = 0; i < size; i++) {
+    while (true) {
+      const u = randomOpenUnit();
+      const v = __random();
+      const x = Math.floor(u ** (-1 / (s - 1)));
+      if (x < 1 || !Number.isFinite(x)) continue;
+      const t = (1 + 1 / x) ** (s - 1);
+      if ((v * x * (t - 1)) / (b - 1) <= t / b) {
+        writeInteger(data, i, x);
+        break;
+      }
+    }
+  }
+
+  return TensorClass.fromTypedArray({
+    data,
+    shape,
+    dtype,
+    device: resolveDevice(opts.device),
+  });
 }

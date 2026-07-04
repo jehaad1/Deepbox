@@ -1,10 +1,14 @@
 /**
  * Statistical utilities for plot calculations.
  * @internal
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
 /**
- * Calculates quartiles using the median-of-medians method (same as Excel).
+ * Calculates quartiles using linear interpolation between the closest ranks
+ * (NumPy's default and matplotlib's boxplot default), so box extents and the
+ * 1.5·IQR whiskers match matplotlib. (This is NOT Excel's/Tukey's hinge
+ * method, which the previous median-of-medians implementation used.)
  * @internal
  */
 export function calculateQuartiles(sortedData: readonly number[]): {
@@ -21,30 +25,16 @@ export function calculateQuartiles(sortedData: readonly number[]): {
     return { q1: val, median: val, q3: val };
   }
 
-  // Helper function to calculate median of a subset
-  const medianOf = (arr: readonly number[], start: number, end: number): number => {
-    const length = end - start;
-    if (length === 0) return 0;
-    if (length === 1) return arr[start] ?? 0;
-
-    const mid = start + Math.floor(length / 2);
-    if (length % 2 === 1) {
-      return arr[mid] ?? 0;
-    } else {
-      return ((arr[mid - 1] ?? 0) + (arr[mid] ?? 0)) / 2;
-    }
+  // Linear-interpolation percentile (numpy 'linear' / matplotlib default).
+  const percentile = (p: number): number => {
+    const idx = (p / 100) * (n - 1);
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    const w = idx - lo;
+    return (sortedData[lo] ?? 0) * (1 - w) + (sortedData[hi] ?? 0) * w;
   };
 
-  const mid = Math.floor(n / 2);
-  const median =
-    n % 2 === 1
-      ? (sortedData[mid] ?? 0)
-      : ((sortedData[mid - 1] ?? 0) + (sortedData[mid] ?? 0)) / 2;
-
-  const q1 = medianOf(sortedData, 0, mid);
-  const q3 = medianOf(sortedData, n % 2 === 1 ? mid + 1 : mid, n);
-
-  return { q1, median, q3 };
+  return { q1: percentile(25), median: percentile(50), q3: percentile(75) };
 }
 
 /**

@@ -245,7 +245,7 @@ function calculateTFIDF(documents: number[][], vocabulary: string[]): number[][]
 
 console.log("═".repeat(70));
 console.log("  SENTIMENT ANALYSIS SYSTEM");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -501,23 +501,31 @@ const testLabels = yTest.data;
 const predLabels = bestModel.predictions.data;
 
 console.log("\nSample Test Predictions:\n");
-let correct = 0;
+const sampleCount = Math.min(10, XTest.shape[0]);
+let sampleCorrect = 0;
+let totalCorrect = 0;
 let shown = 0;
 
-for (let i = 0; i < Math.min(10, XTest.shape[0]); i++) {
+for (let i = 0; i < XTest.shape[0]; i++) {
   const actual = testLabels[i] === 1 ? "Positive" : "Negative";
   const predicted = predLabels[i] === 1 ? "Positive" : "Negative";
   const status = testLabels[i] === predLabels[i] ? "✓" : "✗";
 
-  if (shown < 5) {
+  if (i < sampleCount && shown < 5) {
     console.log(`  ${status} Actual: ${actual.padEnd(10)} Predicted: ${predicted}`);
     shown++;
   }
 
-  if (testLabels[i] === predLabels[i]) correct++;
+  if (testLabels[i] === predLabels[i]) {
+    totalCorrect++;
+    if (i < sampleCount) {
+      sampleCorrect++;
+    }
+  }
 }
 
-console.log(`\n  Total correct: ${correct}/${XTest.shape[0]}`);
+console.log(`\n  Sample subset correct: ${sampleCorrect}/${sampleCount}`);
+console.log(`  Full test correct:    ${totalCorrect}/${XTest.shape[0]}`);
 
 // ============================================================================
 // Step 9: Visualizations
@@ -557,7 +565,7 @@ console.log("═".repeat(70));
 console.log("\n📌 Key Findings:\n");
 console.log("  1. Data Overview:");
 console.log(`     • ${NUM_SAMPLES} reviews analyzed`);
-console.log(`     • Vocabulary size: ${VOCAB_SIZE} terms`);
+console.log(`     • Vocabulary size: ${vocabulary.length} terms`);
 console.log(`     • Balanced classes (50/50)`);
 
 console.log("\n  2. Best Model:");

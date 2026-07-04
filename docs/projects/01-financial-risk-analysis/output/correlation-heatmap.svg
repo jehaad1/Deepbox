@@ -2,6 +2,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="700" viewBox="0 0 800 700">
 <rect x="0" y="0" width="800" height="700" fill="#ffffff" />
 <rect x="50" y="50" width="700" height="600" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-700-600"><path d="M50 50 L750 50 L750 650 L50 650 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-700-600)">
 <rect x="81.82" y="554.55" width="79.55" height="68.18" fill="rgb(253,231,37)" />
 <rect x="161.36" y="554.55" width="79.55" height="68.18" fill="rgb(64,65,133)" />
 <rect x="240.91" y="554.55" width="79.55" height="68.18" fill="rgb(64,66,133)" />
@@ -66,6 +68,7 @@
 <rect x="479.55" y="77.27" width="79.55" height="68.18" fill="rgb(37,132,142)" />
 <rect x="559.09" y="77.27" width="79.55" height="68.18" fill="rgb(47,109,142)" />
 <rect x="638.64" y="77.27" width="79.55" height="68.18" fill="rgb(253,231,37)" />
+</g>
 <line class="x-tick" x1="81.82" y1="650.00" x2="81.82" y2="655.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="81.82" y="657.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
 <line class="x-tick" x1="161.36" y1="650.00" x2="161.36" y2="655.00" stroke="#000" />

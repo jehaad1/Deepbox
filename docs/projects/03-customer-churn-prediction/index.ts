@@ -157,7 +157,7 @@ function generateChurnData(
 
 console.log("═".repeat(70));
 console.log("  CUSTOMER CHURN PREDICTION SYSTEM");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -556,15 +556,19 @@ const rfForImportance = new RandomForestClassifier({
 });
 rfForImportance.fit(XTrainScaled, yTrain);
 
-// Note: Feature importance analysis would require the model to expose featureImportances
-// This is a limitation of the current Deepbox ML implementation
-console.log("\n  Note: Feature importance requires tree model internals access");
-console.log("  Key predictive features based on domain knowledge:");
-console.log("    1. satisfaction_score - Low satisfaction strongly predicts churn");
-console.log("    2. has_contract - No contract increases churn risk");
-console.log("    3. support_calls - High support calls indicate dissatisfaction");
-console.log("    4. tenure_months - Short tenure correlates with higher churn");
-console.log("    5. payment_delay_days - Payment issues signal disengagement");
+const featureImportanceTensor = rfForImportance.featureImportances;
+const featureImportanceData = expectNumericTypedArray(featureImportanceTensor.data);
+const rankedFeatures = featureNames
+  .map((name, index) => ({
+    name,
+    importance: Number(featureImportanceData[featureImportanceTensor.offset + index]),
+  }))
+  .sort((left, right) => right.importance - left.importance);
+
+console.log("\n  Random Forest feature importances:");
+for (const [index, feature] of rankedFeatures.slice(0, 5).entries()) {
+  console.log(`    ${index + 1}. ${feature.name} - importance=${feature.importance.toFixed(4)}`);
+}
 
 // ============================================================================
 // Step 8: Visualizations

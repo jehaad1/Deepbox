@@ -1,5 +1,6 @@
 /**
  * Color specification as a CSS color string (e.g., "#ff0000", "rgb(255,0,0)").
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 export type Color = string;
 
@@ -103,6 +104,21 @@ export type RenderedPNG = {
   readonly height: number;
   /** PNG file data as byte array */
   readonly bytes: Uint8Array;
+};
+
+/**
+ * Result of PDF rendering containing the PDF file data.
+ * PDF rendering is only available in Node.js environments.
+ */
+export type RenderedPDF = {
+  /** Discriminator for the rendered output type */
+  readonly kind: "pdf";
+  /** PDF file data as byte array */
+  readonly bytes: Uint8Array;
+  /** Page width in points */
+  readonly width: number;
+  /** Page height in points */
+  readonly height: number;
 };
 
 /**

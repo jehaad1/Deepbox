@@ -1,5 +1,6 @@
 /**
  * Internal utilities for DataFrame and Series.
+ * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox documentation}
  */
 
 /**
@@ -40,6 +41,13 @@ export const createKey = (value: unknown): string => {
 
   if (type === "bigint") {
     return `bi:${value.toString()}`;
+  }
+
+  // Dates must be keyed by their timestamp. Without this branch they fall into
+  // the object path below, where Object.keys(date) is [] → every Date hashes
+  // to "{}", collapsing all dates to one key in join/groupBy/drop_duplicates.
+  if (value instanceof Date) {
+    return `d:${value.getTime()}`;
   }
 
   if (Array.isArray(value)) {

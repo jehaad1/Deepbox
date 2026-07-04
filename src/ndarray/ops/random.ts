@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   type Device,
   type DType,
@@ -6,6 +10,7 @@ import {
   type Shape,
   shapeToSize,
 } from "../../core";
+import { __random } from "../../random/random";
 import { Tensor } from "../tensor/Tensor";
 
 type NumericDType = Exclude<DType, "string">;
@@ -44,11 +49,11 @@ export function dropoutMask(
   if (data instanceof BigInt64Array) {
     const scaleBig = BigInt(Math.round(scale));
     for (let i = 0; i < size; i++) {
-      data[i] = Math.random() > p ? scaleBig : 0n;
+      data[i] = __random() > p ? scaleBig : 0n;
     }
   } else {
     for (let i = 0; i < size; i++) {
-      data[i] = Math.random() > p ? scale : 0;
+      data[i] = __random() > p ? scale : 0;
     }
   }
 

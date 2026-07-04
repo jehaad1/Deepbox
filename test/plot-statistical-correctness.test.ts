@@ -13,18 +13,19 @@ describe("Plot Statistical Correctness", () => {
       const data = [1, 2, 3, 4, 5, 6, 7, 8];
       const result = calculateQuartiles(data);
 
-      expect(result.q1).toBeCloseTo(2.5, 2);
+      // numpy 'linear' / matplotlib boxplot default
+      expect(result.q1).toBeCloseTo(2.75, 2);
       expect(result.median).toBeCloseTo(4.5, 2);
-      expect(result.q3).toBeCloseTo(6.5, 2);
+      expect(result.q3).toBeCloseTo(6.25, 2);
     });
 
     it("calculates quartiles correctly for odd-length arrays", () => {
       const data = [1, 2, 3, 4, 5, 6, 7, 8, 9];
       const result = calculateQuartiles(data);
 
-      expect(result.q1).toBeCloseTo(2.5, 2);
+      expect(result.q1).toBeCloseTo(3, 2);
       expect(result.median).toBeCloseTo(5, 2);
-      expect(result.q3).toBeCloseTo(7.5, 2);
+      expect(result.q3).toBeCloseTo(7, 2);
     });
 
     it("handles single element arrays", () => {
@@ -49,10 +50,10 @@ describe("Plot Statistical Correctness", () => {
       const data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
       const result = calculateQuartiles(data);
 
-      // These should match our implementation
-      expect(result.q1).toBeCloseTo(3, 2);
+      // numpy linear-interpolation percentiles
+      expect(result.q1).toBeCloseTo(3.25, 2);
       expect(result.median).toBeCloseTo(5.5, 2);
-      expect(result.q3).toBeCloseTo(8, 2);
+      expect(result.q3).toBeCloseTo(7.75, 2);
     });
   });
 
@@ -89,13 +90,15 @@ describe("Plot Statistical Correctness", () => {
     });
 
     it("handles no valid whisker range", () => {
-      const data = [1, 2, 3, 100]; // 100 is far outlier
+      const data = [1, 2, 3, 100]; // 100 is a far outlier
       const { q1, q3 } = calculateQuartiles(data);
       const result = calculateWhiskers(data, q1, q3);
 
       expect(result.lowerWhisker).toBe(1);
-      expect(result.upperWhisker).toBe(100); // Returns max value
-      expect(result.outliers).toEqual([]); // No outliers detected with current logic
+      // Under numpy/matplotlib quartiles, 100 lies beyond 1.5·IQR, so the
+      // upper whisker is the last non-outlier value.
+      expect(result.upperWhisker).toBe(3);
+      expect(result.outliers).toEqual([100]);
     });
   });
 
@@ -157,9 +160,9 @@ describe("Plot Statistical Correctness", () => {
       const data = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
       const boxplot = ax.boxplot(data);
 
-      expect(boxplot.q1).toBeCloseTo(3, 2);
+      expect(boxplot.q1).toBeCloseTo(3.25, 2);
       expect(boxplot.median).toBeCloseTo(5.5, 2);
-      expect(boxplot.q3).toBeCloseTo(8, 2);
+      expect(boxplot.q3).toBeCloseTo(7.75, 2);
       expect(boxplot.whiskerLow).toBe(1);
       expect(boxplot.whiskerHigh).toBe(10);
       expect(boxplot.outliers).toHaveLength(0);
@@ -198,9 +201,9 @@ describe("Plot Statistical Correctness", () => {
       const data = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
       const violinplot = ax.violinplot(data);
 
-      expect(violinplot.q1).toBeCloseTo(3, 2);
+      expect(violinplot.q1).toBeCloseTo(3.25, 2);
       expect(violinplot.median).toBeCloseTo(5.5, 2);
-      expect(violinplot.q3).toBeCloseTo(8, 2);
+      expect(violinplot.q3).toBeCloseTo(7.75, 2);
       expect(violinplot.kdePoints).toHaveLength(100);
       expect(violinplot.kdeValues).toHaveLength(100);
 

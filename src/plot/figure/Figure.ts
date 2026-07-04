@@ -1,7 +1,12 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
 import { InvalidParameterError, NotImplementedError } from "../../core";
 import { RasterCanvas } from "../canvas/RasterCanvas";
+import { svgToPdf } from "../renderers/pdf";
 import { isNodeEnvironment_export, pngEncodeRGBA } from "../renderers/png";
-import type { Color, RenderedPNG, RenderedSVG, Viewport } from "../types";
+import type { Color, RenderedPDF, RenderedPNG, RenderedSVG, Viewport } from "../types";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { assertPositiveInt } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
@@ -89,5 +94,20 @@ export class Figure {
     for (const ax of this.axesList) ax.renderRasterInto(canvas);
     const bytes = await pngEncodeRGBA(this.width, this.height, canvas.data);
     return { kind: "png", width: this.width, height: this.height, bytes };
+  }
+
+  /**
+   * Render this figure to PDF.
+   *
+   * Converts the SVG output to a minimal PDF document with vector
+   * drawing commands. The resulting PDF preserves vector quality and
+   * is suitable for publication or print.
+   *
+   * @returns PDF rendering result with byte data
+   */
+  renderPDF(): RenderedPDF {
+    const svg = this.renderSVG();
+    const bytes = svgToPdf(svg.svg, this.width, this.height);
+    return { kind: "pdf", bytes, width: this.width, height: this.height };
   }
 }

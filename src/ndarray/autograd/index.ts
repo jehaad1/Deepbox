@@ -16,17 +16,17 @@
  * ## max / min backward — tie-breaking
  *
  * When multiple elements share the maximum (or minimum) value along the
- * reduced axis, **all** tied positions receive gradient.  This means the
- * gradient is *not* divided among ties — each tied element gets the full
- * upstream gradient.  This matches Deepbox's behaviour and avoids the
- * cost of counting ties, but callers should be aware that the
- * "effective" gradient magnitude is multiplied by the tie count.
+ * reduced axis, the gradient is **divided equally** among all tied
+ * positions.  This preserves the total gradient magnitude and is a
+ * valid subgradient of the max/min operation.
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
  */
 
 import type { Axis, DType, Shape, TypedArray } from "../../core";
 import {
   DataValidationError,
   DeepboxError,
+  DeviceError,
   DTypeError,
   getBigIntElement,
   getNumericElement,
@@ -36,10 +36,20 @@ import {
   shapeToSize,
 } from "../../core";
 import { dot } from "../linalg";
-import { elu, gelu, leakyRelu, relu, sigmoid } from "../ops/activation";
+import {
+  elu,
+  gelu,
+  hardtanh as hardtanhOp,
+  leakyRelu,
+  relu,
+  sigmoid,
+  tanhshrink as tanhshrinkOp,
+} from "../ops/activation";
 import { abs as absOp, add, clip as clipOp, div, mul, neg, pow, sub } from "../ops/arithmetic";
 import { equal, greater, less } from "../ops/comparison";
 import { col2im, im2col as im2colOp } from "../ops/conv";
+import { dispatchUnary } from "../ops/device_dispatch";
+import { concatenate as concatOp } from "../ops/manipulation";
 import { exp, log } from "../ops/math";
 import { dropoutMask } from "../ops/random";
 import { max, min, sum } from "../ops/reduction";
@@ -141,64 +151,10 @@ function shapesEqual(a: Shape, b: Shape): boolean {
 }
 
 function castTensor(t: Tensor, dtype: Exclude<DType, "string">): Tensor {
-  if (t.dtype === dtype) return t;
   if (t.dtype === "string") {
     throw new DTypeError("autograd does not support string dtype");
   }
-  const Ctor = dtypeToTypedArrayCtor(dtype);
-  const out = new Ctor(t.size);
-  const logicalStrides = computeStrides(t.shape);
-  const contiguous = isContiguous(t.shape, t.strides);
-  const toBool = dtype === "bool";
-
-  const data = t.data;
-  if (Array.isArray(data)) {
-    throw new DTypeError("autograd does not support string dtype");
-  }
-
-  if (out instanceof BigInt64Array) {
-    if (data instanceof BigInt64Array) {
-      for (let i = 0; i < t.size; i++) {
-        const offset = contiguous
-          ? t.offset + i
-          : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        out[i] = getBigIntElement(data, offset);
-      }
-    } else {
-      for (let i = 0; i < t.size; i++) {
-        const offset = contiguous
-          ? t.offset + i
-          : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        out[i] = BigInt(Math.trunc(getNumericElement(data, offset)));
-      }
-    }
-  } else {
-    // out is Numeric TypedArray
-    if (data instanceof BigInt64Array) {
-      for (let i = 0; i < t.size; i++) {
-        const offset = contiguous
-          ? t.offset + i
-          : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        const value = getBigIntElement(data, offset);
-        out[i] = toBool ? (value !== 0n ? 1 : 0) : Number(value);
-      }
-    } else {
-      for (let i = 0; i < t.size; i++) {
-        const offset = contiguous
-          ? t.offset + i
-          : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        const value = getNumericElement(data, offset);
-        out[i] = toBool ? (value !== 0 ? 1 : 0) : value;
-      }
-    }
-  }
-
-  return TensorClass.fromTypedArray({
-    data: out,
-    shape: t.shape,
-    dtype,
-    device: t.device,
-  });
+  return t.astype(dtype);
 }
 
 function reduceBroadcastGrad(grad: Tensor, targetShape: Shape): Tensor {
@@ -283,6 +239,12 @@ function toContiguous(t: Tensor): Tensor {
   }
   if (isContiguous(t.shape, t.strides)) {
     return t;
+  }
+  if (t.isDeviceTensor) {
+    // Materialize a strided device view with the `copy` kernel (writes a
+    // contiguous buffer in logical row-major order) — no host readback.
+    const copied = dispatchUnary("copy", t);
+    if (copied) return copied;
   }
   const Ctor = dtypeToTypedArrayCtor(t.dtype);
   const out = new Ctor(t.size);
@@ -469,6 +431,43 @@ export class GradTensor {
   }
 
   /**
+   * Convert to a nested JS array (delegates to the underlying tensor).
+   * Implements TensorLike interface for compatibility with Tensor.
+   */
+  toArray(): ReturnType<Tensor["toArray"]> {
+    return this.tensor.toArray();
+  }
+
+  /** Read a single element by multi-index (delegates to the underlying tensor). */
+  at(...indices: number[]): ReturnType<Tensor["at"]> {
+    return this.tensor.at(...indices);
+  }
+
+  /**
+   * Cast to another numeric dtype, differentiably. The backward casts the
+   * gradient back to this tensor's dtype.
+   */
+  astype(dtype: Exclude<DType, "string">): GradTensor {
+    if (this.tensor.dtype === dtype) return this;
+    const outTensor = castTensor(this.tensor, dtype);
+    const requiresGrad = gradEnabled && this.requiresGrad;
+    const srcDtype = ensureNumericDType(this.tensor.dtype, "astype");
+    let out: GradTensor;
+    out = new GradTensor({
+      tensor: outTensor,
+      requiresGrad,
+      prev: requiresGrad ? [this] : [],
+      backward: () => {
+        if (!requiresGrad) return;
+        const go = out._grad;
+        if (go === null) throw new DeepboxError("Internal error: missing gradient for astype");
+        this.accumulateGrad(castTensor(go, srcDtype));
+      },
+    });
+    return out;
+  }
+
+  /**
    * Get the device where the tensor resides.
    * Implements TensorLike interface for compatibility with Tensor.
    */
@@ -524,6 +523,14 @@ export class GradTensor {
       );
     }
     ensureSameSize(this.tensor, grad, "setGrad");
+    if (
+      grad.shape.length !== this.tensor.shape.length ||
+      grad.shape.some((d, i) => d !== this.tensor.shape[i])
+    ) {
+      throw new ShapeError(
+        `setGrad shape mismatch: gradient has shape [${grad.shape}] but tensor has shape [${this.tensor.shape}]`
+      );
+    }
     this._grad = grad;
   }
 
@@ -584,15 +591,39 @@ export class GradTensor {
     const topo: GradTensor[] = [];
     const visited = new Set<GradTensor>();
 
-    const build = (v: GradTensor): void => {
-      if (visited.has(v)) return;
-      visited.add(v);
-      for (const child of v._prev) build(child);
-      topo.push(v);
-    };
-
-    build(this);
+    // Iterative post-order DFS (explicit stack, not recursion): the graph
+    // depth for an unrolled model — a long RNN over thousands of timesteps or
+    // a deep residual stack — equals the recursion depth, which overflows
+    // V8's ~10k-frame call stack. An explicit worklist scales to arbitrary
+    // depth. Ordering is identical to the previous recursive post-order.
+    const stack: Array<{ node: GradTensor; idx: number }> = [{ node: this, idx: 0 }];
+    visited.add(this);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1] as { node: GradTensor; idx: number };
+      const prev = frame.node._prev;
+      if (frame.idx < prev.length) {
+        const child = prev[frame.idx] as GradTensor;
+        frame.idx++;
+        if (!visited.has(child)) {
+          visited.add(child);
+          stack.push({ node: child, idx: 0 });
+        }
+      } else {
+        topo.push(frame.node);
+        stack.pop();
+      }
+    }
     topo.reverse();
+
+    // Intermediate (non-leaf) gradients are not retained across backward
+    // calls (PyTorch semantics). Without this reset, a second backward()
+    // would accumulate into stale grads left over from the previous pass
+    // and propagate wrong values into the leaves.
+    for (const v of topo) {
+      if (v !== this && v._prev.length > 0) {
+        v._grad = null;
+      }
+    }
 
     for (const v of topo) {
       v._backward();
@@ -717,6 +748,12 @@ export class GradTensor {
         // d/dx sum(x) = 1, so the input gradient is the upstream gradient broadcast
         // to the input shape.
         if (axis === undefined) {
+          if (this.tensor.isDeviceTensor) {
+            // Device path: broadcast the 0-D upstream gradient across the
+            // input shape with a device kernel instead of reading host data.
+            this.accumulateGrad(mul(onesLike(this.tensor), go));
+            return;
+          }
           const goData = go.data;
           let g0: number;
           if (Array.isArray(goData)) {
@@ -739,53 +776,72 @@ export class GradTensor {
 
         const ax = normalizeAxis(axis, this.tensor.ndim);
 
-        // If keepdims=false, output shape is input shape with the reduced axis removed.
-        // If keepdims=true, output shape matches input ndim with that axis set to 1.
-        const outShape = go.shape;
+        if (this.tensor.isDeviceTensor) {
+          // sum-over-axis backward = broadcast the upstream gradient back along
+          // the reduced axis. Reshape `go` to hold a size-1 reduced axis
+          // (keepdims already has it), then multiply by a ones tensor of the
+          // input shape so the device binary kernel broadcasts it — no host
+          // readback. This is the path softmax/layernorm/cross-entropy hit.
+          const keepShape = this.tensor.shape.map((d, i) => (i === ax ? 1 : d));
+          const goKeep = keepdims ? go : go.reshape(keepShape);
+          this.accumulateGrad(mul(onesLike(this.tensor), goKeep));
+          return;
+        }
+
+        // go shape is the input shape with the reduced axis removed
+        // (keepdims=false) or set to 1 (keepdims=true).
+        // Allocation-free scatter of the upstream gradient back to the input
+        // shape. sum() backward broadcasts `go` along the reduced axis: each
+        // input element maps to the go element at the same coordinates with the
+        // reduced axis removed (keepdims=false) or held at 0 (keepdims=true).
+        // The previous implementation allocated two JS arrays (inCoord/outCoord)
+        // per input element — tens of millions of short-lived allocations per
+        // backward on softmax/cross-entropy/layernorm/attention logits, GC-bound.
+        // Here we walk the input in row-major order with a single reused
+        // coordinate odometer and track the physical go offset incrementally:
+        // zero per-element allocation. `go.strides` are physical offsets into
+        // go.data, so this handles contiguous and non-contiguous `go` uniformly.
+        const ndim = this.tensor.ndim;
+        const shape = this.tensor.shape;
+        const goStridePerInputDim = new Int32Array(ndim);
+        for (let d = 0; d < ndim; d++) {
+          if (d === ax) {
+            // Reduced axis contributes nothing: removed (keepdims=false) or
+            // pinned to index 0 in a size-1 go dimension (keepdims=true).
+            goStridePerInputDim[d] = 0;
+          } else {
+            const goDim = keepdims ? d : d < ax ? d : d - 1;
+            goStridePerInputDim[d] = go.strides[goDim] ?? 0;
+          }
+        }
+
+        const goDataBuf = go.data;
+        if (Array.isArray(goDataBuf)) {
+          throw new DTypeError("autograd does not support string dtype");
+        }
 
         const inDense = new Float64Array(this.tensor.size);
-        const inLogicalStrides = computeStrides(this.tensor.shape);
-        const outLogicalStrides = computeStrides(outShape);
-        const goContiguous = isContiguous(go.shape, go.strides);
-
+        const coord = new Int32Array(ndim);
+        let goOffset = go.offset;
         for (let inFlat = 0; inFlat < this.tensor.size; inFlat++) {
-          // Convert input flat -> input coordinates
-          let rem = inFlat;
-          const inCoord = new Array<number>(this.tensor.ndim);
-          for (let d = 0; d < this.tensor.ndim; d++) {
-            const s = inLogicalStrides[d] ?? 1;
-            const c = Math.floor(rem / s);
-            rem -= c * s;
-            inCoord[d] = c;
-          }
-
-          // Map to output coordinates by removing or zeroing the reduced axis
-          const outCoord: number[] = [];
-          for (let d = 0; d < this.tensor.ndim; d++) {
-            if (d === ax) {
-              if (keepdims) outCoord.push(0);
-              continue;
-            }
-            outCoord.push(inCoord[d] ?? 0);
-          }
-
-          // Convert output coordinates -> output flat
-          let outFlat = 0;
-          for (let d = 0; d < outCoord.length; d++) {
-            outFlat += (outCoord[d] ?? 0) * (outLogicalStrides[d] ?? 1);
-          }
-
-          const goOffset = goContiguous
-            ? go.offset + outFlat
-            : offsetFromFlatIndex(outFlat, outLogicalStrides, go.strides, go.offset);
-          const goDataBuf = go.data;
-          if (Array.isArray(goDataBuf)) {
-            throw new DTypeError("autograd does not support string dtype");
-          }
           inDense[inFlat] =
             goDataBuf instanceof BigInt64Array
               ? Number(getBigIntElement(goDataBuf, goOffset))
               : getNumericElement(goDataBuf, goOffset);
+          // Advance the row-major odometer (last axis fastest), updating the go
+          // offset incrementally instead of recomputing coordinates each step.
+          for (let d = ndim - 1; d >= 0; d--) {
+            const dim = shape[d] ?? 1;
+            const stride = goStridePerInputDim[d] ?? 0;
+            const nc = (coord[d] ?? 0) + 1;
+            if (nc < dim) {
+              coord[d] = nc;
+              goOffset += stride;
+              break;
+            }
+            coord[d] = 0;
+            goOffset -= stride * (dim - 1);
+          }
         }
 
         const inDenseTensor = fromFloat64Dense(this.tensor.shape, this.tensor.device, inDense);
@@ -837,7 +893,7 @@ export class GradTensor {
   }
 
   pow(exponent: number): GradTensor {
-    if (this.tensor.data instanceof BigInt64Array) {
+    if (!this.tensor.isDeviceTensor && this.tensor.data instanceof BigInt64Array) {
       throw new DTypeError(
         "pow() backward is not supported for int64 tensors. " +
           "Cast to float32/float64 before calling pow() if gradients are needed."
@@ -908,26 +964,44 @@ export class GradTensor {
       prev: requiresGrad ? [this, other] : [],
       backward: () => {
         if (!requiresGrad) return;
-        const go = out._grad;
-        if (go === null) {
+        const rawGo = out._grad;
+        if (rawGo === null) {
           throw new DeepboxError("Internal error: missing gradient for matmul backward");
         }
+        // 1-D operands follow NumPy matmul semantics: a 1-D left operand is
+        // promoted to [1, k] and a 1-D right operand to [k, 1], with the
+        // corresponding dim removed from the output. Re-insert those dims on
+        // the upstream gradient and operands so the 2-D formulas apply, then
+        // squeeze the promoted dim back off each computed gradient.
+        const leftIs1d = this.tensor.ndim === 1;
+        const rightIs1d = other.tensor.ndim === 1;
+        const leftMat = leftIs1d ? this.tensor.reshape([1, this.tensor.size]) : this.tensor;
+        const rightMat = rightIs1d ? other.tensor.reshape([other.tensor.size, 1]) : other.tensor;
+        let go = rawGo;
+        if (leftIs1d || rightIs1d) {
+          const goShape = [...rawGo.shape];
+          if (rightIs1d) goShape.push(1);
+          if (leftIs1d) goShape.splice(Math.max(0, goShape.length - 1), 0, 1);
+          go = rawGo.reshape(goShape);
+        }
         if (this.requiresGrad) {
-          let grad = dot(go, swapLastTwo(other.tensor));
+          let grad = dot(go, swapLastTwo(rightMat));
           if (leftBroadcasted) {
             grad = reduceBatchDims(grad, rightBatchRank, leftDtype);
           } else {
             grad = castTensor(grad, leftDtype);
           }
+          if (leftIs1d) grad = grad.reshape([this.tensor.size]);
           this.accumulateGrad(grad);
         }
         if (other.requiresGrad) {
-          let grad = dot(swapLastTwo(this.tensor), go);
+          let grad = dot(swapLastTwo(leftMat), go);
           if (rightBroadcasted) {
             grad = reduceBatchDims(grad, leftBatchRank, rightDtype);
           } else {
             grad = castTensor(grad, rightDtype);
           }
+          if (rightIs1d) grad = grad.reshape([other.tensor.size]);
           other.accumulateGrad(grad);
         }
       },
@@ -937,7 +1011,7 @@ export class GradTensor {
   }
 
   relu(): GradTensor {
-    if (this.tensor.data instanceof BigInt64Array) {
+    if (!this.tensor.isDeviceTensor && this.tensor.data instanceof BigInt64Array) {
       const out = new BigInt64Array(this.tensor.size);
       const logicalStrides = computeStrides(this.tensor.shape);
       const contiguous = isContiguous(this.tensor.shape, this.tensor.strides);
@@ -947,6 +1021,14 @@ export class GradTensor {
           : offsetFromFlatIndex(i, logicalStrides, this.tensor.strides, this.tensor.offset);
         const val = getBigIntElement(this.tensor.data, offset);
         out[i] = val > 0n ? val : 0n;
+      }
+      if (gradEnabled && this.requiresGrad) {
+        // Silently detaching the graph would zero all upstream gradients;
+        // fail loudly like pow() does for int64.
+        throw new DTypeError(
+          "relu gradients are not supported for int64 tensors. " +
+            "Cast to float32/float64 before calling relu() if gradients are needed."
+        );
       }
       const outTensor = TensorClass.fromTypedArray({
         data: out,
@@ -969,6 +1051,15 @@ export class GradTensor {
         const go = out._grad;
         if (go === null) {
           throw new DeepboxError("Internal error: missing gradient for relu backward");
+        }
+        if (this.tensor.isDeviceTensor) {
+          // Device path: Heaviside mask via the `step` kernel.
+          const mask = dispatchUnary("step", this.tensor);
+          if (mask === null) {
+            throw new DeviceError("relu backward: device kernel unavailable");
+          }
+          this.accumulateGrad(mul(go, mask));
+          return;
         }
         const maskData = new (dtypeToTypedArrayCtor(outDtype))(this.tensor.size);
         const inputDense = asFloat64Dense(this.tensor);
@@ -1081,7 +1172,14 @@ export class GradTensor {
   }
 
   tanh(): GradTensor {
-    const outTensor = tanh(this.tensor);
+    // Preserve input dtype (the underlying tanh op always emits float64),
+    // matching sigmoid/relu so mixed-dtype graphs (e.g. float32 RNNs) don't
+    // throw on the next elementwise op.
+    const raw = tanh(this.tensor);
+    const outTensor =
+      raw.dtype === this.tensor.dtype
+        ? raw
+        : castTensor(raw, ensureNumericDType(this.tensor.dtype, "tanh"));
     const requiresGrad = gradEnabled && this.requiresGrad;
 
     const out = new GradTensor({
@@ -1344,7 +1442,10 @@ export class GradTensor {
 
         const maskBool = equal(this.tensor, maxReshaped);
         const mask = castTensor(maskBool, ensureNumericDType(this.tensor.dtype, "max"));
-        const grad = mul(mask, gradReshaped);
+        // Divide gradient among tied elements so total gradient is preserved
+        const tieCount = sum(mask, axis, true);
+        const normalizedMask = div(mask, tieCount);
+        const grad = mul(normalizedMask, gradReshaped);
         this.accumulateGrad(grad);
       },
     });
@@ -1434,9 +1535,44 @@ export class GradTensor {
         if (go === null) {
           throw new DeepboxError("Internal error: missing gradient for view backward");
         }
-        // view preserves total element count; reshape gradient back to original shape
-        const gradReshaped = go.reshape(this.tensor.shape);
-        this.accumulateGrad(gradReshaped);
+        if (strides === undefined && offset === undefined) {
+          // Plain reshape view: gradient is just reshaped back
+          this.accumulateGrad(go.reshape(this.tensor.shape));
+          return;
+        }
+        // Custom strides/offset: elements of the base may be referenced by
+        // zero, one, or several view positions (e.g. overlapping windows), so
+        // the gradient must be scatter-ADDED back — a reshape would be wrong.
+        const base = this.tensor;
+        if (!isContiguous(base.shape, base.strides)) {
+          throw new DeepboxError(
+            "view backward with custom strides requires a contiguous base tensor"
+          );
+        }
+        const goDense = asFloat64Dense(go);
+        const gradData = new Float64Array(base.size);
+        const viewShape = viewTensor.shape;
+        const viewStrides = viewTensor.strides;
+        const relOffset = viewTensor.offset - base.offset;
+        const viewLogicalStrides = computeStrides(viewShape);
+        for (let i = 0; i < viewTensor.size; i++) {
+          let rem = i;
+          let off = relOffset;
+          for (let d = 0; d < viewShape.length; d++) {
+            const ls = viewLogicalStrides[d] ?? 1;
+            const coord = Math.floor(rem / ls);
+            rem -= coord * ls;
+            off += coord * (viewStrides[d] ?? 0);
+          }
+          gradData[off] = (gradData[off] ?? 0) + (goDense[i] ?? 0);
+        }
+        const gradTensor = TensorClass.fromTypedArray({
+          data: gradData,
+          shape: base.shape,
+          dtype: "float64",
+          device: base.device,
+        });
+        this.accumulateGrad(castTensor(gradTensor, ensureNumericDType(base.dtype, "view")));
       },
     });
 
@@ -1463,12 +1599,14 @@ export class GradTensor {
           const grad = transpose(go);
           this.accumulateGrad(grad);
         } else {
-          // Inverse permutation
+          // Inverse permutation (normalize negative axes first — e.g.
+          // transpose([-1, -2]) must invert as [ndim-1, ndim-2])
+          const ndim = this.tensor.ndim;
           const invAxes = new Array<number>(axes.length);
           for (let i = 0; i < axes.length; i++) {
             const axis = axes[i];
             if (axis !== undefined) {
-              invAxes[axis] = i;
+              invAxes[axis < 0 ? axis + ndim : axis] = i;
             }
           }
           const grad = transpose(go, invAxes);
@@ -1512,7 +1650,10 @@ export class GradTensor {
 
         const maskBool = equal(this.tensor, minReshaped);
         const mask = castTensor(maskBool, ensureNumericDType(this.tensor.dtype, "min"));
-        const grad = mul(mask, gradReshaped);
+        // Divide gradient among tied elements so total gradient is preserved
+        const tieCount = sum(mask, axis, true);
+        const normalizedMask = div(mask, tieCount);
+        const grad = mul(normalizedMask, gradReshaped);
         this.accumulateGrad(grad);
       },
     });
@@ -1707,6 +1848,72 @@ export class GradTensor {
     return out;
   }
 
+  hardtanh(minVal = -1, maxVal = 1): GradTensor {
+    const outTensor = hardtanhOp(this.tensor, minVal, maxVal);
+    const outDtype = ensureNumericDType(outTensor.dtype, "hardtanh");
+    const requiresGrad = gradEnabled && this.requiresGrad;
+
+    const out = new GradTensor({
+      tensor: outTensor,
+      requiresGrad,
+      prev: requiresGrad ? [this] : [],
+      backward: () => {
+        if (!requiresGrad) return;
+        const go = out._grad;
+        if (go === null) {
+          throw new DeepboxError("Internal error: missing gradient for hardtanh backward");
+        }
+        const maskData = new (dtypeToTypedArrayCtor(outDtype))(this.tensor.size);
+        const inputDense = asFloat64Dense(this.tensor);
+        if (maskData instanceof BigInt64Array) {
+          for (let i = 0; i < inputDense.length; i++) {
+            const val = inputDense[i] ?? 0;
+            maskData[i] = val > minVal && val < maxVal ? 1n : 0n;
+          }
+        } else {
+          for (let i = 0; i < inputDense.length; i++) {
+            const val = inputDense[i] ?? 0;
+            maskData[i] = val > minVal && val < maxVal ? 1 : 0;
+          }
+        }
+        const maskTensor = TensorClass.fromTypedArray({
+          data: maskData,
+          shape: this.tensor.shape,
+          dtype: outDtype,
+          device: this.tensor.device,
+        });
+        const grad = mul(go, maskTensor);
+        this.accumulateGrad(grad);
+      },
+    });
+
+    return out;
+  }
+
+  tanhshrink(): GradTensor {
+    const outTensor = tanhshrinkOp(this.tensor);
+    const requiresGrad = gradEnabled && this.requiresGrad;
+
+    const out = new GradTensor({
+      tensor: outTensor,
+      requiresGrad,
+      prev: requiresGrad ? [this] : [],
+      backward: () => {
+        if (!requiresGrad) return;
+        const go = out._grad;
+        if (go === null) {
+          throw new DeepboxError("Internal error: missing gradient for tanhshrink backward");
+        }
+        const tanhX = tanh(this.tensor);
+        const gradVal = mul(tanhX, tanhX);
+        if (this.requiresGrad)
+          this.accumulateGrad(reduceBroadcastGrad(mul(go, gradVal), this.tensor.shape));
+      },
+    });
+
+    return out;
+  }
+
   /**
    * Return a human-readable string representation of this GradTensor.
    *
@@ -1796,6 +2003,172 @@ export function im2col(
     backward,
   });
 
+  return result;
+}
+
+/**
+ * Column to Image operation for GradTensor (transpose/adjoint of im2col).
+ * The backward of col2im is im2col.
+ */
+export function col2imGrad(
+  cols: GradTensor,
+  outputShape: readonly number[],
+  kernelSize: [number, number],
+  stride: [number, number],
+  padding: [number, number]
+): GradTensor {
+  const outTensor = col2im(cols.tensor, outputShape, kernelSize, stride, padding);
+  const requiresGrad = gradEnabled && cols.requiresGrad;
+  let result: GradTensor;
+  const backward = () => {
+    if (!requiresGrad) return;
+    const go = result.grad;
+    if (go === null) {
+      throw new DeepboxError("Internal error: missing gradient for col2im backward");
+    }
+    const gradCols = im2colOp(go, kernelSize, stride, padding);
+    cols.accumulateGrad(gradCols);
+  };
+  result = GradTensor.create({
+    tensor: outTensor,
+    requiresGrad,
+    prev: requiresGrad ? [cols] : [],
+    backward,
+  });
+  return result;
+}
+
+/**
+ * Wrap a precomputed output tensor with an explicit reverse-mode rule.
+ *
+ * Layers that compute their forward value with hand-written kernels (Conv3d,
+ * ConvTranspose, pooling, Embedding, RNN cells, …) use this to attach a
+ * correct backward instead of returning a detached leaf. Each entry in
+ * `grads` is `[input, gradFn]`; `gradFn(outGrad)` returns that input's
+ * gradient tensor (already reduced to the input's shape). Honors the global
+ * no-grad context and only records the graph when some input requires grad.
+ */
+export function customOp(
+  output: Tensor,
+  grads: ReadonlyArray<readonly [GradTensor, (outGrad: Tensor) => Tensor]>
+): GradTensor {
+  const requiresGrad = gradEnabled && grads.some(([inp]) => inp.requiresGrad);
+  let result: GradTensor;
+  const backward = () => {
+    if (!requiresGrad) return;
+    const go = result.grad;
+    if (go === null) {
+      throw new DeepboxError("Internal error: missing gradient for customOp backward");
+    }
+    for (const [inp, gradFn] of grads) {
+      if (inp.requiresGrad) inp.accumulateGrad(gradFn(go));
+    }
+  };
+  result = GradTensor.create({
+    tensor: output,
+    requiresGrad,
+    prev: requiresGrad ? grads.filter(([inp]) => inp.requiresGrad).map(([inp]) => inp) : [],
+    backward,
+  });
+  return result;
+}
+
+/**
+ * Stack a list of same-shape GradTensors along a new leading axis.
+ * Backward splits the upstream gradient back to each input. Used by the
+ * recurrent layers to assemble per-timestep hidden states differentiably.
+ */
+export function stackGrad(parts: readonly GradTensor[]): GradTensor {
+  if (parts.length === 0) {
+    throw new DeepboxError("stackGrad requires at least one tensor");
+  }
+  const first = parts[0]!;
+  const partShape = first.tensor.shape;
+  const partSize = first.tensor.size;
+  const outShape = [parts.length, ...partShape];
+  // Preserve the parts' dtype so downstream ops (e.g. the next recurrent
+  // layer's float32 weights) don't hit a dtype mismatch.
+  const outDtype = ensureNumericDType(first.tensor.dtype, "stackGrad");
+  const Ctor = dtypeToTypedArrayCtor(outDtype);
+  const outData = new Ctor(parts.length * partSize) as Exclude<TypedArray, BigInt64Array>;
+  for (let p = 0; p < parts.length; p++) {
+    const d = asFloat64Dense(parts[p]!.tensor);
+    outData.set(d, p * partSize);
+  }
+  const outTensor = TensorClass.fromTypedArray({
+    data: outData,
+    shape: outShape,
+    dtype: outDtype,
+    device: first.tensor.device,
+  });
+  const requiresGrad = gradEnabled && parts.some((p) => p.requiresGrad);
+  let result: GradTensor;
+  const backward = () => {
+    if (!requiresGrad) return;
+    const go = result.grad;
+    if (go === null) throw new DeepboxError("Internal error: missing gradient for stack backward");
+    const goDense = asFloat64Dense(go);
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p]!;
+      if (!part.requiresGrad) continue;
+      const partDtype = ensureNumericDType(part.tensor.dtype, "stackGrad");
+      const sliceCtor = dtypeToTypedArrayCtor(partDtype);
+      const slice = new sliceCtor(partSize) as Exclude<TypedArray, BigInt64Array>;
+      slice.set(goDense.subarray(p * partSize, (p + 1) * partSize));
+      part.accumulateGrad(
+        TensorClass.fromTypedArray({
+          data: slice,
+          shape: partShape,
+          dtype: partDtype,
+          device: part.tensor.device,
+        })
+      );
+    }
+  };
+  result = GradTensor.create({
+    tensor: outTensor,
+    requiresGrad,
+    prev: requiresGrad ? parts.filter((p) => p.requiresGrad) : [],
+    backward,
+  });
+  return result;
+}
+
+/**
+ * Concatenate GradTensors along an existing axis. Backward slices the
+ * gradient back to each input's segment.
+ */
+export function concatGrad(parts: readonly GradTensor[], axis = 0): GradTensor {
+  if (parts.length === 0) throw new DeepboxError("concatGrad requires at least one tensor");
+  const outTensor = concatOp(
+    parts.map((p) => p.tensor),
+    axis
+  );
+  const requiresGrad = gradEnabled && parts.some((p) => p.requiresGrad);
+  let result: GradTensor;
+  const ax = axis < 0 ? axis + parts[0]!.tensor.ndim : axis;
+  const backward = () => {
+    if (!requiresGrad) return;
+    const go = result.grad;
+    if (go === null) throw new DeepboxError("Internal error: missing gradient for concat backward");
+    let start = 0;
+    for (const part of parts) {
+      const len = part.tensor.shape[ax] ?? 0;
+      if (part.requiresGrad) {
+        const ranges = part.tensor.shape.map((_, d) =>
+          d === ax ? { start, end: start + len } : {}
+        );
+        part.accumulateGrad(go.slice(...ranges));
+      }
+      start += len;
+    }
+  };
+  result = GradTensor.create({
+    tensor: outTensor,
+    requiresGrad,
+    prev: requiresGrad ? parts.filter((p) => p.requiresGrad) : [],
+    backward,
+  });
   return result;
 }
 

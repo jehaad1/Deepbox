@@ -10,7 +10,7 @@ import {
   getStringElement,
   isBigInt64Array,
   isNumericTypedArray,
-} from "../src/core/utils/typedArrayAccess";
+} from "../src/core/utils/typed_array_access";
 
 describe("deepbox/core - Typed Array Access", () => {
   it("gets numeric elements safely", () => {

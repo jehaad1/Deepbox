@@ -5,10 +5,76 @@
  * to handle strided tensor access and input validation.
  *
  * @internal
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox documentation}
  */
 
 import { DataValidationError, ShapeError } from "../core/errors";
 import type { Tensor } from "../ndarray";
+
+/**
+ * Read a numeric tensor's logical elements into a dense Float64Array in
+ * row-major order, honouring strides/offset. Optionally validates that every
+ * value is finite in the same pass. Metric hot loops then index `[i]`
+ * directly instead of paying a per-element offsetter closure + bounds-checked
+ * `getNumericElement` + finite-check call.
+ *
+ * Throws for string/int64 tensors (callers guard dtype upstream).
+ */
+export function denseFloat64(t: Tensor, name: string, checkFinite = true): Float64Array {
+  const data = t.data;
+  if (Array.isArray(data) || data instanceof BigInt64Array) {
+    throw new DataValidationError(`${name} must be a numeric (non-int64) tensor`);
+  }
+  const size = t.size;
+  const out = new Float64Array(size);
+  if (size === 0) return out;
+
+  const shape = t.shape;
+  const ndim = shape.length;
+  const strides = t.strides;
+  const offset = t.offset;
+
+  if (ndim <= 1) {
+    const s0 = strides[0] ?? 1;
+    if (s0 === 1 && offset === 0 && data.length === size) {
+      out.set(data as unknown as ArrayLike<number>);
+    } else {
+      for (let i = 0; i < size; i++) out[i] = data[offset + i * s0] as number;
+    }
+  } else {
+    // Row-major odometer over the strided view.
+    const inner = shape[ndim - 1] ?? 1;
+    const innerStride = strides[ndim - 1] ?? 0;
+    const outer = inner === 0 ? 0 : size / inner;
+    const coords = new Array<number>(Math.max(0, ndim - 1)).fill(0);
+    let base = offset;
+    let pos = 0;
+    for (let b = 0; b < outer; b++) {
+      let idx = base;
+      for (let j = 0; j < inner; j++) {
+        out[pos++] = data[idx] as number;
+        idx += innerStride;
+      }
+      for (let d = ndim - 2; d >= 0; d--) {
+        coords[d] = (coords[d] ?? 0) + 1;
+        base += strides[d] ?? 0;
+        if ((coords[d] ?? 0) < (shape[d] ?? 0)) break;
+        base -= (strides[d] ?? 0) * (shape[d] ?? 0);
+        coords[d] = 0;
+      }
+    }
+  }
+
+  if (checkFinite) {
+    for (let i = 0; i < size; i++) {
+      const v = out[i] as number;
+      if (!Number.isFinite(v)) {
+        throw new DataValidationError(`${name} contains NaN or infinite value at index ${i}`);
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * Converts a flat (logical) index to a physical buffer offset.
@@ -16,6 +82,57 @@ import type { Tensor } from "../ndarray";
  * @internal
  */
 export type FlatOffsetter = (flatIndex: number) => number;
+
+/**
+ * Dense-read a tensor's logical elements into a Float64Array when it is a
+ * plain numeric typed array (not string/int64), else return null. No
+ * finiteness check — intended for label comparison where any finite integer
+ * is valid. Lets label metrics take a monomorphic fast path for the common
+ * numeric case and fall back to the generic per-element reader otherwise.
+ *
+ * @internal
+ */
+export function tryDenseNumeric(t: Tensor): Float64Array | null {
+  const data = t.data;
+  if (Array.isArray(data) || data instanceof BigInt64Array) return null;
+  const size = t.size;
+  const out = new Float64Array(size);
+  if (size === 0) return out;
+  const shape = t.shape;
+  const ndim = shape.length;
+  const strides = t.strides;
+  const offset = t.offset;
+  if (ndim <= 1) {
+    const s0 = strides[0] ?? 1;
+    if (s0 === 1 && offset === 0 && data.length === size) {
+      out.set(data as unknown as ArrayLike<number>);
+    } else {
+      for (let i = 0; i < size; i++) out[i] = data[offset + i * s0] as number;
+    }
+    return out;
+  }
+  const inner = shape[ndim - 1] ?? 1;
+  const innerStride = strides[ndim - 1] ?? 0;
+  const outer = inner === 0 ? 0 : size / inner;
+  const coords = new Array<number>(Math.max(0, ndim - 1)).fill(0);
+  let base = offset;
+  let pos = 0;
+  for (let b = 0; b < outer; b++) {
+    let idx = base;
+    for (let j = 0; j < inner; j++) {
+      out[pos++] = data[idx] as number;
+      idx += innerStride;
+    }
+    for (let d = ndim - 2; d >= 0; d--) {
+      coords[d] = (coords[d] ?? 0) + 1;
+      base += strides[d] ?? 0;
+      if ((coords[d] ?? 0) < (shape[d] ?? 0)) break;
+      base -= (strides[d] ?? 0) * (shape[d] ?? 0);
+      coords[d] = 0;
+    }
+  }
+  return out;
+}
 
 /**
  * Compute row-major logical strides from a tensor shape.

@@ -13,7 +13,7 @@
  * All operations maintain type safety and proper error handling.
  */
 
-import type { Axis, TypedArray } from "../../core";
+import type { Axis, DType, TypedArray } from "../../core";
 import {
   DeepboxError,
   DTypeError,
@@ -55,23 +55,57 @@ export function concatenate(tensors: Tensor[], axis: Axis = 0): Tensor {
     throw new InvalidParameterError("concatenate requires at least one tensor", "tensors");
   }
 
-  // Single tensor: return copy
+  // Single tensor: return copy (stride-aware — the input may be a
+  // non-contiguous view such as a transpose or slice)
   if (tensors.length === 1) {
     const t = tensors[0];
     if (!t) throw new DeepboxError("Unexpected: tensor at index 0 is undefined");
+    const contiguous = isContiguous(t.shape, t.strides) && t.offset === 0;
+    const logicalStrides = computeStrides(t.shape);
     if (t.dtype === "string") {
       const data = t.data;
       if (!Array.isArray(data)) throw new DeepboxError("Internal error: expected string array");
+      let out: string[];
+      if (contiguous) {
+        out = [...data];
+      } else {
+        out = new Array<string>(t.size);
+        for (let i = 0; i < t.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+          out[i] = data[off] ?? "";
+        }
+      }
       return Tensor.fromStringArray({
-        data: [...data],
+        data: out,
         shape: t.shape,
         device: t.device,
       });
     }
     const data = t.data;
     if (Array.isArray(data)) throw new DeepboxError("Internal error: expected typed array");
+    let out: TypedArray;
+    if (contiguous) {
+      out = data.slice(0, t.size);
+    } else {
+      const Ctor = dtypeToTypedArrayCtor(t.dtype);
+      out = new Ctor(t.size) as TypedArray;
+      if (data instanceof BigInt64Array) {
+        const bigOut = out as BigInt64Array;
+        for (let i = 0; i < t.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+          bigOut[i] = data[off] ?? 0n;
+        }
+      } else {
+        const numOut = out as Exclude<TypedArray, BigInt64Array>;
+        const numData = data as Exclude<TypedArray, BigInt64Array>;
+        for (let i = 0; i < t.size; i++) {
+          const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
+          numOut[i] = numData[off] ?? 0;
+        }
+      }
+    }
     return Tensor.fromTypedArray({
-      data: data.slice(),
+      data: out,
       shape: t.shape,
       dtype: t.dtype,
       device: t.device,
@@ -133,6 +167,42 @@ export function concatenate(tensors: Tensor[], axis: Axis = 0): Tensor {
 
   // Compute output strides for efficient indexing
   const outStrides = computeStrides(outShape);
+
+  // Fast path: axis-0 concatenation of contiguous typed tensors reduces to
+  // sequential block copies (the generic per-element path allocates a
+  // coordinate array per element and is ~100x slower).
+  if (!isString && !Array.isArray(outData) && ax === 0) {
+    let allContiguous = true;
+    for (const t of tensors) {
+      if (Array.isArray(t.data) || !isContiguous(t.shape, t.strides)) {
+        allContiguous = false;
+        break;
+      }
+    }
+    if (allContiguous) {
+      let pos = 0;
+      if (outData instanceof BigInt64Array) {
+        for (const t of tensors) {
+          outData.set((t.data as BigInt64Array).subarray(t.offset, t.offset + t.size), pos);
+          pos += t.size;
+        }
+      } else {
+        for (const t of tensors) {
+          outData.set(
+            (t.data as Exclude<TypedArray, BigInt64Array>).subarray(t.offset, t.offset + t.size),
+            pos
+          );
+          pos += t.size;
+        }
+      }
+      return Tensor.fromTypedArray({
+        data: outData,
+        shape: outShape,
+        dtype: dtype as Exclude<DType, "string">,
+        device: first.device,
+      });
+    }
+  }
 
   // Copy data from each tensor
   let offsetAlongAxis = 0;
@@ -302,6 +372,43 @@ export function stack(tensors: Tensor[], axis: Axis = 0): Tensor {
   // Compute strides
   const outStrides = computeStrides(outShape);
   const elemSize = first.size;
+
+  // Fast path: stacking contiguous typed tensors along axis 0 is a series
+  // of block copies.
+  if (!isString && !Array.isArray(outData) && ax === 0) {
+    let allContiguous = true;
+    for (const t of tensors) {
+      if (Array.isArray(t.data) || !isContiguous(t.shape, t.strides)) {
+        allContiguous = false;
+        break;
+      }
+    }
+    if (allContiguous) {
+      if (outData instanceof BigInt64Array) {
+        for (let i = 0; i < tensors.length; i++) {
+          const t = tensors[i]!;
+          outData.set(
+            (t.data as BigInt64Array).subarray(t.offset, t.offset + elemSize),
+            i * elemSize
+          );
+        }
+      } else {
+        for (let i = 0; i < tensors.length; i++) {
+          const t = tensors[i]!;
+          outData.set(
+            (t.data as Exclude<TypedArray, BigInt64Array>).subarray(t.offset, t.offset + elemSize),
+            i * elemSize
+          );
+        }
+      }
+      return Tensor.fromTypedArray({
+        data: outData,
+        shape: outShape,
+        dtype: dtype as Exclude<DType, "string">,
+        device: first.device,
+      });
+    }
+  }
 
   // Prepare output buffers
   let stringOut: string[] | undefined;

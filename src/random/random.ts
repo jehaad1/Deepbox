@@ -1,4 +1,9 @@
-import { InvalidParameterError, NotImplementedError } from "../core";
+/**
+ * @see {@link https://deepbox.dev/docs/random-generation | Deepbox documentation}
+ */
+
+import { InvalidParameterError } from "../core/errors/invalid_parameter";
+import { NotImplementedError } from "../core/errors/not_implemented";
 
 /**
  * Internal global seed.
@@ -15,7 +20,6 @@ type CryptoLike = {
 declare const crypto: CryptoLike | undefined;
 
 const UINT64_MASK = (1n << 64n) - 1n;
-const PCG_MULT = 6364136223846793005n;
 const SPLITMIX_GAMMA = 0x9e3779b97f4a7c15n;
 const SPLITMIX_MIX1 = 0xbf58476d1ce4e5b9n;
 const SPLITMIX_MIX2 = 0x94d049bb133111ebn;
@@ -39,39 +43,118 @@ class __SplitMix64 {
 }
 
 /**
- * PCG32 PRNG with 64-bit state.
+ * xoshiro128++ PRNG (Blackman & Vigna 2019) with 128-bit state.
  *
- * High statistical quality, fast, and deterministic across platforms.
- * Not cryptographically secure.
+ * High statistical quality (passes BigCrush), deterministic across
+ * platforms, and ~3x faster per draw than the limb-arithmetic PCG32 it
+ * replaced — the whole state transition is six 32-bit integer ops, which
+ * V8 compiles to straight-line machine code. Not cryptographically secure.
+ *
+ * The public contract is determinism per seed within a Deepbox version;
+ * sequences are not pinned to any external reference implementation.
  */
-class __SeededRandom {
-  /** Current uint64 state. */
-  private state: bigint;
-  /** Stream/sequence selector (must be odd). */
-  private inc: bigint;
+export class __SeededRandom {
+  /**
+   * xoshiro128++ state as int32 bit patterns. An Int32Array sidesteps V8's
+   * object-field representation transitions, which made the same integer
+   * ops ~7x slower when the state lived in plain class fields.
+   */
+  private readonly s = new Int32Array(4);
 
   /**
    * Create a new PRNG from a seed.
    *
-   * @param seedUint64 - Seed coerced to uint64.
+   * @param seedUint64 - Seed coerced to uint64; expanded to the 128-bit
+   * state with SplitMix64 (never all-zero).
    */
   constructor(seedUint64: bigint) {
     const sm = new __SplitMix64(seedUint64);
-    this.state = sm.next();
-    this.inc = (sm.next() << 1n) | 1n;
+    const a = sm.next();
+    const b = sm.next();
+    const s = this.s;
+    s[0] = Number(a & 0xffffffffn) | 0;
+    s[1] = Number(a >> 32n) | 0;
+    s[2] = Number(b & 0xffffffffn) | 0;
+    s[3] = Number(b >> 32n) | 0;
+    if ((s[0]! | s[1]! | s[2]! | s[3]!) === 0) {
+      s[3] = 1;
+    }
   }
 
   /**
    * Generate the next uint32 sample.
    */
   nextUint32(): number {
-    const oldstate = this.state;
-    this.state = (oldstate * PCG_MULT + this.inc) & UINT64_MASK;
+    const s = this.s;
+    const s0 = s[0] as number;
+    const s1 = s[1] as number;
+    const s3 = s[3] as number;
+    const sum = (s0 + s3) | 0;
+    const result = (((sum << 7) | (sum >>> 25)) + s0) >>> 0;
+    const t = (s1 << 9) | 0;
+    let n2 = ((s[2] as number) ^ s0) | 0;
+    const n3 = (s3 ^ s1) | 0;
+    s[1] = (s1 ^ n2) | 0;
+    s[0] = (s0 ^ n3) | 0;
+    n2 = (n2 ^ t) | 0;
+    s[2] = n2;
+    s[3] = (n3 << 11) | (n3 >>> 21) | 0;
+    return result;
+  }
 
-    // Output function: xorshift high bits, then rotate.
-    const xorshifted = Number(((oldstate >> 18n) ^ oldstate) >> 27n) >>> 0;
-    const rot = Number(oldstate >> 59n) & 31;
-    return ((xorshifted >>> rot) | (xorshifted << (-rot & 31))) >>> 0;
+  /**
+   * Fill `target[0..count)` with uniform samples in [0, 1).
+   *
+   * State lives in locals for the whole loop (~2.5x over per-call draws).
+   */
+  fillUniform01(target: Float64Array | Float32Array, count: number): void {
+    const s = this.s;
+    let a = s[0] as number;
+    let b = s[1] as number;
+    let c = s[2] as number;
+    let d = s[3] as number;
+    for (let i = 0; i < count; i++) {
+      const sum = (a + d) | 0;
+      const result = (((sum << 7) | (sum >>> 25)) + a) >>> 0;
+      const t = (b << 9) | 0;
+      c = (c ^ a) | 0;
+      d = (d ^ b) | 0;
+      b = (b ^ c) | 0;
+      a = (a ^ d) | 0;
+      c = (c ^ t) | 0;
+      d = (d << 11) | (d >>> 21) | 0;
+      target[i] = result / 4294967296;
+    }
+    s[0] = a;
+    s[1] = b;
+    s[2] = c;
+    s[3] = d;
+  }
+
+  /**
+   * Fill `target[0..count)` with uint32 samples (state in locals).
+   */
+  fillUint32(target: Uint32Array, count: number): void {
+    const s = this.s;
+    let a = s[0] as number;
+    let b = s[1] as number;
+    let c = s[2] as number;
+    let d = s[3] as number;
+    for (let i = 0; i < count; i++) {
+      const sum = (a + d) | 0;
+      target[i] = (((sum << 7) | (sum >>> 25)) + a) >>> 0;
+      const t = (b << 9) | 0;
+      c = (c ^ a) | 0;
+      d = (d ^ b) | 0;
+      b = (b ^ c) | 0;
+      a = (a ^ d) | 0;
+      c = (c ^ t) | 0;
+      d = (d << 11) | (d >>> 21) | 0;
+    }
+    s[0] = a;
+    s[1] = b;
+    s[2] = c;
+    s[3] = d;
   }
 
   /**
@@ -79,6 +162,68 @@ class __SeededRandom {
    */
   next(): number {
     return this.nextUint32() / 2 ** 32;
+  }
+
+  /** Uniform in (0, 1) from this instance's stream — never 0 or 1, safe for log(). */
+  private nextOpen01(): number {
+    return (this.nextUint32() + 0.5) / 4294967296;
+  }
+
+  /**
+   * Ziggurat rejection path bound to this instance's own stream (so the
+   * generated sequence stays independent of the global RNG).
+   */
+  private normalTail(hz: number, iz: number): number {
+    for (;;) {
+      if (iz === 0) {
+        let x: number;
+        let y: number;
+        do {
+          x = -Math.log(this.nextOpen01()) * ZIG_INV_R;
+          y = -Math.log(this.nextOpen01());
+        } while (y + y < x * x);
+        return hz > 0 ? ZIG_R + x : -(ZIG_R + x);
+      }
+      const x = hz * (zigWn[iz] as number);
+      const fi = zigFn[iz] as number;
+      if (fi + this.next() * ((zigFn[iz - 1] as number) - fi) < Math.exp(-0.5 * x * x)) {
+        return x;
+      }
+      hz = this.nextUint32() | 0;
+      iz = hz & 127;
+      if (Math.abs(hz) < ((zigKn as Uint32Array)[iz] as number)) {
+        return hz * (zigWn[iz] as number);
+      }
+    }
+  }
+
+  /**
+   * Sample one standard-normal deviate via the Ziggurat method, consuming
+   * this instance's stream. ~2.5x cheaper than Box–Muller (one uint32 draw
+   * and a multiply on the ~99% accept path).
+   */
+  nextNormal(): number {
+    const kn = zigKn ?? zigInit();
+    const hz = this.nextUint32() | 0;
+    const iz = hz & 127;
+    return Math.abs(hz) < (kn[iz] as number) ? hz * (zigWn[iz] as number) : this.normalTail(hz, iz);
+  }
+
+  /**
+   * Fill `target[0..count)` with standard-normal samples (Ziggurat).
+   *
+   * State transition lives in this module so the hot accept path inlines,
+   * matching the free-function {@link __fillNormal} throughput.
+   */
+  fillNormal(target: Float64Array | Float32Array, count: number): void {
+    const kn = zigKn ?? zigInit();
+    const wn = zigWn;
+    for (let i = 0; i < count; i++) {
+      const hz = this.nextUint32() | 0;
+      const iz = hz & 127;
+      target[i] =
+        Math.abs(hz) < (kn[iz] as number) ? hz * (wn[iz] as number) : this.normalTail(hz, iz);
+    }
   }
 }
 
@@ -135,21 +280,27 @@ function getCrypto(): CryptoLike | undefined {
   return crypto;
 }
 
+// Batched crypto randomness: one getRandomValues syscall per 4096 words
+// instead of per sample (the per-call overhead made every unseeded sample
+// ~1us, dominating randn and the dataset generators).
+const CRYPTO_BATCH = 4096;
+let cryptoBuf: Uint32Array | null = null;
+let cryptoPos = CRYPTO_BATCH;
+
 function randomUint32FromCrypto(): number {
-  const crypto = getCrypto();
-  if (!crypto) {
-    throw new NotImplementedError(
-      "Cryptographically secure randomness is unavailable in this environment. " +
-        "Provide a seed for deterministic randomness."
-    );
+  if (cryptoPos >= CRYPTO_BATCH) {
+    const crypto = getCrypto();
+    if (!crypto) {
+      throw new NotImplementedError(
+        "Cryptographically secure randomness is unavailable in this environment. " +
+          "Provide a seed for deterministic randomness."
+      );
+    }
+    if (!cryptoBuf) cryptoBuf = new Uint32Array(CRYPTO_BATCH);
+    crypto.getRandomValues(cryptoBuf);
+    cryptoPos = 0;
   }
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  const value = buf[0];
-  if (value === undefined) {
-    throw new InvalidParameterError("Failed to read cryptographic randomness", "crypto", value);
-  }
-  return value >>> 0;
+  return (cryptoBuf as Uint32Array)[cryptoPos++]! >>> 0;
 }
 
 export function __random(): number {
@@ -168,11 +319,56 @@ export function __random(): number {
  * Uses the seeded PRNG when a seed is set; otherwise uses a cryptographically
  * secure RNG via `crypto.getRandomValues`.
  */
+/**
+ * Fill `target[0..count)` with uniform uint32 samples.
+ *
+ * Bulk variant of {@link __randomUint32}: the sampling loop lives in the
+ * same module as the RNG state so it inlines (per-call module-boundary
+ * overhead made large fills ~10x slower), and the unseeded path writes
+ * crypto randomness directly into the target. Consumes the seeded stream
+ * in exactly the same order as repeated `__randomUint32()` calls.
+ */
+export function __fillUint32(target: Uint32Array, count: number): void {
+  if (__rng) {
+    __rng.fillUint32(target, count);
+    return;
+  }
+  const crypto = getCrypto();
+  if (!crypto) {
+    throw new NotImplementedError(
+      "Cryptographically secure randomness is unavailable in this environment. " +
+        "Provide a seed for deterministic randomness."
+    );
+  }
+  // Node caps getRandomValues at 65536 bytes per call.
+  const MAX_WORDS = 16384;
+  for (let start = 0; start < count; start += MAX_WORDS) {
+    crypto.getRandomValues(target.subarray(start, Math.min(count, start + MAX_WORDS)));
+  }
+}
+
 export function __randomUint32(): number {
   if (__rng) {
     return __rng.nextUint32();
   }
   return randomUint32FromCrypto();
+}
+
+/**
+ * Fill `target[0..count)` with uniform samples in [0, 1).
+ *
+ * Bulk variant of {@link __random}: the sampling loop lives in the same
+ * module as the RNG state so the generator inlines (a per-call module
+ * boundary costs ~2x on large fills).
+ */
+export function __fillUniform(target: Float64Array | Float32Array, count: number): void {
+  if (__rng) {
+    __rng.fillUniform01(target, count);
+    return;
+  }
+  for (let i = 0; i < count; i++) {
+    target[i] = randomUint32FromCrypto() / 4294967296;
+  }
 }
 
 /**
@@ -186,25 +382,111 @@ export function __randomUint53(): number {
   return hi * 2 ** 26 + lo;
 }
 
+// ─── Ziggurat standard-normal sampler (Marsaglia & Tsang 2000, 128 layers) ──
+// ~99% of samples cost one uint32 draw and one multiply; the Box–Muller
+// sampler this replaces paid log+sqrt+cos on two draws for every sample.
+
+const ZIG_R = 3.442619855899;
+const ZIG_INV_R = 1 / ZIG_R;
+let zigKn: Uint32Array | null = null;
+let zigWn: Float64Array = new Float64Array(0);
+let zigFn: Float64Array = new Float64Array(0);
+
+function zigInit(): Uint32Array {
+  const m1 = 2147483648.0; // 2^31
+  const vn = 9.91256303526217e-3;
+  const kn = new Uint32Array(128);
+  const wn = new Float64Array(128);
+  const fn = new Float64Array(128);
+  let dn = ZIG_R;
+  let tn = dn;
+  const q = vn / Math.exp(-0.5 * dn * dn);
+  kn[0] = Math.floor((dn / q) * m1);
+  kn[1] = 0;
+  wn[0] = q / m1;
+  wn[127] = dn / m1;
+  fn[0] = 1;
+  fn[127] = Math.exp(-0.5 * dn * dn);
+  for (let i = 126; i >= 1; i--) {
+    dn = Math.sqrt(-2 * Math.log(vn / dn + Math.exp(-0.5 * dn * dn)));
+    kn[i + 1] = Math.floor((dn / tn) * m1);
+    tn = dn;
+    fn[i] = Math.exp(-0.5 * dn * dn);
+    wn[i] = dn / m1;
+  }
+  zigKn = kn;
+  zigWn = wn;
+  zigFn = fn;
+  return kn;
+}
+
+/** Uniform in (0, 1) — never 0 or 1, safe for log(). */
+function uniformOpen(): number {
+  return (__randomUint32() + 0.5) / 4294967296;
+}
+
+/** Rejection path for samples outside a layer's guaranteed-accept region. */
+function zigFix(hz: number, iz: number): number {
+  for (;;) {
+    if (iz === 0) {
+      // Tail beyond ZIG_R (Marsaglia's exponential-wrap method); always finite.
+      let x: number;
+      let y: number;
+      do {
+        x = -Math.log(uniformOpen()) * ZIG_INV_R;
+        y = -Math.log(uniformOpen());
+      } while (y + y < x * x);
+      return hz > 0 ? ZIG_R + x : -(ZIG_R + x);
+    }
+    const x = hz * (zigWn[iz] as number);
+    const fi = zigFn[iz] as number;
+    if (fi + __random() * ((zigFn[iz - 1] as number) - fi) < Math.exp(-0.5 * x * x)) {
+      return x;
+    }
+    hz = __randomUint32() | 0;
+    iz = hz & 127;
+    if (Math.abs(hz) < ((zigKn as Uint32Array)[iz] as number)) {
+      return hz * (zigWn[iz] as number);
+    }
+  }
+}
+
 /**
  * Sample from the standard normal distribution (mean 0, std 1).
  *
- * Uses Box-Muller transform.
- *
- * Important: `log(0)` is `-Infinity`, so we avoid `u1 === 0`.
+ * Uses the Ziggurat method (Marsaglia & Tsang 2000). All values are finite
+ * and deterministic when a seed is set.
  */
 export function __normalRandom(): number {
-  // Ensure u1 is in (0, 1] to avoid log(0).
-  let u1 = __random();
-  while (u1 === 0) {
-    u1 = __random();
+  const kn = zigKn ?? zigInit();
+  const hz = __randomUint32() | 0;
+  const iz = hz & 127;
+  return Math.abs(hz) < (kn[iz] as number) ? hz * (zigWn[iz] as number) : zigFix(hz, iz);
+}
+
+/**
+ * Fill `target[0..count)` with standard-normal samples.
+ *
+ * Bulk variant of {@link __normalRandom}: the sampling loop lives in the
+ * same module as the RNG state so the common accept path inlines.
+ */
+export function __fillNormal(target: Float64Array | Float32Array, count: number): void {
+  const kn = zigKn ?? zigInit();
+  const wn = zigWn;
+  if (__rng) {
+    const rng = __rng;
+    for (let i = 0; i < count; i++) {
+      const hz = rng.nextUint32() | 0;
+      const iz = hz & 127;
+      target[i] = Math.abs(hz) < (kn[iz] as number) ? hz * (wn[iz] as number) : zigFix(hz, iz);
+    }
+    return;
   }
-
-  // u2 can be 0 safely.
-  const u2 = __random();
-
-  // Box–Muller.
-  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  for (let i = 0; i < count; i++) {
+    const hz = randomUint32FromCrypto() | 0;
+    const iz = hz & 127;
+    target[i] = Math.abs(hz) < (kn[iz] as number) ? hz * (wn[iz] as number) : zigFix(hz, iz);
+  }
 }
 
 /**

@@ -7,6 +7,7 @@ import {
 } from "../../core";
 import { type Tensor, Tensor as TensorImpl } from "../tensor/Tensor";
 
+/** Initialization data for constructing a {@link CSRMatrix}. */
 export type CSRMatrixInit = {
   readonly data: Float64Array;
   readonly indices: Int32Array;
@@ -585,6 +586,225 @@ export class CSRMatrix {
     });
   }
 
+  /**
+   * Sparse-sparse matrix multiplication.
+   *
+   * Computes C = A * B where both A and B are CSR matrices.
+   *
+   * @param other - Sparse matrix to multiply with
+   * @returns New CSRMatrix containing the product
+   * @throws {ShapeError} If inner dimensions don't match
+   *
+   * @example
+   * ```ts
+   * const C = A.spmm(B);  // C = A * B (sparse × sparse)
+   * ```
+   */
+  spmm(other: CSRMatrix): CSRMatrix {
+    if (this.cols !== other.rows) {
+      throw new ShapeError(
+        `Cannot multiply: left columns (${this.cols}) != right rows (${other.rows})`
+      );
+    }
+
+    const resultData: number[] = [];
+    const resultIndices: number[] = [];
+    const resultIndptr: number[] = [0];
+
+    for (let r = 0; r < this.rows; r++) {
+      // Accumulate row values using a map
+      const rowValues = new Map<number, number>();
+      const aStart = this.indptr[r] ?? 0;
+      const aEnd = this.indptr[r + 1] ?? aStart;
+
+      for (let pa = aStart; pa < aEnd; pa++) {
+        const k = this.indices[pa] ?? 0;
+        const aVal = this.data[pa] ?? 0;
+
+        // Multiply with row k of other
+        const bStart = other.indptr[k] ?? 0;
+        const bEnd = other.indptr[k + 1] ?? bStart;
+        for (let pb = bStart; pb < bEnd; pb++) {
+          const c = other.indices[pb] ?? 0;
+          const bVal = other.data[pb] ?? 0;
+          rowValues.set(c, (rowValues.get(c) ?? 0) + aVal * bVal);
+        }
+      }
+
+      // Sort by column and emit non-zeros
+      const sortedCols = Array.from(rowValues.keys()).sort((a, b) => a - b);
+      for (const c of sortedCols) {
+        const v = rowValues.get(c) ?? 0;
+        if (v !== 0) {
+          resultIndices.push(c);
+          resultData.push(v);
+        }
+      }
+      resultIndptr.push(resultData.length);
+    }
+
+    return new CSRMatrix({
+      data: new Float64Array(resultData),
+      indices: new Int32Array(resultIndices),
+      indptr: new Int32Array(resultIndptr),
+      shape: [this.rows, other.cols],
+    });
+  }
+
+  /**
+   * Extract a contiguous range of rows as a new CSRMatrix.
+   *
+   * @param start - First row index (inclusive)
+   * @param end - Last row index (exclusive)
+   * @returns New CSRMatrix containing only the selected rows
+   *
+   * @example
+   * ```ts
+   * const sub = matrix.sliceRows(1, 3);  // rows 1 and 2
+   * ```
+   */
+  sliceRows(start: number, end: number): CSRMatrix {
+    if (start < 0) start = 0;
+    if (end > this.rows) end = this.rows;
+    if (start >= end) {
+      // start > end (e.g. sliceRows(3, 1)) yields an empty matrix; the
+      // indptr length must not go negative.
+      return new CSRMatrix({
+        data: new Float64Array(0),
+        indices: new Int32Array(0),
+        indptr: new Int32Array(1),
+        shape: [0, this.cols],
+      });
+    }
+
+    const pStart = this.indptr[start] ?? 0;
+    const pEnd = this.indptr[end] ?? pStart;
+    const newData = this.data.slice(pStart, pEnd);
+    const newIndices = this.indices.slice(pStart, pEnd);
+    const newRows = end - start;
+    const newIndptr = new Int32Array(newRows + 1);
+    for (let i = 0; i <= newRows; i++) {
+      newIndptr[i] = (this.indptr[start + i] ?? 0) - pStart;
+    }
+
+    return new CSRMatrix({
+      data: newData,
+      indices: newIndices,
+      indptr: newIndptr,
+      shape: [newRows, this.cols],
+    });
+  }
+
+  /**
+   * Extract a single row as a 1D dense Float64Array.
+   *
+   * @param row - Row index
+   * @returns Dense array of the row values
+   *
+   * @example
+   * ```ts
+   * const row = matrix.getRow(0);  // [1, 0, 2, 0, ...]
+   * ```
+   */
+  getRow(row: number): Float64Array {
+    if (row < 0 || row >= this.rows) {
+      throw new IndexError(`Row index ${row} out of bounds for ${this.rows} rows`);
+    }
+    const out = new Float64Array(this.cols);
+    const start = this.indptr[row] ?? 0;
+    const end = this.indptr[row + 1] ?? start;
+    for (let p = start; p < end; p++) {
+      const c = this.indices[p] ?? 0;
+      out[c] = this.data[p] ?? 0;
+    }
+    return out;
+  }
+
+  /**
+   * Extract a single column as a 1D dense Float64Array.
+   *
+   * @param col - Column index
+   * @returns Dense array of the column values
+   *
+   * @example
+   * ```ts
+   * const col = matrix.getCol(2);  // [0, 2, 0, ...]
+   * ```
+   */
+  getCol(col: number): Float64Array {
+    if (col < 0 || col >= this.cols) {
+      throw new IndexError(`Column index ${col} out of bounds for ${this.cols} columns`);
+    }
+    const out = new Float64Array(this.rows);
+    for (let r = 0; r < this.rows; r++) {
+      const start = this.indptr[r] ?? 0;
+      const end = this.indptr[r + 1] ?? start;
+      for (let p = start; p < end; p++) {
+        if ((this.indices[p] ?? 0) === col) {
+          out[r] = this.data[p] ?? 0;
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Create a sparse identity matrix.
+   *
+   * @param n - Size of the identity matrix (n × n)
+   * @returns CSRMatrix identity
+   *
+   * @example
+   * ```ts
+   * const I = CSRMatrix.eye(4);  // 4×4 identity
+   * ```
+   */
+  static eye(n: number): CSRMatrix {
+    const data = new Float64Array(n).fill(1);
+    const indices = new Int32Array(n);
+    const indptr = new Int32Array(n + 1);
+    for (let i = 0; i < n; i++) {
+      indices[i] = i;
+      indptr[i + 1] = i + 1;
+    }
+    return new CSRMatrix({ data, indices, indptr, shape: [n, n] });
+  }
+
+  /**
+   * Create a sparse diagonal matrix from values.
+   *
+   * @param values - Diagonal values
+   * @returns CSRMatrix with values on the diagonal
+   *
+   * @example
+   * ```ts
+   * const D = CSRMatrix.diag(new Float64Array([1, 2, 3]));
+   * ```
+   */
+  static diag(values: Float64Array): CSRMatrix {
+    const n = values.length;
+    const data = new Float64Array(n);
+    const indices = new Int32Array(n);
+    const indptr = new Int32Array(n + 1);
+    let nnz = 0;
+    for (let i = 0; i < n; i++) {
+      const v = values[i] ?? 0;
+      if (v !== 0) {
+        data[nnz] = v;
+        indices[nnz] = i;
+        nnz++;
+      }
+      indptr[i + 1] = nnz;
+    }
+    return new CSRMatrix({
+      data: data.slice(0, nnz),
+      indices: indices.slice(0, nnz),
+      indptr,
+      shape: [n, n],
+    });
+  }
+
   /** Helper to convert Tensor to Float64Array */
   private tensorToFloat64(t: Tensor): Float64Array {
     if (t.dtype === "string") {
@@ -634,7 +854,10 @@ export class CSRMatrix {
    * @param args.rowIndices - Row indices of non-zero values
    * @param args.colIndices - Column indices of non-zero values
    * @param args.values - Non-zero values
-   * @param args.sort - Whether to sort entries (default: true)
+   * @param args.sort - Whether to sort entries (default: true). Pass false
+   *   ONLY if entries are already sorted by (row, col); unsorted input with
+   *   sort: false produces an invalid matrix (get() relies on sorted columns).
+   *   Duplicate (row, col) entries are summed (SciPy semantics).
    * @returns New CSRMatrix
    *
    * @example
@@ -705,6 +928,38 @@ export class CSRMatrix {
       next[r] = pos + 1;
     }
 
-    return new CSRMatrix({ data, indices, indptr, shape: [rows, cols] });
+    // Sum duplicate (row, col) entries (SciPy semantics). After sorting,
+    // duplicates are adjacent within each row; without this pass, toDense,
+    // get and matvec would each see a different value for the same cell.
+    // With `sort: false` the caller guarantees entries are already sorted.
+    const dedupIndptr = new Int32Array(rows + 1);
+    let outNnz = 0;
+    for (let r = 0; r < rows; r++) {
+      const rowStart = indptr[r] ?? 0;
+      const rowEnd = indptr[r + 1] ?? 0;
+      const outRowStart = outNnz;
+      for (let p = rowStart; p < rowEnd; p++) {
+        const c = indices[p] ?? 0;
+        const v = data[p] ?? 0;
+        if (outNnz > outRowStart && indices[outNnz - 1] === c) {
+          data[outNnz - 1] = (data[outNnz - 1] ?? 0) + v;
+        } else {
+          indices[outNnz] = c;
+          data[outNnz] = v;
+          outNnz++;
+        }
+      }
+      dedupIndptr[r + 1] = outNnz;
+    }
+
+    if (outNnz === nnz) {
+      return new CSRMatrix({ data, indices, indptr, shape: [rows, cols] });
+    }
+    return new CSRMatrix({
+      data: data.slice(0, outNnz),
+      indices: indices.slice(0, outNnz),
+      indptr: dedupIndptr,
+      shape: [rows, cols],
+    });
   }
 }

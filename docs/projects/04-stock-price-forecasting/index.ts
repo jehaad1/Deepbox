@@ -241,7 +241,7 @@ function createFeatures(
 
 console.log("═".repeat(70));
 console.log("  TIME SERIES STOCK PRICE FORECASTING");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory

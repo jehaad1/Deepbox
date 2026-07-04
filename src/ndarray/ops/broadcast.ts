@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import { type DType, DTypeError, getArrayElement, type Shape, ShapeError } from "../../core";
 import type { Tensor } from "../tensor/Tensor";
 

@@ -987,7 +987,10 @@ describe("stats - Statistical Tests", () => {
 
     it("rejects when distributions differ significantly", () => {
       const result = stats.mannwhitneyu(tensor([1, 2, 3, 4, 5]), tensor([10, 20, 30, 40, 50]));
-      expect(result.pvalue).toBeLessThan(0.01);
+      // Fully-separated samples: scipy's asymptotic (continuity-corrected)
+      // two-sided p-value is ≈0.0122 for n1=n2=5.
+      expect(result.pvalue).toBeCloseTo(0.0122, 3);
+      expect(result.pvalue).toBeLessThan(0.05);
     });
 
     it("accepts similar distributions", () => {

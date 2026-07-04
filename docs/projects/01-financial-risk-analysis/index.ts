@@ -11,7 +11,7 @@
  *
  * Deepbox Modules Used:
  * - deepbox/ndarray: Tensor operations
- * - deepbox/linalg: Matrix decomposition, inverse
+ * - deepbox/linalg: Matrix inverse, Cholesky, determinant/trace
  * - deepbox/stats: Correlation, covariance, statistical measures
  * - deepbox/dataframe: Data manipulation
  * - deepbox/plot: Visualization
@@ -68,7 +68,7 @@ const expectNumericTypedArray = (
 
 console.log("═".repeat(70));
 console.log("  FINANCIAL PORTFOLIO RISK ANALYSIS SYSTEM");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GradTensor, parameter, tensor } from "../src/ndarray";
-import { binaryCrossEntropyWithLogitsLoss, crossEntropyLoss } from "../src/nn/losses/crossEntropy";
+import { binaryCrossEntropyWithLogitsLoss, crossEntropyLoss } from "../src/nn/losses/cross_entropy";
 import { expectNumberArray2D } from "./nn-test-utils";
 
 describe("deepbox/nn - Cross Entropy Losses", () => {

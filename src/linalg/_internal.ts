@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox documentation}
+ */
+
 import { DataValidationError, DTypeError, getConfig, IndexError, ShapeError } from "../core";
 import { Tensor } from "../ndarray";
 
@@ -258,13 +262,17 @@ export function luFactorSquare(
   // Track sign of permutation for determinant calculation
   let pivSign = 1;
 
-  // Main elimination loop over columns
+  // Main elimination loop over columns. The elimination triple loop is
+  // O(n³) — its inner accesses use direct typed-array indexing (with row
+  // bases hoisted) rather than the bounds-checked `at()` accessor, which
+  // V8 cannot keep on its fast path across the undefined-check/throw edge.
   for (let k = 0; k < n; k++) {
+    const kRow = k * n;
     // Find pivot: row with largest absolute value in column k
     let maxRow = k;
-    let maxVal = Math.abs(at(lu, k * n + k));
+    let maxVal = Math.abs(lu[kRow + k] as number);
     for (let i = k + 1; i < n; i++) {
-      const v = Math.abs(at(lu, i * n + k));
+      const v = Math.abs(lu[i * n + k] as number);
       if (v > maxVal) {
         maxVal = v;
         maxRow = i;
@@ -278,29 +286,29 @@ export function luFactorSquare(
 
     // Perform row swap if needed (partial pivoting)
     if (maxRow !== k) {
-      // Swap rows k and maxRow in lu matrix
+      const mRow = maxRow * n;
       for (let j = 0; j < n; j++) {
-        const tmp = at(lu, k * n + j);
-        lu[k * n + j] = at(lu, maxRow * n + j);
-        lu[maxRow * n + j] = tmp;
+        const tmp = lu[kRow + j] as number;
+        lu[kRow + j] = lu[mRow + j] as number;
+        lu[mRow + j] = tmp;
       }
-      // Update permutation vector
       const tp = atInt(piv, k);
       piv[k] = atInt(piv, maxRow);
       piv[maxRow] = tp;
-      // Flip sign for determinant
       pivSign = -pivSign;
     }
 
     // Perform elimination for rows below pivot
-    const pivot = at(lu, k * n + k);
+    const pivot = lu[kRow + k] as number;
+    const invPivot = 1 / pivot;
     for (let i = k + 1; i < n; i++) {
-      // Compute multiplier (stored in L part)
-      lu[i * n + k] = at(lu, i * n + k) / pivot;
-      const lik = at(lu, i * n + k);
+      const iRow = i * n;
+      const lik = (lu[iRow + k] as number) * invPivot;
+      lu[iRow + k] = lik;
+      if (lik === 0) continue;
       // Update row i: row_i = row_i - lik * row_k
       for (let j = k + 1; j < n; j++) {
-        lu[i * n + j] = at(lu, i * n + j) - lik * at(lu, k * n + j);
+        lu[iRow + j] = (lu[iRow + j] as number) - lik * (lu[kRow + j] as number);
       }
     }
   }
@@ -345,33 +353,40 @@ export function luSolveInPlace(
     }
   }
 
-  // Step 2: Forward substitution - solve L*Y = P*B
-  // L has unit diagonal (implicit 1s), so no division needed
+  // Step 2: Forward substitution — solve L*Y = P*B. L has unit diagonal.
+  // axpy form (rank-1 update of the whole RHS row per already-solved row)
+  // walks both b-rows contiguously in j and avoids the strided per-column
+  // dot product of the textbook order.
   for (let i = 0; i < n; i++) {
-    for (let j = 0; j < nrhs; j++) {
-      let sum = at(b, i * nrhs + j);
-      // Subtract contributions from already-solved variables
-      for (let k = 0; k < i; k++) {
-        sum -= at(lu, i * n + k) * at(b, k * nrhs + j);
+    const iRow = i * nrhs;
+    const luRow = i * n;
+    for (let k = 0; k < i; k++) {
+      const lik = lu[luRow + k] as number;
+      if (lik === 0) continue;
+      const kRow = k * nrhs;
+      for (let j = 0; j < nrhs; j++) {
+        b[iRow + j] = (b[iRow + j] as number) - lik * (b[kRow + j] as number);
       }
-      b[i * nrhs + j] = sum;
     }
   }
 
-  // Step 3: Backward substitution - solve U*X = Y
-  // U has explicit diagonal, must divide by it
+  // Step 3: Backward substitution — solve U*X = Y.
   for (let i = n - 1; i >= 0; i--) {
-    const diag = at(lu, i * n + i);
-    // Check for singularity
+    const iRow = i * nrhs;
+    const luRow = i * n;
+    const diag = lu[luRow + i] as number;
     if (diag === 0) throw new DataValidationError("Matrix is singular");
-    for (let j = 0; j < nrhs; j++) {
-      let sum = at(b, i * nrhs + j);
-      // Subtract contributions from already-solved variables
-      for (let k = i + 1; k < n; k++) {
-        sum -= at(lu, i * n + k) * at(b, k * nrhs + j);
+    for (let k = i + 1; k < n; k++) {
+      const uik = lu[luRow + k] as number;
+      if (uik === 0) continue;
+      const kRow = k * nrhs;
+      for (let j = 0; j < nrhs; j++) {
+        b[iRow + j] = (b[iRow + j] as number) - uik * (b[kRow + j] as number);
       }
-      // Divide by diagonal element
-      b[i * nrhs + j] = sum / diag;
+    }
+    const invDiag = 1 / diag;
+    for (let j = 0; j < nrhs; j++) {
+      b[iRow + j] = (b[iRow + j] as number) * invDiag;
     }
   }
 }

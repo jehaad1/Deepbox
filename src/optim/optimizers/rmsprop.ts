@@ -1,11 +1,27 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import {
+  add,
+  addScalar,
+  div,
+  type GradTensor,
+  mulScalar,
+  sqrt,
+  square,
+  sub,
+  type Tensor,
+} from "../../ndarray";
 import {
   assertBufferSize,
   assertFinite,
   assertFiniteNonNegative,
   assertFinitePositive,
   assertHasGradFloat,
+  deviceMaxScalar,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -40,6 +56,10 @@ type RMSpropState = {
   squareAvg: Float64Array;
   momentumBuffer?: Float64Array;
   gradAvg?: Float64Array;
+  /** Device state buffers (used when the parameter lives on a kernel device). */
+  squareAvgTensor?: Tensor;
+  momentumTensor?: Tensor;
+  gradAvgTensor?: Tensor;
 };
 
 /**
@@ -206,6 +226,52 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
 
       // Update each parameter in the group
       for (const param of group.params) {
+        // Device path: keep the whole RMSprop update resident on the
+        // accelerator by composing it from device-dispatched tensor ops.
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let dstate = this.state.get(param);
+          if (!dstate) {
+            dstate = { squareAvg: new Float64Array(0) };
+            this.state.set(param, dstate);
+          }
+          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const sqPrev = dstate.squareAvgTensor;
+          // v(t) = alpha * v(t-1) + (1 - alpha) * g^2
+          const sqNew = sqPrev
+            ? add(mulScalar(sqPrev, alpha), mulScalar(square(grad), 1 - alpha))
+            : mulScalar(square(grad), 1 - alpha);
+          dstate.squareAvgTensor = sqNew;
+          let avg: Tensor = sqNew;
+          let denom: Tensor;
+          if (centered) {
+            const gPrev = dstate.gradAvgTensor;
+            const gAvgNew = gPrev
+              ? add(mulScalar(gPrev, alpha), mulScalar(grad, 1 - alpha))
+              : mulScalar(grad, 1 - alpha);
+            dstate.gradAvgTensor = gAvgNew;
+            avg = sub(sqNew, square(gAvgNew));
+            // denom = sqrt(max(avg, 0) + eps)
+            denom = sqrt(addScalar(deviceMaxScalar(avg, 0), eps));
+          } else {
+            // denom = sqrt(avg) + eps
+            denom = addScalar(sqrt(avg), eps);
+          }
+          const normalizedGrad = div(grad, denom);
+          if (momentum > 0) {
+            const bufPrev = dstate.momentumTensor;
+            const bufNew = bufPrev
+              ? add(mulScalar(bufPrev, momentum), normalizedGrad)
+              : normalizedGrad;
+            dstate.momentumTensor = bufNew;
+            replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(bufNew, lr)));
+          } else {
+            replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(normalizedGrad, lr)));
+          }
+          continue;
+        }
+
         // Get gradient and validate
         const {
           grad: gradData,

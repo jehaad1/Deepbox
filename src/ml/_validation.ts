@@ -3,6 +3,7 @@
  * This file is not exported from the public API.
  *
  * @internal
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
 import { DataValidationError, ShapeError } from "../core";

@@ -1,12 +1,16 @@
 import {
   DeepboxError,
   type Device,
+  DeviceError,
   type DType,
   DTypeError,
   InvalidParameterError,
+  isBackendAvailable,
   isDevice,
   ShapeError,
+  shapesEqual,
 } from "../../core";
+import { getKernelBackend } from "../../core/backend/registry";
 import { type AnyTensor, GradTensor, type Tensor } from "../../ndarray";
 import { offsetFromFlatIndex } from "../../ndarray/tensor/strides";
 import { computeStrides } from "../../ndarray/tensor/Tensor";
@@ -16,14 +20,6 @@ type StateEntry = {
   dtype: DType;
   shape: number[];
 };
-
-function shapesEqual(a: readonly number[], b: readonly number[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return false;
-  }
-  return true;
-}
 
 function sizeFromShape(shape: readonly number[], context: string): number {
   let size = 1;
@@ -283,6 +279,11 @@ export abstract class Module {
   protected registerParameter(name: string, param: GradTensor): void {
     // Register a trainable parameter (weight or bias) for optimization
     this._parameters.set(name, param);
+  }
+
+  /** Retrieve a previously registered parameter by name (undefined if absent). */
+  protected getParameter(name: string): GradTensor | undefined {
+    return this._parameters.get(name);
   }
 
   /**
@@ -566,6 +567,12 @@ export abstract class Module {
       for (const [key, value] of Object.entries(module)) {
         if (value === param) {
           Reflect.set(module, key, nextParam);
+        } else if (Array.isArray(value)) {
+          for (let i = 0; i < value.length; i++) {
+            if (value[i] === param) {
+              value[i] = nextParam;
+            }
+          }
         }
       }
     }
@@ -582,12 +589,6 @@ export abstract class Module {
     }
     const localName = parts[parts.length - 1] ?? "";
     return { module, localName };
-  }
-
-  private static setTensorDeviceMetadata(target: Tensor, device: Device): void {
-    if (!Reflect.set(target, "device", device)) {
-      throw new DeepboxError("Failed to update tensor device metadata");
-    }
   }
 
   /**
@@ -679,37 +680,89 @@ export abstract class Module {
   }
 
   /**
-   * Move module to a specific device.
+   * Move the module's parameters and buffers to a device.
    *
-   * **⚠️ WARNING**: This is a metadata-only operation. It updates the device
-   * property on parameters and buffers but does NOT actually transfer data
-   * between devices. Actual device data transfer requires device-specific
-   * memory management which is not yet implemented.
+   * Transfers the underlying tensor data (uploading to device memory for
+   * kernel devices like `webgpu`, downloading when moving back to `cpu`).
+   * Existing parameter gradients move along with their parameters. The
+   * device/backend validation happens synchronously (invalid devices throw
+   * immediately); the data transfer itself is asynchronous because device
+   * readback cannot block the JavaScript thread.
    *
-   * This method is provided for API compatibility and future extensibility.
-   * Currently, it only updates the `device` metadata field.
+   * Kernel devices execute float32 only, so non-float32 parameters and
+   * buffers (e.g. integer bookkeeping buffers) stay in host memory — they
+   * are consumed by host-side code paths.
    *
    * @param device - Target device identifier (e.g., 'cpu', 'webgpu', 'wasm')
-   * @returns this module for method chaining
+   * @returns Promise resolving to this module for chaining
+   * @throws {InvalidParameterError} If the device identifier is unknown
+   * @throws {DeviceError} If no backend is registered/available for the device
    *
    * @example
    * ```ts
    * const model = new Linear(10, 5);
-   * model.to('webgpu'); // Updates device metadata only
+   * await model.to('webgpu'); // parameters now live in GPU memory
+   * await model.to('cpu');    // ...and back
    * ```
    */
-  to(device: Device): this {
+  to(device: Device): Promise<this> {
     if (!isDevice(device)) {
       throw new InvalidParameterError("device must be one of: cpu, webgpu, wasm", "device", device);
     }
 
-    for (const param of this.parameters()) {
-      Module.setTensorDeviceMetadata(param.tensor, device);
+    if (!isBackendAvailable(device)) {
+      throw new DeviceError(
+        `No backend available for device "${device}". ` +
+          "Register one first (e.g. `registerBackend('webgpu', gpu)` after `await gpu.init()`). " +
+          "See https://deepbox.dev/docs/devices-and-execution for backends and the accelerated op set."
+      );
     }
-    for (const buffer of this.buffers()) {
-      Module.setTensorDeviceMetadata(buffer, device);
+
+    return this.moveTo(device);
+  }
+
+  private async moveTo(device: Device): Promise<this> {
+    // Kernel devices hold float32 buffers (plus half-precision float16 /
+    // bfloat16); other dtypes stay on the host.
+    const kernelDevice = getKernelBackend(device) !== null;
+
+    const movable = (t: Tensor): boolean =>
+      !kernelDevice || t.dtype === "float32" || t.dtype === "float16" || t.dtype === "bfloat16";
+
+    for (const module of this.modules()) {
+      for (const param of module._parameters.values()) {
+        if (!movable(param.tensor)) continue;
+        const moved = await param.tensor.to(device);
+        if (moved !== param.tensor) {
+          Module.replaceGradTensorStorage(param, "tensor", moved);
+        }
+        const grad = param.grad;
+        if (grad && movable(grad)) {
+          const movedGrad = await grad.to(device);
+          if (movedGrad !== grad) {
+            Module.replaceGradTensorStorage(param, "_grad", movedGrad);
+          }
+        }
+      }
+      for (const [name, buffer] of module._buffers.entries()) {
+        if (!movable(buffer)) continue;
+        const moved = await buffer.to(device);
+        if (moved !== buffer) {
+          module._buffers.set(name, moved);
+        }
+      }
     }
     return this;
+  }
+
+  private static replaceGradTensorStorage(
+    target: GradTensor,
+    field: "tensor" | "_grad",
+    value: Tensor
+  ): void {
+    if (!Reflect.set(target, field, value)) {
+      throw new DeepboxError("Failed to move parameter tensor to the target device");
+    }
   }
 
   /**
@@ -763,6 +816,63 @@ export abstract class Module {
     }
 
     lines.push(")");
+    return lines.join("\n");
+  }
+
+  /**
+   * Print a summary of the model showing layer names, types, and parameter counts.
+   *
+   * @returns Formatted summary string
+   */
+  summary(): string {
+    const rows: { name: string; type: string; params: number }[] = [];
+    let totalParams = 0;
+    let trainableParams = 0;
+
+    // Collect own parameters
+    for (const [pName, param] of this._parameters.entries()) {
+      const count = param.tensor.size;
+      rows.push({ name: pName, type: "(parameter)", params: count });
+      totalParams += count;
+      if (param.requiresGrad) trainableParams += count;
+    }
+
+    // Collect child modules recursively
+    for (const [mName, module] of this._modules.entries()) {
+      let modParams = 0;
+      for (const p of module.parameters(true)) {
+        modParams += p.tensor.size;
+        totalParams += p.tensor.size;
+        if (p.requiresGrad) trainableParams += p.tensor.size;
+      }
+      rows.push({
+        name: mName,
+        type: module.constructor.name,
+        params: modParams,
+      });
+    }
+
+    const sep = "-".repeat(60);
+    const lines: string[] = [
+      sep,
+      `${this.constructor.name} Summary`,
+      sep,
+      `${"Layer".padEnd(25)} ${"Type".padEnd(20)} ${"Params".padStart(10)}`,
+      sep,
+    ];
+
+    for (const row of rows) {
+      lines.push(
+        `${row.name.padEnd(25)} ${row.type.padEnd(20)} ${String(row.params).padStart(10)}`
+      );
+    }
+
+    lines.push(sep);
+    lines.push(`Total params: ${totalParams}`);
+    lines.push(`Trainable params: ${trainableParams}`);
+    lines.push(`Non-trainable params: ${totalParams - trainableParams}`);
+    lines.push(sep);
+
     return lines.join("\n");
   }
 }

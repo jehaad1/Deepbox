@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tensor } from "../src/ndarray";
-import { abs } from "../src/ndarray/ops/abs";
+import { abs } from "../src/ndarray/ops/arithmetic";
 import {
   cbrt,
   ceil,

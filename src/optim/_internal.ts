@@ -3,6 +3,7 @@
  * This module is not part of the public API.
  *
  * @internal
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
 import {
@@ -13,7 +14,84 @@ import {
   NotFittedError,
   ShapeError,
 } from "../core";
-import type { GradTensor } from "../ndarray";
+import {
+  add,
+  addScalar,
+  type GradTensor,
+  mulScalar,
+  neg,
+  relu,
+  sub,
+  type Tensor,
+  tensor,
+  where,
+} from "../ndarray";
+
+/**
+ * Replace a parameter's underlying storage tensor in place. Optimizers that
+ * run their update on a device (where the parameter buffer is opaque GPU
+ * memory) compose the new parameter with device tensor ops and swap it in via
+ * this helper, mirroring how `nn.Module.to` moves parameters. The `tensor` /
+ * `_grad` fields are declared `readonly`, so the write goes through
+ * `Reflect.set`.
+ */
+export function replaceParamStorage(
+  param: GradTensor,
+  field: "tensor" | "_grad",
+  value: Tensor
+): void {
+  if (!Reflect.set(param, field, value)) {
+    throw new DeepboxError(`optimizer: failed to update parameter ${field} on device`);
+  }
+}
+
+/**
+ * Device analogue of `Math.sign`, composed from device-dispatched ops so it can
+ * run on opaque accelerator memory (the exported `sign` op is host-only). Returns
+ * +1 where `t > 0`, -1 where `t < 0`, and 0 where `t === 0`, matching
+ * `Math.sign` on finite values.
+ *
+ * @internal
+ */
+export function deviceSign(t: Tensor): Tensor {
+  const one = tensor(1);
+  const zero = tensor(0);
+  // relu(t) is nonzero exactly where t > 0; relu(-t) exactly where t < 0.
+  const pos = where(relu(t), one, zero);
+  const negPart = where(relu(neg(t)), one, zero);
+  return sub(pos, negPart);
+}
+
+/**
+ * Device analogue of `Math.max(t, c)` for a scalar `c`, composed from
+ * device-dispatched ops (the exported `maximum` op is host-only). Uses the
+ * identity `max(t, c) = c + relu(t - c)`, which is exact for finite values.
+ *
+ * @internal
+ */
+export function deviceMaxScalar(t: Tensor, c: number): Tensor {
+  return addScalar(relu(addScalar(t, -c)), c);
+}
+
+/**
+ * Device analogue of `Math.min(t, c)` for a scalar `c`, composed from
+ * device-dispatched ops. Uses `min(t, c) = c - relu(c - t)`.
+ *
+ * @internal
+ */
+export function deviceMinScalar(t: Tensor, c: number): Tensor {
+  return addScalar(mulScalar(relu(addScalar(neg(t), c)), -1), c);
+}
+
+/**
+ * Device analogue of element-wise `maximum(a, b)`, composed from
+ * device-dispatched ops via `max(a, b) = a + relu(b - a)`.
+ *
+ * @internal
+ */
+export function deviceMaxTensor(a: Tensor, b: Tensor): Tensor {
+  return add(a, relu(sub(b, a)));
+}
 
 /**
  * Supported floating-point typed array types for optimizer parameters.

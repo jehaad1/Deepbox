@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { tensor } from "../src/ndarray";
 import { reshape, transpose } from "../src/ndarray/tensor/shape";
-import { squeeze, unsqueeze } from "../src/ndarray/tensor/shapeOps";
+import { squeeze, unsqueeze } from "../src/ndarray/tensor/shape_ops";
 
 describe("ndarray shape ops error branches", () => {
   it("throws on reshape size mismatch", () => {

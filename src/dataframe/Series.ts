@@ -1,7 +1,9 @@
-import { DataValidationError, IndexError, InvalidParameterError } from "../core/errors/index.js";
-import { type Tensor, tensor } from "../ndarray/index.js";
-import type { SeriesOptions } from "./types.js";
-import { createKey } from "./utils.js";
+import { DataValidationError, IndexError, InvalidParameterError } from "../core/errors/index";
+import { type Tensor, tensor } from "../ndarray/index";
+import { DateTimeAccessor } from "./DateTimeAccessor";
+import { StringAccessor } from "./StringAccessor";
+import type { SeriesOptions } from "./types";
+import { createKey } from "./utils";
 
 /**
  * One-dimensional labeled array capable of holding any data type.
@@ -114,6 +116,47 @@ export class Series<T = unknown> {
    */
   get name(): string | undefined {
     return this._name;
+  }
+
+  /**
+   * Access string methods on this Series.
+   *
+   * Returns a {@link StringAccessor} that provides vectorized string
+   * operations. Each method operates element-wise, propagating null
+   * values as null.
+   *
+   * @returns StringAccessor for this Series
+   *
+   * @example
+   * ```ts
+   * const s = new Series(['hello', 'world', null]);
+   * s.str.upper();        // Series(['HELLO', 'WORLD', null])
+   * s.str.contains('lo'); // Series([true, false, null])
+   * ```
+   */
+  get str(): StringAccessor {
+    return new StringAccessor(this);
+  }
+
+  /**
+   * Access datetime methods on this Series.
+   *
+   * Returns a {@link DateTimeAccessor} that provides vectorized date/time
+   * operations. Each method operates element-wise, propagating null
+   * values as null.
+   *
+   * @returns DateTimeAccessor for this Series
+   *
+   * @example
+   * ```ts
+   * const s = new Series([new Date('2024-01-15'), new Date('2024-06-20')]);
+   * s.dt.year();       // Series([2024, 2024])
+   * s.dt.month();      // Series([1, 6])
+   * s.dt.dayofweek();  // Series([1, 4])
+   * ```
+   */
+  get dt(): DateTimeAccessor {
+    return new DateTimeAccessor(this);
   }
 
   /**

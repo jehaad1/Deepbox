@@ -1,47 +1,26 @@
-import {
-  DTypeError,
-  getElementAsNumber,
-  InvalidParameterError,
-  type Shape,
-  ShapeError,
-} from "../../core";
+/**
+ * Recurrent neural-network layers: RNN, LSTM, GRU.
+ *
+ * These layers are fully differentiable — the forward pass is built from
+ * composable GradTensor operations (matmul/add/tanh/sigmoid/slice/stack/
+ * concat), so backpropagation-through-time flows to every registered weight.
+ *
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox documentation}
+ */
+
+import { DTypeError, InvalidParameterError, ShapeError } from "../../core";
 import {
   type AnyTensor,
+  concatGrad,
   GradTensor,
   mulScalar,
   parameter,
   randn,
+  stackGrad,
   Tensor,
   zeros,
 } from "../../ndarray";
 import { Module } from "../module/Module";
-
-function ensureFloatTensor(
-  t: Tensor,
-  context: string
-): asserts t is Tensor<Shape, "float32" | "float64"> {
-  if (t.dtype === "string") {
-    throw new DTypeError(`${context} does not support string dtype`);
-  }
-  if (t.dtype !== "float32" && t.dtype !== "float64") {
-    throw new DTypeError(`${context} expects float32 or float64 dtype`);
-  }
-}
-
-function readNumeric(t: Tensor, offset: number): number {
-  const data = t.data;
-  if (Array.isArray(data)) {
-    throw new DTypeError("String tensors are not supported");
-  }
-  return getElementAsNumber(data, offset);
-}
-
-function createFloatBuffer(
-  size: number,
-  dtype: "float32" | "float64"
-): Float32Array | Float64Array {
-  return dtype === "float64" ? new Float64Array(size) : new Float32Array(size);
-}
 
 function validatePositiveInt(name: string, value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
@@ -49,258 +28,121 @@ function validatePositiveInt(name: string, value: number): void {
   }
 }
 
-type ParsedInput = {
-  readonly batch: number;
-  readonly seqLen: number;
-  readonly inputDim: number;
-  readonly isUnbatched: boolean;
-  readonly batchStride: number;
-  readonly seqStride: number;
-  readonly featStride: number;
-};
-
-function parseInput(input: Tensor, batchFirst: boolean): ParsedInput {
-  if (input.ndim === 2) {
-    const seqLen = input.shape[0] ?? 0;
-    const inputDim = input.shape[1] ?? 0;
-    return {
-      batch: 1,
-      seqLen,
-      inputDim,
-      isUnbatched: true,
-      batchStride: 0,
-      seqStride: input.strides[0] ?? 0,
-      featStride: input.strides[1] ?? 0,
-    };
-  }
-
-  if (input.ndim !== 3) {
-    throw new ShapeError(`Recurrent layers expect 2D or 3D input; got ndim=${input.ndim}`);
-  }
-
-  if (batchFirst) {
-    return {
-      batch: input.shape[0] ?? 0,
-      seqLen: input.shape[1] ?? 0,
-      inputDim: input.shape[2] ?? 0,
-      isUnbatched: false,
-      batchStride: input.strides[0] ?? 0,
-      seqStride: input.strides[1] ?? 0,
-      featStride: input.strides[2] ?? 0,
-    };
-  }
-
-  return {
-    batch: input.shape[1] ?? 0,
-    seqLen: input.shape[0] ?? 0,
-    inputDim: input.shape[2] ?? 0,
-    isUnbatched: false,
-    batchStride: input.strides[1] ?? 0,
-    seqStride: input.strides[0] ?? 0,
-    featStride: input.strides[2] ?? 0,
-  };
+function asGrad(x: AnyTensor): GradTensor {
+  return GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 }
 
-function outputIndex(
-  batchFirst: boolean,
-  isUnbatched: boolean,
-  batch: number,
-  seqLen: number,
-  hiddenSize: number,
-  b: number,
-  t: number,
-  j: number
-): number {
-  if (isUnbatched) {
-    return t * hiddenSize + j;
+function ensureFloatDtype(x: GradTensor, context: string): void {
+  if (x.dtype !== "float32" && x.dtype !== "float64") {
+    throw new DTypeError(`${context} expects float32 or float64 input`);
   }
-  if (batchFirst) {
-    return b * (seqLen * hiddenSize) + t * hiddenSize + j;
-  }
-  return t * (batch * hiddenSize) + b * hiddenSize + j;
-}
-
-function extractTensor(arg: AnyTensor, _name: string): Tensor {
-  if (GradTensor.isGradTensor(arg)) {
-    return arg.tensor;
-  }
-  return arg;
-}
-
-function buildState(
-  state: Tensor | undefined,
-  numLayers: number,
-  batch: number,
-  hiddenSize: number,
-  isUnbatched: boolean,
-  name: string
-): Float64Array[] {
-  const result = new Array<Float64Array>(numLayers);
-  for (let l = 0; l < numLayers; l++) {
-    result[l] = new Float64Array(batch * hiddenSize);
-  }
-
-  if (!state) {
-    return result;
-  }
-
-  ensureFloatTensor(state, name);
-
-  if (state.ndim === 2) {
-    if (!isUnbatched) {
-      throw new ShapeError(`Expected ${name} with 3 dimensions for batched input`);
-    }
-    if ((state.shape[0] ?? 0) !== numLayers || (state.shape[1] ?? 0) !== hiddenSize) {
-      throw new ShapeError(
-        `Expected ${name} shape [${numLayers}, ${hiddenSize}], got [${state.shape.join(", ")}]`
-      );
-    }
-
-    const stride0 = state.strides[0] ?? 0;
-    const stride1 = state.strides[1] ?? 0;
-    for (let l = 0; l < numLayers; l++) {
-      const layerState = result[l];
-      if (!layerState) {
-        throw new ShapeError(`Internal error: missing ${name} layer state`);
-      }
-      const base = state.offset + l * stride0;
-      for (let j = 0; j < hiddenSize; j++) {
-        layerState[j] = readNumeric(state, base + j * stride1);
-      }
-    }
-
-    return result;
-  }
-
-  if (state.ndim !== 3) {
-    throw new ShapeError(`Expected ${name} with 2 or 3 dimensions; got ndim=${state.ndim}`);
-  }
-
-  const expectedBatch = isUnbatched ? 1 : batch;
-  if (
-    (state.shape[0] ?? 0) !== numLayers ||
-    (state.shape[1] ?? 0) !== expectedBatch ||
-    (state.shape[2] ?? 0) !== hiddenSize
-  ) {
-    const expected = isUnbatched ? [numLayers, 1, hiddenSize] : [numLayers, batch, hiddenSize];
-    throw new ShapeError(
-      `Expected ${name} shape [${expected.join(", ")}], got [${state.shape.join(", ")}]`
-    );
-  }
-
-  const stride0 = state.strides[0] ?? 0;
-  const stride1 = state.strides[1] ?? 0;
-  const stride2 = state.strides[2] ?? 0;
-
-  for (let l = 0; l < numLayers; l++) {
-    const layerState = result[l];
-    if (!layerState) {
-      throw new ShapeError(`Internal error: missing ${name} layer state`);
-    }
-    const baseLayer = state.offset + l * stride0;
-    for (let b = 0; b < batch; b++) {
-      const baseBatch = baseLayer + b * stride1;
-      for (let j = 0; j < hiddenSize; j++) {
-        layerState[b * hiddenSize + j] = readNumeric(state, baseBatch + j * stride2);
-      }
-    }
-  }
-
-  return result;
-}
-
-function packState(
-  state: Float64Array[],
-  numLayers: number,
-  batch: number,
-  hiddenSize: number,
-  dtype: "float32" | "float64",
-  device: Tensor["device"],
-  isUnbatched: boolean
-): Tensor {
-  const size = isUnbatched ? numLayers * hiddenSize : numLayers * batch * hiddenSize;
-  const data = createFloatBuffer(size, dtype);
-
-  if (isUnbatched) {
-    for (let l = 0; l < numLayers; l++) {
-      const layer = state[l];
-      if (!layer) {
-        throw new ShapeError("Internal error: missing packed state layer");
-      }
-      for (let j = 0; j < hiddenSize; j++) {
-        data[l * hiddenSize + j] = layer[j] ?? 0;
-      }
-    }
-    return Tensor.fromTypedArray({
-      data,
-      shape: [numLayers, hiddenSize],
-      dtype,
-      device,
-    });
-  }
-
-  for (let l = 0; l < numLayers; l++) {
-    const layer = state[l];
-    if (!layer) {
-      throw new ShapeError("Internal error: missing packed state layer");
-    }
-    const layerOffset = l * batch * hiddenSize;
-    for (let b = 0; b < batch; b++) {
-      const batchOffset = layerOffset + b * hiddenSize;
-      for (let j = 0; j < hiddenSize; j++) {
-        data[batchOffset + j] = layer[b * hiddenSize + j] ?? 0;
-      }
-    }
-  }
-
-  return Tensor.fromTypedArray({
-    data,
-    shape: [numLayers, batch, hiddenSize],
-    dtype,
-    device,
-  });
 }
 
 /**
- * Simple RNN layer.
- *
- * Applies a simple recurrent neural network to an input sequence.
- *
- * **Formula**: h_t = tanh(W_ih * x_t + b_ih + W_hh * h_{t-1} + b_hh)
+ * Normalize a recurrent input to a batched [batch, seqLen, feat] GradTensor.
+ * Records how to restore the caller's layout for the output.
+ */
+interface NormalizedSeq {
+  readonly x: GradTensor; // [batch, seqLen, feat]
+  readonly batch: number;
+  readonly seqLen: number;
+  readonly feat: number;
+  readonly isUnbatched: boolean;
+}
+
+function normalizeSeqInput(input: GradTensor, batchFirst: boolean): NormalizedSeq {
+  if (input.ndim === 2) {
+    const seqLen = input.shape[0] ?? 0;
+    const feat = input.shape[1] ?? 0;
+    return { x: input.reshape([1, seqLen, feat]), batch: 1, seqLen, feat, isUnbatched: true };
+  }
+  if (input.ndim !== 3) {
+    throw new ShapeError(`Recurrent layers expect 2D or 3D input; got ndim=${input.ndim}`);
+  }
+  if (batchFirst) {
+    return {
+      x: input,
+      batch: input.shape[0] ?? 0,
+      seqLen: input.shape[1] ?? 0,
+      feat: input.shape[2] ?? 0,
+      isUnbatched: false,
+    };
+  }
+  // [seqLen, batch, feat] -> [batch, seqLen, feat]
+  return {
+    x: input.transpose([1, 0, 2]),
+    batch: input.shape[1] ?? 0,
+    seqLen: input.shape[0] ?? 0,
+    feat: input.shape[2] ?? 0,
+    isUnbatched: false,
+  };
+}
+
+/** Slice timestep t out of a [batch, seqLen, feat] sequence -> [batch, feat]. */
+function timestep(seq: GradTensor, t: number): GradTensor {
+  return seq.slice({}, t);
+}
+
+/** Restore output from internal [batch, seqLen, hidden] to the caller's layout. */
+function restoreOutput(out: GradTensor, batchFirst: boolean, isUnbatched: boolean): GradTensor {
+  if (isUnbatched) {
+    // [1, seqLen, hidden] -> [seqLen, hidden]
+    const seqLen = out.shape[1] ?? 0;
+    const hidden = out.shape[2] ?? 0;
+    return out.reshape([seqLen, hidden]);
+  }
+  if (batchFirst) return out;
+  // [batch, seqLen, hidden] -> [seqLen, batch, hidden]
+  return out.transpose([1, 0, 2]);
+}
+
+type Params = {
+  readonly wIh: GradTensor;
+  readonly wHh: GradTensor;
+  readonly bIh?: GradTensor | undefined;
+  readonly bHh?: GradTensor | undefined;
+};
+
+/** Linear projection y = x @ W^T (+ b). x: [batch, in], W: [out, in]. */
+function linear(x: GradTensor, w: GradTensor, b?: GradTensor): GradTensor {
+  let y = x.matmul(w.transpose());
+  if (b) y = y.add(b);
+  return y;
+}
+
+export type RNNNonlinearity = "tanh" | "relu";
+
+/**
+ * Elman RNN layer with `tanh` or `relu` nonlinearity.
  *
  * @example
  * ```ts
  * import { RNN } from 'deepbox/nn';
- * import { tensor } from 'deepbox/ndarray';
+ * import { randn } from 'deepbox/ndarray';
  *
- * const rnn = new RNN(10, 20);
- * const x = tensor([[[1, 2, 3]]]);  // (batch, seq_len, input_size)
+ * const rnn = new RNN(4, 8, { numLayers: 2 });
+ * const x = randn([2, 5, 4]); // (batch, seq, feature)
  * const output = rnn.forward(x);
  * ```
- *
- * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
  */
 export class RNN extends Module {
   private readonly inputSize: number;
   private readonly hiddenSize: number;
   private readonly numLayers: number;
-  private readonly nonlinearity: "tanh" | "relu";
+  private readonly nonlinearity: RNNNonlinearity;
   private readonly bias: boolean;
   private readonly batchFirst: boolean;
-
-  private weightsIh: Tensor[];
-  private weightsHh: Tensor[];
-  private biasIh: Tensor[];
-  private biasHh: Tensor[];
+  private readonly bidirectional: boolean;
 
   constructor(
     inputSize: number,
     hiddenSize: number,
     options: {
       readonly numLayers?: number;
-      readonly nonlinearity?: "tanh" | "relu";
+      readonly nonlinearity?: RNNNonlinearity;
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
+      readonly bidirectional?: boolean;
     } = {}
   ) {
     super();
@@ -315,183 +157,91 @@ export class RNN extends Module {
     this.nonlinearity = options.nonlinearity ?? "tanh";
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
+    this.bidirectional = options.bidirectional ?? false;
 
-    const stdv = 1.0 / Math.sqrt(hiddenSize);
+    initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
+      gateMul: 1,
+      inputSize,
+      hiddenSize,
+      numLayers,
+      bias: this.bias,
+      bidirectional: this.bidirectional,
+    });
+  }
 
-    this.weightsIh = [];
-    this.weightsHh = [];
-    this.biasIh = [];
-    this.biasHh = [];
+  private paramsFor(layer: number, reverse: boolean): Params {
+    return gatherParams((n) => this.getParameter(n), layer, reverse, this.bias);
+  }
+
+  private cell(xt: GradTensor, hPrev: GradTensor, p: Params): GradTensor {
+    const pre = linear(xt, p.wIh, p.bIh).add(linear(hPrev, p.wHh, p.bHh));
+    return this.nonlinearity === "tanh" ? pre.tanh() : pre.relu();
+  }
+
+  private runAll(input: GradTensor, hx?: GradTensor): { output: GradTensor; h: GradTensor } {
+    ensureFloatDtype(input, "RNN");
+    const norm = normalizeSeqInput(input, this.batchFirst);
+    if (norm.feat !== this.inputSize) {
+      throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
+    }
+    if (norm.seqLen <= 0) {
+      throw new InvalidParameterError("Sequence length must be positive", "seqLen", norm.seqLen);
+    }
+    if (!norm.isUnbatched && norm.batch <= 0) {
+      throw new InvalidParameterError("Batch size must be positive", "batch", norm.batch);
+    }
+    const numDir = this.bidirectional ? 2 : 1;
+    const paramDtype = this.paramsFor(0, false).wIh.dtype === "float64" ? "float64" : "float32";
+    const h0 = parseInitialState(
+      hx,
+      this.numLayers * numDir,
+      norm.batch,
+      this.hiddenSize,
+      paramDtype
+    );
+
+    let layerInput = norm.x.astype(paramDtype); // [batch, seqLen, feat]
+    const finalStates: GradTensor[] = [];
 
     for (let layer = 0; layer < this.numLayers; layer++) {
-      const inputDim = layer === 0 ? inputSize : hiddenSize;
-      const wIh = mulScalar(randn([hiddenSize, inputDim]), stdv);
-      const wHh = mulScalar(randn([hiddenSize, hiddenSize]), stdv);
-
-      this.weightsIh.push(wIh);
-      this.weightsHh.push(wHh);
-      this.registerParameter(`weight_ih_l${layer}`, parameter(wIh));
-      this.registerParameter(`weight_hh_l${layer}`, parameter(wHh));
-
-      if (this.bias) {
-        const bIh = zeros([hiddenSize]);
-        const bHh = zeros([hiddenSize]);
-        this.biasIh.push(bIh);
-        this.biasHh.push(bHh);
-        this.registerParameter(`bias_ih_l${layer}`, parameter(bIh));
-        this.registerParameter(`bias_hh_l${layer}`, parameter(bHh));
+      const dirOutputs: GradTensor[] = [];
+      for (let dir = 0; dir < numDir; dir++) {
+        const reverse = dir === 1;
+        const stateIdx = layer * numDir + dir;
+        const p = this.paramsFor(layer, reverse);
+        let hCur = h0[stateIdx]!;
+        const perStep: GradTensor[] = new Array(norm.seqLen);
+        for (let s = 0; s < norm.seqLen; s++) {
+          const t = reverse ? norm.seqLen - 1 - s : s;
+          hCur = this.cell(timestep(layerInput, t), hCur, p);
+          perStep[t] = hCur;
+        }
+        // [seqLen, batch, hidden] -> [batch, seqLen, hidden]
+        dirOutputs.push(stackGrad(perStep).transpose([1, 0, 2]));
+        finalStates[stateIdx] = hCur;
       }
+      layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
     }
+
+    const output = restoreOutput(layerInput, this.batchFirst, norm.isUnbatched);
+    const h = packStates(finalStates, norm.isUnbatched);
+    return { output, h };
   }
 
-  private activation(x: number): number {
-    return this.nonlinearity === "tanh" ? Math.tanh(x) : Math.max(0, x);
-  }
-
-  private run(input: Tensor, hx?: Tensor): { output: Tensor; h: Tensor } {
-    ensureFloatTensor(input, "RNN");
-    const parsed = parseInput(input, this.batchFirst);
-    const { batch, seqLen, inputDim, isUnbatched, batchStride, seqStride, featStride } = parsed;
-
-    if (inputDim !== this.inputSize) {
-      throw new ShapeError(`Expected input size ${this.inputSize}, got ${inputDim}`);
-    }
-    if (seqLen <= 0) {
-      throw new InvalidParameterError("Sequence length must be positive", "seqLen", seqLen);
-    }
-    if (!isUnbatched && batch <= 0) {
-      throw new InvalidParameterError("Batch size must be positive", "batch", batch);
-    }
-
-    const h = buildState(hx, this.numLayers, batch, this.hiddenSize, isUnbatched, "hx");
-    const outSize = (isUnbatched ? seqLen : batch * seqLen) * this.hiddenSize;
-    const out = createFloatBuffer(outSize, input.dtype);
-
-    const inputVec = new Float64Array(inputDim);
-
-    for (let t = 0; t < seqLen; t++) {
-      for (let b = 0; b < batch; b++) {
-        const baseOffset = input.offset + b * batchStride + t * seqStride;
-        for (let i = 0; i < inputDim; i++) {
-          inputVec[i] = readNumeric(input, baseOffset + i * featStride);
-        }
-
-        let layerInput = inputVec;
-
-        for (let l = 0; l < this.numLayers; l++) {
-          const wIh = this.weightsIh[l];
-          const wHh = this.weightsHh[l];
-          if (!wIh || !wHh) {
-            throw new ShapeError("Internal error: missing RNN weights");
-          }
-
-          const curInputSize = l === 0 ? this.inputSize : this.hiddenSize;
-          const newH = new Float64Array(this.hiddenSize);
-          const hLayer = h[l];
-          if (!hLayer) {
-            throw new ShapeError("Internal error: missing RNN hidden state");
-          }
-
-          const wIhStride0 = wIh.strides[0] ?? 0;
-          const wIhStride1 = wIh.strides[1] ?? 0;
-          const wHhStride0 = wHh.strides[0] ?? 0;
-          const wHhStride1 = wHh.strides[1] ?? 0;
-          const biasIh = this.biasIh[l];
-          const biasHh = this.biasHh[l];
-          const biasIhStride = biasIh ? (biasIh.strides[0] ?? 0) : 0;
-          const biasHhStride = biasHh ? (biasHh.strides[0] ?? 0) : 0;
-
-          for (let j = 0; j < this.hiddenSize; j++) {
-            let sum = 0;
-            const wIhBase = wIh.offset + j * wIhStride0;
-            for (let k = 0; k < curInputSize; k++) {
-              sum += (layerInput[k] ?? 0) * readNumeric(wIh, wIhBase + k * wIhStride1);
-            }
-
-            const wHhBase = wHh.offset + j * wHhStride0;
-            for (let k = 0; k < this.hiddenSize; k++) {
-              sum +=
-                (hLayer[b * this.hiddenSize + k] ?? 0) * readNumeric(wHh, wHhBase + k * wHhStride1);
-            }
-
-            if (this.bias && biasIh && biasHh) {
-              sum += readNumeric(biasIh, biasIh.offset + j * biasIhStride);
-              sum += readNumeric(biasHh, biasHh.offset + j * biasHhStride);
-            }
-
-            newH[j] = this.activation(sum);
-          }
-
-          for (let j = 0; j < this.hiddenSize; j++) {
-            hLayer[b * this.hiddenSize + j] = newH[j] ?? 0;
-          }
-
-          layerInput = newH;
-        }
-
-        for (let j = 0; j < this.hiddenSize; j++) {
-          const idx = outputIndex(
-            this.batchFirst,
-            isUnbatched,
-            batch,
-            seqLen,
-            this.hiddenSize,
-            b,
-            t,
-            j
-          );
-          out[idx] = layerInput[j] ?? 0;
-        }
-      }
-    }
-
-    const outShape = isUnbatched
-      ? [seqLen, this.hiddenSize]
-      : this.batchFirst
-        ? [batch, seqLen, this.hiddenSize]
-        : [seqLen, batch, this.hiddenSize];
-
-    return {
-      output: Tensor.fromTypedArray({
-        data: out,
-        shape: outShape,
-        dtype: input.dtype,
-        device: input.device,
-      }),
-      h: packState(
-        h,
-        this.numLayers,
-        batch,
-        this.hiddenSize,
-        input.dtype,
-        input.device,
-        isUnbatched
-      ),
-    };
-  }
-
-  forward(...inputs: AnyTensor[]): Tensor {
+  forward(...inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 2) {
       throw new InvalidParameterError("RNN.forward expects 1 or 2 inputs", "inputs", inputs.length);
     }
-    const inputArg = inputs[0];
-    if (inputArg === undefined) {
-      throw new InvalidParameterError("RNN.forward requires an input tensor", "input", inputArg);
+    if (inputs[0] === undefined) {
+      throw new InvalidParameterError("RNN.forward requires an input tensor", "input", inputs[0]);
     }
-    const input = extractTensor(inputArg, "input");
-    const hxArg = inputs.length === 2 ? inputs[1] : undefined;
-    const hx = hxArg === undefined ? undefined : extractTensor(hxArg, "hx");
-    return this.run(input, hx).output;
+    const input = asGrad(inputs[0]);
+    const hx = inputs[1] === undefined ? undefined : asGrad(inputs[1]);
+    return this.runAll(input, hx).output;
   }
 
-  /**
-   * Forward pass returning both output and hidden state.
-   * Use this method when you need the hidden state.
-   */
-  forwardWithState(input: AnyTensor, hx?: AnyTensor): [Tensor, Tensor] {
-    const inputTensor = extractTensor(input, "input");
-    const hxTensor = hx === undefined ? undefined : extractTensor(hx, "hx");
-    const { output, h } = this.run(inputTensor, hxTensor);
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [GradTensor, GradTensor] {
+    const { output, h } = this.runAll(asGrad(input), hx === undefined ? undefined : asGrad(hx));
     return [output, h];
   }
 
@@ -503,17 +253,13 @@ export class RNN extends Module {
 /**
  * LSTM (Long Short-Term Memory) layer.
  *
- * Applies a multi-layer LSTM to an input sequence.
+ * @example
+ * ```ts
+ * import { LSTM } from 'deepbox/nn';
  *
- * **Gates**:
- * - Input gate: i_t = σ(W_ii * x_t + b_ii + W_hi * h_{t-1} + b_hi)
- * - Forget gate: f_t = σ(W_if * x_t + b_if + W_hf * h_{t-1} + b_hf)
- * - Cell gate: g_t = tanh(W_ig * x_t + b_ig + W_hg * h_{t-1} + b_hg)
- * - Output gate: o_t = σ(W_io * x_t + b_io + W_ho * h_{t-1} + b_ho)
- * - Cell state: c_t = f_t * c_{t-1} + i_t * g_t
- * - Hidden state: h_t = o_t * tanh(c_t)
- *
- * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
+ * const lstm = new LSTM(4, 8);
+ * const [output, [hN, cN]] = lstm.forwardWithState(x);
+ * ```
  */
 export class LSTM extends Module {
   private readonly inputSize: number;
@@ -521,11 +267,7 @@ export class LSTM extends Module {
   private readonly numLayers: number;
   private readonly bias: boolean;
   private readonly batchFirst: boolean;
-
-  private weightsIh: Tensor[];
-  private weightsHh: Tensor[];
-  private biasIh: Tensor[];
-  private biasHh: Tensor[];
+  private readonly bidirectional: boolean;
 
   constructor(
     inputSize: number,
@@ -534,6 +276,7 @@ export class LSTM extends Module {
       readonly numLayers?: number;
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
+      readonly bidirectional?: boolean;
     } = {}
   ) {
     super();
@@ -547,190 +290,96 @@ export class LSTM extends Module {
     this.numLayers = numLayers;
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
+    this.bidirectional = options.bidirectional ?? false;
 
-    const stdv = 1.0 / Math.sqrt(hiddenSize);
+    initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
+      gateMul: 4,
+      inputSize,
+      hiddenSize,
+      numLayers,
+      bias: this.bias,
+      bidirectional: this.bidirectional,
+    });
+  }
 
-    this.weightsIh = [];
-    this.weightsHh = [];
-    this.biasIh = [];
-    this.biasHh = [];
+  private paramsFor(layer: number, reverse: boolean): Params {
+    return gatherParams((n) => this.getParameter(n), layer, reverse, this.bias);
+  }
+
+  private cell(
+    xt: GradTensor,
+    hPrev: GradTensor,
+    cPrev: GradTensor,
+    p: Params
+  ): { h: GradTensor; c: GradTensor } {
+    const H = this.hiddenSize;
+    const gates = linear(xt, p.wIh, p.bIh).add(linear(hPrev, p.wHh, p.bHh)); // [batch, 4H]
+    const i = gates.slice({}, { start: 0, end: H }).sigmoid();
+    const f = gates.slice({}, { start: H, end: 2 * H }).sigmoid();
+    const g = gates.slice({}, { start: 2 * H, end: 3 * H }).tanh();
+    const o = gates.slice({}, { start: 3 * H, end: 4 * H }).sigmoid();
+    const c = f.mul(cPrev).add(i.mul(g));
+    const h = o.mul(c.tanh());
+    return { h, c };
+  }
+
+  private runAll(
+    input: GradTensor,
+    hx?: GradTensor,
+    cx?: GradTensor
+  ): { output: GradTensor; h: GradTensor; c: GradTensor } {
+    ensureFloatDtype(input, "LSTM");
+    const norm = normalizeSeqInput(input, this.batchFirst);
+    if (norm.feat !== this.inputSize) {
+      throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
+    }
+    if (norm.seqLen <= 0) {
+      throw new InvalidParameterError("Sequence length must be positive", "seqLen", norm.seqLen);
+    }
+    if (!norm.isUnbatched && norm.batch <= 0) {
+      throw new InvalidParameterError("Batch size must be positive", "batch", norm.batch);
+    }
+    const numDir = this.bidirectional ? 2 : 1;
+    const total = this.numLayers * numDir;
+    const paramDtype = this.paramsFor(0, false).wIh.dtype === "float64" ? "float64" : "float32";
+    const h0 = parseInitialState(hx, total, norm.batch, this.hiddenSize, paramDtype);
+    const c0 = parseInitialState(cx, total, norm.batch, this.hiddenSize, paramDtype);
+
+    let layerInput = norm.x.astype(paramDtype);
+    const finalH: GradTensor[] = [];
+    const finalC: GradTensor[] = [];
 
     for (let layer = 0; layer < this.numLayers; layer++) {
-      const inputDim = layer === 0 ? inputSize : hiddenSize;
-
-      const wIh = mulScalar(randn([4 * hiddenSize, inputDim]), stdv);
-      const wHh = mulScalar(randn([4 * hiddenSize, hiddenSize]), stdv);
-
-      this.weightsIh.push(wIh);
-      this.weightsHh.push(wHh);
-      this.registerParameter(`weight_ih_l${layer}`, parameter(wIh));
-      this.registerParameter(`weight_hh_l${layer}`, parameter(wHh));
-
-      if (this.bias) {
-        const bIh = zeros([4 * hiddenSize]);
-        const bHh = zeros([4 * hiddenSize]);
-        this.biasIh.push(bIh);
-        this.biasHh.push(bHh);
-        this.registerParameter(`bias_ih_l${layer}`, parameter(bIh));
-        this.registerParameter(`bias_hh_l${layer}`, parameter(bHh));
+      const dirOutputs: GradTensor[] = [];
+      for (let dir = 0; dir < numDir; dir++) {
+        const reverse = dir === 1;
+        const stateIdx = layer * numDir + dir;
+        const p = this.paramsFor(layer, reverse);
+        let hCur = h0[stateIdx]!;
+        let cCur = c0[stateIdx]!;
+        const perStep: GradTensor[] = new Array(norm.seqLen);
+        for (let s = 0; s < norm.seqLen; s++) {
+          const t = reverse ? norm.seqLen - 1 - s : s;
+          const res = this.cell(timestep(layerInput, t), hCur, cCur, p);
+          hCur = res.h;
+          cCur = res.c;
+          perStep[t] = hCur;
+        }
+        dirOutputs.push(stackGrad(perStep).transpose([1, 0, 2]));
+        finalH[stateIdx] = hCur;
+        finalC[stateIdx] = cCur;
       }
+      layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
     }
-  }
-
-  private sigmoid(x: number): number {
-    return 1 / (1 + Math.exp(-x));
-  }
-
-  private run(input: Tensor, hx?: Tensor, cx?: Tensor): { output: Tensor; h: Tensor; c: Tensor } {
-    ensureFloatTensor(input, "LSTM");
-    const parsed = parseInput(input, this.batchFirst);
-    const { batch, seqLen, inputDim, isUnbatched, batchStride, seqStride, featStride } = parsed;
-
-    if (inputDim !== this.inputSize) {
-      throw new ShapeError(`Expected input size ${this.inputSize}, got ${inputDim}`);
-    }
-    if (seqLen <= 0) {
-      throw new InvalidParameterError("Sequence length must be positive", "seqLen", seqLen);
-    }
-    if (!isUnbatched && batch <= 0) {
-      throw new InvalidParameterError("Batch size must be positive", "batch", batch);
-    }
-
-    const h = buildState(hx, this.numLayers, batch, this.hiddenSize, isUnbatched, "hx");
-    const c = buildState(cx, this.numLayers, batch, this.hiddenSize, isUnbatched, "cx");
-
-    const outSize = (isUnbatched ? seqLen : batch * seqLen) * this.hiddenSize;
-    const out = createFloatBuffer(outSize, input.dtype);
-
-    const inputVec = new Float64Array(inputDim);
-    const gates = new Float64Array(4 * this.hiddenSize);
-
-    for (let t = 0; t < seqLen; t++) {
-      for (let b = 0; b < batch; b++) {
-        const baseOffset = input.offset + b * batchStride + t * seqStride;
-        for (let i = 0; i < inputDim; i++) {
-          inputVec[i] = readNumeric(input, baseOffset + i * featStride);
-        }
-
-        let layerInput = inputVec;
-
-        for (let l = 0; l < this.numLayers; l++) {
-          const wIh = this.weightsIh[l];
-          const wHh = this.weightsHh[l];
-          if (!wIh || !wHh) {
-            throw new ShapeError("Internal error: missing LSTM weights");
-          }
-
-          const curInputSize = l === 0 ? this.inputSize : this.hiddenSize;
-          const hLayer = h[l];
-          const cLayer = c[l];
-          if (!hLayer || !cLayer) {
-            throw new ShapeError("Internal error: missing LSTM state");
-          }
-
-          const wIhStride0 = wIh.strides[0] ?? 0;
-          const wIhStride1 = wIh.strides[1] ?? 0;
-          const wHhStride0 = wHh.strides[0] ?? 0;
-          const wHhStride1 = wHh.strides[1] ?? 0;
-          const biasIh = this.biasIh[l];
-          const biasHh = this.biasHh[l];
-          const biasIhStride = biasIh ? (biasIh.strides[0] ?? 0) : 0;
-          const biasHhStride = biasHh ? (biasHh.strides[0] ?? 0) : 0;
-
-          for (let g = 0; g < 4 * this.hiddenSize; g++) {
-            let sum = 0;
-            const wIhBase = wIh.offset + g * wIhStride0;
-            for (let k = 0; k < curInputSize; k++) {
-              sum += (layerInput[k] ?? 0) * readNumeric(wIh, wIhBase + k * wIhStride1);
-            }
-            const wHhBase = wHh.offset + g * wHhStride0;
-            for (let k = 0; k < this.hiddenSize; k++) {
-              sum +=
-                (hLayer[b * this.hiddenSize + k] ?? 0) * readNumeric(wHh, wHhBase + k * wHhStride1);
-            }
-            if (this.bias && biasIh && biasHh) {
-              sum += readNumeric(biasIh, biasIh.offset + g * biasIhStride);
-              sum += readNumeric(biasHh, biasHh.offset + g * biasHhStride);
-            }
-            gates[g] = sum;
-          }
-
-          const newH = new Float64Array(this.hiddenSize);
-          const newC = new Float64Array(this.hiddenSize);
-
-          for (let j = 0; j < this.hiddenSize; j++) {
-            const iGate = this.sigmoid(gates[j] ?? 0);
-            const fGate = this.sigmoid(gates[this.hiddenSize + j] ?? 0);
-            const gGate = Math.tanh(gates[2 * this.hiddenSize + j] ?? 0);
-            const oGate = this.sigmoid(gates[3 * this.hiddenSize + j] ?? 0);
-
-            const prevC = cLayer[b * this.hiddenSize + j] ?? 0;
-            const nextC = fGate * prevC + iGate * gGate;
-            const nextH = oGate * Math.tanh(nextC);
-
-            newC[j] = nextC;
-            newH[j] = nextH;
-          }
-
-          for (let j = 0; j < this.hiddenSize; j++) {
-            hLayer[b * this.hiddenSize + j] = newH[j] ?? 0;
-            cLayer[b * this.hiddenSize + j] = newC[j] ?? 0;
-          }
-
-          layerInput = newH;
-        }
-
-        for (let j = 0; j < this.hiddenSize; j++) {
-          const idx = outputIndex(
-            this.batchFirst,
-            isUnbatched,
-            batch,
-            seqLen,
-            this.hiddenSize,
-            b,
-            t,
-            j
-          );
-          out[idx] = layerInput[j] ?? 0;
-        }
-      }
-    }
-
-    const outShape = isUnbatched
-      ? [seqLen, this.hiddenSize]
-      : this.batchFirst
-        ? [batch, seqLen, this.hiddenSize]
-        : [seqLen, batch, this.hiddenSize];
 
     return {
-      output: Tensor.fromTypedArray({
-        data: out,
-        shape: outShape,
-        dtype: input.dtype,
-        device: input.device,
-      }),
-      h: packState(
-        h,
-        this.numLayers,
-        batch,
-        this.hiddenSize,
-        input.dtype,
-        input.device,
-        isUnbatched
-      ),
-      c: packState(
-        c,
-        this.numLayers,
-        batch,
-        this.hiddenSize,
-        input.dtype,
-        input.device,
-        isUnbatched
-      ),
+      output: restoreOutput(layerInput, this.batchFirst, norm.isUnbatched),
+      h: packStates(finalH, norm.isUnbatched),
+      c: packStates(finalC, norm.isUnbatched),
     };
   }
 
-  forward(...inputs: AnyTensor[]): Tensor {
+  forward(...inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 3) {
       throw new InvalidParameterError(
         "LSTM.forward expects 1 to 3 inputs",
@@ -738,27 +387,25 @@ export class LSTM extends Module {
         inputs.length
       );
     }
-    const inputArg = inputs[0];
-    if (inputArg === undefined) {
-      throw new InvalidParameterError("LSTM.forward requires an input tensor", "input", inputArg);
+    if (inputs[0] === undefined) {
+      throw new InvalidParameterError("LSTM.forward requires an input tensor", "input", inputs[0]);
     }
-    const input = extractTensor(inputArg, "input");
-    const hxArg = inputs.length >= 2 ? inputs[1] : undefined;
-    const cxArg = inputs.length >= 3 ? inputs[2] : undefined;
-    const hx = hxArg === undefined ? undefined : extractTensor(hxArg, "hx");
-    const cx = cxArg === undefined ? undefined : extractTensor(cxArg, "cx");
-    return this.run(input, hx, cx).output;
+    const input = asGrad(inputs[0]);
+    const hx = inputs[1] === undefined ? undefined : asGrad(inputs[1]);
+    const cx = inputs[2] === undefined ? undefined : asGrad(inputs[2]);
+    return this.runAll(input, hx, cx).output;
   }
 
-  /**
-   * Forward pass returning output, hidden state, and cell state.
-   * Use this method when you need the hidden/cell states.
-   */
-  forwardWithState(input: AnyTensor, hx?: AnyTensor, cx?: AnyTensor): [Tensor, [Tensor, Tensor]] {
-    const inputTensor = extractTensor(input, "input");
-    const hxTensor = hx === undefined ? undefined : extractTensor(hx, "hx");
-    const cxTensor = cx === undefined ? undefined : extractTensor(cx, "cx");
-    const { output, h, c } = this.run(inputTensor, hxTensor, cxTensor);
+  forwardWithState(
+    input: AnyTensor,
+    hx?: AnyTensor,
+    cx?: AnyTensor
+  ): [GradTensor, [GradTensor, GradTensor]] {
+    const { output, h, c } = this.runAll(
+      asGrad(input),
+      hx === undefined ? undefined : asGrad(hx),
+      cx === undefined ? undefined : asGrad(cx)
+    );
     return [output, [h, c]];
   }
 
@@ -770,15 +417,13 @@ export class LSTM extends Module {
 /**
  * GRU (Gated Recurrent Unit) layer.
  *
- * Applies a multi-layer GRU to an input sequence.
+ * @example
+ * ```ts
+ * import { GRU } from 'deepbox/nn';
  *
- * **Gates**:
- * - Reset gate: r_t = σ(W_ir * x_t + b_ir + W_hr * h_{t-1} + b_hr)
- * - Update gate: z_t = σ(W_iz * x_t + b_iz + W_hz * h_{t-1} + b_hz)
- * - New gate: n_t = tanh(W_in * x_t + b_in + r_t * (W_hn * h_{t-1} + b_hn))
- * - Hidden: h_t = (1 - z_t) * n_t + z_t * h_{t-1}
- *
- * @see {@link https://deepbox.dev/docs/nn-recurrent | Deepbox Recurrent Layers}
+ * const gru = new GRU(4, 8);
+ * const output = gru.forward(x);
+ * ```
  */
 export class GRU extends Module {
   private readonly inputSize: number;
@@ -786,11 +431,7 @@ export class GRU extends Module {
   private readonly numLayers: number;
   private readonly bias: boolean;
   private readonly batchFirst: boolean;
-
-  private weightsIh: Tensor[];
-  private weightsHh: Tensor[];
-  private biasIh: Tensor[];
-  private biasHh: Tensor[];
+  private readonly bidirectional: boolean;
 
   constructor(
     inputSize: number,
@@ -799,6 +440,7 @@ export class GRU extends Module {
       readonly numLayers?: number;
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
+      readonly bidirectional?: boolean;
     } = {}
   ) {
     super();
@@ -812,200 +454,246 @@ export class GRU extends Module {
     this.numLayers = numLayers;
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
+    this.bidirectional = options.bidirectional ?? false;
 
-    const stdv = 1.0 / Math.sqrt(hiddenSize);
+    initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
+      gateMul: 3,
+      inputSize,
+      hiddenSize,
+      numLayers,
+      bias: this.bias,
+      bidirectional: this.bidirectional,
+    });
+  }
 
-    this.weightsIh = [];
-    this.weightsHh = [];
-    this.biasIh = [];
-    this.biasHh = [];
+  private paramsFor(layer: number, reverse: boolean): Params {
+    return gatherParams((n) => this.getParameter(n), layer, reverse, this.bias);
+  }
+
+  private cell(xt: GradTensor, hPrev: GradTensor, p: Params): GradTensor {
+    const H = this.hiddenSize;
+    // Separate input and hidden projections: the new-gate applies the reset
+    // gate only to the hidden contribution (PyTorch GRU convention).
+    const gih = linear(xt, p.wIh, p.bIh); // [batch, 3H]
+    const ghh = linear(hPrev, p.wHh, p.bHh); // [batch, 3H]
+    const rGate = gih
+      .slice({}, { start: 0, end: H })
+      .add(ghh.slice({}, { start: 0, end: H }))
+      .sigmoid();
+    const zGate = gih
+      .slice({}, { start: H, end: 2 * H })
+      .add(ghh.slice({}, { start: H, end: 2 * H }))
+      .sigmoid();
+    const nGate = gih
+      .slice({}, { start: 2 * H, end: 3 * H })
+      .add(rGate.mul(ghh.slice({}, { start: 2 * H, end: 3 * H })))
+      .tanh();
+    // h = (1 - z) * n + z * hPrev
+    const oneMinusZ = onesLike(zGate).sub(zGate);
+    return oneMinusZ.mul(nGate).add(zGate.mul(hPrev));
+  }
+
+  private runAll(input: GradTensor, hx?: GradTensor): { output: GradTensor; h: GradTensor } {
+    ensureFloatDtype(input, "GRU");
+    const norm = normalizeSeqInput(input, this.batchFirst);
+    if (norm.feat !== this.inputSize) {
+      throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
+    }
+    if (norm.seqLen <= 0) {
+      throw new InvalidParameterError("Sequence length must be positive", "seqLen", norm.seqLen);
+    }
+    if (!norm.isUnbatched && norm.batch <= 0) {
+      throw new InvalidParameterError("Batch size must be positive", "batch", norm.batch);
+    }
+    const numDir = this.bidirectional ? 2 : 1;
+    const paramDtype = this.paramsFor(0, false).wIh.dtype === "float64" ? "float64" : "float32";
+    const h0 = parseInitialState(
+      hx,
+      this.numLayers * numDir,
+      norm.batch,
+      this.hiddenSize,
+      paramDtype
+    );
+
+    let layerInput = norm.x.astype(paramDtype);
+    const finalStates: GradTensor[] = [];
 
     for (let layer = 0; layer < this.numLayers; layer++) {
-      const inputDim = layer === 0 ? inputSize : hiddenSize;
-
-      const wIh = mulScalar(randn([3 * hiddenSize, inputDim]), stdv);
-      const wHh = mulScalar(randn([3 * hiddenSize, hiddenSize]), stdv);
-
-      this.weightsIh.push(wIh);
-      this.weightsHh.push(wHh);
-      this.registerParameter(`weight_ih_l${layer}`, parameter(wIh));
-      this.registerParameter(`weight_hh_l${layer}`, parameter(wHh));
-
-      if (this.bias) {
-        const bIh = zeros([3 * hiddenSize]);
-        const bHh = zeros([3 * hiddenSize]);
-        this.biasIh.push(bIh);
-        this.biasHh.push(bHh);
-        this.registerParameter(`bias_ih_l${layer}`, parameter(bIh));
-        this.registerParameter(`bias_hh_l${layer}`, parameter(bHh));
+      const dirOutputs: GradTensor[] = [];
+      for (let dir = 0; dir < numDir; dir++) {
+        const reverse = dir === 1;
+        const stateIdx = layer * numDir + dir;
+        const p = this.paramsFor(layer, reverse);
+        let hCur = h0[stateIdx]!;
+        const perStep: GradTensor[] = new Array(norm.seqLen);
+        for (let s = 0; s < norm.seqLen; s++) {
+          const t = reverse ? norm.seqLen - 1 - s : s;
+          hCur = this.cell(timestep(layerInput, t), hCur, p);
+          perStep[t] = hCur;
+        }
+        dirOutputs.push(stackGrad(perStep).transpose([1, 0, 2]));
+        finalStates[stateIdx] = hCur;
       }
+      layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
     }
-  }
-
-  private sigmoid(x: number): number {
-    return 1 / (1 + Math.exp(-x));
-  }
-
-  private run(input: Tensor, hx?: Tensor): { output: Tensor; h: Tensor } {
-    ensureFloatTensor(input, "GRU");
-    const parsed = parseInput(input, this.batchFirst);
-    const { batch, seqLen, inputDim, isUnbatched, batchStride, seqStride, featStride } = parsed;
-
-    if (inputDim !== this.inputSize) {
-      throw new ShapeError(`Expected input size ${this.inputSize}, got ${inputDim}`);
-    }
-    if (seqLen <= 0) {
-      throw new InvalidParameterError("Sequence length must be positive", "seqLen", seqLen);
-    }
-    if (!isUnbatched && batch <= 0) {
-      throw new InvalidParameterError("Batch size must be positive", "batch", batch);
-    }
-
-    const h = buildState(hx, this.numLayers, batch, this.hiddenSize, isUnbatched, "hx");
-    const outSize = (isUnbatched ? seqLen : batch * seqLen) * this.hiddenSize;
-    const out = createFloatBuffer(outSize, input.dtype);
-
-    const inputVec = new Float64Array(inputDim);
-    const gatesIh = new Float64Array(3 * this.hiddenSize);
-    const gatesHh = new Float64Array(3 * this.hiddenSize);
-
-    for (let t = 0; t < seqLen; t++) {
-      for (let b = 0; b < batch; b++) {
-        const baseOffset = input.offset + b * batchStride + t * seqStride;
-        for (let i = 0; i < inputDim; i++) {
-          inputVec[i] = readNumeric(input, baseOffset + i * featStride);
-        }
-
-        let layerInput = inputVec;
-
-        for (let l = 0; l < this.numLayers; l++) {
-          const wIh = this.weightsIh[l];
-          const wHh = this.weightsHh[l];
-          if (!wIh || !wHh) {
-            throw new ShapeError("Internal error: missing GRU weights");
-          }
-
-          const curInputSize = l === 0 ? this.inputSize : this.hiddenSize;
-          const hLayer = h[l];
-          if (!hLayer) {
-            throw new ShapeError("Internal error: missing GRU hidden state");
-          }
-
-          const wIhStride0 = wIh.strides[0] ?? 0;
-          const wIhStride1 = wIh.strides[1] ?? 0;
-          const wHhStride0 = wHh.strides[0] ?? 0;
-          const wHhStride1 = wHh.strides[1] ?? 0;
-          const biasIh = this.biasIh[l];
-          const biasHh = this.biasHh[l];
-          const biasIhStride = biasIh ? (biasIh.strides[0] ?? 0) : 0;
-          const biasHhStride = biasHh ? (biasHh.strides[0] ?? 0) : 0;
-
-          for (let g = 0; g < 3 * this.hiddenSize; g++) {
-            let sumIh = 0;
-            let sumHh = 0;
-            const wIhBase = wIh.offset + g * wIhStride0;
-            for (let k = 0; k < curInputSize; k++) {
-              sumIh += (layerInput[k] ?? 0) * readNumeric(wIh, wIhBase + k * wIhStride1);
-            }
-            const wHhBase = wHh.offset + g * wHhStride0;
-            for (let k = 0; k < this.hiddenSize; k++) {
-              sumHh +=
-                (hLayer[b * this.hiddenSize + k] ?? 0) * readNumeric(wHh, wHhBase + k * wHhStride1);
-            }
-            if (this.bias && biasIh && biasHh) {
-              sumIh += readNumeric(biasIh, biasIh.offset + g * biasIhStride);
-              sumHh += readNumeric(biasHh, biasHh.offset + g * biasHhStride);
-            }
-            gatesIh[g] = sumIh;
-            gatesHh[g] = sumHh;
-          }
-
-          const newH = new Float64Array(this.hiddenSize);
-          for (let j = 0; j < this.hiddenSize; j++) {
-            const r = this.sigmoid((gatesIh[j] ?? 0) + (gatesHh[j] ?? 0));
-            const z = this.sigmoid(
-              (gatesIh[this.hiddenSize + j] ?? 0) + (gatesHh[this.hiddenSize + j] ?? 0)
-            );
-            const n = Math.tanh(
-              (gatesIh[2 * this.hiddenSize + j] ?? 0) + r * (gatesHh[2 * this.hiddenSize + j] ?? 0)
-            );
-            newH[j] = (1 - z) * n + z * (hLayer[b * this.hiddenSize + j] ?? 0);
-          }
-
-          for (let j = 0; j < this.hiddenSize; j++) {
-            hLayer[b * this.hiddenSize + j] = newH[j] ?? 0;
-          }
-
-          layerInput = newH;
-        }
-
-        for (let j = 0; j < this.hiddenSize; j++) {
-          const idx = outputIndex(
-            this.batchFirst,
-            isUnbatched,
-            batch,
-            seqLen,
-            this.hiddenSize,
-            b,
-            t,
-            j
-          );
-          out[idx] = layerInput[j] ?? 0;
-        }
-      }
-    }
-
-    const outShape = isUnbatched
-      ? [seqLen, this.hiddenSize]
-      : this.batchFirst
-        ? [batch, seqLen, this.hiddenSize]
-        : [seqLen, batch, this.hiddenSize];
 
     return {
-      output: Tensor.fromTypedArray({
-        data: out,
-        shape: outShape,
-        dtype: input.dtype,
-        device: input.device,
-      }),
-      h: packState(
-        h,
-        this.numLayers,
-        batch,
-        this.hiddenSize,
-        input.dtype,
-        input.device,
-        isUnbatched
-      ),
+      output: restoreOutput(layerInput, this.batchFirst, norm.isUnbatched),
+      h: packStates(finalStates, norm.isUnbatched),
     };
   }
 
-  forward(...inputs: AnyTensor[]): Tensor {
+  forward(...inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 2) {
       throw new InvalidParameterError("GRU.forward expects 1 or 2 inputs", "inputs", inputs.length);
     }
-    const inputArg = inputs[0];
-    if (inputArg === undefined) {
-      throw new InvalidParameterError("GRU.forward requires an input tensor", "input", inputArg);
+    if (inputs[0] === undefined) {
+      throw new InvalidParameterError("GRU.forward requires an input tensor", "input", inputs[0]);
     }
-    const input = extractTensor(inputArg, "input");
-    const hxArg = inputs.length === 2 ? inputs[1] : undefined;
-    const hx = hxArg === undefined ? undefined : extractTensor(hxArg, "hx");
-    return this.run(input, hx).output;
+    const input = asGrad(inputs[0]);
+    const hx = inputs[1] === undefined ? undefined : asGrad(inputs[1]);
+    return this.runAll(input, hx).output;
   }
 
-  /**
-   * Forward pass returning both output and hidden state.
-   * Use this method when you need the hidden state.
-   */
-  forwardWithState(input: AnyTensor, hx?: AnyTensor): [Tensor, Tensor] {
-    const inputTensor = extractTensor(input, "input");
-    const hxTensor = hx === undefined ? undefined : extractTensor(hx, "hx");
-    const { output, h } = this.run(inputTensor, hxTensor);
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [GradTensor, GradTensor] {
+    const { output, h } = this.runAll(asGrad(input), hx === undefined ? undefined : asGrad(hx));
     return [output, h];
   }
 
   override toString(): string {
     return `GRU(${this.inputSize}, ${this.hiddenSize}, num_layers=${this.numLayers})`;
   }
+}
+
+// ─── Shared parameter helpers ────────────────────────────────────────────────
+
+interface RecurrentInit {
+  readonly gateMul: number;
+  readonly inputSize: number;
+  readonly hiddenSize: number;
+  readonly numLayers: number;
+  readonly bias: boolean;
+  readonly bidirectional: boolean;
+}
+
+/**
+ * Register all weight/bias parameters for a recurrent module via a supplied
+ * `register` callback (bound to the module's protected registerParameter).
+ */
+function initRecurrentParams(
+  register: (name: string, p: GradTensor) => void,
+  cfg: RecurrentInit
+): void {
+  const { gateMul, inputSize, hiddenSize, numLayers, bias, bidirectional } = cfg;
+  const stdv = 1.0 / Math.sqrt(hiddenSize);
+  const numDir = bidirectional ? 2 : 1;
+  const gateSize = gateMul * hiddenSize;
+
+  const reg = (name: string, t: Tensor) => register(name, parameter(t));
+
+  for (let layer = 0; layer < numLayers; layer++) {
+    const inputDim = layer === 0 ? inputSize : hiddenSize * numDir;
+    reg(`weight_ih_l${layer}`, mulScalar(randn([gateSize, inputDim]), stdv));
+    reg(`weight_hh_l${layer}`, mulScalar(randn([gateSize, hiddenSize]), stdv));
+    if (bias) {
+      reg(`bias_ih_l${layer}`, zeros([gateSize]));
+      reg(`bias_hh_l${layer}`, zeros([gateSize]));
+    }
+    if (bidirectional) {
+      reg(`weight_ih_l${layer}_reverse`, mulScalar(randn([gateSize, inputDim]), stdv));
+      reg(`weight_hh_l${layer}_reverse`, mulScalar(randn([gateSize, hiddenSize]), stdv));
+      if (bias) {
+        reg(`bias_ih_l${layer}_reverse`, zeros([gateSize]));
+        reg(`bias_hh_l${layer}_reverse`, zeros([gateSize]));
+      }
+    }
+  }
+}
+
+function gatherParams(
+  get: (name: string) => GradTensor | undefined,
+  layer: number,
+  reverse: boolean,
+  bias: boolean
+): Params {
+  const suffix = reverse ? "_reverse" : "";
+  const wIh = get(`weight_ih_l${layer}${suffix}`);
+  const wHh = get(`weight_hh_l${layer}${suffix}`);
+  if (!wIh || !wHh) throw new ShapeError("Internal error: missing recurrent weights");
+  return {
+    wIh,
+    wHh,
+    ...(bias
+      ? { bIh: get(`bias_ih_l${layer}${suffix}`), bHh: get(`bias_hh_l${layer}${suffix}`) }
+      : {}),
+  };
+}
+
+/** Build per-(layer,dir) initial state list, each [batch, hidden]. */
+function parseInitialState(
+  state: GradTensor | undefined,
+  total: number,
+  batch: number,
+  hidden: number,
+  dtype: "float32" | "float64"
+): GradTensor[] {
+  const result: GradTensor[] = [];
+  if (state === undefined) {
+    for (let i = 0; i < total; i++) {
+      result.push(GradTensor.fromTensor(zeros([batch, hidden], { dtype })));
+    }
+    return result;
+  }
+  // Accept [total, hidden] (unbatched) or [total, batch, hidden] (batched)
+  if (state.ndim === 2) {
+    if ((state.shape[0] ?? -1) !== total || (state.shape[1] ?? -1) !== hidden) {
+      throw new ShapeError(
+        `Expected initial state shape [${total}, ${hidden}], got [${state.shape.join(", ")}]`
+      );
+    }
+    for (let i = 0; i < total; i++) {
+      result.push(state.slice(i).reshape([1, hidden]).astype(dtype));
+    }
+    return result;
+  }
+  if (state.ndim === 3) {
+    if (
+      (state.shape[0] ?? -1) !== total ||
+      (state.shape[1] ?? -1) !== batch ||
+      (state.shape[2] ?? -1) !== hidden
+    ) {
+      throw new ShapeError(
+        `Expected initial state shape [${total}, ${batch}, ${hidden}], got [${state.shape.join(", ")}]`
+      );
+    }
+    for (let i = 0; i < total; i++) {
+      result.push(state.slice(i).astype(dtype));
+    }
+    return result;
+  }
+  throw new ShapeError(`Expected initial state with 2 or 3 dimensions, got ${state.ndim}`);
+}
+
+/**
+ * Pack per-(layer,dir) final states [batch, hidden] into the reported state
+ * tensor: [total, batch, hidden] batched, or [total, hidden] unbatched.
+ */
+function packStates(states: GradTensor[], isUnbatched: boolean): GradTensor {
+  const stacked = stackGrad(states); // [total, batch, hidden]
+  if (isUnbatched) {
+    const total = stacked.shape[0] ?? 0;
+    const hidden = stacked.shape[2] ?? 0;
+    return stacked.reshape([total, hidden]);
+  }
+  return stacked;
+}
+
+/** GradTensor of ones matching a reference GradTensor's shape/dtype. */
+function onesLike(ref: GradTensor): GradTensor {
+  const dtype = ref.dtype === "float64" ? "float64" : "float32";
+  const data =
+    dtype === "float64" ? new Float64Array(ref.size).fill(1) : new Float32Array(ref.size).fill(1);
+  return GradTensor.fromTensor(
+    Tensor.fromTypedArray({ data, shape: ref.shape, dtype, device: ref.tensor.device })
+  );
 }

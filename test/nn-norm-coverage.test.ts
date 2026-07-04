@@ -74,7 +74,7 @@ describe("NN Normalization Coverage", () => {
     it("should throw on dimension mismatch", () => {
       const bn = new BatchNorm1d(2);
       const x = tensor([[1, 2, 3]], { dtype: "float32" }); // 3 features
-      expect(() => bn.forward(x)).toThrow(/Expected 2 features/);
+      expect(() => bn.forward(x)).toThrow(/Expected 2 channels/);
     });
   });
 

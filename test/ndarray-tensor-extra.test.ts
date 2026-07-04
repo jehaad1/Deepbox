@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { tensor } from "../src/ndarray";
 import { gather, slice } from "../src/ndarray/tensor/indexing";
-import { expandDims, squeeze, unsqueeze } from "../src/ndarray/tensor/shapeOps";
+import { expandDims, squeeze, unsqueeze } from "../src/ndarray/tensor/shape_ops";
 
 describe("deepbox/ndarray - Tensor Extra", () => {
   it("creates string tensors", () => {

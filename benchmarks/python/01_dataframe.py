@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import pandas as pd
+from io import StringIO
 from utils import run, create_suite, header, footer
 
 suite = create_suite("dataframe", "Pandas")
@@ -37,6 +38,15 @@ df50k = make_mixed_df(50000, 42)
 numDf100 = make_numeric_df(100, 5, 42)
 numDf1k = make_numeric_df(1000, 5, 42)
 numDf10k = make_numeric_df(10000, 5, 42)
+strSeries1k = pd.Series([f"user_{i}@deepbox.dev" for i in range(1000)])
+strSeries10k = pd.Series([f"user_{i}@deepbox.dev" for i in range(10000)])
+dateSeries1k = pd.to_datetime(pd.Series([f"2026-03-{(i % 28) + 1:02d}" for i in range(1000)]))
+dateSeries10k = pd.to_datetime(pd.Series([f"2026-03-{(i % 28) + 1:02d}" for i in range(10000)]))
+salesPivotDf = pd.DataFrame({
+    "region": [["east", "west", "north", "south"][i % 4] for i in range(4000)],
+    "quarter": [f"Q{(i % 4) + 1}" for i in range(4000)],
+    "revenue": [100 + (i % 97) for i in range(4000)],
+})
 
 # ── Creation ─────────────────────────────────────────────
 
@@ -140,6 +150,27 @@ run(suite, "describe", "10Kx5", lambda: numDf10k.describe())
 
 run(suite, "corr", "100x5", lambda: numDf100.corr())
 run(suite, "corr", "1Kx5", lambda: numDf1k.corr())
+
+# ── Advanced v1.0.0 DataFrame Operations ─────────────────
+
+run(suite, "rolling(5).mean", "1K rows", lambda: numDf1k.rolling(5).mean())
+run(suite, "rolling(5).mean", "10K rows", lambda: numDf10k.rolling(5).mean())
+run(suite, "expanding().sum", "1K rows", lambda: numDf1k.expanding().sum())
+run(suite, "ewm(span=5).mean", "1K rows", lambda: numDf1k.ewm(span=5).mean())
+run(suite, "ewm(span=5).mean", "10K rows", lambda: numDf10k.ewm(span=5).mean())
+run(suite, "query", "1K rows", lambda: df1k.query("age > 40 and score > 50"))
+run(suite, "query", "10K rows", lambda: df10k.query("age > 40 and score > 50"))
+run(suite, "eval (derived col)", "1K rows", lambda: df1k.eval("score2 = score * 1.1"))
+run(suite, "eval (derived col)", "10K rows", lambda: df10k.eval("score2 = score * 1.1"))
+run(suite, "pivot_table(sum)", "4K rows", lambda: salesPivotDf.pivot_table(
+    index="region", columns="quarter", values="revenue", aggfunc="sum"
+))
+run(suite, "crosstab", "10K rows", lambda: pd.crosstab(df10k["category"], df10k["age"]))
+run(suite, "Series.str.upper", "1K", lambda: strSeries1k.str.upper())
+run(suite, "Series.str.upper", "10K", lambda: strSeries10k.str.upper())
+run(suite, "Series.dt.month", "1K", lambda: dateSeries1k.dt.month)
+run(suite, "Series.dt.month", "10K", lambda: dateSeries10k.dt.month)
+run(suite, "CSV roundtrip", "1K rows", lambda: pd.read_csv(StringIO(df1k.to_csv(index=False))))
 
 # ── Drop ─────────────────────────────────────────────────
 

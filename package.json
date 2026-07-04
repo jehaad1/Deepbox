@@ -1,6 +1,6 @@
 {
   "name": "deepbox",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "The TypeScript Toolkit for AI & Numerical Computing",
   "author": "Jehaad Aljohani",
   "license": "MIT",
@@ -19,27 +19,38 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "lint": "biome check .",
+    "test:coverage": "rm -rf coverage && vitest run --coverage",
+    "lint": "npm run lint:check",
     "lint:fix": "biome check --write .",
     "lint:check": "biome check .",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
+    "jsdoc:docs-gaps": "node scripts/list-jsdoc-docs-gaps.mjs",
+    "jsdoc:core-slugs": "node scripts/check-jsdoc-core-slugs.mjs",
+    "jsdoc:inject-docs-links": "node scripts/inject-jsdoc-deepbox-dev.mjs",
     "clean": "rm -rf dist",
     "prepack": "npm run build",
-    "all": "npm run format:check && npm run lint:check && npm run typecheck && npm run build && npm run test && npm run test:coverage",
-    "all:fix": "npm run format && npm run lint:fix && npm run typecheck && npm run build && npm run test && npm run test:coverage",
+    "all": "npm run validate:all",
+    "all:fix": "npm run validate:fix",
+    "validate:runtime": "npm run build && npm run test && npm run bench:ci && npm run examples:all && npm run projects:all && npm run test:coverage",
+    "validate:all": "npm run format && npm run lint:check && npm run typecheck && npm run typecheck:test && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
+    "validate:fix": "npm run format && npm run lint:fix && npm run typecheck && npm run typecheck:test && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
     "project:01": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/01-financial-risk-analysis/index.ts",
     "project:02": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/02-neural-image-classifier/index.ts",
     "project:03": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/03-customer-churn-prediction/index.ts",
     "project:04": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/04-stock-price-forecasting/index.ts",
     "project:05": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/05-recommendation-engine/index.ts",
     "project:06": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/06-sentiment-analysis/index.ts",
-    "projects:all": "npm run project:01 && npm run project:02 && npm run project:03 && npm run project:04 && npm run project:05 && npm run project:06",
+    "project:07": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/07-fraud-detection-platform/index.ts",
+    "project:08": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/08-support-ticket-triage/index.ts",
+    "project:09": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/09-experimentation-platform/index.ts",
+    "projects:all": "npm run project:01 && npm run project:02 && npm run project:03 && npm run project:04 && npm run project:05 && npm run project:06 && npm run project:07 && npm run project:08 && npm run project:09",
     "example:00": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/00-quick-start/index.ts",
     "example:01": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/01-tensor-basics/index.ts",
     "example:02": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/02-tensor-operations/index.ts",
@@ -73,7 +84,24 @@
     "example:30": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/30-normalization-dropout/index.ts",
     "example:31": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/31-dataloader/index.ts",
     "example:32": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/32-module-system/index.ts",
-    "examples:all": "npm run example:00 && npm run example:01 && npm run example:02 && npm run example:03 && npm run example:04 && npm run example:05 && npm run example:06 && npm run example:07 && npm run example:08 && npm run example:09 && npm run example:10 && npm run example:11 && npm run example:12 && npm run example:13 && npm run example:14 && npm run example:15 && npm run example:16 && npm run example:17 && npm run example:18 && npm run example:19 && npm run example:20 && npm run example:21 && npm run example:22 && npm run example:23 && npm run example:24 && npm run example:25 && npm run example:26 && npm run example:27 && npm run example:28 && npm run example:29 && npm run example:30 && npm run example:31 && npm run example:32",
+    "example:33": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/33-dataframe-advanced/index.ts",
+    "example:34": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/34-ensemble-advanced-ml/index.ts",
+    "example:35": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/35-advanced-clustering/index.ts",
+    "example:36": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/36-svm-anomaly-detection/index.ts",
+    "example:37": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/37-model-selection-pipeline/index.ts",
+    "example:38": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/38-feature-engineering/index.ts",
+    "example:39": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/39-advanced-neural-networks/index.ts",
+    "example:40": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/40-transformer-architecture/index.ts",
+    "example:41": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/41-advanced-optimizers-schedulers/index.ts",
+    "example:42": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/42-fft-signal-processing/index.ts",
+    "example:43": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/43-statistical-tests/index.ts",
+    "example:44": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/44-advanced-visualization/index.ts",
+    "example:45": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/45-core-runtime-tooling/index.ts",
+    "example:46": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/46-dataset-transforms-samplers/index.ts",
+    "example:47": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/47-dataframe-io-styling/index.ts",
+    "example:48": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/48-statistical-inference-playbook/index.ts",
+    "example:49": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/49-advanced-linear-algebra/index.ts",
+    "examples:all": "npm run example:00 && npm run example:01 && npm run example:02 && npm run example:03 && npm run example:04 && npm run example:05 && npm run example:06 && npm run example:07 && npm run example:08 && npm run example:09 && npm run example:10 && npm run example:11 && npm run example:12 && npm run example:13 && npm run example:14 && npm run example:15 && npm run example:16 && npm run example:17 && npm run example:18 && npm run example:19 && npm run example:20 && npm run example:21 && npm run example:22 && npm run example:23 && npm run example:24 && npm run example:25 && npm run example:26 && npm run example:27 && npm run example:28 && npm run example:29 && npm run example:30 && npm run example:31 && npm run example:32 && npm run example:33 && npm run example:34 && npm run example:35 && npm run example:36 && npm run example:37 && npm run example:38 && npm run example:39 && npm run example:40 && npm run example:41 && npm run example:42 && npm run example:43 && npm run example:44 && npm run example:45 && npm run example:46 && npm run example:47 && npm run example:48 && npm run example:49",
     "bench:dataframe": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/01-dataframe.ts",
     "bench:datasets": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/02-datasets.ts",
     "bench:linalg": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/03-linalg.ts",
@@ -86,10 +114,13 @@
     "bench:preprocess": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/10-preprocess.ts",
     "bench:random": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts",
     "bench:stats": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/12-stats.ts",
+    "bench:core": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/13-core.ts",
+    "bench:tensor": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/14-tensor.ts",
     "bench:compare": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/compare.ts",
-    "bench:deepbox": "npm run bench:dataframe && npm run bench:datasets && npm run bench:linalg && npm run bench:metrics && npm run bench:ml && npm run bench:ndarray && npm run bench:nn && npm run bench:optim && npm run bench:plot && npm run bench:preprocess && npm run bench:random && npm run bench:stats",
+    "bench:deepbox": "node -e \"console.log('[bench:deepbox] Running suites 01–13. Suite 14 (tensor) is separate: npm run bench:tensor (Deepbox-only; excluded from bench:python compare).')\" && npm run bench:dataframe && npm run bench:datasets && npm run bench:linalg && npm run bench:metrics && npm run bench:ml && npm run bench:ndarray && npm run bench:nn && npm run bench:optim && npm run bench:plot && npm run bench:preprocess && npm run bench:random && npm run bench:stats && npm run bench:core",
     "bench:python": "python3 benchmarks/python/01_dataframe.py && python3 benchmarks/python/02_datasets.py && python3 benchmarks/python/03_linalg.py && python3 benchmarks/python/04_metrics.py && python3 benchmarks/python/05_ml.py && python3 benchmarks/python/06_ndarray.py && python3 benchmarks/python/07_nn.py && python3 benchmarks/python/08_optim.py && python3 benchmarks/python/09_plot.py && python3 benchmarks/python/10_preprocess.py && python3 benchmarks/python/11_random.py && python3 benchmarks/python/12_stats.py",
-    "bench:all": "npm run bench:deepbox && npm run bench:python && npm run bench:compare"
+    "bench:all": "npm run bench:deepbox && npm run bench:python && npm run bench:compare",
+    "bench:ci": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/13-core.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/06-ndarray.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts"
   },
   "exports": {
     ".": {
@@ -163,19 +194,66 @@
       "require": "./dist/datasets/index.cjs"
     }
   },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "./dist/core/index.d.ts"
+      ],
+      "ndarray": [
+        "./dist/ndarray/index.d.ts"
+      ],
+      "linalg": [
+        "./dist/linalg/index.d.ts"
+      ],
+      "dataframe": [
+        "./dist/dataframe/index.d.ts"
+      ],
+      "stats": [
+        "./dist/stats/index.d.ts"
+      ],
+      "metrics": [
+        "./dist/metrics/index.d.ts"
+      ],
+      "preprocess": [
+        "./dist/preprocess/index.d.ts"
+      ],
+      "ml": [
+        "./dist/ml/index.d.ts"
+      ],
+      "nn": [
+        "./dist/nn/index.d.ts"
+      ],
+      "optim": [
+        "./dist/optim/index.d.ts"
+      ],
+      "random": [
+        "./dist/random/index.d.ts"
+      ],
+      "plot": [
+        "./dist/plot/index.d.ts"
+      ],
+      "datasets": [
+        "./dist/datasets/index.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md",
+    "SKILL.md"
   ],
   "devDependencies": {
-    "@biomejs/biome": "^2.3.0",
-    "@types/node": "^25.2.3",
-    "@vitest/coverage-v8": "^4.0.18",
-    "tsx": "^4.7.0",
-    "tsup": "^8.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^4.0.18"
+    "@biomejs/biome": "^2.5.0",
+    "@types/node": "^25.9.3",
+    "@vitest/coverage-v8": "^4.1.9",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "wabt": "^1.0.39",
+    "webgpu": "^0.4.0"
   },
   "keywords": [
     "deepbox",
@@ -220,8 +298,11 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "npm@11.6.2",
+  "packageManager": "npm@11.17.0",
   "engines": {
     "node": ">=24.13.0"
+  },
+  "allowScripts": {
+    "webgpu@0.4.0": true
   }
 }

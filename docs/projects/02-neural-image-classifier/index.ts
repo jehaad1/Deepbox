@@ -2,7 +2,7 @@
  * Neural Network Image Classifier
  *
  * A demonstration of neural network training for image classification
- * using the Deepbox library's deep learning modules.
+ * using the Deepbox Framework's deep learning modules.
  *
  * Deepbox Modules Used:
  * - deepbox/nn: Neural network layers, Sequential, loss functions
@@ -18,10 +18,12 @@ import { loadDigits } from "deepbox/datasets";
 import { confusionMatrix, f1Score, precision, recall } from "deepbox/metrics";
 import { GradTensor, type Tensor, tensor } from "deepbox/ndarray";
 import { crossEntropyLoss } from "deepbox/nn";
+import { Adam } from "deepbox/optim";
 import { Figure } from "deepbox/plot";
 import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
+import { setSeed } from "deepbox/random";
 
-import { createSimpleMLP, getModelSummary } from "./src/models";
+import { createModel, createSimpleMLP, getModelSummary } from "./src/models";
 
 // ============================================================================
 // Configuration
@@ -29,8 +31,8 @@ import { createSimpleMLP, getModelSummary } from "./src/models";
 
 const OUTPUT_DIR = "docs/projects/02-neural-image-classifier/output";
 const NUM_CLASSES = 10;
-const LEARNING_RATE = 0.01;
-const NUM_EPOCHS = 20;
+const LEARNING_RATE = 0.001;
+const NUM_EPOCHS = 40;
 const BATCH_SIZE = 32;
 
 // ============================================================================
@@ -39,8 +41,10 @@ const BATCH_SIZE = 32;
 
 console.log("═".repeat(70));
 console.log("  NEURAL NETWORK IMAGE CLASSIFIER");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
+
+setSeed(42);
 
 // Create output directory
 if (!existsSync(OUTPUT_DIR)) {
@@ -114,6 +118,7 @@ const modelParams = Array.from(model.parameters());
 console.log(`  Trainable parameters collected: ${modelParams.length} tensors`);
 
 // Create optimizer
+const optimizer = new Adam(model.parameters(), { lr: LEARNING_RATE });
 console.log(`  Optimizer: Adam (lr=${LEARNING_RATE})`);
 console.log(`  Epochs: ${NUM_EPOCHS}`);
 console.log(`  Batch Size: ${BATCH_SIZE}`);
@@ -141,11 +146,13 @@ const expectNumericTypedArray = (
   return value;
 };
 
-// Helper function to create one-hot encoding
+const scalarFromTensor = (value: Tensor): number => {
+  const data = expectNumericTypedArray(value.data);
+  return Number(data[value.offset] ?? 0);
+};
+
 // Helper to extract data as arrays
 function extractData(X: Tensor, y: Tensor): { XArr: number[][]; yArr: number[] } {
-  const xData = expectNumericTypedArray(X.data);
-  const yData = expectNumericTypedArray(y.data);
   const n = X.shape[0];
   const f = X.shape[1] || 1;
 
@@ -155,10 +162,10 @@ function extractData(X: Tensor, y: Tensor): { XArr: number[][]; yArr: number[] }
   for (let i = 0; i < n; i++) {
     const row: number[] = [];
     for (let j = 0; j < f; j++) {
-      row.push(xData[i * f + j]);
+      row.push(Number(X.at(i, j)));
     }
     XArr.push(row);
-    yArr.push(yData[i]);
+    yArr.push(Number(y.at(i)));
   }
 
   return { XArr, yArr };
@@ -169,40 +176,62 @@ console.log("\nTraining Progress:");
 console.log("─".repeat(50));
 
 const { XArr: XTrainArr, yArr: yTrainArr } = extractData(XTrainScaled, yTrain);
-const numBatches = Math.ceil(trainSize / BATCH_SIZE);
+const createEpochOrder = (epoch: number): number[] => {
+  const order = Array.from({ length: trainSize }, (_, index) => index);
+  let state = 42 + epoch * 9973;
+
+  for (let i = order.length - 1; i > 0; i--) {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    const current = order[i];
+    order[i] = order[j] ?? current;
+    order[j] = current ?? order[j] ?? 0;
+  }
+
+  return order;
+};
 
 // Simplified training demonstration
 for (let epoch = 0; epoch < NUM_EPOCHS; epoch++) {
   model.train(true);
   let epochLoss = 0;
   let epochCorrect = 0;
+  const epochOrder = createEpochOrder(epoch);
+  const numBatches = Math.ceil(epochOrder.length / BATCH_SIZE);
 
   // Process in batches
   for (let batch = 0; batch < numBatches; batch++) {
     const startIdx = batch * BATCH_SIZE;
-    const endIdx = Math.min(startIdx + BATCH_SIZE, trainSize);
+    const endIdx = Math.min(startIdx + BATCH_SIZE, epochOrder.length);
     const batchSize = endIdx - startIdx;
 
     // Extract batch
-    const XBatch = XTrainArr.slice(startIdx, endIdx);
-    const yBatch = yTrainArr.slice(startIdx, endIdx);
+    const batchIndices = epochOrder.slice(startIdx, endIdx);
+    const XBatch = batchIndices.map((index) => XTrainArr[index] ?? []);
+    const yBatch = batchIndices.map((index) => yTrainArr[index] ?? 0);
 
     // Create GradTensor input
     const input = GradTensor.fromTensor(tensor(XBatch, { dtype: "float32" }), {
       requiresGrad: false,
     });
 
+    optimizer.zeroGrad();
+
     // Forward pass
-    const output = model.forward(input.tensor);
-    const outputTensor = output instanceof GradTensor ? output.tensor : output;
+    const output = model.forward(input);
+    if (!(output instanceof GradTensor)) {
+      throw new Error("Expected GradTensor output during training");
+    }
 
     // Create targets - crossEntropyLoss expects 1D class labels, not one-hot
-    const targetsTensor = tensor(yBatch, { dtype: "float32" });
-    const lossVal = crossEntropyLoss(outputTensor, targetsTensor);
-    epochLoss += lossVal;
+    const targetsTensor = tensor(yBatch, { dtype: "int32" });
+    const loss = crossEntropyLoss(output, targetsTensor);
+    epochLoss += scalarFromTensor(loss.tensor);
+    loss.backward();
+    optimizer.step();
 
     // Calculate accuracy
-    const outData = expectNumericTypedArray(outputTensor.data);
+    const outData = expectNumericTypedArray(output.tensor.data);
     for (let i = 0; i < batchSize; i++) {
       let maxVal = -Infinity;
       let predClass = 0;
@@ -251,7 +280,8 @@ const { XArr: XTestArr, yArr: yTestArr } = extractData(XTestScaled, yTest);
 const testInput = GradTensor.fromTensor(tensor(XTestArr, { dtype: "float32" }), {
   requiresGrad: false,
 });
-const testOutput = model.forward(testInput.tensor);
+const testOutputRaw = model.forward(testInput);
+const testOutput = testOutputRaw instanceof GradTensor ? testOutputRaw.tensor : testOutputRaw;
 
 // Get predictions
 const testOutData = expectNumericTypedArray(testOutput.data);
@@ -311,12 +341,27 @@ for (let i = 0; i < NUM_CLASSES; i++) {
 // Step 6: Model Comparison
 // ============================================================================
 
-console.log("\n🔬 STEP 6: Architecture Comparison");
+console.log("\n🔬 STEP 6: Architecture Overview");
 console.log("─".repeat(70));
-console.log("\n⚠️  Architecture comparison skipped due to dtype compatibility issues.");
-console.log("   The library currently initializes model parameters as float64 by default,");
-console.log("   which causes dtype mismatches with float32 inputs.");
-console.log("   This will be addressed in a future library update.");
+
+const architectureConfigs = [
+  { name: "simple", label: "Simple + ReLU" },
+  { name: "gelu", label: "GELU" },
+  { name: "leaky", label: "LeakyReLU" },
+] as const;
+
+for (const config of architectureConfigs) {
+  const candidate = createModel({
+    inputSize: numFeatures,
+    hiddenSize: 128,
+    numClasses: NUM_CLASSES,
+    architecture: config.name,
+  });
+  const candidateSummary = getModelSummary(candidate);
+  console.log(
+    `  ${config.label.padEnd(16)}: ${candidateSummary.numLayers} layers, ${candidateSummary.numParameters} parameters`
+  );
+}
 
 // ============================================================================
 // Step 7: Visualizations

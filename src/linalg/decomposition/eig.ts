@@ -6,7 +6,6 @@ import {
 } from "../../core";
 import type { Tensor } from "../../ndarray";
 import {
-  at,
   atArr,
   fromDenseMatrix2D,
   fromDenseVector1D,
@@ -27,76 +26,287 @@ function getSquareMatrixSize(a: Tensor, context: string): number {
   return rows;
 }
 
-function jacobiEigenSymmetric(
-  a: Float64Array,
-  n: number,
-  maxSweeps = 100,
-  tol = 1e-12
-): { readonly values: Float64Array; readonly vectors: Float64Array } {
-  const A = new Float64Array(a);
-  const V = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) V[i * n + i] = 1;
+/**
+ * Householder tridiagonalization of a symmetric matrix (EISPACK tred2).
+ *
+ * Reduces the symmetric matrix in `z` (row-major n×n, overwritten with the
+ * accumulated orthogonal transform) to tridiagonal form with diagonal `d`
+ * and off-diagonal `e` (e[0] unused). O(4n³/3) — the cyclic-Jacobi sweep
+ * this replaces cost ~10x more FLOPs at 100×100.
+ */
+function tred2(n: number, z: Float64Array, d: Float64Array, e: Float64Array): void {
+  for (let i = 0; i < n; i++) {
+    d[i] = z[(n - 1) * n + i] as number;
+  }
 
-  for (let sweep = 0; sweep < maxSweeps; sweep++) {
-    let p = 0;
-    let q = 1;
-    let max = 0;
+  for (let i = n - 1; i > 0; i--) {
+    const l = i - 1;
+    let h = 0;
+    let scale = 0;
+    if (l > 0) {
+      for (let k = 0; k <= l; k++) scale += Math.abs(d[k] as number);
+      if (scale === 0) {
+        e[i] = d[l] as number;
+        for (let j = 0; j <= l; j++) {
+          d[j] = z[l * n + j] as number;
+          z[i * n + j] = 0;
+          z[j * n + i] = 0;
+        }
+      } else {
+        const invScale = 1 / scale;
+        for (let k = 0; k <= l; k++) {
+          const v = (d[k] as number) * invScale;
+          d[k] = v;
+          h += v * v;
+        }
+        let f = d[l] as number;
+        let g = f >= 0 ? -Math.sqrt(h) : Math.sqrt(h);
+        e[i] = scale * g;
+        h -= f * g;
+        d[l] = f - g;
+        for (let j = 0; j <= l; j++) e[j] = 0;
 
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const v = Math.abs(at(A, i * n + j));
-        if (v > max) {
-          max = v;
-          p = i;
-          q = j;
+        for (let j = 0; j <= l; j++) {
+          f = d[j] as number;
+          z[j * n + i] = f;
+          g = (e[j] as number) + (z[j * n + j] as number) * f;
+          for (let k = j + 1; k <= l; k++) {
+            g += (z[k * n + j] as number) * (d[k] as number);
+            e[k] = (e[k] as number) + (z[k * n + j] as number) * f;
+          }
+          e[j] = g;
+        }
+        f = 0;
+        const invH = 1 / h;
+        for (let j = 0; j <= l; j++) {
+          const ej = (e[j] as number) * invH;
+          e[j] = ej;
+          f += ej * (d[j] as number);
+        }
+        const hh = f / (h + h);
+        for (let j = 0; j <= l; j++) {
+          e[j] = (e[j] as number) - hh * (d[j] as number);
+        }
+        for (let j = 0; j <= l; j++) {
+          f = d[j] as number;
+          g = e[j] as number;
+          for (let k = j; k <= l; k++) {
+            z[k * n + j] = (z[k * n + j] as number) - f * (e[k] as number) - g * (d[k] as number);
+          }
+          d[j] = z[l * n + j] as number;
+          z[i * n + j] = 0;
+        }
+      }
+    } else {
+      e[i] = d[l] as number;
+      for (let j = 0; j <= l; j++) {
+        d[j] = z[l * n + j] as number;
+        z[i * n + j] = 0;
+        z[j * n + i] = 0;
+      }
+      h = 0;
+    }
+    d[i] = h;
+  }
+
+  // Accumulate transformations.
+  for (let i = 1; i < n; i++) {
+    const l = i - 1;
+    z[(n - 1) * n + l] = z[l * n + l] as number;
+    z[l * n + l] = 1;
+    const h = d[i] as number;
+    if (h !== 0) {
+      const invH = 1 / h;
+      for (let k = 0; k <= l; k++) d[k] = (z[k * n + i] as number) * invH;
+      for (let j = 0; j <= l; j++) {
+        let g = 0;
+        for (let k = 0; k <= l; k++) g += (z[k * n + i] as number) * (z[k * n + j] as number);
+        for (let k = 0; k <= l; k++) {
+          z[k * n + j] = (z[k * n + j] as number) - g * (d[k] as number);
         }
       }
     }
-
-    if (max < tol) break;
-
-    const app = at(A, p * n + p);
-    const aqq = at(A, q * n + q);
-    const apq = at(A, p * n + q);
-    if (apq === 0) continue;
-
-    const tau = (aqq - app) / (2 * apq);
-    const sign = tau >= 0 ? 1 : -1;
-    const t = sign / (Math.abs(tau) + Math.sqrt(1 + tau * tau));
-    const c = 1 / Math.sqrt(1 + t * t);
-    const s = t * c;
-
-    for (let k = 0; k < n; k++) {
-      if (k === p || k === q) continue;
-      const aik = at(A, k * n + p);
-      const akq = at(A, k * n + q);
-      const newAik = c * aik - s * akq;
-      const newAkq = s * aik + c * akq;
-      A[k * n + p] = newAik;
-      A[p * n + k] = newAik;
-      A[k * n + q] = newAkq;
-      A[q * n + k] = newAkq;
-    }
-
-    const newApp = c * c * app - 2 * s * c * apq + s * s * aqq;
-    const newAqq = s * s * app + 2 * s * c * apq + c * c * aqq;
-
-    A[p * n + p] = newApp;
-    A[q * n + q] = newAqq;
-    A[p * n + q] = 0;
-    A[q * n + p] = 0;
-
-    for (let k = 0; k < n; k++) {
-      const vkp = at(V, k * n + p);
-      const vkq = at(V, k * n + q);
-      V[k * n + p] = c * vkp - s * vkq;
-      V[k * n + q] = s * vkp + c * vkq;
-    }
+    for (let k = 0; k <= l; k++) z[k * n + i] = 0;
   }
+  for (let j = 0; j < n; j++) {
+    d[j] = z[(n - 1) * n + j] as number;
+    z[(n - 1) * n + j] = 0;
+  }
+  z[(n - 1) * n + (n - 1)] = 1;
+  e[0] = 0;
+}
 
-  const values = new Float64Array(n);
-  for (let i = 0; i < n; i++) values[i] = at(A, i * n + i);
-  return { values, vectors: V };
+/**
+ * QL algorithm with implicit shifts for a symmetric tridiagonal matrix
+ * (EISPACK tql2). Consumes `d`/`e` from {@link tred2}, leaves ascending is
+ * NOT guaranteed — callers sort. Eigenvectors are accumulated into `z`.
+ */
+function tql2(n: number, d: Float64Array, e: Float64Array, z: Float64Array): void {
+  for (let i = 1; i < n; i++) e[i - 1] = e[i] as number;
+  e[n - 1] = 0;
+
+  let f = 0;
+  let tst1 = 0;
+  const eps = Number.EPSILON;
+  for (let l = 0; l < n; l++) {
+    tst1 = Math.max(tst1, Math.abs(d[l] as number) + Math.abs(e[l] as number));
+    let m = l;
+    while (m < n) {
+      if (Math.abs(e[m] as number) <= eps * tst1) break;
+      m++;
+    }
+    if (m > l) {
+      let iter = 0;
+      do {
+        if (iter++ === 60) {
+          throw new ConvergenceError("eigh: QL iteration failed to converge", { iterations: 60 });
+        }
+        // Compute implicit shift.
+        let g = d[l] as number;
+        let p = ((d[l + 1] as number) - g) / (2 * (e[l] as number));
+        let r = Math.hypot(p, 1);
+        if (p < 0) r = -r;
+        d[l] = (e[l] as number) / (p + r);
+        d[l + 1] = (e[l] as number) * (p + r);
+        const dl1 = d[l + 1] as number;
+        let h = g - (d[l] as number);
+        for (let i = l + 2; i < n; i++) d[i] = (d[i] as number) - h;
+        f += h;
+
+        // Implicit QL transformation.
+        p = d[m] as number;
+        let c = 1;
+        let c2 = c;
+        let c3 = c;
+        const el1 = e[l + 1] as number;
+        let s = 0;
+        let s2 = 0;
+        for (let i = m - 1; i >= l; i--) {
+          c3 = c2;
+          c2 = c;
+          s2 = s;
+          g = c * (e[i] as number);
+          h = c * p;
+          r = Math.hypot(p, e[i] as number);
+          e[i + 1] = s * r;
+          s = (e[i] as number) / r;
+          c = p / r;
+          p = c * (d[i] as number) - s * g;
+          d[i + 1] = h + s * (c * g + s * (d[i] as number));
+          for (let k = 0; k < n; k++) {
+            h = z[k * n + i + 1] as number;
+            const zki = z[k * n + i] as number;
+            z[k * n + i + 1] = s * zki + c * h;
+            z[k * n + i] = c * zki - s * h;
+          }
+        }
+        p = (-s * s2 * c3 * el1 * (e[l] as number)) / dl1;
+        e[l] = s * p;
+        d[l] = c * p;
+      } while (Math.abs(e[l] as number) > eps * tst1);
+    }
+    d[l] = (d[l] as number) + f;
+    e[l] = 0;
+  }
+}
+
+/**
+ * Symmetric eigendecomposition via Householder tridiagonalization + QL with
+ * implicit shifts. Same interface as the Jacobi routine it replaces.
+ */
+function symmetricEigen(
+  a: Float64Array,
+  n: number
+): { readonly values: Float64Array; readonly vectors: Float64Array } {
+  const z = new Float64Array(a);
+  const d = new Float64Array(n);
+  const e = new Float64Array(n);
+  if (n === 0) return { values: d, vectors: z };
+  if (n === 1) {
+    d[0] = a[0] as number;
+    z[0] = 1;
+    return { values: d, vectors: z };
+  }
+  tred2(n, z, d, e);
+  tql2(n, d, e, z);
+  return { values: d, vectors: z };
+}
+
+/**
+ * Tridiagonalize (accumulating no transform) then run the QL sweep without
+ * eigenvector updates — eigenvalues only, ~2x less work than
+ * {@link symmetricEigen}. Returns unsorted eigenvalues.
+ */
+function symmetricEigenvalues(a: Float64Array, n: number): Float64Array {
+  const d = new Float64Array(n);
+  const e = new Float64Array(n);
+  if (n === 0) return d;
+  if (n === 1) {
+    d[0] = a[0] as number;
+    return d;
+  }
+  const A = new Float64Array(a);
+  tred2(n, A, d, e);
+  // QL without eigenvector accumulation (structure mirrors tql2).
+  for (let i = 1; i < n; i++) e[i - 1] = e[i] as number;
+  e[n - 1] = 0;
+  let f = 0;
+  let tst1 = 0;
+  const eps = Number.EPSILON;
+  for (let l = 0; l < n; l++) {
+    tst1 = Math.max(tst1, Math.abs(d[l] as number) + Math.abs(e[l] as number));
+    let m = l;
+    while (m < n) {
+      if (Math.abs(e[m] as number) <= eps * tst1) break;
+      m++;
+    }
+    if (m > l) {
+      let iter = 0;
+      do {
+        if (iter++ === 60) {
+          throw new ConvergenceError("eigvalsh: QL iteration failed to converge", {
+            iterations: 60,
+          });
+        }
+        let g = d[l] as number;
+        let p = ((d[l + 1] as number) - g) / (2 * (e[l] as number));
+        let r = Math.hypot(p, 1);
+        if (p < 0) r = -r;
+        d[l] = (e[l] as number) / (p + r);
+        d[l + 1] = (e[l] as number) * (p + r);
+        const dl1 = d[l + 1] as number;
+        let h = g - (d[l] as number);
+        for (let i = l + 2; i < n; i++) d[i] = (d[i] as number) - h;
+        f += h;
+        p = d[m] as number;
+        let c = 1;
+        let c2 = c;
+        let c3 = c;
+        const el1 = e[l + 1] as number;
+        let s = 0;
+        let s2 = 0;
+        for (let i = m - 1; i >= l; i--) {
+          c3 = c2;
+          c2 = c;
+          s2 = s;
+          g = c * (e[i] as number);
+          h = c * p;
+          r = Math.hypot(p, e[i] as number);
+          e[i + 1] = s * r;
+          s = (e[i] as number) / r;
+          c = p / r;
+          p = c * (d[i] as number) - s * g;
+          d[i + 1] = h + s * (c * g + s * (d[i] as number));
+        }
+        p = (-s * s2 * c3 * el1 * (e[l] as number)) / dl1;
+        e[l] = s * p;
+        d[l] = c * p;
+      } while (Math.abs(e[l] as number) > eps * tst1);
+    }
+    d[l] = (d[l] as number) + f;
+    e[l] = 0;
+  }
+  return d;
 }
 
 function matmulSquare(a: Float64Array, b: Float64Array, n: number): Float64Array {
@@ -105,7 +315,7 @@ function matmulSquare(a: Float64Array, b: Float64Array, n: number): Float64Array
     for (let j = 0; j < n; j++) {
       let sum = 0;
       for (let k = 0; k < n; k++) {
-        sum += at(a, i * n + k) * at(b, k * n + j);
+        sum += (a[i * n + k] as number) * (b[k * n + j] as number);
       }
       out[i * n + j] = sum;
     }
@@ -131,22 +341,22 @@ function qrFactorSquare(
       for (let j = 0; j < col; j++) {
         let dot = 0;
         for (let k = 0; k < n; k++) {
-          dot += at(Q, k * n + j) * at(vec, k);
+          dot += (Q[k * n + j] as number) * (vec[k] as number);
         }
         for (let k = 0; k < n; k++) {
-          vec[k] = at(vec, k) - dot * at(Q, k * n + j);
+          vec[k] = (vec[k] as number) - dot * (Q[k * n + j] as number);
         }
       }
       let norm = 0;
       for (let k = 0; k < n; k++) {
-        const val = at(vec, k);
+        const val = vec[k] as number;
         norm += val * val;
       }
       norm = Math.sqrt(norm);
       if (norm > 1e-12) {
         const inv = 1 / norm;
         for (let k = 0; k < n; k++) {
-          Q[k * n + col] = at(vec, k) * inv;
+          Q[k * n + col] = (vec[k] as number) * inv;
         }
         return;
       }
@@ -157,17 +367,17 @@ function qrFactorSquare(
     for (let i = 0; i < j; i++) {
       let dot = 0;
       for (let k = 0; k < n; k++) {
-        dot += at(Q, k * n + i) * at(v, k * n + j);
+        dot += (Q[k * n + i] as number) * (v[k * n + j] as number);
       }
       R[i * n + j] = dot;
       for (let k = 0; k < n; k++) {
-        v[k * n + j] = at(v, k * n + j) - dot * at(Q, k * n + i);
+        v[k * n + j] = (v[k * n + j] as number) - dot * (Q[k * n + i] as number);
       }
     }
 
     let norm = 0;
     for (let k = 0; k < n; k++) {
-      const x = at(v, k * n + j);
+      const x = v[k * n + j] as number;
       norm += x * x;
     }
     norm = Math.sqrt(norm);
@@ -175,7 +385,7 @@ function qrFactorSquare(
     if (norm > 1e-12) {
       const inv = 1 / norm;
       for (let k = 0; k < n; k++) {
-        Q[k * n + j] = at(v, k * n + j) * inv;
+        Q[k * n + j] = (v[k * n + j] as number) * inv;
       }
     } else {
       fillOrthonormalColumn(j);
@@ -208,7 +418,7 @@ function hessenbergReduce(
     // Extract column col below diagonal
     let norm = 0;
     for (let i = col + 1; i < n; i++) {
-      const val = at(H, i * n + col);
+      const val = H[i * n + col] as number;
       v[i] = val;
       norm += val * val;
     }
@@ -217,32 +427,32 @@ function hessenbergReduce(
     if (norm < 1e-14) continue;
 
     // Choose sign to avoid cancellation
-    const vkp1 = at(v, col + 1);
+    const vkp1 = v[col + 1] as number;
     const sign = vkp1 >= 0 ? 1 : -1;
     v[col + 1] = vkp1 + sign * norm;
 
     // Normalize v
     let vnorm = 0;
     for (let i = col + 1; i < n; i++) {
-      const val = at(v, i);
+      const val = v[i] as number;
       vnorm += val * val;
     }
     vnorm = Math.sqrt(vnorm);
     if (vnorm < 1e-14) continue;
 
     for (let i = col + 1; i < n; i++) {
-      v[i] = at(v, i) / vnorm;
+      v[i] = (v[i] as number) / vnorm;
     }
 
     // Apply H = (I - 2*v*v^T) * H from left
     for (let j = col; j < n; j++) {
       let dot = 0;
       for (let i = col + 1; i < n; i++) {
-        dot += at(v, i) * at(H, i * n + j);
+        dot += (v[i] as number) * (H[i * n + j] as number);
       }
       dot *= 2;
       for (let i = col + 1; i < n; i++) {
-        H[i * n + j] = at(H, i * n + j) - dot * at(v, i);
+        H[i * n + j] = (H[i * n + j] as number) - dot * (v[i] as number);
       }
     }
 
@@ -250,11 +460,11 @@ function hessenbergReduce(
     for (let i = 0; i < n; i++) {
       let dot = 0;
       for (let j = col + 1; j < n; j++) {
-        dot += at(H, i * n + j) * at(v, j);
+        dot += (H[i * n + j] as number) * (v[j] as number);
       }
       dot *= 2;
       for (let j = col + 1; j < n; j++) {
-        H[i * n + j] = at(H, i * n + j) - dot * at(v, j);
+        H[i * n + j] = (H[i * n + j] as number) - dot * (v[j] as number);
       }
     }
 
@@ -262,11 +472,11 @@ function hessenbergReduce(
     for (let i = 0; i < n; i++) {
       let dot = 0;
       for (let j = col + 1; j < n; j++) {
-        dot += at(Q, i * n + j) * at(v, j);
+        dot += (Q[i * n + j] as number) * (v[j] as number);
       }
       dot *= 2;
       for (let j = col + 1; j < n; j++) {
-        Q[i * n + j] = at(Q, i * n + j) - dot * at(v, j);
+        Q[i * n + j] = (Q[i * n + j] as number) - dot * (v[j] as number);
       }
     }
   }
@@ -345,8 +555,8 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
   let symmetric = true;
   for (let i = 0; i < n && symmetric; i++) {
     for (let j = i + 1; j < n; j++) {
-      const aij = at(A0, i * n + j);
-      const aji = at(A0, j * n + i);
+      const aij = A0[i * n + j] as number;
+      const aji = A0[j * n + i] as number;
       if (Math.abs(aij - aji) > 1e-10) {
         symmetric = false;
         break;
@@ -370,7 +580,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
   for (let iter = 0; iter < maxIter; iter++) {
     let off = 0;
     for (let i = 1; i < n; i++) {
-      const v = at(Ak, i * n + (i - 1));
+      const v = Ak[i * n + (i - 1)] as number;
       off += v * v;
     }
     if (Math.sqrt(off) < convTol) {
@@ -378,22 +588,43 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
       break;
     }
 
-    const mu = at(Ak, (n - 1) * n + (n - 1));
+    // Wilkinson shift from the trailing 2x2 block. A pure Rayleigh shift
+    // (mu = A[n-1][n-1]) livelocks on matrices like [[0,2],[0.5,0]] whose
+    // trailing diagonal entry never moves. Every 12th iteration applies an
+    // exceptional shift to break any remaining symmetric cycling.
+    let mu: number;
+    const t11 = Ak[(n - 2) * n + (n - 2)] as number;
+    const t12 = Ak[(n - 2) * n + (n - 1)] as number;
+    const t21 = Ak[(n - 1) * n + (n - 2)] as number;
+    const t22 = Ak[(n - 1) * n + (n - 1)] as number;
+    const delta = (t11 - t22) / 2;
+    const disc = delta * delta + t12 * t21;
+    if ((iter + 1) % 12 === 0) {
+      mu = t22 + Math.abs(t21) + Math.abs(delta);
+    } else if (disc >= 0) {
+      const sgn = delta >= 0 ? 1 : -1;
+      const denom = delta + sgn * Math.sqrt(disc);
+      mu = denom === 0 ? t22 : t22 - (t12 * t21) / denom;
+    } else {
+      // Complex eigenvalue pair in the trailing block; fall back to the
+      // Rayleigh shift (the complex-pair detection below reports it).
+      mu = t22;
+    }
     const shifted = new Float64Array(Ak);
     for (let i = 0; i < n; i++) {
-      shifted[i * n + i] = at(shifted, i * n + i) - mu;
+      shifted[i * n + i] = (shifted[i * n + i] as number) - mu;
     }
 
     const { Q, R } = qrFactorSquare(shifted, n);
     Ak = matmulSquare(R, Q, n);
     for (let i = 0; i < n; i++) {
-      Ak[i * n + i] = at(Ak, i * n + i) + mu;
+      Ak[i * n + i] = (Ak[i * n + i] as number) + mu;
     }
   }
 
   // Clean small subdiagonal entries to stabilize eigenvalue detection
   for (let i = 1; i < n; i++) {
-    const v = at(Ak, i * n + (i - 1));
+    const v = Ak[i * n + (i - 1)] as number;
     if (Math.abs(v) < convTol) {
       Ak[i * n + (i - 1)] = 0;
     }
@@ -408,13 +639,13 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
   const complexTol = 1e-8;
   let hasComplex = false;
   for (let i = 0; i < n - 1; i++) {
-    const subdiag = Math.abs(at(Ak, (i + 1) * n + i));
+    const subdiag = Math.abs(Ak[(i + 1) * n + i] as number);
     if (subdiag > complexTol) {
       // Non-negligible subdiagonal element indicates a 2x2 block
-      const a11 = at(Ak, i * n + i);
-      const a12 = at(Ak, i * n + (i + 1));
-      const a21 = at(Ak, (i + 1) * n + i);
-      const a22 = at(Ak, (i + 1) * n + (i + 1));
+      const a11 = Ak[i * n + i] as number;
+      const a12 = Ak[i * n + (i + 1)] as number;
+      const a21 = Ak[(i + 1) * n + i] as number;
+      const a22 = Ak[(i + 1) * n + (i + 1)] as number;
       const discriminant = (a11 - a22) * (a11 - a22) + 4 * a12 * a21;
       if (discriminant < -complexTol) {
         hasComplex = true;
@@ -440,7 +671,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
   }
 
   const evals = new Float64Array(n);
-  for (let i = 0; i < n; i++) evals[i] = at(Ak, i * n + i);
+  for (let i = 0; i < n; i++) evals[i] = Ak[i * n + i] as number;
 
   // Compute eigenvectors by finding nullspace of (A - λI)
   const vectors = new Float64Array(n * n);
@@ -449,12 +680,12 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
 
   for (let i = 0; i < n; i++) {
     if (used[i]) continue;
-    const lambda = at(evals, i);
+    const lambda = evals[i] as number;
     const cluster = [i];
     used[i] = true;
     for (let j = i + 1; j < n; j++) {
       if (used[j]) continue;
-      const diff = Math.abs(at(evals, j) - lambda);
+      const diff = Math.abs((evals[j] as number) - lambda);
       const scale = Math.max(1, Math.abs(lambda));
       if (diff <= clusterTol * scale) {
         used[j] = true;
@@ -465,7 +696,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
     const basis = (() => {
       const M = new Float64Array(A0);
       for (let d = 0; d < n; d++) {
-        M[d * n + d] = at(M, d * n + d) - lambda;
+        M[d * n + d] = (M[d * n + d] as number) - lambda;
       }
       const [_, s, Vt] = svd(fromDenseMatrix2D(n, n, M), true);
       const sDense = toDenseVector1D(s);
@@ -473,17 +704,17 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
       const vData = new Float64Array(n * n);
       for (let r = 0; r < n; r++) {
         for (let c = 0; c < n; c++) {
-          vData[r * n + c] = at(VtData, c * n + r);
+          vData[r * n + c] = VtData[c * n + r] as number;
         }
       }
-      const sMax = sDense.length === 0 ? 0 : at(sDense, 0);
+      const sMax = sDense.length === 0 ? 0 : (sDense[0] as number);
       const tol = Number.EPSILON * n * sMax;
       const basisVecs: Float64Array[] = [];
       for (let r = sDense.length - 1; r >= 0; r--) {
-        if (at(sDense, r) <= tol) {
+        if ((sDense[r] as number) <= tol) {
           const vec = new Float64Array(n);
           for (let c = 0; c < n; c++) {
-            vec[c] = at(vData, c * n + r);
+            vec[c] = vData[c * n + r] as number;
           }
           basisVecs.push(vec);
         }
@@ -492,7 +723,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
         const r = sDense.length - 1;
         const vec = new Float64Array(n);
         for (let c = 0; c < n; c++) {
-          vec[c] = at(vData, c * n + r);
+          vec[c] = vData[c * n + r] as number;
         }
         basisVecs.push(vec);
       }
@@ -510,7 +741,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
       }
       let norm = 0;
       for (let r = 0; r < n; r++) {
-        const v = at(vec, r);
+        const v = vec[r] as number;
         norm += v * v;
       }
       if (norm === 0) {
@@ -521,7 +752,7 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
       }
       const inv = 1 / Math.sqrt(norm);
       for (let r = 0; r < n; r++) {
-        vectors[r * n + colIndex] = at(vec, r) * inv;
+        vectors[r * n + colIndex] = (vec[r] as number) * inv;
       }
     }
   }
@@ -586,16 +817,18 @@ export function eigvalsh(a: Tensor): Tensor {
   // Validate symmetry
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      const aij = at(A, i * n + j);
-      const aji = at(A, j * n + i);
+      const aij = A[i * n + j] as number;
+      const aji = A[j * n + i] as number;
       if (Math.abs(aij - aji) > 1e-10) {
         throw new DataValidationError("Input must be symmetric for eigvalsh");
       }
     }
   }
 
-  const [eigenvalues] = eigh(a);
-  return eigenvalues;
+  // Eigenvalues only — skip the O(n³) eigenvector accumulation entirely.
+  const values = symmetricEigenvalues(A, n);
+  values.sort();
+  return fromDenseVector1D(values);
 }
 
 /**
@@ -635,28 +868,28 @@ export function eigh(a: Tensor): [Tensor, Tensor] {
   // Validate symmetry
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      const aij = at(A, i * n + j);
-      const aji = at(A, j * n + i);
+      const aij = A[i * n + j] as number;
+      const aji = A[j * n + i] as number;
       if (Math.abs(aij - aji) > 1e-10) {
         throw new DataValidationError("Input must be symmetric for eigh");
       }
     }
   }
 
-  const { values, vectors } = jacobiEigenSymmetric(A, n);
+  const { values, vectors } = symmetricEigen(A, n);
 
   // Sort ascending like eigh
   const idx = new Array<number>(n);
   for (let i = 0; i < n; i++) idx[i] = i;
-  idx.sort((i, j) => at(values, i) - at(values, j));
+  idx.sort((i, j) => (values[i] as number) - (values[j] as number));
 
   const outVals = new Float64Array(n);
   const outVecs = new Float64Array(n * n);
   for (let col = 0; col < n; col++) {
     const src = atArr(idx, col);
-    outVals[col] = at(values, src);
+    outVals[col] = values[src] as number;
     for (let row = 0; row < n; row++) {
-      outVecs[row * n + col] = at(vectors, row * n + src);
+      outVecs[row * n + col] = vectors[row * n + src] as number;
     }
   }
 

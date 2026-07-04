@@ -5,7 +5,8 @@ import {
   InvalidParameterError,
   NotFittedError,
 } from "../core/errors";
-import { type Tensor, tensor, zeros } from "../ndarray";
+import { type Tensor, Tensor as TensorClass, tensor, zeros } from "../ndarray";
+import { __random } from "../random/random";
 import {
   assert2D,
   assertNumericTensor,
@@ -34,6 +35,59 @@ function parseBooleanOption(value: unknown, name: string, defaultValue: boolean)
     throw new InvalidParameterError(`${name} must be a boolean`, name, value);
   }
   return value;
+}
+
+/**
+ * Read a 2-D numeric tensor into a dense row-major Float64Array (honouring
+ * strides/offset), validating finiteness in the same pass. Returns the
+ * buffer plus its dims. Replaces the old two-pass validate-then-nested-copy
+ * (each element paid a `Number()` coercion, an undefined check, and a final
+ * `tensor(nested)` re-validation) for the hot scaler transforms.
+ */
+function denseRowMajorFinite(
+  X: Tensor,
+  name: string
+): { data: Float64Array; nSamples: number; nFeatures: number } {
+  const [nSamples, nFeatures] = getShape2D(X);
+  const src = getNumericData(X, name);
+  const [stride0, stride1] = getStrides2D(X);
+  const out = new Float64Array(nSamples * nFeatures);
+  const offset = X.offset;
+  let pos = 0;
+  if (stride1 === 1) {
+    for (let i = 0; i < nSamples; i++) {
+      let idx = offset + i * stride0;
+      for (let j = 0; j < nFeatures; j++) {
+        const v = Number(src[idx++]);
+        if (!Number.isFinite(v)) {
+          throw new DataValidationError(`${name} contains NaN or Infinity at index ${pos}`);
+        }
+        out[pos++] = v;
+      }
+    }
+  } else {
+    for (let i = 0; i < nSamples; i++) {
+      const rowBase = offset + i * stride0;
+      for (let j = 0; j < nFeatures; j++) {
+        const v = Number(src[rowBase + j * stride1]);
+        if (!Number.isFinite(v)) {
+          throw new DataValidationError(`${name} contains NaN or Infinity at index ${pos}`);
+        }
+        out[pos++] = v;
+      }
+    }
+  }
+  return { data: out, nSamples, nFeatures };
+}
+
+/** Read a fitted 1-D parameter tensor (mean_/scale_/…) into a Float64Array. */
+function dense1D(vec: Tensor, name: string, len: number): Float64Array {
+  const src = getNumericData(vec, name);
+  const stride = getStride1D(vec);
+  const offset = vec.offset;
+  const out = new Float64Array(len);
+  for (let j = 0; j < len; j++) out[j] = Number(src[offset + j * stride]);
+  return out;
 }
 
 function validateFiniteData(X: Tensor, name: string): void {
@@ -231,17 +285,8 @@ export class StandardScaler {
     }
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
     const mean = this.mean_;
     const scale = this.scale_;
-    const meanData = mean ? getNumericData(mean, "mean_") : undefined;
-    const scaleData = scale ? getNumericData(scale, "scale_") : undefined;
-    const meanStride = mean ? getStride1D(mean) : 0;
-    const scaleStride = scale ? getStride1D(scale) : 0;
-
     if (this.withMean && !mean) {
       throw new DeepboxError("StandardScaler internal error: missing mean_");
     }
@@ -249,48 +294,72 @@ export class StandardScaler {
       throw new DeepboxError("StandardScaler internal error: missing scale_");
     }
 
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
+    const { data, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
 
-    for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
+    // Fold mean subtraction and 1/std into per-feature offset/scale vectors
+    // once, then apply them in a single dense pass. out = (x - off) * mul.
+    const off = this.withMean && mean ? dense1D(mean, "mean_", nFeatures) : null;
+    const mul = new Float64Array(nFeatures);
+    if (this.withStd && scale) {
+      const sc = dense1D(scale, "scale_", nFeatures);
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let val = Number(raw);
+        const s = sc[j] as number;
+        mul[j] = s === 0 ? 1 : 1 / s;
+      }
+    } else {
+      mul.fill(1);
+    }
 
-        if (this.withMean && mean && meanData) {
-          const meanValue = meanData[mean.offset + j * meanStride];
-          if (meanValue === undefined) {
-            throw new DeepboxError("Internal error: mean tensor access out of bounds");
-          }
-          val -= Number(meanValue);
+    const out = data; // transform in place over the freshly-allocated dense copy
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      if (off) {
+        for (let j = 0; j < nFeatures; j++) {
+          out[pos] = ((out[pos] as number) - (off[j] as number)) * (mul[j] as number);
+          pos++;
         }
-
-        if (this.withStd && scale && scaleData) {
-          const rawScale = scaleData[scale.offset + j * scaleStride];
-          if (rawScale === undefined) {
-            throw new DeepboxError("Internal error: scale tensor access out of bounds");
-          }
-          const std = Number(rawScale);
-          const safeStd = std === 0 ? 1 : std;
-          val /= safeStd;
+      } else {
+        for (let j = 0; j < nFeatures; j++) {
+          out[pos] = (out[pos] as number) * (mul[j] as number);
+          pos++;
         }
-
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = val;
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: X.device,
+    });
   }
 
   fitTransform(X: Tensor): Tensor {
     return this.fit(X).transform(X);
+  }
+
+  getParams(): Record<string, unknown> {
+    return { withMean: this.withMean, withStd: this.withStd };
+  }
+
+  setParams(params: Record<string, unknown>): this {
+    if ("withMean" in params && typeof params["withMean"] === "boolean") {
+      this.withMean = params["withMean"];
+    }
+    if ("withStd" in params && typeof params["withStd"] === "boolean") {
+      this.withStd = params["withStd"];
+    }
+    return this;
+  }
+
+  clone(): StandardScaler {
+    return new StandardScaler(
+      this.getParams() as {
+        withMean?: boolean;
+        withStd?: boolean;
+        copy?: boolean;
+      }
+    );
   }
 
   inverseTransform(X: Tensor): Tensor {
@@ -442,55 +511,52 @@ export class MinMaxScaler {
     }
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
     const [minRange, maxRange] = this.featureRange;
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
     const dataMin = this.dataMin_;
     const dataMax = this.dataMax_;
-
     if (!dataMin || !dataMax) {
       throw new DeepboxError("MinMaxScaler internal error: missing fitted min/max");
     }
-    const minData = getNumericData(dataMin, "dataMin_");
-    const maxData = getNumericData(dataMax, "dataMax_");
-    const minStride = getStride1D(dataMin);
-    const maxStride = getStride1D(dataMax);
 
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
+    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
+    const minArr = dense1D(dataMin, "dataMin_", nFeatures);
+    const maxArr = dense1D(dataMax, "dataMax_", nFeatures);
 
-    for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
-      for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const rawMin = minData[dataMin.offset + j * minStride];
-        const rawMax = maxData[dataMax.offset + j * maxStride];
-        if (rawMin === undefined || rawMax === undefined) {
-          throw new DeepboxError("Internal error: min/max tensor access out of bounds");
-        }
-        const min = Number(rawMin);
-        const max = Number(rawMax);
-        const range = max - min;
-
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        let scaled =
-          range !== 0 ? ((val - min) / range) * (maxRange - minRange) + minRange : minRange;
-        if (this.clip) {
-          scaled = Math.max(minRange, Math.min(maxRange, scaled));
-        }
-        row[j] = scaled;
+    // Per-feature affine map folded to out = x*mul + add (mul=0 for a
+    // zero-range feature so it collapses to the constant minRange).
+    const rangeSpan = maxRange - minRange;
+    const mul = new Float64Array(nFeatures);
+    const add = new Float64Array(nFeatures);
+    for (let j = 0; j < nFeatures; j++) {
+      const min = minArr[j] as number;
+      const range = (maxArr[j] as number) - min;
+      if (range !== 0) {
+        const m = rangeSpan / range;
+        mul[j] = m;
+        add[j] = minRange - min * m;
+      } else {
+        mul[j] = 0;
+        add[j] = minRange;
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    const clip = this.clip;
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        let scaled = (out[pos] as number) * (mul[j] as number) + (add[j] as number);
+        if (clip) scaled = Math.max(minRange, Math.min(maxRange, scaled));
+        out[pos] = scaled;
+        pos++;
+      }
+    }
+
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: X.device,
+    });
   }
 
   fitTransform(X: Tensor): Tensor {
@@ -608,42 +674,33 @@ export class MaxAbsScaler {
     }
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
     const maxAbs = this.maxAbs_;
     if (!maxAbs) {
       throw new DeepboxError("MaxAbsScaler internal error: missing fitted maxAbs");
     }
-    const maxData = getNumericData(maxAbs, "maxAbs_");
-    const maxStride = getStride1D(maxAbs);
 
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
+    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
+    const maxArr = dense1D(maxAbs, "maxAbs_", nFeatures);
+    const mul = new Float64Array(nFeatures);
+    for (let j = 0; j < nFeatures; j++) {
+      const s = maxArr[j] as number;
+      mul[j] = s === 0 ? 1 : 1 / s;
+    }
 
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const rawScale = maxData[maxAbs.offset + j * maxStride];
-        if (rawScale === undefined) {
-          throw new DeepboxError("Internal error: maxAbs tensor access out of bounds");
-        }
-        const scale = Number(rawScale);
-        const safeScale = scale === 0 ? 1 : scale;
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = val / safeScale;
+        out[pos] = (out[pos] as number) * (mul[j] as number);
+        pos++;
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: X.device,
+    });
   }
 
   fitTransform(X: Tensor): Tensor {
@@ -774,49 +831,29 @@ export class RobustScaler {
       throw new DeepboxError("RobustScaler internal error: invalid unit variance normalizer");
     }
 
+    // Reusable column buffer; typed numeric `.sort()` (comparator-free)
+    // replaces the per-feature `number[].push()` + `(a,b)=>a-b` sort.
+    const values = new Float64Array(nSamples);
+    const interpolate = (q: number): number => {
+      if (nSamples === 1) return values[0] as number;
+      const position = q * (nSamples - 1);
+      const lower = Math.floor(position);
+      const upper = Math.ceil(position);
+      const lowerValue = values[lower] as number;
+      if (upper === lower) return lowerValue;
+      const weight = position - lower;
+      return lowerValue * (1 - weight) + (values[upper] as number) * weight;
+    };
+
     for (let j = 0; j < nFeatures; j++) {
-      const values: number[] = [];
       for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        values.push(Number(raw));
+        values[i] = Number(data[X.offset + i * stride0 + j * stride1]);
       }
-      values.sort((a, b) => a - b);
-
-      const interpolate = (q: number): number => {
-        if (values.length === 0) {
-          throw new DeepboxError("Internal error: cannot interpolate empty values");
-        }
-        if (values.length === 1) {
-          const only = values[0];
-          if (only === undefined) {
-            throw new DeepboxError("Internal error: missing sorted value");
-          }
-          return only;
-        }
-
-        const position = q * (values.length - 1);
-        const lower = Math.floor(position);
-        const upper = Math.ceil(position);
-        const lowerValue = values[lower];
-        const upperValue = values[upper];
-        if (lowerValue === undefined || upperValue === undefined) {
-          throw new DeepboxError("Internal error: quantile interpolation index out of bounds");
-        }
-        if (upper === lower) {
-          return lowerValue;
-        }
-        const weight = position - lower;
-        return lowerValue * (1 - weight) + upperValue * weight;
-      };
+      values.sort();
 
       // Median for centering and IQR for scaling
       centers[j] = interpolate(0.5);
-      const qLower = interpolate(lowerFraction);
-      const qUpper = interpolate(upperFraction);
-      const iqr = qUpper - qLower;
+      const iqr = interpolate(upperFraction) - interpolate(lowerFraction);
       scales[j] = this.unitVariance ? iqr / normalizer : iqr;
     }
 
@@ -832,17 +869,8 @@ export class RobustScaler {
     }
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
     const center = this.center_;
     const scale = this.scale_;
-    const centerData = center ? getNumericData(center, "center_") : undefined;
-    const scaleData = scale ? getNumericData(scale, "scale_") : undefined;
-    const centerStride = center ? getStride1D(center) : 0;
-    const scaleStride = scale ? getStride1D(scale) : 0;
-
     if (this.withCentering && !center) {
       throw new DeepboxError("RobustScaler internal error: missing center_");
     }
@@ -850,44 +878,40 @@ export class RobustScaler {
       throw new DeepboxError("RobustScaler internal error: missing scale_");
     }
 
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
-    for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
+    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
+    const off = this.withCentering && center ? dense1D(center, "center_", nFeatures) : null;
+    const mul = new Float64Array(nFeatures);
+    if (this.withScaling && scale) {
+      const sc = dense1D(scale, "scale_", nFeatures);
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let val = Number(raw);
+        const s = sc[j] as number;
+        mul[j] = s === 0 ? 1 : 1 / s;
+      }
+    } else {
+      mul.fill(1);
+    }
 
-        if (this.withCentering && center && centerData) {
-          const rawCenter = centerData[center.offset + j * centerStride];
-          if (rawCenter === undefined) {
-            throw new DeepboxError("Internal error: center tensor access out of bounds");
-          }
-          val -= Number(rawCenter);
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      if (off) {
+        for (let j = 0; j < nFeatures; j++) {
+          out[pos] = ((out[pos] as number) - (off[j] as number)) * (mul[j] as number);
+          pos++;
         }
-
-        if (this.withScaling && scale && scaleData) {
-          const rawScale = scaleData[scale.offset + j * scaleStride];
-          if (rawScale === undefined) {
-            throw new DeepboxError("Internal error: scale tensor access out of bounds");
-          }
-          const scaleValue = Number(rawScale);
-          const safeScale = scaleValue === 0 ? 1 : scaleValue;
-          val /= safeScale;
+      } else {
+        for (let j = 0; j < nFeatures; j++) {
+          out[pos] = (out[pos] as number) * (mul[j] as number);
+          pos++;
         }
-
-        const resultRow = result[i];
-        if (resultRow === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        resultRow[j] = val;
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: X.device,
+    });
   }
 
   fitTransform(X: Tensor): Tensor {
@@ -990,60 +1014,39 @@ export class Normalizer {
   transform(X: Tensor): Tensor {
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
+    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
+    const kind = this.norm;
 
     for (let i = 0; i < nSamples; i++) {
+      const rowBase = i * nFeatures;
       let norm = 0;
-      const rowBase = X.offset + i * stride0;
-
-      if (this.norm === "l2") {
+      if (kind === "l2") {
         for (let j = 0; j < nFeatures; j++) {
-          const raw = data[rowBase + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          const val = Number(raw);
-          norm += val * val;
+          const v = out[rowBase + j] as number;
+          norm += v * v;
         }
         norm = Math.sqrt(norm);
-      } else if (this.norm === "l1") {
+      } else if (kind === "l1") {
+        for (let j = 0; j < nFeatures; j++) norm += Math.abs(out[rowBase + j] as number);
+      } else {
         for (let j = 0; j < nFeatures; j++) {
-          const raw = data[rowBase + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          norm += Math.abs(Number(raw));
-        }
-      } else if (this.norm === "max") {
-        for (let j = 0; j < nFeatures; j++) {
-          const raw = data[rowBase + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          norm = Math.max(norm, Math.abs(Number(raw)));
+          norm = Math.max(norm, Math.abs(out[rowBase + j] as number));
         }
       }
-
-      for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
+      if (norm !== 0) {
+        const inv = 1 / norm;
+        for (let j = 0; j < nFeatures; j++) {
+          out[rowBase + j] = (out[rowBase + j] as number) * inv;
         }
-        const val = Number(raw);
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = norm === 0 ? val : val / norm;
       }
     }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: X.device,
+    });
   }
 
   fitTransform(X: Tensor): Tensor {
@@ -1147,7 +1150,7 @@ export class QuantileTransformer {
     if (sampleCount < nSamples) {
       sampleIndices = Array.from({ length: nSamples }, (_, i) => i);
       const random =
-        this.randomState !== undefined ? createSeededRandom(this.randomState) : Math.random;
+        this.randomState !== undefined ? createSeededRandom(this.randomState) : __random;
       shuffleIndicesInPlace(sampleIndices, random);
       sampleIndices = sampleIndices.slice(0, sampleCount);
     }

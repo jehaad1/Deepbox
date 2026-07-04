@@ -3,7 +3,6 @@ import {
   DeepboxError,
   InvalidParameterError,
   NotFittedError,
-  NotImplementedError,
   ShapeError,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
@@ -18,7 +17,13 @@ type TreeNode = {
   readonly threshold?: number;
   readonly left?: TreeNode;
   readonly right?: TreeNode;
+  // Weighted impurity decrease at this split (n*imp - nL*impL - nR*impR),
+  // recorded so feature_importances_ is the standard MDI (mean decrease in
+  // impurity) rather than a raw split count.
+  readonly weightedImpurityDecrease?: number;
 };
+
+export type ClassificationCriterion = "gini" | "entropy" | "log_loss";
 
 /**
  * Decision Tree Classifier.
@@ -46,12 +51,55 @@ type TreeNode = {
  *
  * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
+/**
+ * Sort `positions[0..n)` ascending by `col[pos]`, stably.
+ *
+ * When every column value is float32-exact (the common case: features come
+ * from float32 tensors), values are bit-encoded into order-preserving
+ * integers and packed with the position into a Float64Array so V8's
+ * comparator-free typed sort applies (~3x faster than a comparator sort).
+ * Otherwise falls back to a stable comparator sort. Both paths produce
+ * identical orderings.
+ */
+const treeSortF32 = new Float32Array(1);
+const treeSortU32 = new Uint32Array(treeSortF32.buffer);
+
+function sortPositionsByColumn(col: Float64Array, positions: Int32Array, n: number): void {
+  let packable = n <= 2097152;
+  if (packable) {
+    for (let i = 0; i < n; i++) {
+      const v = col[i]!;
+      if (Math.fround(v) !== v) {
+        packable = false;
+        break;
+      }
+    }
+  }
+  if (packable) {
+    const packed = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      treeSortF32[0] = col[i]!;
+      const bits = treeSortU32[0]! >>> 0;
+      const enc = bits & 0x80000000 ? ~bits >>> 0 : (bits | 0x80000000) >>> 0;
+      packed[i] = enc * 2097152 + i;
+    }
+    packed.sort();
+    for (let i = 0; i < n; i++) {
+      const key = packed[i]!;
+      positions[i] = key - Math.floor(key / 2097152) * 2097152;
+    }
+    return;
+  }
+  positions.sort((a, b) => col[a]! - col[b]!);
+}
+
 export class DecisionTreeClassifier implements Classifier {
   private maxDepth: number;
   private minSamplesSplit: number;
   private minSamplesLeaf: number;
   private maxFeatures: number | undefined;
   private randomState: number | undefined;
+  private criterion: "gini" | "entropy" | "log_loss";
 
   private tree?: TreeNode;
   private nFeatures?: number;
@@ -65,11 +113,13 @@ export class DecisionTreeClassifier implements Classifier {
       readonly minSamplesLeaf?: number;
       readonly maxFeatures?: number;
       readonly randomState?: number;
+      readonly criterion?: "gini" | "entropy" | "log_loss";
     } = {}
   ) {
     this.maxDepth = options.maxDepth ?? 10;
     this.minSamplesSplit = options.minSamplesSplit ?? 2;
     this.minSamplesLeaf = options.minSamplesLeaf ?? 1;
+    this.criterion = options.criterion ?? "gini";
     if (options.maxFeatures !== undefined) {
       this.maxFeatures = options.maxFeatures;
     }
@@ -118,11 +168,17 @@ export class DecisionTreeClassifier implements Classifier {
     }
   }
 
+  // One RNG per fit(), advanced across all node splits. Creating a fresh RNG
+  // per split (the old behavior) re-seeded from randomState every node and so
+  // evaluated the identical maxFeatures subset at every node, silently
+  // degrading seeded forests into a fixed random-subspace ensemble.
+  private activeRng: (() => number) | undefined;
+
   private getRng(): () => number {
     if (this.randomState === undefined) {
       return Math.random;
     }
-    let seed = this.randomState;
+    let seed = this.randomState >>> 0;
     return () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed / 4294967296;
@@ -162,7 +218,8 @@ export class DecisionTreeClassifier implements Classifier {
     // Get unique classes
     this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
 
-    // Build tree
+    // Build tree (single RNG shared across all node splits)
+    this.activeRng = this.getRng();
     const indices = Array.from({ length: nSamples }, (_, i) => i);
     this.tree = this.buildTree(XData, yData, indices, 0);
     this.fitted = true;
@@ -217,12 +274,24 @@ export class DecisionTreeClassifier implements Classifier {
     const left = this.buildTree(XData, yData, leftIndices, depth + 1);
     const right = this.buildTree(XData, yData, rightIndices, depth + 1);
 
+    const countsOf = (idxs: number[]): Map<number, number> => {
+      const m = new Map<number, number>();
+      for (const i of idxs) m.set(yData[i] ?? 0, (m.get(yData[i] ?? 0) ?? 0) + 1);
+      return m;
+    };
+    const nodeImp = this.impurityFromCounts(countsOf(indices), indices.length);
+    const leftImp = this.impurityFromCounts(countsOf(leftIndices), leftIndices.length);
+    const rightImp = this.impurityFromCounts(countsOf(rightIndices), rightIndices.length);
+    const weightedImpurityDecrease =
+      indices.length * nodeImp - leftIndices.length * leftImp - rightIndices.length * rightImp;
+
     return {
       isLeaf: false,
       featureIndex,
       threshold,
       left,
       right,
+      weightedImpurityDecrease,
     };
   }
 
@@ -287,7 +356,7 @@ export class DecisionTreeClassifier implements Classifier {
     let featureIndices = Array.from({ length: nFeatures }, (_, i) => i);
 
     if (this.maxFeatures !== undefined && this.maxFeatures < nFeatures) {
-      const rng = this.getRng();
+      const rng = this.activeRng ?? this.getRng();
       // Fisher-Yates shuffle partial
       for (let i = 0; i < this.maxFeatures; i++) {
         const j = i + Math.floor(rng() * (nFeatures - i));
@@ -304,58 +373,91 @@ export class DecisionTreeClassifier implements Classifier {
     }
 
     const n = indices.length;
-    // Pre-calculate total class counts
-    const totalCounts = new Map<number, number>();
-    for (const i of indices) {
-      const label = yData[i] ?? 0;
-      totalCounts.set(label, (totalCounts.get(label) ?? 0) + 1);
+    // Encode labels into a compact 0..k-1 code space once, so the scan loop
+    // uses typed count arrays instead of Maps (which dominated fit time).
+    const labelToCode = new Map<number, number>();
+    const localLabels = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const label = yData[indices[i]!] ?? 0;
+      let code = labelToCode.get(label);
+      if (code === undefined) {
+        code = labelToCode.size;
+        labelToCode.set(label, code);
+      }
+      localLabels[i] = code;
     }
+    const k = labelToCode.size;
+    const totalCountsArr = new Float64Array(k);
+    for (let i = 0; i < n; i++) totalCountsArr[localLabels[i]!]! += 1;
+
+    const isGini = this.criterion === "gini";
+    const impurityArr = (counts: Float64Array, size: number): number => {
+      if (isGini) {
+        let imp = 1.0;
+        for (let c = 0; c < k; c++) {
+          const pC = counts[c]! / size;
+          imp -= pC * pC;
+        }
+        return imp;
+      }
+      let entropy = 0;
+      for (let c = 0; c < k; c++) {
+        const count = counts[c]!;
+        if (count === 0) continue;
+        const pC = count / size;
+        entropy -= pC * Math.log2(pC);
+      }
+      return entropy;
+    };
+
+    const col = new Float64Array(n);
+    const positions = new Int32Array(n);
+    const leftCountsArr = new Float64Array(k);
+    const rightCountsArr = new Float64Array(k);
 
     for (const f of featureIndices) {
-      // Sort indices by feature value
-      // Create a copy to sort
-      const sortedIndices = [...indices].sort(
-        (a, b) => (XData[a]?.[f] ?? 0) - (XData[b]?.[f] ?? 0)
-      );
+      // Extract the feature column once; the sort comparator then reads a
+      // monomorphic typed array instead of nested arrays.
+      for (let i = 0; i < n; i++) {
+        col[i] = XData[indices[i]!]?.[f] ?? 0;
+        positions[i] = i;
+      }
+      sortPositionsByColumn(col, positions, n);
 
-      const leftCounts = new Map<number, number>();
-      const rightCounts = new Map<number, number>(totalCounts);
+      leftCountsArr.fill(0);
+      rightCountsArr.set(totalCountsArr);
       let leftSize = 0;
       let rightSize = n;
 
       for (let i = 0; i < n - 1; i++) {
-        const idx = sortedIndices[i];
-        if (idx === undefined) continue;
-        const label = yData[idx] ?? 0;
-        const val = XData[idx]?.[f] ?? 0;
-        const nextIdx = sortedIndices[i + 1];
-        if (nextIdx === undefined) continue;
-        const nextVal = XData[nextIdx]?.[f] ?? 0;
+        const pos = positions[i]!;
+        const label = localLabels[pos]!;
+        const val = col[pos]!;
+        const nextVal = col[positions[i + 1]!]!;
 
-        // Move from Right to Left
-        const currentRight = rightCounts.get(label) ?? 0;
-        if (currentRight <= 1) rightCounts.delete(label);
-        else rightCounts.set(label, currentRight - 1);
+        rightCountsArr[label]! -= 1;
         rightSize--;
-
-        leftCounts.set(label, (leftCounts.get(label) ?? 0) + 1);
+        leftCountsArr[label]! += 1;
         leftSize++;
 
         if (val === nextVal) continue; // Cannot split between same values
 
         if (leftSize < this.minSamplesLeaf || rightSize < this.minSamplesLeaf) continue;
 
-        // Calculate weighted Gini
-        const leftGini = this.giniFromCounts(leftCounts, leftSize);
-        const rightGini = this.giniFromCounts(rightCounts, rightSize);
-        const weightedGini = (leftSize * leftGini + rightSize * rightGini) / n;
+        // Weighted impurity using the configured criterion (gini or
+        // entropy/log_loss), not always gini.
+        const leftImp = impurityArr(leftCountsArr, leftSize);
+        const rightImp = impurityArr(rightCountsArr, rightSize);
+        const weightedGini = (leftSize * leftImp + rightSize * rightImp) / n;
 
         if (weightedGini < bestGini) {
           bestGini = weightedGini;
           bestFeature = f;
           bestThreshold = (val + nextVal) / 2;
-          bestLeft = sortedIndices.slice(0, i + 1);
-          bestRight = sortedIndices.slice(i + 1);
+          bestLeft = new Array(i + 1);
+          for (let q = 0; q <= i; q++) bestLeft[q] = indices[positions[q]!]!;
+          bestRight = new Array(n - i - 1);
+          for (let q = i + 1; q < n; q++) bestRight[q - i - 1] = indices[positions[q]!]!;
         }
       }
     }
@@ -375,6 +477,19 @@ export class DecisionTreeClassifier implements Classifier {
       impurity -= p * p;
     }
     return impurity;
+  }
+
+  /** Node impurity under the configured criterion. */
+  private impurityFromCounts(counts: Map<number, number>, n: number): number {
+    if (this.criterion === "gini") return this.giniFromCounts(counts, n);
+    // entropy / log_loss: -sum p log2 p
+    let entropy = 0;
+    for (const count of counts.values()) {
+      if (count === 0) continue;
+      const p = count / n;
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
   }
 
   /**
@@ -541,18 +656,122 @@ export class DecisionTreeClassifier implements Classifier {
       minSamplesLeaf: this.minSamplesLeaf,
       maxFeatures: this.maxFeatures,
       randomState: this.randomState,
+      criterion: this.criterion,
     };
   }
 
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError(
-      "DecisionTreeClassifier does not support setParams after construction"
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "maxDepth":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
+          }
+          this.maxDepth = value;
+          break;
+        case "minSamplesSplit":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+            throw new InvalidParameterError(
+              "minSamplesSplit must be an integer >= 2",
+              "minSamplesSplit",
+              value
+            );
+          }
+          this.minSamplesSplit = value;
+          break;
+        case "minSamplesLeaf":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "minSamplesLeaf must be an integer >= 1",
+              "minSamplesLeaf",
+              value
+            );
+          }
+          this.minSamplesLeaf = value;
+          break;
+        case "maxFeatures":
+          if (value !== undefined && (typeof value !== "number" || value < 1)) {
+            throw new InvalidParameterError(
+              "maxFeatures must be an integer >= 1 or undefined",
+              "maxFeatures",
+              value
+            );
+          }
+          this.maxFeatures = value;
+          break;
+        case "criterion":
+          if (value !== "gini" && value !== "entropy" && value !== "log_loss") {
+            throw new InvalidParameterError(
+              `criterion must be "gini", "entropy", or "log_loss"; received ${String(value)}`,
+              "criterion",
+              value
+            );
+          }
+          this.criterion = value;
+          break;
+        case "randomState":
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+            throw new InvalidParameterError(
+              "randomState must be a finite number",
+              "randomState",
+              value
+            );
+          }
+          this.randomState = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  /** Access the internal tree structure (for export_text). */
+  get tree_(): TreeNode | undefined {
+    return this.tree;
+  }
+
+  /** Number of features seen during fit. */
+  get nFeatures_(): number | undefined {
+    return this.nFeatures;
+  }
+
+  get featureImportances(): Tensor {
+    if (!this.fitted || !this.tree || this.nFeatures === undefined) {
+      throw new NotFittedError(
+        "DecisionTreeClassifier must be fitted to access feature_importances_"
+      );
+    }
+    const importances = new Array<number>(this.nFeatures).fill(0);
+    computeFeatureImportances(this.tree, importances);
+    let total = 0;
+    for (let i = 0; i < importances.length; i++) {
+      total += importances[i] ?? 0;
+    }
+    if (total > 0) {
+      for (let i = 0; i < importances.length; i++) {
+        importances[i] = (importances[i] ?? 0) / total;
+      }
+    }
+    return tensor(importances);
+  }
+
+  clone(): DecisionTreeClassifier {
+    return new DecisionTreeClassifier(
+      this.getParams() as {
+        maxDepth?: number;
+        minSamplesSplit?: number;
+        minSamplesLeaf?: number;
+        maxFeatures?: number;
+        randomState?: number;
+        criterion?: "gini" | "entropy" | "log_loss";
+      }
     );
   }
 }
@@ -635,11 +854,15 @@ export class DecisionTreeRegressor implements Regressor {
     }
   }
 
+  // One RNG per fit(), advanced across all node splits (see the classifier
+  // for why a per-split RNG froze the feature subset).
+  private activeRng: (() => number) | undefined;
+
   private getRng(): () => number {
     if (this.randomState === undefined) {
       return Math.random;
     }
-    let seed = this.randomState;
+    let seed = this.randomState >>> 0;
     return () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed / 4294967296;
@@ -678,6 +901,7 @@ export class DecisionTreeRegressor implements Regressor {
       yData.push(Number(y.data[y.offset + i]));
     }
 
+    this.activeRng = this.getRng();
     const indices = Array.from({ length: nSamples }, (_, i) => i);
     this.tree = this.buildTree(XData, yData, indices, 0);
     this.fitted = true;
@@ -713,12 +937,28 @@ export class DecisionTreeRegressor implements Regressor {
     const left = this.buildTree(XData, yData, leftIndices, depth + 1);
     const right = this.buildTree(XData, yData, rightIndices, depth + 1);
 
+    const mse = (idxs: number[]): number => {
+      if (idxs.length === 0) return 0;
+      const mean = this.getMean(yData, idxs);
+      let s = 0;
+      for (const i of idxs) {
+        const d = (yData[i] ?? 0) - mean;
+        s += d * d;
+      }
+      return s / idxs.length;
+    };
+    const weightedImpurityDecrease =
+      indices.length * mse(indices) -
+      leftIndices.length * mse(leftIndices) -
+      rightIndices.length * mse(rightIndices);
+
     return {
       isLeaf: false,
       featureIndex,
       threshold,
       left,
       right,
+      weightedImpurityDecrease,
     };
   }
 
@@ -750,7 +990,7 @@ export class DecisionTreeRegressor implements Regressor {
     let featureIndices = Array.from({ length: nFeatures }, (_, i) => i);
 
     if (this.maxFeatures !== undefined && this.maxFeatures < nFeatures) {
-      const rng = this.getRng();
+      const rng = this.activeRng ?? this.getRng();
       for (let i = 0; i < this.maxFeatures; i++) {
         const j = i + Math.floor(rng() * (nFeatures - i));
         const a = featureIndices[i];
@@ -772,11 +1012,19 @@ export class DecisionTreeRegressor implements Regressor {
       totalSum += yVal;
     }
 
+    // Column extraction + local-position sort: the comparator reads a
+    // monomorphic typed array instead of nested arrays (see classifier).
+    const col = new Float64Array(n);
+    const yLocal = new Float64Array(n);
+    const positions = new Int32Array(n);
+    for (let i = 0; i < n; i++) yLocal[i] = yData[indices[i]!] ?? 0;
+
     for (const f of featureIndices) {
-      // Sort indices by feature value
-      const sortedIndices = [...indices].sort(
-        (a, b) => (XData[a]?.[f] ?? 0) - (XData[b]?.[f] ?? 0)
-      );
+      for (let i = 0; i < n; i++) {
+        col[i] = XData[indices[i]!]?.[f] ?? 0;
+        positions[i] = i;
+      }
+      sortPositionsByColumn(col, positions, n);
 
       let leftSum = 0;
       let leftCnt = 0;
@@ -784,13 +1032,10 @@ export class DecisionTreeRegressor implements Regressor {
       let rightCnt = n;
 
       for (let i = 0; i < n - 1; i++) {
-        const idx = sortedIndices[i];
-        if (idx === undefined) continue;
-        const val = XData[idx]?.[f] ?? 0;
-        const nextIdx = sortedIndices[i + 1];
-        if (nextIdx === undefined) continue;
-        const nextVal = XData[nextIdx]?.[f] ?? 0;
-        const yVal = yData[idx] ?? 0;
+        const pos = positions[i]!;
+        const val = col[pos]!;
+        const nextVal = col[positions[i + 1]!]!;
+        const yVal = yLocal[pos]!;
 
         // Move from Right to Left
         leftSum += yVal;
@@ -810,8 +1055,10 @@ export class DecisionTreeRegressor implements Regressor {
           bestScore = score;
           bestFeature = f;
           bestThreshold = (val + nextVal) / 2;
-          bestLeft = sortedIndices.slice(0, i + 1);
-          bestRight = sortedIndices.slice(i + 1);
+          bestLeft = new Array(i + 1);
+          for (let q = 0; q <= i; q++) bestLeft[q] = indices[positions[q]!]!;
+          bestRight = new Array(n - i - 1);
+          for (let q = i + 1; q < n; q++) bestRight[q - i - 1] = indices[positions[q]!]!;
         }
       }
     }
@@ -865,6 +1112,26 @@ export class DecisionTreeRegressor implements Regressor {
     }
 
     return tensor(predictions);
+  }
+
+  /**
+   * Rewrite each leaf's prediction via `fn(oldValue)`. Used by gradient
+   * boosting to apply the TreeBoost Newton leaf-value update so that both
+   * training and inference use the corrected terminal values.
+   */
+  remapLeaves(fn: (leafValue: number) => number): void {
+    if (!this.tree) return;
+    const walk = (node: TreeNode): TreeNode => {
+      if (node.isLeaf) {
+        return { ...node, prediction: fn(node.prediction ?? 0) };
+      }
+      return {
+        ...node,
+        ...(node.left ? { left: walk(node.left) } : {}),
+        ...(node.right ? { right: walk(node.right) } : {}),
+      };
+    };
+    this.tree = walk(this.tree);
   }
 
   private predictSample(sample: number[], node: TreeNode): number {
@@ -950,12 +1217,192 @@ export class DecisionTreeRegressor implements Regressor {
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError(
-      "DecisionTreeRegressor does not support setParams after construction"
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "maxDepth":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
+          }
+          this.maxDepth = value;
+          break;
+        case "minSamplesSplit":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+            throw new InvalidParameterError(
+              "minSamplesSplit must be an integer >= 2",
+              "minSamplesSplit",
+              value
+            );
+          }
+          this.minSamplesSplit = value;
+          break;
+        case "minSamplesLeaf":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "minSamplesLeaf must be an integer >= 1",
+              "minSamplesLeaf",
+              value
+            );
+          }
+          this.minSamplesLeaf = value;
+          break;
+        case "maxFeatures":
+          if (value !== undefined && (typeof value !== "number" || value < 1)) {
+            throw new InvalidParameterError(
+              "maxFeatures must be an integer >= 1 or undefined",
+              "maxFeatures",
+              value
+            );
+          }
+          this.maxFeatures = value;
+          break;
+        case "randomState":
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+            throw new InvalidParameterError(
+              "randomState must be a finite number",
+              "randomState",
+              value
+            );
+          }
+          this.randomState = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  /** Access the internal tree structure (for export_text). */
+  get tree_(): TreeNode | undefined {
+    return this.tree;
+  }
+
+  /** Number of features seen during fit. */
+  get nFeatures_(): number | undefined {
+    return this.nFeatures;
+  }
+
+  get featureImportances(): Tensor {
+    if (!this.fitted || !this.tree || this.nFeatures === undefined) {
+      throw new NotFittedError(
+        "DecisionTreeRegressor must be fitted to access feature_importances_"
+      );
+    }
+    const importances = new Array<number>(this.nFeatures).fill(0);
+    computeFeatureImportances(this.tree, importances);
+    let total = 0;
+    for (let i = 0; i < importances.length; i++) {
+      total += importances[i] ?? 0;
+    }
+    if (total > 0) {
+      for (let i = 0; i < importances.length; i++) {
+        importances[i] = (importances[i] ?? 0) / total;
+      }
+    }
+    return tensor(importances);
+  }
+
+  clone(): DecisionTreeRegressor {
+    return new DecisionTreeRegressor(
+      this.getParams() as {
+        maxDepth?: number;
+        minSamplesSplit?: number;
+        minSamplesLeaf?: number;
+        maxFeatures?: number;
+        randomState?: number;
+      }
     );
   }
+}
+
+function computeFeatureImportances(node: TreeNode, importances: number[]): void {
+  if (node.isLeaf) return;
+  const fi = node.featureIndex ?? 0;
+  if (fi < importances.length) {
+    // Mean-decrease-in-impurity: accumulate the weighted impurity decrease
+    // this split produced (sklearn convention), not a raw +1 split count.
+    importances[fi] = (importances[fi] ?? 0) + (node.weightedImpurityDecrease ?? 0);
+  }
+  if (node.left) computeFeatureImportances(node.left, importances);
+  if (node.right) computeFeatureImportances(node.right, importances);
+}
+
+/**
+ * Build a text representation of a decision tree.
+ *
+ * Works with both DecisionTreeClassifier and DecisionTreeRegressor.
+ *
+ * @param tree - A fitted DecisionTreeClassifier or DecisionTreeRegressor
+ * @param options - Optional feature names and formatting options
+ * @returns Multi-line string representation of the tree
+ *
+ * @example
+ * ```ts
+ * const clf = new DecisionTreeClassifier({ maxDepth: 3 });
+ * clf.fit(X, y);
+ * console.log(export_text(clf));
+ * // |--- feature_1 <= 3.50
+ * // |   |--- class: 0
+ * // |--- feature_1 > 3.50
+ * // |   |--- class: 1
+ * ```
+ */
+export function export_text(
+  tree: DecisionTreeClassifier | DecisionTreeRegressor,
+  options: { featureNames?: readonly string[]; decimals?: number } = {}
+): string {
+  const root = tree.tree_;
+  if (!root) {
+    throw new NotFittedError("Tree must be fitted before export");
+  }
+
+  const decimals = options.decimals ?? 2;
+  const featureNames = options.featureNames;
+  const lines: string[] = [];
+
+  function featureName(idx: number): string {
+    if (featureNames && idx < featureNames.length) {
+      return featureNames[idx] ?? `feature_${idx}`;
+    }
+    return `feature_${idx}`;
+  }
+
+  function recurse(node: TreeNode, prefix: string, _isLast: boolean): void {
+    const connector = "|--- ";
+    if (node.isLeaf) {
+      const val =
+        node.prediction !== undefined
+          ? Number.isInteger(node.prediction)
+            ? String(node.prediction)
+            : node.prediction.toFixed(decimals)
+          : "?";
+      if (node.classProbabilities !== undefined) {
+        lines.push(`${prefix}${connector}class: ${val}`);
+      } else {
+        lines.push(`${prefix}${connector}value: ${val}`);
+      }
+      return;
+    }
+
+    const fi = node.featureIndex ?? 0;
+    const thresh = (node.threshold ?? 0).toFixed(decimals);
+    const fname = featureName(fi);
+
+    lines.push(`${prefix}${connector}${fname} <= ${thresh}`);
+    if (node.left) {
+      recurse(node.left, `${prefix}|   `, true);
+    }
+
+    lines.push(`${prefix}${connector}${fname} > ${thresh}`);
+    if (node.right) {
+      recurse(node.right, `${prefix}|   `, false);
+    }
+  }
+
+  recurse(root, "", true);
+  return lines.join("\n");
 }

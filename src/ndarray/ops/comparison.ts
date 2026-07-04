@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   DeepboxError,
   DTypeError,
@@ -155,6 +159,50 @@ function runComparison(a: Tensor, b: Tensor, op: "eq" | "neq" | "gt" | "ge" | "l
     device: a.device,
   });
 
+  // Fast path: same-shape contiguous non-bigint operands compare in tight
+  // per-op loops (the generic closure path costs ~15x on small tensors).
+  if (
+    !(aData instanceof BigInt64Array) &&
+    !(bData instanceof BigInt64Array) &&
+    a.ndim === b.ndim &&
+    isContiguous(a.shape, a.strides) &&
+    isContiguous(b.shape, b.strides)
+  ) {
+    let sameShape = true;
+    for (let d = 0; d < a.ndim; d++) {
+      if (a.shape[d] !== b.shape[d]) {
+        sameShape = false;
+        break;
+      }
+    }
+    if (sameShape) {
+      const aArr = a.offset === 0 ? aData : aData.subarray(a.offset, a.offset + a.size);
+      const bArr = b.offset === 0 ? bData : bData.subarray(b.offset, b.offset + b.size);
+      const n = outSize;
+      switch (op) {
+        case "eq":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) === (bArr[i] as number) ? 1 : 0;
+          break;
+        case "neq":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) !== (bArr[i] as number) ? 1 : 0;
+          break;
+        case "gt":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) > (bArr[i] as number) ? 1 : 0;
+          break;
+        case "ge":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) >= (bArr[i] as number) ? 1 : 0;
+          break;
+        case "lt":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) < (bArr[i] as number) ? 1 : 0;
+          break;
+        case "le":
+          for (let i = 0; i < n; i++) out[i] = (aArr[i] as number) <= (bArr[i] as number) ? 1 : 0;
+          break;
+      }
+      return result;
+    }
+  }
+
   // compareMixed handles mixed types (BigInt/Number).
   // We rely on broadcastApply to handle iteration.
   // Note: aData and bData are TypedArrays. Accessing by index returns number or bigint.
@@ -253,6 +301,17 @@ export function lessEqual(a: Tensor, b: Tensor): Tensor {
  * @param atol - Absolute tolerance (default: 1e-8)
  * @returns Boolean tensor with closeness test results
  */
+/**
+ * NumPy-compatible scalar closeness: NaN is never close to anything, and
+ * infinities are close only to an infinity of the same sign (the tolerance
+ * formula would otherwise yield an infinite threshold or a NaN diff).
+ */
+function scalarIsClose(ax: number, bx: number, rtol: number, atol: number): boolean {
+  if (Number.isNaN(ax) || Number.isNaN(bx)) return false;
+  if (!Number.isFinite(ax) || !Number.isFinite(bx)) return ax === bx;
+  return Math.abs(ax - bx) <= atol + rtol * Math.abs(bx);
+}
+
 export function isclose(a: Tensor, b: Tensor, rtol: number = 1e-5, atol: number = 1e-8): Tensor {
   if (a.dtype === "string" || b.dtype === "string") {
     throw new DTypeError("isclose for string dtype is not implemented");
@@ -290,10 +349,7 @@ export function isclose(a: Tensor, b: Tensor, rtol: number = 1e-5, atol: number 
     const ax = readAsNumber(aData, offA);
     const bx = readAsNumber(bData, offB);
 
-    // Check if within tolerance: |a - b| <= atol + rtol * |b|
-    const diff = Math.abs(ax - bx);
-    const threshold = atol + rtol * Math.abs(bx);
-    out[offOut] = diff <= threshold ? 1 : 0;
+    out[offOut] = scalarIsClose(ax, bx, rtol, atol) ? 1 : 0;
   });
 
   return result;
@@ -347,9 +403,7 @@ export function allclose(a: Tensor, b: Tensor, rtol: number = 1e-5, atol: number
   if (outShape.length === 0) {
     const ax = readAsNumber(aData, a.offset);
     const bx = readAsNumber(bData, b.offset);
-    const diff = Math.abs(ax - bx);
-    const threshold = atol + rtol * Math.abs(bx);
-    return diff <= threshold;
+    return scalarIsClose(ax, bx, rtol, atol);
   }
 
   // Setup broadcast strides
@@ -388,9 +442,7 @@ export function allclose(a: Tensor, b: Tensor, rtol: number = 1e-5, atol: number
     const ax = readAsNumber(aData, offA);
     const bx = readAsNumber(bData, offB);
 
-    const diff = Math.abs(ax - bx);
-    const threshold = atol + rtol * Math.abs(bx);
-    if (diff > threshold) {
+    if (!scalarIsClose(ax, bx, rtol, atol)) {
       return false;
     }
 

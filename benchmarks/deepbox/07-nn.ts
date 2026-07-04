@@ -9,10 +9,13 @@ import {
   binaryCrossEntropyWithLogitsLoss,
   Conv1d,
   Conv2d,
+  clip_grad_norm_,
   crossEntropyLoss,
   ELU,
+  Embedding,
   GELU,
   GRU,
+  GroupNorm,
   huberLoss,
   LayerNorm,
   LeakyReLU,
@@ -21,6 +24,7 @@ import {
   Mish,
   maeLoss,
   mseLoss,
+  PReLU,
   ReLU,
   RNN,
   rmseLoss,
@@ -29,6 +33,7 @@ import {
   Softmax,
   Swish,
   Tanh,
+  TransformerEncoderLayer,
 } from "deepbox/nn";
 import { Adam, SGD } from "deepbox/optim";
 import { createSuite, footer, header, run } from "../utils";
@@ -93,6 +98,9 @@ const x128_10 = randn([128, 10]);
 const x64_50 = randn([64, 50]);
 const x32_10g = parameter(randn([32, 10]));
 const x64_50g = parameter(randn([64, 50]));
+const embedIdx = tensor([0, 1, 2, 3], { dtype: "int32" });
+const groupNormInput = randn([2, 4]);
+const transformerInput = randn([1, 4, 8]);
 
 run(suite, "forward (10→64→1)", "batch=32", () => model1.forward(x32_10));
 run(suite, "forward (10→64→1)", "batch=128", () => model1.forward(x128_10));
@@ -242,6 +250,26 @@ run(suite, "stateDict()", "3-layer", () => model1.stateDict());
 run(suite, "train/eval toggle", "—", () => {
   model1.train();
   model1.eval();
+});
+
+// ── Additional v1.0.0 neural network coverage ──────────
+
+run(suite, "Embedding create", "16x8", () => new Embedding(16, 8));
+const embedding = new Embedding(16, 8);
+run(suite, "Embedding forward", "4 idx", () => embedding.forward(embedIdx));
+run(suite, "GroupNorm create", "2 groups/4 ch", () => new GroupNorm(2, 4));
+const groupNorm = new GroupNorm(2, 4);
+run(suite, "GroupNorm forward", "2x4", () => groupNorm.forward(groupNormInput));
+run(suite, "PReLU forward", "32x64", () => new PReLU().forward(act_in));
+run(suite, "TransformerEncoderLayer create", "8/2/16", () => new TransformerEncoderLayer(8, 2, 16));
+const encoderLayer = new TransformerEncoderLayer(8, 2, 16);
+run(suite, "TransformerEncoderLayer forward", "1x4x8", () =>
+  encoderLayer.forward(transformerInput)
+);
+run(suite, "clip_grad_norm_", "1 param", () => {
+  const p = GradTensor.fromTensor(tensor([1, 2, 3]), { requiresGrad: true });
+  p.setGrad(tensor([3, 4, 0]));
+  return clip_grad_norm_([p], 1.0);
 });
 
 footer(suite, "deepbox-nn.json");

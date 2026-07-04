@@ -118,6 +118,7 @@ describe("project 03: Customer Churn Prediction", () => {
   it("trains and compares 4 classifiers on Iris (as proxy)", () => {
     const iris = loadIris();
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });
@@ -248,6 +249,7 @@ describe("project 06: Sentiment Analysis", () => {
   it("LogReg vs GaussianNB on Iris (as proxy for text classification)", () => {
     const iris = loadIris();
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });

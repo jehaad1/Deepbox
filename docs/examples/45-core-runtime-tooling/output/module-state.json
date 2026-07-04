@@ -1,0 +1,30 @@
+{
+  "__type": "ModuleState",
+  "parameters": {
+    "encoder.weight": {
+      "data": [
+        0.1,
+        0.2,
+        0.3,
+        0.4
+      ],
+      "dtype": "float32",
+      "shape": [
+        2,
+        2
+      ]
+    }
+  },
+  "buffers": {
+    "running_mean": {
+      "data": [
+        0,
+        0
+      ],
+      "dtype": "float32",
+      "shape": [
+        2
+      ]
+    }
+  }
+}

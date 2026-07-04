@@ -11,8 +11,9 @@ try:
     import torch.nn as nn
     import torch.optim as optim
     from torch.optim.lr_scheduler import (
+        CosineAnnealingWarmRestarts, CyclicLR,
         StepLR, MultiStepLR, ExponentialLR, CosineAnnealingLR,
-        LinearLR, OneCycleLR, ReduceLROnPlateau,
+        LambdaLR, LinearLR, OneCycleLR, PolynomialLR, ReduceLROnPlateau, SequentialLR,
     )
 except ImportError:
     print("⚠ PyTorch not installed. Run: pip3 install torch")
@@ -47,9 +48,15 @@ run(suite, "SGD create", "—", lambda: optim.SGD(base_model.parameters(), lr=0.
 run(suite, "SGD create (momentum)", "—", lambda: optim.SGD(base_model.parameters(), lr=0.01, momentum=0.9))
 run(suite, "Adam create", "—", lambda: optim.Adam(base_model.parameters(), lr=0.001))
 run(suite, "AdamW create", "—", lambda: optim.AdamW(base_model.parameters(), lr=0.001))
+run(suite, "Adamax create", "—", lambda: optim.Adamax(base_model.parameters(), lr=0.002))
 run(suite, "Adagrad create", "—", lambda: optim.Adagrad(base_model.parameters(), lr=0.01))
 run(suite, "AdaDelta create", "—", lambda: optim.Adadelta(base_model.parameters(), lr=1.0))
 run(suite, "Nadam create", "—", lambda: optim.NAdam(base_model.parameters(), lr=0.002))
+run(suite, "RAdam create", "—", lambda: optim.RAdam(base_model.parameters(), lr=0.002))
+run(suite, "ASGD create", "—", lambda: optim.ASGD(base_model.parameters(), lr=0.01))
+run(suite, "Rprop create", "—", lambda: optim.Rprop(base_model.parameters(), lr=0.01))
+run(suite, "LBFGS create", "—", lambda: optim.LBFGS(base_model.parameters(), lr=1.0))
+run(suite, "SparseAdam create", "—", lambda: optim.SparseAdam(base_model.parameters(), lr=0.01))
 run(suite, "RMSprop create", "—", lambda: optim.RMSprop(base_model.parameters(), lr=0.01))
 
 # ── Optimizer Step ──────────────────────────────────────
@@ -66,7 +73,11 @@ def make_step(opt_class, **kwargs):
 run(suite, "SGD step", "16x10→1", make_step(optim.SGD, lr=0.01))
 run(suite, "Adam step", "16x10→1", make_step(optim.Adam, lr=0.001))
 run(suite, "AdamW step", "16x10→1", make_step(optim.AdamW, lr=0.001))
+run(suite, "Adamax step", "16x10→1", make_step(optim.Adamax, lr=0.002))
 run(suite, "Adagrad step", "16x10→1", make_step(optim.Adagrad, lr=0.01))
+run(suite, "RAdam step", "16x10→1", make_step(optim.RAdam, lr=0.002))
+run(suite, "ASGD step", "16x10→1", make_step(optim.ASGD, lr=0.01))
+run(suite, "Rprop step", "16x10→1", make_step(optim.Rprop, lr=0.01))
 run(suite, "RMSprop step", "16x10→1", make_step(optim.RMSprop, lr=0.01))
 
 # ── Training Loops (per optimizer) ──────────────────────
@@ -99,7 +110,27 @@ run(suite, "MultiStepLR (100 steps)", "—", sched_step(lambda o: MultiStepLR(o,
 run(suite, "ExponentialLR (100 steps)", "—", sched_step(lambda o: ExponentialLR(o, gamma=0.95), 100))
 run(suite, "CosineAnnealingLR (100 steps)", "—", sched_step(lambda o: CosineAnnealingLR(o, T_max=100), 100))
 run(suite, "LinearLR (100 steps)", "—", sched_step(lambda o: LinearLR(o, start_factor=0.1, total_iters=100), 100))
-run(suite, "OneCycleLR (100 steps)", "—", sched_step(lambda o: OneCycleLR(o, max_lr=0.1, total_steps=100), 100))
+# total_steps is set high so torch's hard step-count guard never trips across the
+# harness's repeated timing iterations; per-step cost is independent of total_steps,
+# so this measures the same 100 steps/call as every other scheduler (apples-to-apples).
+run(suite, "OneCycleLR (100 steps)", "—", sched_step(lambda o: OneCycleLR(o, max_lr=0.1, total_steps=1_000_000), 100))
+run(suite, "CosineAnnealingWarmRestarts (100 steps)", "—", sched_step(lambda o: CosineAnnealingWarmRestarts(o, T_0=10), 100))
+run(suite, "CyclicLR (100 steps)", "—", sched_step(lambda o: CyclicLR(o, base_lr=0.001, max_lr=0.01, step_size_up=5), 100))
+run(suite, "LambdaLR (100 steps)", "—", sched_step(lambda o: LambdaLR(o, lr_lambda=lambda _: 0.95), 100))
+run(suite, "PolynomialLR (100 steps)", "—", sched_step(lambda o: PolynomialLR(o, total_iters=100, power=2.0), 100))
+
+def sched_step_sequential(steps):
+    m = make_model(10, 16)
+    opt = optim.SGD(m.parameters(), lr=0.1)
+    warm = LambdaLR(opt, lr_lambda=lambda _: 0.5)
+    decay = StepLR(opt, step_size=10, gamma=0.1)
+    sched = SequentialLR(opt, schedulers=[warm, decay], milestones=[50])
+    def fn():
+        for _ in range(steps):
+            sched.step()
+    return fn
+
+run(suite, "SequentialLR (100 steps)", "—", sched_step_sequential(100))
 
 def sched_step_plateau(steps):
     m = make_model(10, 16)

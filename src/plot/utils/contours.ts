@@ -1,8 +1,13 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
 import { InvalidParameterError, ShapeError } from "../../core";
 import type { AnyTensor } from "../../ndarray";
 import { tensorToFloat64Matrix2D, tensorToFloat64Vector1D } from "./tensor";
 import { isFiniteNumber } from "./validation";
 
+/** Structured grid of scalar values for contour computation. */
 export type ContourGrid = {
   readonly rows: number;
   readonly cols: number;
@@ -13,6 +18,7 @@ export type ContourGrid = {
   readonly dataMax: number;
 };
 
+/** Bounding rectangle for contour plot coordinates. */
 export type ContourExtent = {
   readonly xmin: number;
   readonly xmax: number;

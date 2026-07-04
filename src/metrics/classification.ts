@@ -7,12 +7,15 @@ import {
   type NumericTypedArray,
 } from "../core";
 import { DTypeError, InvalidParameterError } from "../core/errors";
-import { type Tensor, tensor } from "../ndarray";
+import { type Tensor, Tensor as TensorClass, tensor } from "../ndarray";
+import { radixArgsortF64 } from "../ndarray/ops/radix";
 import {
   assertFiniteNumber,
   assertSameSizeVectors,
   createFlatOffsetter,
+  denseFloat64,
   type FlatOffsetter,
+  tryDenseNumeric,
 } from "./_internal";
 
 function getNumericLabelData(t: Tensor): NumericTypedArray {
@@ -217,6 +220,20 @@ export function accuracy(yTrue: Tensor, yPred: Tensor): number {
   if (yTrue.size === 0) return 0;
 
   assertComparableLabelTypes(yTrue, yPred);
+
+  // Fast path: numeric labels compare over dense Float64 buffers, skipping the
+  // per-element offsetter + dtype-dispatch of readComparableLabel.
+  const tNum = tryDenseNumeric(yTrue);
+  const pNum = tryDenseNumeric(yPred);
+  if (tNum && pNum) {
+    let correct = 0;
+    const n = tNum.length;
+    for (let i = 0; i < n; i++) {
+      if ((tNum[i] as number) === (pNum[i] as number)) correct++;
+    }
+    return correct / n;
+  }
+
   const trueOffset = createFlatOffsetter(yTrue);
   const predOffset = createFlatOffsetter(yPred);
 
@@ -771,6 +788,37 @@ export function confusionMatrix(yTrue: Tensor, yPred: Tensor): Tensor {
     return tensor([]).reshape([0, 0]);
   }
 
+  // Fast path: numeric labels. Densify once, then all Set/Map/count work
+  // reads the flat buffers directly and the matrix is built into a typed
+  // array (skips per-element dtype dispatch and the nested tensor() build).
+  const tNum = tryDenseNumeric(yTrue);
+  const pNum = tryDenseNumeric(yPred);
+  if (tNum && pNum) {
+    const n = tNum.length;
+    const labelSet = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      labelSet.add(tNum[i] as number);
+      labelSet.add(pNum[i] as number);
+    }
+    const labels = Array.from(labelSet).sort((a, b) => a - b);
+    const nClasses = labels.length;
+    const labelToIndex = new Map<number, number>();
+    for (let i = 0; i < nClasses; i++) labelToIndex.set(labels[i] as number, i);
+
+    const out = new Float64Array(nClasses * nClasses);
+    for (let i = 0; i < n; i++) {
+      const r = labelToIndex.get(tNum[i] as number) as number;
+      const c = labelToIndex.get(pNum[i] as number) as number;
+      out[r * nClasses + c] = (out[r * nClasses + c] as number) + 1;
+    }
+    return TensorClass.fromTypedArray({
+      data: out,
+      shape: [nClasses, nClasses],
+      dtype: "float64",
+      device: yTrue.device,
+    });
+  }
+
   const trueOffset = createFlatOffsetter(yTrue);
   const predOffset = createFlatOffsetter(yPred);
 
@@ -1038,7 +1086,11 @@ export function rocCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Tensor, Tensor
     thresholds.push(threshold);
   }
 
-  return [tensor(fpr), tensor(tpr), tensor(thresholds)];
+  return [
+    tensor(fpr, { dtype: "float64" }),
+    tensor(tpr, { dtype: "float64" }),
+    tensor(thresholds, { dtype: "float64" }),
+  ];
 }
 
 /**
@@ -1074,25 +1126,45 @@ export function rocCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Tensor, Tensor
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function rocAucScore(yTrue: Tensor, yScore: Tensor): number {
-  const curves = rocCurve(yTrue, yScore);
-  const fprT = curves[0];
-  const tprT = curves[1];
-  if (!fprT || !tprT || fprT.size === 0 || tprT.size === 0) return 0.5;
+  assertSameSizeVectors(yTrue, yScore, "yTrue", "yScore");
+  const n = yTrue.size;
+  if (n === 0) return 0.5;
+  getNumericLabelData(yTrue);
+  getNumericLabelData(yScore);
 
-  const fprData = getNumericLabelData(fprT);
-  const tprData = getNumericLabelData(tprT);
-  const fprOffset = createFlatOffsetter(fprT);
-  const tprOffset = createFlatOffsetter(tprT);
+  // Trapezoidal AUC computed directly from the score-sorted labels — avoids
+  // building fpr/tpr tensors and the per-sample {score,label} objects.
+  const labels = denseFloat64(yTrue, "yTrue");
+  const scores = denseFloat64(yScore, "yScore");
+  let nPos = 0;
+  for (let i = 0; i < n; i++) {
+    ensureBinaryValue(labels[i] as number, "yTrue", i);
+    if (labels[i] === 1) nPos++;
+  }
+  const nNeg = n - nPos;
+  if (nPos === 0 || nNeg === 0) return 0.5;
+
+  const asc = new Int32Array(n);
+  radixArgsortF64(scores, asc);
 
   let auc = 0;
-  let prevX = 0;
-  let prevY = 0;
-  for (let i = 1; i < fprT.size; i++) {
-    const x = readNumericLabel(fprData, fprOffset, i, "fpr");
-    const y = readNumericLabel(tprData, tprOffset, i, "tpr");
-    auc += (x - prevX) * ((y + prevY) / 2);
-    prevX = x;
-    prevY = y;
+  let tp = 0;
+  let fp = 0;
+  let prevTpr = 0;
+  let prevFpr = 0;
+  let pos = n - 1;
+  while (pos >= 0) {
+    const threshold = scores[asc[pos] as number] as number;
+    while (pos >= 0 && (scores[asc[pos] as number] as number) === threshold) {
+      if (labels[asc[pos] as number] === 1) tp++;
+      else fp++;
+      pos--;
+    }
+    const tpr = tp / nPos;
+    const fpr = fp / nNeg;
+    auc += (fpr - prevFpr) * ((tpr + prevTpr) / 2);
+    prevTpr = tpr;
+    prevFpr = fpr;
   }
 
   return auc;
@@ -1184,7 +1256,11 @@ export function precisionRecallCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Te
     thresholds.push(threshold);
   }
 
-  return [tensor(prec), tensor(rec), tensor(thresholds)];
+  return [
+    tensor(prec, { dtype: "float64" }),
+    tensor(rec, { dtype: "float64" }),
+    tensor(thresholds, { dtype: "float64" }),
+  ];
 }
 
 /**
@@ -1221,25 +1297,44 @@ export function precisionRecallCurve(yTrue: Tensor, yScore: Tensor): [Tensor, Te
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function averagePrecisionScore(yTrue: Tensor, yScore: Tensor): number {
-  const curves = precisionRecallCurve(yTrue, yScore);
-  const precT = curves[0];
-  const recT = curves[1];
-  if (!precT || !recT || precT.size === 0 || recT.size === 0) return 0;
+  assertSameSizeVectors(yTrue, yScore, "yTrue", "yScore");
+  const n = yTrue.size;
+  if (n === 0) return 0;
+  getNumericLabelData(yTrue);
+  getNumericLabelData(yScore);
 
-  const precData = getNumericLabelData(precT);
-  const recData = getNumericLabelData(recT);
-  const precOffset = createFlatOffsetter(precT);
-  const recOffset = createFlatOffsetter(recT);
+  // Compute AP directly by sweeping the score-sorted labels — no intermediate
+  // precision/recall tensors to build and re-read, and the sort runs over an
+  // index array (no per-sample object allocation).
+  const labels = denseFloat64(yTrue, "yTrue");
+  const scores = denseFloat64(yScore, "yScore");
+  let nPos = 0;
+  for (let i = 0; i < n; i++) {
+    ensureBinaryValue(labels[i] as number, "yTrue", i);
+    if (labels[i] === 1) nPos++;
+  }
+  if (nPos === 0) return 0;
+
+  // Ascending radix-argsort (O(n)); walk it in reverse for descending score.
+  const asc = new Int32Array(n);
+  radixArgsortF64(scores, asc);
 
   let ap = 0;
-  let prevRecall = readNumericLabel(recData, recOffset, 0, "recall");
-  for (let i = 1; i < recT.size; i++) {
-    const recall = readNumericLabel(recData, recOffset, i, "recall");
-    const precision = readNumericLabel(precData, precOffset, i, "precision");
-    const deltaRecall = recall - prevRecall;
-    if (deltaRecall > 0) {
-      ap += deltaRecall * precision;
+  let tp = 0;
+  let fp = 0;
+  let prevRecall = 0;
+  let pos = n - 1;
+  while (pos >= 0) {
+    const threshold = scores[asc[pos] as number] as number;
+    while (pos >= 0 && (scores[asc[pos] as number] as number) === threshold) {
+      if (labels[asc[pos] as number] === 1) tp++;
+      else fp++;
+      pos--;
     }
+    const precision = tp + fp === 0 ? 1 : tp / (tp + fp);
+    const recall = tp / nPos;
+    const deltaRecall = recall - prevRecall;
+    if (deltaRecall > 0) ap += deltaRecall * precision;
     prevRecall = recall;
   }
 
@@ -1338,6 +1433,18 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
   if (yTrue.size === 0) return 0;
 
   assertComparableLabelTypes(yTrue, yPred);
+
+  const tNum = tryDenseNumeric(yTrue);
+  const pNum = tryDenseNumeric(yPred);
+  if (tNum && pNum) {
+    let errors = 0;
+    const n = tNum.length;
+    for (let i = 0; i < n; i++) {
+      if ((tNum[i] as number) !== (pNum[i] as number)) errors++;
+    }
+    return errors / n;
+  }
+
   const trueOffset = createFlatOffsetter(yTrue);
   const predOffset = createFlatOffsetter(yPred);
 
@@ -1526,10 +1633,10 @@ export function cohenKappaScore(yTrue: Tensor, yPred: Tensor): number {
 
   if (n === 0) return 0;
 
-  const yTrueData = getNumericLabelData(yTrue);
-  const yPredData = getNumericLabelData(yPred);
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
+  getNumericLabelData(yTrue);
+  getNumericLabelData(yPred);
+  const tArr = denseFloat64(yTrue, "yTrue");
+  const pArr = denseFloat64(yPred, "yPred");
 
   // Observed agreement and class marginals
   let po = 0;
@@ -1537,8 +1644,8 @@ export function cohenKappaScore(yTrue: Tensor, yPred: Tensor): number {
   const predCount = new Map<number, number>();
 
   for (let i = 0; i < n; i++) {
-    const t = readNumericLabel(yTrueData, trueOffset, i, "yTrue");
-    const p = readNumericLabel(yPredData, predOffset, i, "yPred");
+    const t = tArr[i] as number;
+    const p = pArr[i] as number;
     if (t === p) {
       po++;
     }

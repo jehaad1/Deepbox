@@ -31,10 +31,8 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = createMockOptimizer(0.1);
       const scheduler = new StepLR(optimizer, { stepSize: 2, gamma: 0.5 });
 
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
-
-      scheduler.step(); // epoch 0
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
+      // Construction performs epoch 0 (matches PyTorch _LRScheduler.__init__)
+      expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1); // epoch 0
 
       scheduler.step(); // epoch 1
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
@@ -53,10 +51,10 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = createMockOptimizer(1.0);
       const scheduler = new StepLR(optimizer, { stepSize: 1 });
 
-      scheduler.step();
+      // epoch 0 at construction
       expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
 
-      scheduler.step();
+      scheduler.step(); // epoch 1
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
     });
   });
@@ -66,8 +64,7 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = createMockOptimizer(1.0);
       const scheduler = new ExponentialLR(optimizer, { gamma: 0.9 });
 
-      scheduler.step(); // epoch 0
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
+      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0); // epoch 0
 
       scheduler.step(); // epoch 1
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.9);
@@ -88,8 +85,7 @@ describe("Learning Rate Schedulers", () => {
         etaMin: 0,
       });
 
-      scheduler.step(); // epoch 0
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
+      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0); // epoch 0
 
       scheduler.step(); // epoch 1
       // cos(pi * 1 / 4) = sqrt(2)/2 ≈ 0.707
@@ -114,8 +110,7 @@ describe("Learning Rate Schedulers", () => {
         etaMin: 0.1,
       });
 
-      scheduler.step();
-      scheduler.step();
+      scheduler.step(); // epoch 1
       scheduler.step(); // epoch 2 = T_max
 
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
@@ -130,8 +125,7 @@ describe("Learning Rate Schedulers", () => {
         gamma: 0.1,
       });
 
-      scheduler.step(); // epoch 0
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
+      expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0); // epoch 0
 
       scheduler.step(); // epoch 1
       expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
@@ -159,8 +153,7 @@ describe("Learning Rate Schedulers", () => {
         totalIters: 4,
       });
 
-      scheduler.step(); // epoch 0
-      expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1);
+      expect(scheduler.getLastLr()[0]).toBeCloseTo(0.1); // epoch 0
 
       scheduler.step(); // epoch 1
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.325);
@@ -245,7 +238,7 @@ describe("Learning Rate Schedulers", () => {
         warmupEpochs: 3,
       });
 
-      scheduler.step(); // epoch 0: warmup 1/3
+      // epoch 0 at construction: warmup 1/3
       expect(scheduler.getLastLr()[0]).toBeCloseTo(1 / 3);
 
       scheduler.step(); // epoch 1: warmup 2/3
@@ -263,13 +256,13 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = createMockOptimizer(1.0);
       const scheduler = new WarmupLR(optimizer, null, { warmupEpochs: 2 });
 
-      scheduler.step();
+      // epoch 0 at construction: warmup 1/2
       expect(scheduler.getLastLr()[0]).toBeCloseTo(0.5);
 
-      scheduler.step();
+      scheduler.step(); // epoch 1: warmup 2/2 = 1.0
       expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
 
-      scheduler.step(); // past warmup, stays at base lr
+      scheduler.step(); // epoch 2: past warmup, stays at base lr
       expect(scheduler.getLastLr()[0]).toBeCloseTo(1.0);
     });
   });
@@ -285,24 +278,23 @@ describe("Learning Rate Schedulers", () => {
         finalDivFactor: 100, // end at 0.01
       });
 
-      // Initial lr = maxLr / divFactor = 0.1
-      scheduler.step(); // step 0
+      // Initial lr = maxLr / divFactor = 0.1 (step 0 at construction)
       const lr0 = scheduler.getLastLr()[0] ?? 0;
       expect(lr0).toBeCloseTo(0.1);
 
       // Step 1, 2 should increase
-      scheduler.step();
-      scheduler.step();
+      scheduler.step(); // step 1
+      scheduler.step(); // step 2
       const lr2 = scheduler.getLastLr()[0] ?? 0;
       expect(lr2).toBeGreaterThan(lr0);
 
       // Continue stepping until we pass the peak
       scheduler.step(); // step 3 - should be at or past peak
-      scheduler.step();
-      scheduler.step();
-      scheduler.step();
-      scheduler.step();
-      scheduler.step();
+      scheduler.step(); // step 4
+      scheduler.step(); // step 5
+      scheduler.step(); // step 6
+      scheduler.step(); // step 7
+      scheduler.step(); // step 8
       scheduler.step(); // step 9
 
       // Final lr should be close to maxLr / finalDivFactor = 0.01
@@ -316,11 +308,12 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = createMockOptimizer(1.0);
       const scheduler = new StepLR(optimizer, { stepSize: 5 });
 
-      expect(scheduler.epoch).toBe(-1);
-      scheduler.step();
+      // Construction performs epoch 0 (matches PyTorch _LRScheduler.__init__)
       expect(scheduler.epoch).toBe(0);
       scheduler.step();
       expect(scheduler.epoch).toBe(1);
+      scheduler.step();
+      expect(scheduler.epoch).toBe(2);
     });
   });
 
@@ -330,7 +323,7 @@ describe("Learning Rate Schedulers", () => {
       const optimizer = new SGD([p], { lr: 0.1 });
       const scheduler = new StepLR(optimizer, { stepSize: 1, gamma: 0.1 });
 
-      scheduler.step(); // epoch 0
+      // epoch 0 at construction
       expect(optimizer.getLearningRate()).toBeCloseTo(0.1);
 
       scheduler.step(); // epoch 1

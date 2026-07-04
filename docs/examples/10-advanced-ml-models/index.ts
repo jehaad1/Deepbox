@@ -24,7 +24,7 @@ const expectNumericTypedArray = (
 };
 
 console.log("=".repeat(60));
-console.log("Example 21: Advanced ML Models");
+console.log("Example 10: Advanced ML Models");
 console.log("=".repeat(60));
 
 // ============================================================================

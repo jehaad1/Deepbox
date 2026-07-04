@@ -2,7 +2,7 @@
 
 > **View online:** https://deepbox.dev/examples/01-tensor-basics
 
-Learn the fundamentals of creating and manipulating tensors (N-dimensional arrays). Tensors are the core data structure in Deepbox, the core data structure in Deepbox.
+Learn the fundamentals of creating and manipulating tensors (N-dimensional arrays). Tensors are the core data structure in Deepbox.
 
 ## Deepbox Modules Used
 

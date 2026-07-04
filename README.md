@@ -7,14 +7,30 @@
 [![CI](https://github.com/jehaad1/Deepbox/actions/workflows/ci.yml/badge.svg)](https://github.com/jehaad1/Deepbox/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/deepbox)](https://www.npmjs.com/package/deepbox)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<!--
+[![Bench](https://img.shields.io/badge/Bench-Leaderboard-amber)](https://bench.deepbox.dev)
+-->
 
-Deepbox is a comprehensive, type-safe TypeScript library that unifies numerical computing, tabular data workflows, and machine learning into a single modular package. Zero runtime dependencies. 4,344 tests. Production-ready.
+Deepbox is a zero-runtime-dependency TypeScript framework for tensors, linear algebra, tabular data, machine learning, neural networks, statistics, datasets, and plotting. It is designed for users who want one coherent toolkit instead of stitching together separate numerical and ML libraries.
 
-> **Documentation:** https://deepbox.dev/docs · **Examples:** https://deepbox.dev/examples · **Projects:** https://deepbox.dev/projects
+> Docs: [deepbox.dev/docs](https://deepbox.dev/docs)
+> Examples: [deepbox.dev/examples](https://deepbox.dev/examples)
+> Projects: [deepbox.dev/projects](https://deepbox.dev/projects)
+<!--
+> Benchmarks: [bench.deepbox.dev](https://bench.deepbox.dev)
+-->
+
+## Why Deepbox
+
+- Zero runtime dependencies
+- ESM and CommonJS builds with bundled type declarations
+- Stable subpath exports for each major module
+- Broad numerical surface area in a single package
+- **315** implementation files under `src/**/*.ts` excluding `*.d.ts`, **421** Vitest files matching `test/**/*.test.ts`, **8,686** tests, 50 example directories, and 9 end-to-end projects in the current `v1.0.0` tree (other files under `test/` are helpers or benches, not counted here)
 
 ## Requirements
 
-- Node.js `>= 24.13.0`
+- Node.js `>= 24.13.0` as declared in `package.json` `engines`. Deepbox 1.x is built and CI-tested on Node 24.x with a TypeScript `ES2024` target; use this line for predictable behavior. Older Node versions are not supported for 1.x.
 
 ## Installation
 
@@ -22,300 +38,218 @@ Deepbox is a comprehensive, type-safe TypeScript library that unifies numerical 
 npm install deepbox
 ```
 
-## Quick Start
+## Import Model
+
+Deepbox is organized around subpath exports. Prefer importing named APIs from the module you actually use:
 
 ```ts
-import { tensor, add, parameter } from "deepbox/ndarray";
-import { DataFrame } from "deepbox/dataframe";
+import { tensor, parameter } from "deepbox/ndarray";
 import { LinearRegression } from "deepbox/ml";
-
-// Tensor operations with broadcasting
-const a = tensor([
-  [1, 2],
-  [3, 4],
-]);
-const b = tensor([
-  [5, 6],
-  [7, 8],
-]);
-const c = add(a, b); // tensor([[6, 8], [10, 12]])
-
-// Automatic differentiation
-const x = parameter([2, 3]);
-const y = x.mul(x).sum();
-y.backward();
-// x.grad -> tensor([4, 6])
-
-// DataFrame operations
-const df = new DataFrame({
-  name: ["Alice", "Bob", "Charlie"],
-  age: [25, 30, 35],
-  score: [85, 90, 78],
-});
-
-// Machine learning
-const model = new LinearRegression();
-model.fit(XTrain, yTrain);
-const predictions = model.predict(XTest);
+import { DataFrame } from "deepbox/dataframe";
 ```
 
-Prefer per-module imports for tree-shaking, or use namespaces from the root:
+The root package exports namespaces, not direct named symbols:
 
 ```ts
 import * as db from "deepbox";
-const t = db.ndarray.tensor([1, 2, 3]);
+
+const x = db.ndarray.tensor([1, 2, 3]);
+const model = new db.ml.LinearRegression();
 ```
 
-## Modules
+## Quick Start
 
-| Module               | What it provides                                                                       | Docs                                                       |
-| -------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `deepbox/core`       | Types, errors, validation, dtype helpers, configuration                                | [core](https://deepbox.dev/docs/core-types)                |
-| `deepbox/ndarray`    | N-D tensors with autograd, broadcasting, 90+ ops, sparse matrices                      | [ndarray](https://deepbox.dev/docs/ndarray-tensor)         |
-| `deepbox/linalg`     | SVD, QR, LU, Cholesky, eigenvalue decomposition, solvers, norms                        | [linalg](https://deepbox.dev/docs/linalg-decompositions)   |
-| `deepbox/dataframe`  | DataFrame + Series with 50+ operations, CSV I/O                                        | [dataframe](https://deepbox.dev/docs/dataframe-overview)   |
-| `deepbox/stats`      | Descriptive stats, correlations, hypothesis tests (t-test, ANOVA, chi-square, etc.)    | [stats](https://deepbox.dev/docs/stats-descriptive)        |
-| `deepbox/metrics`    | 40+ ML metrics (classification, regression, clustering)                                | [metrics](https://deepbox.dev/docs/metrics-classification) |
-| `deepbox/preprocess` | Scalers, encoders, normalizers, cross-validation splits                                | [preprocess](https://deepbox.dev/docs/preprocess-scalers)  |
-| `deepbox/ml`         | Classical ML (Linear, Ridge, Lasso, Logistic, Trees, SVM, KNN, Naive Bayes, Ensembles) | [ml](https://deepbox.dev/docs/ml-linear)                   |
-| `deepbox/nn`         | Neural networks (Linear, Conv, RNN/LSTM/GRU, Attention, Normalization, Losses)         | [nn](https://deepbox.dev/docs/nn-module)                   |
-| `deepbox/optim`      | Optimizers (SGD, Adam, AdamW, RMSprop, etc.) + LR schedulers                           | [optim](https://deepbox.dev/docs/optim-optimizers)         |
-| `deepbox/random`     | Distributions (uniform, normal, binomial, gamma, beta, etc.) + sampling                | [random](https://deepbox.dev/docs/random-distributions)    |
-| `deepbox/datasets`   | Built-in datasets (Iris, Digits, Breast Cancer, etc.) + synthetic generators           | [datasets](https://deepbox.dev/docs/datasets-builtin)      |
-| `deepbox/plot`       | SVG/PNG plotting (scatter, line, bar, hist, heatmap, contour, ML plots)                | [plot](https://deepbox.dev/docs/plot-basic)                |
-
-## Features
-
-### N-Dimensional Arrays
-
-- **90+ operations**: arithmetic, trigonometric, logical, reductions, sorting, manipulation
-- **Automatic differentiation**: `GradTensor` with reverse-mode backpropagation
-- **Broadcasting**: full broadcasting semantics ([docs](https://deepbox.dev/docs/ndarray-ops))
-- **Sparse matrices**: CSR format with arithmetic and matrix operations
-- **Multiple dtypes**: float32, float64, int32, int64, uint8, bool, string
-- **Activation functions**: ReLU, Sigmoid, Softmax, GELU, Mish, Swish, ELU, LeakyReLU
-
-### DataFrames & Series
-
-- **Tabular API**: filtering, grouping, joining, merging, pivoting, sorting ([docs](https://deepbox.dev/docs/dataframe-overview))
-- **CSV I/O**: read and write CSV files
-- **Descriptive statistics**: `describe()`, value counts, correlation matrices
-
-### Linear Algebra
-
-- **Decompositions**: SVD, QR, LU, Cholesky, Eigenvalue (eig, eigh, eigvals, eigvalsh)
-- **Solvers**: `solve()`, `lstsq()`, `solveTriangular()`
-- **Properties**: `det()`, `trace()`, `matrixRank()`, `cond()`, `slogdet()`
-- **Norms**: `norm()` (L1, L2, Frobenius, nuclear, inf)
-- **Inverse**: `inv()`, `pinv()`
-
-### Statistics
-
-- **Descriptive**: mean, median, mode, variance, std, skewness, kurtosis, quantile, percentile
-- **Correlations**: Pearson, Spearman, Kendall tau
-- **Hypothesis tests**: t-tests (1-sample, independent, paired), ANOVA, chi-square, Shapiro-Wilk, Mann-Whitney U, Kruskal-Wallis, Friedman, Anderson-Darling, KS test
-- **Variance tests**: Levene, Bartlett
-
-### Machine Learning
-
-- **Linear models**: LinearRegression, Ridge, Lasso, LogisticRegression
-- **Tree-based**: DecisionTreeClassifier/Regressor, RandomForestClassifier/Regressor
-- **Ensemble**: GradientBoostingClassifier/Regressor
-- **SVM**: LinearSVC, LinearSVR
-- **Neighbors**: KNeighborsClassifier, KNeighborsRegressor
-- **Naive Bayes**: GaussianNB
-- **Clustering**: KMeans, DBSCAN
-- **Dimensionality reduction**: PCA, t-SNE
-
-### Neural Networks
-
-- **Layers**: Linear, Conv1d, Conv2d, MaxPool2d, AvgPool2d
-- **Recurrent**: RNN, LSTM, GRU
-- **Attention**: MultiheadAttention, TransformerEncoderLayer
-- **Normalization**: BatchNorm1d, LayerNorm
-- **Regularization**: Dropout
-- **Activations**: ReLU, Sigmoid, Tanh, GELU, Mish, Swish, Softmax, LogSoftmax, ELU, LeakyReLU, Softplus
-- **Losses**: mseLoss, maeLoss, crossEntropyLoss, binaryCrossEntropyLoss, binaryCrossEntropyWithLogitsLoss, huberLoss, rmseLoss
-- **Containers**: Sequential
-
-### Optimization
-
-- **Optimizers**: SGD (with momentum), Adam, AdamW, Nadam, RMSprop, Adagrad, AdaDelta
-- **LR Schedulers**: StepLR, MultiStepLR, ExponentialLR, CosineAnnealingLR, LinearLR, OneCycleLR, ReduceLROnPlateau, WarmupLR
-
-### Preprocessing
-
-- **Scalers**: StandardScaler, MinMaxScaler, RobustScaler, MaxAbsScaler, Normalizer, PowerTransformer, QuantileTransformer
-- **Encoders**: LabelEncoder, OneHotEncoder, OrdinalEncoder, LabelBinarizer, MultiLabelBinarizer
-- **Splitting**: trainTestSplit, KFold, StratifiedKFold, GroupKFold, LeaveOneOut, LeavePOut
-
-### Visualization
-
-- **Plot types**: scatter, line, bar, histogram, heatmap, contour, box plot, violin plot, pie chart
-- **ML plots**: confusion matrix, ROC curve, precision-recall curve, learning curves, validation curves, decision boundaries
-- **Output**: SVG (browser + Node.js), PNG (Node.js only)
-
-## Examples
-
-### Automatic Differentiation
+### Tensors and Autograd
 
 ```ts
-import { parameter } from "deepbox/ndarray";
+import { parameter, tensor } from "deepbox/ndarray";
 
 const x = parameter([
   [1, 2],
   [3, 4],
 ]);
-const w = parameter([[0.5], [0.5]]);
+const w = parameter([[0.5], [0.25]]);
+
 const y = x.matmul(w).sum();
 y.backward();
-// x.grad -> gradients w.r.t. x
-// w.grad -> gradients w.r.t. w
+
+console.log(x.grad?.toString());
+console.log(w.grad?.toString());
+
+const plain = tensor([1, 2, 3]);
+console.log(plain.toString());
 ```
 
-### Neural Network Training
+### GPU and WASM Acceleration
+
+Tensors carry a device (`cpu`, `webgpu`, `wasm`). With a registered backend the
+accelerated op set executes on the device; ops a device cannot run throw a
+`DeviceError` with a transfer hint instead of silently computing elsewhere.
+
+The WebGPU device set is training-complete: element-wise arithmetic and
+activations (incl. `gelu`, `erf`, `rsqrt`, `where`), matmul and **batched**
+matmul (attention), **axis reductions** (so `softmax`/`logSoftmax`/`layerNorm`
+compose on-device), 2-D **convolution and pooling** (incl. `MaxPool`), and full
+reductions. The reverse pass (autograd) and **every practical optimizer step**
+(`SGD`, `Adam`, `AdamW`, `RMSprop`, `Adagrad`, `Adamax`, `Nadam`, `RAdam`,
+`Adadelta`, `ASGD`, `Rprop`, `Lion`, `LAMB`, `LARS`) also run on the device, so
+a full forward → backward → update loop for an MLP, transformer, or CNN stays
+resident on the GPU with no per-step host transfers. **Half precision** is
+supported: `float16` tensors compute in true on-device half (WGSL `shader-f16`,
+halving memory footprint) and `bfloat16` carries correct bf16 numerics.
 
 ```ts
-import { Sequential, Linear, ReLU, Dropout, mseLoss } from "deepbox/nn";
-import { Adam } from "deepbox/optim";
+import { registerBackend, WebGpuBackend } from "deepbox/core";
+import { dot, relu, tensor } from "deepbox/ndarray";
 
-const model = new Sequential(
-  new Linear(10, 64),
-  new ReLU(),
-  new Dropout(0.2),
-  new Linear(64, 32),
-  new ReLU(),
-  new Linear(32, 1),
-);
+const gpu = new WebGpuBackend(); // in Node, pass { gpu } from a WebGPU binding
+await gpu.init();
+if (gpu.info().available) {
+  registerBackend("webgpu", gpu);
 
-const optimizer = new Adam(model.parameters(), { lr: 0.001 });
-
-for (let epoch = 0; epoch < 100; epoch++) {
-  const output = model.forward(xTrain);
-  const loss = mseLoss(output, yTrain);
-  optimizer.zeroGrad();
-  loss.backward();
-  optimizer.step();
+  const a = tensor([[1, 2], [3, 4]], { device: "webgpu" }); // lives in GPU memory
+  const y = relu(dot(a, a));       // WGSL compute kernels
+  const host = await y.cpu();      // async readback
+  console.log(host.toString());
 }
 ```
 
-### ML Pipeline
+WebGPU kernels are float32/float16 and stride/broadcast-aware (views and
+transposes execute without copies), verified on GPU hardware against the CPU
+reference. The
+WASM backend accelerates contiguous float32 arithmetic with embedded SIMD
+kernels over zero-copy host storage:
 
 ```ts
-import { trainTestSplit, StandardScaler } from "deepbox/preprocess";
-import { RandomForestClassifier } from "deepbox/ml";
-import { accuracy, f1Score } from "deepbox/metrics";
+import { registerBackend, WasmBackend } from "deepbox/core";
+import { add, tensor } from "deepbox/ndarray";
 
-const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, {
-  testSize: 0.2,
-  randomState: 42,
-});
-
-const scaler = new StandardScaler();
-scaler.fit(XTrain);
-const XTrainScaled = scaler.transform(XTrain);
-const XTestScaled = scaler.transform(XTest);
-
-const model = new RandomForestClassifier({ nEstimators: 100, maxDepth: 10 });
-model.fit(XTrainScaled, yTrain);
-
-const yPred = model.predict(XTestScaled);
-console.log("Accuracy:", accuracy(yTest, yPred));
-console.log("F1 Score:", f1Score(yTest, yPred));
+const wasm = new WasmBackend();
+await wasm.init();
+if (wasm.info().available) {
+  registerBackend("wasm", wasm);
+  const a = tensor(new Array(4096).fill(1), { device: "wasm" });
+  console.log(add(a, a).at(0)); // SIMD, bit-identical to the CPU result
+}
 ```
 
-### Classical ML Models
+### Classical ML
 
 ```ts
-import {
-  DecisionTreeClassifier,
-  GradientBoostingClassifier,
-  KNeighborsClassifier,
-  LinearSVC,
-} from "deepbox/ml";
+import { tensor } from "deepbox/ndarray";
+import { LinearRegression } from "deepbox/ml";
 
-const tree = new DecisionTreeClassifier({ maxDepth: 5 });
-tree.fit(XTrain, yTrain);
+const X = tensor([
+  [1],
+  [2],
+  [3],
+  [4],
+]);
+const y = tensor([2, 4, 6, 8]);
 
-const gb = new GradientBoostingClassifier({
-  nEstimators: 100,
-  learningRate: 0.1,
-});
-gb.fit(XTrain, yTrain);
+const model = new LinearRegression();
+model.fit(X, y);
 
-const knn = new KNeighborsClassifier({ nNeighbors: 5 });
-knn.fit(XTrain, yTrain);
-
-const svm = new LinearSVC({ C: 1.0 });
-svm.fit(XTrain, yTrain);
+const predictions = model.predict(tensor([[5], [6]]));
+console.log(predictions.toString());
 ```
 
-### DataFrame Operations
+### DataFrames
 
 ```ts
 import { DataFrame } from "deepbox/dataframe";
 
 const df = new DataFrame({
-  name: ["Alice", "Bob", "Charlie", "David"],
-  age: [25, 30, 35, 28],
-  salary: [50000, 60000, 75000, 55000],
-  department: ["IT", "HR", "IT", "HR"],
+  name: ["Alice", "Bob", "Charlie"],
+  team: ["A", "A", "B"],
+  score: [91, 84, 96],
 });
 
-const itDept = df.filter((row) => row.department === "IT");
-const avgSalary = df.groupBy("department").agg({ salary: "mean" });
-const sorted = df.sort("salary", false);
+const summary = df.groupBy("team").mean();
+console.log(summary.toString());
 ```
 
-### Plotting
+## Modules
 
-```ts
-import { scatter, plot, hist, heatmap, saveFig } from "deepbox/plot";
-import { tensor } from "deepbox/ndarray";
+| Module | Includes |
+| --- | --- |
+| `deepbox/core` | Types, errors, config, backends, logging, warnings, validation, serialization, worker pool |
+| `deepbox/ndarray` | Tensor creation, 100+ operations, autograd, sparse CSR, FFT, einsum, numerical utilities |
+| `deepbox/linalg` | Decompositions, matrix functions, solvers, norms, special matrices |
+| `deepbox/dataframe` | `DataFrame`, `Series`, string and datetime accessors, MultiIndex, Categorical, CSV/JSON methods, Excel/Parquet helpers |
+| `deepbox/stats` | Descriptive stats, correlations, distributions, hypothesis tests, KDE, confidence intervals, power analysis |
+| `deepbox/metrics` | Classification, regression, clustering, pairwise, ranking, and calibration-oriented metrics |
+| `deepbox/preprocess` | Scalers, encoders, imputers, feature selection, text vectorizers, splitters |
+| `deepbox/ml` | Linear models, trees, ensembles, SVM, neighbors, Naive Bayes, clustering, manifold, pipelines, model selection |
+| `deepbox/nn` | Modules, layers, recurrent models, transformers, losses, training utilities, initialization |
+| `deepbox/optim` | Optimizers and learning-rate schedulers |
+| `deepbox/random` | Seed control, `Generator`, distributions, sampling utilities |
+| `deepbox/datasets` | Built-in datasets, synthetic generators, loaders, samplers, remote and Kaggle helpers |
+| `deepbox/plot` | Figure API, SVG/PNG/PDF output, statistical plots, ML diagnostic plots, palettes, animation |
 
-scatter(tensor([1, 2, 3, 4, 5]), tensor([2, 4, 5, 4, 6]), { color: "#1f77b4" });
-plot(tensor([1, 2, 3, 4, 5]), tensor([2, 4, 5, 4, 6]), { color: "#ff7f0e" });
-hist(tensor([1, 2, 2, 3, 3, 3, 4, 4, 5]), { bins: 5 });
-heatmap(
-  tensor([
-    [1, 2, 3],
-    [4, 5, 6],
-    [7, 8, 9],
-  ]),
-);
-saveFig("output.svg");
-```
+## v1.0.0 Highlights
 
+### Numerical Computing
+
+- Tensor ops spanning arithmetic, broadcasting, reductions, sorting, indexing, signal processing, FFT, and Einstein summation
+- Sparse CSR matrices, complex dtypes, half-precision arrays, and NaN-aware reductions
+- Linear algebra with SVD, QR, LU, Cholesky, eigensolvers, Schur, polar, Hessenberg, and matrix functions
+- Training-complete WebGPU backend: device tensors with PyTorch-style `.to(device)` transfers, plus axis reductions, batched matmul, convolution/pooling, on-device autograd, and on-device `SGD`/`Adam` — MLP, transformer, and CNN training loops run resident on the GPU. WASM SIMD host acceleration for contiguous float32. Strict same-device semantics and loud errors for unaccelerated device ops
+
+### Data and Statistics
+
+- `DataFrame` and `Series` workflows with grouping, merging, pivoting, rolling, expanding, EWM, string accessors, and datetime tooling
+- Statistical distributions, confidence intervals, kernel density estimation, multiple-comparison corrections, and power analysis
+- Metrics for classification, regression, clustering, ranking, and pairwise similarity
+
+### Machine Learning and Deep Learning
+
+- Expanded estimator surface across ensembles, SVM variants, Naive Bayes, clustering, manifold learning, Gaussian processes, anomaly detection, and model selection
+- Pipeline composition with `Pipeline`, `FeatureUnion`, `ColumnTransformer`, `GridSearchCV`, and `RandomizedSearchCV`
+- Neural network stack with convolutional, recurrent, normalization, attention, transformer, embedding, and utility layers
+- Training infrastructure including `Trainer`, callbacks, clipping, and advanced optimizers and schedulers
+
+### Visualization and Data Sources
+
+- Figure-based plotting API with line, scatter, histogram, heatmap, contour, violin, radar, polar, dendrogram, and diagnostic plots
+- Real reference datasets (Iris, Wine, Breast Cancer, Diabetes, Digits — values matching scikit-learn), synthetic generators, `DataLoader`, samplers, and remote dataset helpers
+- Streaming / out-of-core datasets: a lazy `StreamingDataset` with map/shuffle-buffer/batch/prefetch that trains on data larger than RAM via `Trainer.fitAsync`
+
+<!--
 ## Performance
 
 Deepbox is pure TypeScript — no native addons, no WebAssembly, no C bindings. Every operation runs on V8’s JIT compiler with `TypedArray` backing. Despite competing against Python libraries that use hand-tuned C and Fortran backends (BLAS, LAPACK, ATen), Deepbox delivers competitive or superior performance in several areas.
 
-**542 head-to-head benchmarks** across 10 categories, tested on the same machine with identical data sizes and iteration counts:
+**930 head-to-head benchmarks** across 12 categories, tested on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
+
+Two win rates are reported. **Overall:** 586/930 (63.0%). **Realized-work** (excludes 120 sub-microsecond lazy-view/spec-build cases that only rewrite shape/stride metadata): 483/810 (59.6%). The realized-work rate is the fair measure of throughput on operations that actually move data; see [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) for the per-case breakdown.
 
 | Category | Deepbox Wins | Python Package Wins | Competing Against |
 | --- | ---: | ---: | --- |
-| DataFrames | 23 | 32 | Pandas (C / Cython) |
-| Datasets | 11 | 30 | scikit-learn |
-| Linear Algebra | 0 | 54 | NumPy + SciPy (LAPACK) |
-| Metrics | 46 | 17 | scikit-learn (C / Cython) |
-| ML Training | 15 | 33 | scikit-learn (C / Cython) |
-| NDArray Ops | 6 | 88 | NumPy (C / BLAS) |
-| Plotting | 43 | 0 | Matplotlib (C / Agg) |
-| Preprocessing | 19 | 24 | scikit-learn (C / Cython) |
-| Random | 0 | 44 | NumPy (C) |
-| Statistics | 30 | 27 | SciPy (C / Fortran) |
-| **Total** | **193** | **349** | |
+| DataFrames | 43 | 28 | Pandas (C / Cython) |
+| Datasets | 51 | 0 | scikit-learn |
+| Linear Algebra | 15 | 50 | NumPy + SciPy (LAPACK) |
+| Metrics | 125 | 4 | scikit-learn (C / Cython) |
+| ML Training | 60 | 28 | scikit-learn (C / Cython) |
+| NDArray Ops | 41 | 169 | NumPy (C / BLAS) |
+| Neural Networks | 28 | 19 | PyTorch (C++ ATen) |
+| Optimizers | 46 | 3 | PyTorch (C++ ATen) |
+| Plotting | 6 | 0 | Matplotlib (C / Agg) |
+| Preprocessing | 48 | 16 | scikit-learn (C / Cython) |
+| Random | 47 | 6 | NumPy (C) |
+| Statistics | 76 | 21 | SciPy (C / Fortran) |
+| **Total** | **586** | **344** | |
 
 ### Where Deepbox shines
 
-- **bar** (200 bars) — 9963.3x faster *(Plotting)*
-- **transpose** (500x500) — 54.5x faster *(NDArray Ops)*
-- **KNeighborsRegressor fit** (200x5) — 36.6x faster *(ML Training)*
-- **fbetaScore (β=0.5)** (1K) — 30.9x faster *(Metrics)*
-- **describe** (100x5) — 29.5x faster *(DataFrames)*
-- **chisquare** (10 bins) — 19.3x faster *(Statistics)*
-- **loadLinnerud** (20x3) — 15.1x faster *(Datasets)*
-- **PowerTransformer fit** (500x10) — 6.4x faster *(Preprocessing)*
+- **chi2_contingency** (2x3) — 681.0x faster *(Statistics)*
+- **matthewsCorrcoef** (100) — 577.4x faster *(Metrics)*
+- **show (SVG) scatter** (100 pts) — 494.8x faster *(Plotting)*
+- **MeanShift fit** (120x2) — 163.5x faster *(ML Training)*
+- **describe** (100x5) — 137.9x faster *(DataFrames)*
+- **WarmupLR (100 steps)** (—) — 57.7x faster *(Optimizers)*
+- **loadLinnerud** (20x3) — 27.0x faster *(Datasets)*
+- **setdiff1d** (6-5) — 25.7x faster *(NDArray Ops)*
 
 ### Context
 
@@ -323,24 +257,33 @@ Python’s numerical libraries delegate heavy lifting to compiled C/Fortran code
 
 > Run `npm run bench:all` to reproduce. Full results in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
+## Repository Contents
+
+- [`docs/examples`](./docs/examples) contains 50 numbered examples (`00`-`49`)
+- [`docs/projects`](./docs/projects) contains 9 larger end-to-end projects
+<!--
+- [`benchmarks`](./benchmarks) contains Deepbox and Python benchmark harnesses (`npm run bench:deepbox` runs numeric suites **01–13**; suite **14** is `npm run bench:tensor` only and is excluded from the Python comparison path — see `benchmarks/README.md`)
+-->
+
+## For AI Agents
+
+Use [`SKILL.md`](./SKILL.md) as the repo-native agent guide (also included at `node_modules/deepbox/SKILL.md` when you install from npm). It documents:
+
+- correct import patterns
+- module selection guidance
+- Deepbox core types
+- custom error hierarchy
+- common coding patterns and gotchas
+
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
-
 ```bash
-npm install         # Install dependencies
-npm run build       # Build the package
-npm test            # Run 4,344 tests
-npm run typecheck   # Type checking
-npm run lint        # Lint with Biome
-npm run format      # Format with Biome
-npm run all         # Run all checks
+npm ci
+npm run validate:all
 ```
+
+Additional contributor workflow details live in [CONTRIBUTING.md](CONTRIBUTING.md). Security reporting instructions live in [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-Built by [Jehaad Aljohani](https://github.com/jehaad1)
+Deepbox is released under the [MIT License](LICENSE).

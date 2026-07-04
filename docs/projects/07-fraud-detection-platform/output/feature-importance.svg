@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="520" viewBox="0 0 860 520">
+<rect x="0" y="0" width="860" height="520" fill="#ffffff" />
+<rect x="50" y="50" width="760" height="420" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-760-420"><path d="M50 50 L810 50 L810 470 L50 470 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-760-420)">
+<rect x="602.73" y="411.75" width="172.73" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="602.73" y="362.80" width="43.18" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="559.55" y="313.85" width="43.18" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="343.64" y="264.90" width="259.09" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="214.09" y="215.94" width="388.64" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="170.91" y="166.99" width="431.82" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="127.73" y="118.04" width="475.00" height="39.16" fill="#1d4ed8" stroke="#000000" />
+<rect x="84.55" y="69.09" width="518.18" height="39.16" fill="#1d4ed8" stroke="#000000" />
+</g>
+<line class="x-tick" x1="116.93" y1="470.00" x2="116.93" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="116.93" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-0.005</text>
+<line class="x-tick" x1="214.09" y1="470.00" x2="214.09" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="214.09" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-0.004</text>
+<line class="x-tick" x1="311.25" y1="470.00" x2="311.25" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="311.25" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-0.003</text>
+<line class="x-tick" x1="408.41" y1="470.00" x2="408.41" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="408.41" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-0.002</text>
+<line class="x-tick" x1="505.57" y1="470.00" x2="505.57" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="505.57" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">-0.001</text>
+<line class="x-tick" x1="602.73" y1="470.00" x2="602.73" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="602.73" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
+<line class="x-tick" x1="699.89" y1="470.00" x2="699.89" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="699.89" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0.001</text>
+<line class="x-tick" x1="797.05" y1="470.00" x2="797.05" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="797.05" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0.002</text>
+<line class="y-tick" x1="50.00" y1="431.33" x2="45.00" y2="431.33" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="431.33" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">chargebackHistory</text>
+<line class="y-tick" x1="50.00" y1="382.38" x2="45.00" y2="382.38" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="382.38" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">amount</text>
+<line class="y-tick" x1="50.00" y1="333.43" x2="45.00" y2="333.43" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="333.43" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">deviceRisk</text>
+<line class="y-tick" x1="50.00" y1="284.48" x2="45.00" y2="284.48" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="284.48" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">geoRisk</text>
+<line class="y-tick" x1="50.00" y1="235.52" x2="45.00" y2="235.52" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="235.52" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">hourOfDay</text>
+<line class="y-tick" x1="50.00" y1="186.57" x2="45.00" y2="186.57" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="186.57" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">velocity30m</text>
+<line class="y-tick" x1="50.00" y1="137.62" x2="45.00" y2="137.62" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="137.62" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">merchantRisk</text>
+<line class="y-tick" x1="50.00" y1="88.67" x2="45.00" y2="88.67" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="88.67" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">accountAgeDays</text>
+<text x="430" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Feature Importance</text>
+<text x="430" y="505" text-anchor="middle" font-size="12" fill="#000">Importance</text>
+</svg>

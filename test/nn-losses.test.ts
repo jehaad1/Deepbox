@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import { tensor } from "../src/ndarray";
 import {
   binaryCrossEntropyLoss,
+  cosineEmbeddingLoss,
+  ctcLoss,
   huberLoss,
+  klDivLoss,
   maeLoss,
   mseLoss,
+  nllLoss,
   rmseLoss,
+  smoothL1Loss,
+  tripletMarginLoss,
 } from "../src/nn/losses/index";
 import { expectNumber, expectNumberArray } from "./nn-test-utils";
 
@@ -208,6 +214,135 @@ describe("deepbox/nn - Loss Functions", () => {
       const predictions = tensor([1, 2, 3]);
       const targets = tensor([1, 2]);
       expect(() => huberLoss(predictions, targets)).toThrow(/shape/i);
+    });
+  });
+
+  describe("nllLoss", () => {
+    it("should compute negative log likelihood for class targets", () => {
+      const logProbs = tensor([
+        [Math.log(0.1), Math.log(0.9)],
+        [Math.log(0.8), Math.log(0.2)],
+      ]);
+      const targets = tensor([1, 0], { dtype: "int32" });
+
+      const loss = nllLoss(logProbs, targets);
+
+      expect(expectNumber(loss.toArray(), "nllLoss")).toBeCloseTo(
+        (-Math.log(0.9) - Math.log(0.8)) / 2,
+        5
+      );
+    });
+
+    it("should reject out-of-range targets", () => {
+      const logProbs = tensor([[Math.log(0.5), Math.log(0.5)]]);
+      const targets = tensor([2], { dtype: "int32" });
+
+      expect(() => nllLoss(logProbs, targets)).toThrow(/out of range/i);
+    });
+  });
+
+  describe("klDivLoss", () => {
+    it("should be near zero for matching distributions", () => {
+      const probs = tensor([0.25, 0.75]);
+      const input = tensor([Math.log(0.25), Math.log(0.75)]);
+
+      const loss = klDivLoss(input, probs);
+
+      expect(expectNumber(loss.toArray(), "klDivLoss")).toBeCloseTo(0, 6);
+    });
+  });
+
+  describe("smoothL1Loss", () => {
+    it("should compute Smooth L1 loss across quadratic and linear regions", () => {
+      const predictions = tensor([0, 0]);
+      const targets = tensor([0.5, 2]);
+
+      const loss = smoothL1Loss(predictions, targets);
+
+      expect(expectNumber(loss.toArray(), "smoothL1Loss")).toBeCloseTo((0.125 + 1.5) / 2, 5);
+    });
+  });
+
+  describe("cosineEmbeddingLoss", () => {
+    it("should return zero for identical positive pairs", () => {
+      const x1 = tensor([[1, 0]]);
+      const x2 = tensor([[1, 0]]);
+      const y = tensor([1], { dtype: "int32" });
+
+      const loss = cosineEmbeddingLoss(x1, x2, y);
+
+      expect(expectNumber(loss.toArray(), "cosineEmbeddingLoss")).toBeCloseTo(0, 6);
+    });
+  });
+
+  describe("tripletMarginLoss", () => {
+    it("should compute positive margin violations", () => {
+      const anchor = tensor([[0, 0]]);
+      const positive = tensor([[1, 0]]);
+      const negative = tensor([[1.5, 0]]);
+
+      const loss = tripletMarginLoss(anchor, positive, negative);
+
+      expect(expectNumber(loss.toArray(), "tripletMarginLoss")).toBeCloseTo(0.5, 6);
+    });
+  });
+
+  describe("ctcLoss", () => {
+    it("should compute loss for a simple single-target sequence", () => {
+      const logProbs = tensor([
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+      ]);
+      const targets = tensor([1], { dtype: "int32" });
+      const inputLengths = tensor([2], { dtype: "int32" });
+      const targetLengths = tensor([1], { dtype: "int32" });
+
+      const loss = ctcLoss(logProbs, targets, inputLengths, targetLengths);
+
+      expect(expectNumber(loss.toArray(), "ctcLoss")).toBeCloseTo(-Math.log(0.56), 5);
+    });
+
+    it("should support reduction none", () => {
+      const logProbs = tensor([
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+      ]);
+      const targets = tensor([1], { dtype: "int32" });
+      const inputLengths = tensor([2], { dtype: "int32" });
+      const targetLengths = tensor([1], { dtype: "int32" });
+
+      const loss = ctcLoss(logProbs, targets, inputLengths, targetLengths, {
+        reduction: "none",
+      });
+
+      const arr = expectNumberArray(loss.toArray(), "ctcLoss");
+      expect(arr[0] ?? 0).toBeCloseTo(-Math.log(0.56), 5);
+    });
+
+    it("should return Infinity when the input is shorter than the target", () => {
+      const logProbs = tensor([[[Math.log(0.5), Math.log(0.4), Math.log(0.1)]]]);
+      const targets = tensor([1, 2], { dtype: "int32" });
+      const inputLengths = tensor([1], { dtype: "int32" });
+      const targetLengths = tensor([2], { dtype: "int32" });
+
+      const loss = ctcLoss(logProbs, targets, inputLengths, targetLengths, {
+        reduction: "none",
+      });
+
+      const arr = expectNumberArray(loss.toArray(), "ctcLoss");
+      expect(arr[0]).toBe(Infinity);
+    });
+
+    it("should reject targets equal to the blank index", () => {
+      const logProbs = tensor([
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+        [[Math.log(0.5), Math.log(0.4), Math.log(0.1)]],
+      ]);
+      const targets = tensor([0], { dtype: "int32" });
+      const inputLengths = tensor([2], { dtype: "int32" });
+      const targetLengths = tensor([1], { dtype: "int32" });
+
+      expect(() => ctcLoss(logProbs, targets, inputLengths, targetLengths)).toThrow(/blank/i);
     });
   });
 });

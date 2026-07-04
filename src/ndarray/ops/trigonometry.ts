@@ -1,13 +1,14 @@
-import { DTypeError, getNumericElement, type Shape } from "../../core";
+import { DTypeError, type Shape } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, isBigIntArray, Tensor } from "../tensor/Tensor";
-import { flatOffset, readAsNumberSafe } from "./_internal";
+import { flatOffset, readAsNumberSafe, readNumericContiguous } from "./_internal";
 import {
   broadcastApply,
   ensureBroadcastableScalar,
   getBroadcastShape,
   isScalar,
 } from "./broadcast";
+import { dispatchUnary } from "./device_dispatch";
 
 /**
  * Element-wise sine.
@@ -41,9 +42,12 @@ export function sin(t: Tensor): Tensor {
       out[i] = Math.sin(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("sin is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.sin(getNumericElement(data, srcOffset));
+      out[i] = Math.sin(src[i] as number);
     }
   }
 
@@ -84,9 +88,12 @@ export function cos(t: Tensor): Tensor {
       out[i] = Math.cos(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("cos is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.cos(getNumericElement(data, srcOffset));
+      out[i] = Math.cos(src[i] as number);
     }
   }
 
@@ -127,9 +134,12 @@ export function tan(t: Tensor): Tensor {
       out[i] = Math.tan(data[i] as number);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("tan is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.tan(getNumericElement(data, srcOffset));
+      out[i] = Math.tan(src[i] as number);
     }
   }
 
@@ -166,9 +176,12 @@ export function asin(t: Tensor): Tensor {
       out[i] = Math.asin(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("asin is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.asin(getNumericElement(data, srcOffset));
+      out[i] = Math.asin(src[i] as number);
     }
   }
 
@@ -205,9 +218,12 @@ export function acos(t: Tensor): Tensor {
       out[i] = Math.acos(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("acos is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.acos(getNumericElement(data, srcOffset));
+      out[i] = Math.acos(src[i] as number);
     }
   }
 
@@ -244,9 +260,12 @@ export function atan(t: Tensor): Tensor {
       out[i] = Math.atan(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("atan is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.atan(getNumericElement(data, srcOffset));
+      out[i] = Math.atan(src[i] as number);
     }
   }
 
@@ -329,9 +348,12 @@ export function sinh(t: Tensor): Tensor {
       out[i] = Math.sinh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("sinh is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.sinh(getNumericElement(data, srcOffset));
+      out[i] = Math.sinh(src[i] as number);
     }
   }
 
@@ -368,9 +390,12 @@ export function cosh(t: Tensor): Tensor {
       out[i] = Math.cosh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("cosh is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.cosh(getNumericElement(data, srcOffset));
+      out[i] = Math.cosh(src[i] as number);
     }
   }
 
@@ -392,6 +417,11 @@ export function tanh(t: Tensor): Tensor {
     throw new DTypeError("tanh is not defined for string dtype");
   }
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("tanh", t);
+    if (onDevice) return onDevice;
+  }
+
   const out = new Float64Array(t.size);
   const logicalStrides = computeStrides(t.shape);
   const contiguous = isContiguous(t.shape, t.strides);
@@ -407,9 +437,25 @@ export function tanh(t: Tensor): Tensor {
       out[i] = Math.tanh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("tanh is not defined for string dtype");
+    }
+    // tanh(x) = sign(x) * (1 - e) / (1 + e) with e = exp(-2|x|). Computed from a
+    // single Math.exp (V8's Math.tanh is a much slower libm call, ~1.4x here);
+    // exp(-2|x|) stays in (0,1] so there is no overflow, and |x|>20 saturates to
+    // ±1. Matches Math.tanh to ~1 ulp across the range.
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.tanh(getNumericElement(data, srcOffset));
+      const v = src[i] as number;
+      const ax = v < 0 ? -v : v;
+      let r: number;
+      if (ax > 20) {
+        r = 1;
+      } else {
+        const e = Math.exp(-2 * ax);
+        r = (1 - e) / (1 + e);
+      }
+      out[i] = v < 0 ? -r : r;
     }
   }
 
@@ -446,9 +492,12 @@ export function asinh(t: Tensor): Tensor {
       out[i] = Math.asinh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("asinh is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.asinh(getNumericElement(data, srcOffset));
+      out[i] = Math.asinh(src[i] as number);
     }
   }
 
@@ -485,9 +534,12 @@ export function acosh(t: Tensor): Tensor {
       out[i] = Math.acosh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("acosh is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.acosh(getNumericElement(data, srcOffset));
+      out[i] = Math.acosh(src[i] as number);
     }
   }
 
@@ -524,9 +576,12 @@ export function atanh(t: Tensor): Tensor {
       out[i] = Math.atanh(readAsNumberSafe(data, srcOffset));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("atanh is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = Math.atanh(getNumericElement(data, srcOffset));
+      out[i] = Math.atanh(src[i] as number);
     }
   }
 

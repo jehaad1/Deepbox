@@ -16,7 +16,6 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "composite": false,
-    "baseUrl": "..",
     "rootDir": "..",
     "paths": {
       "deepbox": ["./src/index.ts"],

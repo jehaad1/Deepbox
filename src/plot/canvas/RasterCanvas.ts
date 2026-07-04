@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
 import { assertPositiveInt, clampInt } from "../utils/validation";
 
 /**
@@ -7,6 +11,9 @@ export class RasterCanvas {
   readonly width: number;
   readonly height: number;
   readonly data: Uint8ClampedArray;
+  // Optional clip rectangle in pixel space; when set, all pixel writes outside
+  // it are discarded (used to keep data series inside the axes viewport).
+  private clip: { x0: number; y0: number; x1: number; y1: number } | null = null;
 
   constructor(width: number, height: number) {
     assertPositiveInt("width", width);
@@ -14,6 +21,16 @@ export class RasterCanvas {
     this.width = width;
     this.height = height;
     this.data = new Uint8ClampedArray(width * height * 4);
+  }
+
+  /** Restrict subsequent pixel writes to `[x0,x1) × [y0,y1)`. */
+  setClipRect(x0: number, y0: number, x1: number, y1: number): void {
+    this.clip = { x0, y0, x1, y1 };
+  }
+
+  /** Remove any active clip rectangle. */
+  clearClip(): void {
+    this.clip = null;
   }
 
   clearRGBA(r: number, g: number, b: number, a: number): void {
@@ -29,6 +46,12 @@ export class RasterCanvas {
 
   setPixelRGBA(x: number, y: number, r: number, g: number, b: number, a: number): void {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
+    if (
+      this.clip &&
+      (x < this.clip.x0 || x >= this.clip.x1 || y < this.clip.y0 || y >= this.clip.y1)
+    ) {
+      return;
+    }
     const idx = (y * this.width + x) * 4;
     this.data[idx] = r;
     this.data[idx + 1] = g;

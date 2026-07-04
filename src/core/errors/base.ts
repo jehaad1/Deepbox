@@ -3,6 +3,7 @@
  *
  * Provides a stable `instanceof DeepboxError` discriminator
  * and consistent `cause` chaining.
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
  */
 export class DeepboxError extends Error {
   override name = "DeepboxError";

@@ -1,5 +1,10 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ */
+
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { __random } from "../../random/random";
 import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 
@@ -98,7 +103,7 @@ export class Lasso implements Regressor {
         return seed / 233280;
       };
     }
-    return Math.random;
+    return __random;
   }
 
   /**

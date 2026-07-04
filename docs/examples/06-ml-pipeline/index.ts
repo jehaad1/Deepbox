@@ -11,13 +11,13 @@ import {
   recall,
   rmse,
 } from "deepbox/metrics";
-import { Lasso, LinearRegression, LogisticRegression, Ridge } from "deepbox/ml";
+import { cross_validate, Lasso, LinearRegression, LogisticRegression, Ridge } from "deepbox/ml";
 import { tensor } from "deepbox/ndarray";
 import { Figure } from "deepbox/plot";
-import { KFold, StandardScaler, trainTestSplit } from "deepbox/preprocess";
+import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
 
 console.log("=".repeat(60));
-console.log("Example 2: Complete Machine Learning Pipeline");
+console.log("Example 06: Complete Machine Learning Pipeline");
 console.log("=".repeat(60));
 
 mkdirSync("docs/examples/06-ml-pipeline/output", { recursive: true });
@@ -140,27 +140,31 @@ for (const { name, model } of models) {
 
 console.log("\n🔄 Cross-Validation");
 console.log("-".repeat(60));
-console.log("Note: Cross-validation with gather() requires advanced indexing.");
-console.log("For this example, we'll demonstrate the concept with a simpler approach.\n");
+const cvResult = cross_validate(new Ridge({ alpha: 1.0 }), XTrainHousingScaled, yTrainHousing, {
+  cv: 5,
+  scoring: {
+    r2: (estimator, XFold, yFold) => r2Score(yFold, (estimator as Ridge).predict(XFold)),
+    rmse: (estimator, XFold, yFold) => rmse(yFold, (estimator as Ridge).predict(XFold)),
+  },
+});
 
-// Simplified CV demonstration without gather()
-const kfold = new KFold({ nSplits: 5, shuffle: true, randomState: 42 });
-let foldNum = 1;
+const cvR2Scores = cvResult.testScores.r2 ?? [];
+const cvRmseScores = cvResult.testScores.rmse ?? [];
+const meanCvR2 =
+  cvR2Scores.reduce((total, score) => total + score, 0) / Math.max(cvR2Scores.length, 1);
+const meanCvRmse =
+  cvRmseScores.reduce((total, score) => total + score, 0) / Math.max(cvRmseScores.length, 1);
 
-console.log("Cross-validation fold splits:");
-for (const { trainIndex, testIndex } of kfold.split(housing.data)) {
+console.log("5-fold cross-validation for Ridge Regression (α=1.0):");
+for (let i = 0; i < cvR2Scores.length; i++) {
+  const r2 = cvR2Scores[i];
+  const rmseScore = cvRmseScores[i];
   console.log(
-    `  Fold ${foldNum}: Train=${trainIndex.length} samples, Test=${testIndex.length} samples`
+    `  Fold ${i + 1}: R²=${r2?.toFixed(4) ?? "n/a"}, RMSE=${rmseScore?.toFixed(4) ?? "n/a"}`
   );
-  foldNum++;
 }
-
-console.log("\nIn a full implementation, each fold would:");
-console.log("  1. Index the data using the train/test indices");
-console.log("  2. Scale the features");
-console.log("  3. Train the model");
-console.log("  4. Evaluate performance");
-console.log("  5. Average scores across all folds");
+console.log(`\nMean CV R²: ${meanCvR2.toFixed(4)}`);
+console.log(`Mean CV RMSE: ${meanCvRmse.toFixed(4)}`);
 
 console.log("\n📈 Visualizing Predictions");
 console.log("-".repeat(60));
@@ -198,7 +202,7 @@ console.log("\n💡 Key Takeaways");
 console.log("-".repeat(60));
 console.log("• Logistic Regression achieved high accuracy on binary classification");
 console.log("• Ridge Regression with α=1.0 performed best on housing dataset");
-console.log("• Cross-validation confirms model stability across different folds");
+console.log("• Cross-validation now reports real fold-by-fold R² and RMSE scores");
 console.log("• Feature scaling is crucial for model performance");
 console.log("• Regularization helps prevent overfitting");
 

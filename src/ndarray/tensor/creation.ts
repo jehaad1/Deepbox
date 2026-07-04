@@ -1,4 +1,4 @@
-import type { Device, DType, ScalarDType, Shape, TypedArray } from "../../core";
+import type { Device, DType, Shape, TypedArray } from "../../core";
 import {
   DataValidationError,
   DeepboxError,
@@ -7,9 +7,11 @@ import {
   getNumericElement,
   InvalidParameterError,
   isTypedArray,
+  MemoryError,
   shapeToSize,
   validateShape,
 } from "../../core";
+import { __fillNormal, __normalRandom } from "../../random/random";
 
 import { dtypeToTypedArrayCtor, Tensor } from "./Tensor";
 
@@ -28,8 +30,10 @@ import { dtypeToTypedArrayCtor, Tensor } from "./Tensor";
  */
 export type NestedArray = number | boolean | NestedArray[];
 
+/** Recursive type for nested string arrays used in string tensor creation. */
 export type StringNestedArray = string | StringNestedArray[];
 
+/** Options for the {@link tensor} creation function. */
 export type TensorCreateOptions = {
   readonly dtype?: DType;
   readonly device?: Device;
@@ -42,6 +46,52 @@ function ensureNumericDType(dtype: DType, op: string): NumericDType {
     throw new DTypeError(`${op} does not support string dtype`);
   }
   return dtype;
+}
+
+/**
+ * Per-tensor allocation ceiling, in bytes.
+ *
+ * JavaScript engines cap the size of a single `ArrayBuffer` — and therefore any
+ * `TypedArray` backing a tensor — at roughly 2 GiB. Exceeding it throws an
+ * opaque `RangeError: Invalid typed array length` from the engine with no
+ * indication of which shape or dtype was at fault. We compute the requested
+ * byte size up-front and raise a clear {@link MemoryError} instead.
+ *
+ * At this ceiling a single tensor can hold up to ~500M `float32`/`int32` or
+ * ~250M `float64`/`int64` elements.
+ */
+const MAX_TENSOR_BYTES = 0x8000_0000; // 2 GiB (2 ** 31)
+
+/**
+ * Guard against oversized typed-array allocations before they are attempted.
+ *
+ * Runs in O(1): the element count is already computed for allocation, so this
+ * only multiplies by the dtype byte width and compares against the ceiling. It
+ * adds no per-element overhead and does not affect normally-sized tensors.
+ *
+ * @param shape - Requested tensor shape (used only for the error message).
+ * @param size - Total element count (product of `shape`).
+ * @param bytesPerElement - Byte width of the backing dtype (e.g. 4 for float32).
+ *
+ * @throws {MemoryError} If the resulting byte size exceeds {@link MAX_TENSOR_BYTES}.
+ */
+function assertAllocatable(shape: Shape, size: number, bytesPerElement: number): void {
+  const byteSize = size * bytesPerElement;
+  if (byteSize <= MAX_TENSOR_BYTES) {
+    return;
+  }
+
+  const shapeStr = `[${shape.map((d) => d.toLocaleString("en-US")).join(", ")}]`;
+  const wideDtypeHint =
+    bytesPerElement >= 8 ? " use a narrower dtype such as float32 (halves the footprint)," : "";
+  throw new MemoryError(
+    `Cannot allocate tensor of shape ${shapeStr}: ` +
+      `${size.toLocaleString("en-US")} elements × ${bytesPerElement} bytes = ` +
+      `${byteSize.toLocaleString("en-US")} bytes, which exceeds the per-tensor ceiling of ` +
+      `${MAX_TENSOR_BYTES.toLocaleString("en-US")} bytes (~2 GiB, the JavaScript ArrayBuffer limit). ` +
+      `Split the data into smaller chunks,${wideDtypeHint} or process it in batches.`,
+    { requestedBytes: byteSize, availableBytes: MAX_TENSOR_BYTES }
+  );
 }
 
 function inferShapeFromNestedArray(data: unknown): Shape {
@@ -231,7 +281,7 @@ function isTypedArrayCompatibleWithDType(data: TypedArray, dtype: DType): boolea
  *
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
-export function tensor(data: NestedArray, opts?: TensorCreateOptions): Tensor<Shape, ScalarDType>;
+export function tensor(data: NestedArray, opts?: TensorCreateOptions): Tensor;
 export function tensor(
   data: NestedArray | StringNestedArray | TypedArray,
   opts?: TensorCreateOptions
@@ -285,6 +335,7 @@ export function tensor(
 
   const size = shapeToSize(shape);
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable(shape, size, Ctor.BYTES_PER_ELEMENT);
   const typed = new Ctor(size);
 
   // Fast path: flatten directly into TypedArray for non-BigInt dtypes
@@ -348,6 +399,11 @@ export function zeros(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
     return Tensor.zeros(shape, { dtype, device });
   }
   const numericDtype = ensureNumericDType(dtype, "zeros");
+  assertAllocatable(
+    shape,
+    shapeToSize(shape),
+    dtypeToTypedArrayCtor(numericDtype).BYTES_PER_ELEMENT
+  );
   return Tensor.zeros(shape, { dtype: numericDtype, device });
 }
 
@@ -369,6 +425,7 @@ export function ones(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
 
   const numericDtype = ensureNumericDType(dtype, "ones");
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable(shape, size, Ctor.BYTES_PER_ELEMENT);
   const data = new Ctor(size);
   if (data instanceof BigInt64Array) {
     data.fill(1n);
@@ -394,6 +451,7 @@ export function empty(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
   }
   const numericDtype = ensureNumericDType(dtype, "empty");
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable(shape, size, Ctor.BYTES_PER_ELEMENT);
   const data = new Ctor(size);
 
   return Tensor.fromTypedArray({ data, shape, dtype: numericDtype, device });
@@ -478,6 +536,7 @@ export function arange(
 
   const length = Math.max(0, Math.ceil((actualStop - actualStart) / step));
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable([length], length, Ctor.BYTES_PER_ELEMENT);
   const data = new Ctor(length);
 
   if (data instanceof BigInt64Array) {
@@ -559,6 +618,7 @@ export function linspace(
   const step = endpoint ? (stop - start) / (num - 1) : (stop - start) / num;
 
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable([num], num, Ctor.BYTES_PER_ELEMENT);
   const data = new Ctor(num);
 
   if (data instanceof BigInt64Array) {
@@ -840,43 +900,18 @@ export function randn(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
   const size = shapeArr.reduce((a, b) => a * b, 1);
 
   const Ctor = dtypeToTypedArrayCtor(numericDtype);
+  assertAllocatable(shapeArr, size, Ctor.BYTES_PER_ELEMENT);
   const data = new Ctor(size);
 
-  const sampleUnitOpen = (): number => {
-    const u = Math.random();
-    return u > 0 ? u : Number.MIN_VALUE;
-  };
-
-  // Box-Muller transform for generating normal distribution
   if (data instanceof BigInt64Array) {
-    for (let i = 0; i < size; i += 2) {
-      const u1 = sampleUnitOpen();
-      const u2 = Math.random();
-
-      const z0 = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-      const z1 = Math.sqrt(-2 * Math.log(u1)) * Math.sin(2 * Math.PI * u2);
-
-      data[i] = BigInt(Math.trunc(z0));
-      if (i + 1 < size) {
-        data[i + 1] = BigInt(Math.trunc(z1));
-      }
+    for (let i = 0; i < size; i++) {
+      data[i] = BigInt(Math.trunc(__normalRandom()));
     }
+  } else if (data instanceof Float64Array || data instanceof Float32Array) {
+    __fillNormal(data, size);
   } else {
-    for (let i = 0; i < size; i += 2) {
-      // Generate two uniform random numbers between 0 and 1
-      // These will be transformed using Box-Muller algorithm
-      const u1 = sampleUnitOpen();
-      const u2 = Math.random();
-
-      // Box-Muller transform to convert uniform to normal distribution
-      // z0 and z1 are independent standard normal random variables
-      const z0 = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-      const z1 = Math.sqrt(-2 * Math.log(u1)) * Math.sin(2 * Math.PI * u2);
-
-      data[i] = z0;
-      if (i + 1 < size) {
-        data[i + 1] = z1;
-      }
+    for (let i = 0; i < size; i++) {
+      data[i] = __normalRandom();
     }
   }
 

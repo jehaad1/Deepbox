@@ -1,5 +1,20 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import {
+  add,
+  addScalar,
+  div,
+  type GradTensor,
+  mul,
+  mulScalar,
+  sqrt,
+  square,
+  sub,
+  type Tensor,
+} from "../../ndarray";
 import {
   assertBufferSize,
   assertFinite,
@@ -7,6 +22,7 @@ import {
   assertFinitePositive,
   assertHasGradFloat,
   assertInRange,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -21,6 +37,9 @@ type AdaDeltaOptions = {
 type AdaDeltaState = {
   squareAvg: Float64Array;
   accDelta: Float64Array;
+  /** Device state (used when the parameter lives on a kernel device). */
+  squareAvgTensor?: Tensor;
+  accDeltaTensor?: Tensor;
 };
 
 /**
@@ -136,6 +155,37 @@ export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
       assertFiniteNonNegative("weight_decay value", weightDecay);
 
       for (const param of group.params) {
+        // Device path: compose the AdaDelta update from device-dispatched ops.
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let dstate = this.state.get(param);
+          if (!dstate) {
+            dstate = { squareAvg: new Float64Array(0), accDelta: new Float64Array(0) };
+            this.state.set(param, dstate);
+          }
+          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const sqPrev = dstate.squareAvgTensor;
+          // E[g^2](t) = rho * E[g^2](t-1) + (1 - rho) * g^2
+          const sqNew = sqPrev
+            ? add(mulScalar(sqPrev, rho), mulScalar(square(grad), 1 - rho))
+            : mulScalar(square(grad), 1 - rho);
+          dstate.squareAvgTensor = sqNew;
+          const std = sqrt(addScalar(sqNew, eps));
+          // RMS[dx](t-1) = sqrt(E[dx^2](t-1) + eps); first step acc=0 -> sqrt(eps).
+          const accPrev = dstate.accDeltaTensor ?? mulScalar(sqNew, 0);
+          const rms = sqrt(addScalar(accPrev, eps));
+          // delta = (RMS[dx](t-1) / RMS[g](t)) * g
+          const delta = mul(div(rms, std), grad);
+          // E[dx^2](t) = rho * E[dx^2](t-1) + (1 - rho) * delta^2
+          const accNew = dstate.accDeltaTensor
+            ? add(mulScalar(accPrev, rho), mulScalar(square(delta), 1 - rho))
+            : mulScalar(square(delta), 1 - rho);
+          dstate.accDeltaTensor = accNew;
+          replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(delta, lr)));
+          continue;
+        }
+
         const {
           grad: gradData,
           gradOffset: gOff,

@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { tensor } from "../src/ndarray";
-import { abs as absOp } from "../src/ndarray/ops/abs";
 import { relu, sigmoid } from "../src/ndarray/ops/activation";
-import { add, clip, div, floorDiv, mod, pow, reciprocal } from "../src/ndarray/ops/arithmetic";
+import {
+  abs as absOp,
+  add,
+  clip,
+  div,
+  floorDiv,
+  mod,
+  pow,
+  reciprocal,
+} from "../src/ndarray/ops/arithmetic";
 import { allclose, equal, isclose } from "../src/ndarray/ops/comparison";
 import { exp, log, square } from "../src/ndarray/ops/math";
 import { atan2, sin } from "../src/ndarray/ops/trigonometry";

@@ -6,10 +6,12 @@ import {
   forEachIndexOffset,
   getNumberAt,
   normalCdf,
+  normalPpf,
   rankData,
   studentTCdf,
 } from "./_internal";
 
+/** Result of a statistical hypothesis test. */
 export type TestResult = {
   statistic: number;
   pvalue: number;
@@ -102,18 +104,10 @@ function shapiroWilk(x: Float64Array): TestResult {
     const an25 = an + 0.25;
     let summ2 = 0;
     for (let i = 1; i <= nn2; i++) {
+      // Expected values of normal order statistics (Blom's approximation):
+      // m_i = Φ⁻¹((i − 0.375) / (n + 0.25)).
       const p = (i - 0.375) / an25;
-      // Inverse normal CDF via approximation using studentTCdf? We use a rational approximation:
-      // For this package, approximate quantile using inverse error function via binary search on normalCdf.
-      let lo = -10;
-      let hi = 10;
-      for (let it = 0; it < 80; it++) {
-        const mid = (lo + hi) / 2;
-        const cdf = normalCdf(mid);
-        if (cdf < p) lo = mid;
-        else hi = mid;
-      }
-      const z = (lo + hi) / 2;
+      const z = normalPpf(p);
       a[i] = z;
       summ2 += z * z;
     }
@@ -199,12 +193,14 @@ function shapiroWilk(x: Float64Array): TestResult {
     m = poly(c3, an);
     s = Math.exp(poly(c4, an));
     const z = (yy - m) / s;
-    return { statistic: w, pvalue: normalCdf(z) };
+    // Shapiro-Wilk p-value is the upper tail: P(W <= w) = 1 - Φ(z).
+    return { statistic: w, pvalue: 1 - normalCdf(z) };
   }
   m = poly(c5, lnN);
   s = Math.exp(poly(c6, lnN));
   const z = (y - m) / s;
-  return { statistic: w, pvalue: normalCdf(z) };
+  // Shapiro-Wilk p-value is the upper tail: P(W <= w) = 1 - Φ(z).
+  return { statistic: w, pvalue: 1 - normalCdf(z) };
 }
 
 /**
@@ -250,6 +246,7 @@ export function ttest_1samp(a: Tensor, popmean: number): TestResult {
  * Tests whether means of two independent samples are equal.
  *
  * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
+ * @deprecated Prefer {@link ttestInd}.
  */
 export function ttest_ind(a: Tensor, b: Tensor, equalVar = true): TestResult {
   const xa = toDenseSortedArray1D(a);
@@ -319,6 +316,7 @@ export function ttest_ind(a: Tensor, b: Tensor, equalVar = true): TestResult {
  * Tests whether means of two related samples are equal.
  *
  * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
+ * @deprecated Prefer {@link ttestRel}.
  */
 export function ttest_rel(a: Tensor, b: Tensor): TestResult {
   if (a.size !== b.size) {
@@ -699,10 +697,11 @@ export function mannwhitneyu(x: Tensor, y: Tensor): TestResult {
   }
 
   const stdU = Math.sqrt(varU);
-  // Continuity correction for two-sided normal approximation.
-  // For small samples, omit correction to better match exact distribution behavior.
-  const useContinuity = nx + ny > 20;
-  const continuity = useContinuity ? (U < meanU ? 0.5 : U > meanU ? -0.5 : 0) : 0;
+  // Continuity correction for the two-sided normal approximation, applied for
+  // all sample sizes (scipy's asymptotic method always applies it). Omitting
+  // it for small n made the test anti-conservative rather than closer to the
+  // exact distribution.
+  const continuity = U < meanU ? 0.5 : U > meanU ? -0.5 : 0;
   const z = (U - meanU + continuity) / stdU;
   const pvalue = 2 * (1 - normalCdf(Math.abs(z)));
 
@@ -1194,6 +1193,7 @@ export function bartlett(...samples: Tensor[]): TestResult {
  * One-way ANOVA.
  *
  * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
+ * @deprecated Prefer {@link fOneway}.
  */
 export function f_oneway(...samples: Tensor[]): TestResult {
   const k = samples.length;
@@ -1284,3 +1284,832 @@ export function f_oneway(...samples: Tensor[]): TestResult {
 
   return { statistic: F, pvalue };
 }
+
+/**
+ * Result of two-way ANOVA test.
+ */
+export type TwoWayAnovaResult = {
+  factorA: TestResult;
+  factorB: TestResult;
+  interaction: TestResult;
+};
+
+/**
+ * Two-way ANOVA for balanced designs.
+ *
+ * Tests main effects of two factors and their interaction.
+ * Expects data organized as a 3D array: data[a][b][replication].
+ *
+ * @param data - 3D array indexed by [factorA level][factorB level][replications]
+ * @returns Object with factorA, factorB, and interaction test results
+ *
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Hypothesis Tests}
+ */
+export function f_twoway(data: number[][][]): TwoWayAnovaResult {
+  const a = data.length;
+  if (a < 2) {
+    throw new InvalidParameterError(
+      "f_twoway() requires at least 2 levels for factor A",
+      "data",
+      a
+    );
+  }
+
+  const firstRow = data[0];
+  if (!firstRow) {
+    throw new InvalidParameterError("f_twoway() data[0] is undefined", "data");
+  }
+  const b = firstRow.length;
+  if (b < 2) {
+    throw new InvalidParameterError(
+      "f_twoway() requires at least 2 levels for factor B",
+      "data",
+      b
+    );
+  }
+
+  const firstCell = firstRow[0];
+  if (!firstCell) {
+    throw new InvalidParameterError("f_twoway() data[0][0] is undefined", "data");
+  }
+  const n = firstCell.length;
+  if (n < 1) {
+    throw new InvalidParameterError(
+      "f_twoway() requires at least 1 replication per cell",
+      "data",
+      n
+    );
+  }
+
+  // Validate balanced design and compute cell means
+  const cellMeans: number[][] = [];
+  let grandSum = 0;
+  const N = a * b * n;
+
+  for (let i = 0; i < a; i++) {
+    const row = data[i];
+    if (!row || row.length !== b) {
+      throw new InvalidParameterError(
+        `f_twoway() factor B must have ${b} levels in all rows`,
+        "data"
+      );
+    }
+    cellMeans.push([]);
+    for (let j = 0; j < b; j++) {
+      const cell = row[j];
+      if (!cell || cell.length !== n) {
+        throw new InvalidParameterError(`f_twoway() all cells must have ${n} replications`, "data");
+      }
+      let cellSum = 0;
+      for (let k = 0; k < n; k++) {
+        const v = cell[k];
+        if (v === undefined || !Number.isFinite(v)) {
+          throw new InvalidParameterError("f_twoway() data must be finite numbers", "data");
+        }
+        cellSum += v;
+        grandSum += v;
+      }
+      cellMeans[i]!.push(cellSum / n);
+    }
+  }
+
+  const grandMean = grandSum / N;
+
+  // Row means (factor A)
+  const rowMeans: number[] = [];
+  for (let i = 0; i < a; i++) {
+    let sum = 0;
+    for (let j = 0; j < b; j++) {
+      sum += cellMeans[i]![j]!;
+    }
+    rowMeans.push(sum / b);
+  }
+
+  // Column means (factor B)
+  const colMeans: number[] = [];
+  for (let j = 0; j < b; j++) {
+    let sum = 0;
+    for (let i = 0; i < a; i++) {
+      sum += cellMeans[i]![j]!;
+    }
+    colMeans.push(sum / a);
+  }
+
+  // Sum of squares
+  let SSA = 0;
+  for (let i = 0; i < a; i++) {
+    SSA += b * n * (rowMeans[i]! - grandMean) ** 2;
+  }
+
+  let SSB = 0;
+  for (let j = 0; j < b; j++) {
+    SSB += a * n * (colMeans[j]! - grandMean) ** 2;
+  }
+
+  let SSAB = 0;
+  for (let i = 0; i < a; i++) {
+    for (let j = 0; j < b; j++) {
+      SSAB += n * (cellMeans[i]![j]! - rowMeans[i]! - colMeans[j]! + grandMean) ** 2;
+    }
+  }
+
+  let SSE = 0;
+  for (let i = 0; i < a; i++) {
+    for (let j = 0; j < b; j++) {
+      const cell = data[i]![j]!;
+      const cm = cellMeans[i]![j]!;
+      for (let k = 0; k < n; k++) {
+        SSE += (cell[k]! - cm) ** 2;
+      }
+    }
+  }
+
+  const dfA = a - 1;
+  const dfB_val = b - 1;
+  const dfAB = dfA * dfB_val;
+  const dfE = a * b * (n - 1);
+
+  if (dfE <= 0) {
+    throw new InvalidParameterError(
+      "f_twoway() requires more than 1 replication per cell for error estimation",
+      "data",
+      n
+    );
+  }
+
+  const MSA = SSA / dfA;
+  const MSB_val = SSB / dfB_val;
+  const MSAB = SSAB / dfAB;
+  const MSE = SSE / dfE;
+
+  const computeF = (ms: number, df: number): TestResult => {
+    if (MSE === 0) {
+      const stat = ms === 0 ? NaN : Infinity;
+      return { statistic: stat, pvalue: ms === 0 ? NaN : 0 };
+    }
+    const stat = ms / MSE;
+    const pval = 1 - fCdf(stat, df, dfE);
+    return { statistic: stat, pvalue: pval };
+  };
+
+  return {
+    factorA: computeF(MSA, dfA),
+    factorB: computeF(MSB_val, dfB_val),
+    interaction: computeF(MSAB, dfAB),
+  };
+}
+
+// ─── Contingency table analysis ─────────────────────────────────────────────
+
+/** Result of a contingency table analysis (chi-square test). */
+export type ContingencyResult = {
+  statistic: number;
+  pvalue: number;
+  dof: number;
+  expected: number[][];
+};
+
+/**
+ * Chi-squared test of independence for a contingency table.
+ *
+ * Tests whether two categorical variables are independent
+ * given their observed frequency table.
+ *
+ * @param observed - 2D array of observed frequencies (rows × cols)
+ * @returns Object with chi2 statistic, p-value, degrees of freedom, and expected frequencies
+ *
+ * @example
+ * ```ts
+ * import { chi2_contingency } from 'deepbox/stats';
+ * const result = chi2_contingency([[10, 20, 30], [6, 9, 17]]);
+ * console.log(result.pvalue);
+ * ```
+ * @deprecated Prefer {@link chi2Contingency}.
+ */
+export function chi2_contingency(observed: readonly (readonly number[])[]): ContingencyResult {
+  const nRows = observed.length;
+  if (nRows < 2) {
+    throw new InvalidParameterError(
+      "Contingency table must have at least 2 rows",
+      "observed",
+      nRows
+    );
+  }
+  const nCols = observed[0]?.length ?? 0;
+  if (nCols < 2) {
+    throw new InvalidParameterError(
+      "Contingency table must have at least 2 columns",
+      "observed",
+      nCols
+    );
+  }
+
+  // Validate all rows have same length
+  for (let i = 1; i < nRows; i++) {
+    if ((observed[i]?.length ?? 0) !== nCols) {
+      throw new InvalidParameterError(
+        "All rows must have the same number of columns",
+        "observed",
+        observed[i]?.length ?? 0
+      );
+    }
+  }
+
+  // Compute row and column totals
+  const rowTotals = new Float64Array(nRows);
+  const colTotals = new Float64Array(nCols);
+  let grandTotal = 0;
+
+  for (let i = 0; i < nRows; i++) {
+    for (let j = 0; j < nCols; j++) {
+      const val = observed[i]?.[j] ?? 0;
+      if (val < 0) {
+        throw new InvalidParameterError(
+          "Observed frequencies must be non-negative",
+          "observed",
+          val
+        );
+      }
+      rowTotals[i] = (rowTotals[i] ?? 0) + val;
+      colTotals[j] = (colTotals[j] ?? 0) + val;
+      grandTotal += val;
+    }
+  }
+
+  if (grandTotal === 0) {
+    throw new InvalidParameterError(
+      "Contingency table total must be positive",
+      "observed",
+      grandTotal
+    );
+  }
+
+  // Compute expected frequencies and chi-squared statistic
+  const expected: number[][] = [];
+  let chi2Stat = 0;
+
+  for (let i = 0; i < nRows; i++) {
+    const row: number[] = [];
+    for (let j = 0; j < nCols; j++) {
+      const exp = ((rowTotals[i] ?? 0) * (colTotals[j] ?? 0)) / grandTotal;
+      row.push(exp);
+      const obs = observed[i]?.[j] ?? 0;
+      if (exp > 0) {
+        chi2Stat += (obs - exp) ** 2 / exp;
+      }
+    }
+    expected.push(row);
+  }
+
+  const dof = (nRows - 1) * (nCols - 1);
+  const pvalue = 1 - chiSquareCdf(chi2Stat, dof);
+
+  return { statistic: chi2Stat, pvalue, dof, expected };
+}
+
+/**
+ * Fisher's exact test for a 2×2 contingency table.
+ *
+ * Computes the exact p-value for the association between two binary variables.
+ * Uses the hypergeometric distribution.
+ *
+ * @param table - 2×2 array of observed frequencies [[a, b], [c, d]]
+ * @param alternative - 'two-sided' (default), 'less', or 'greater'
+ * @returns Object with odds ratio and p-value
+ *
+ * @example
+ * ```ts
+ * import { fisher_exact } from 'deepbox/stats';
+ * const result = fisher_exact([[1, 9], [11, 3]]);
+ * console.log(result.pvalue);
+ * ```
+ * @deprecated Prefer {@link fisherExact}.
+ */
+export function fisher_exact(
+  table: readonly [readonly [number, number], readonly [number, number]],
+  alternative: "two-sided" | "less" | "greater" = "two-sided"
+): { oddsRatio: number; pvalue: number } {
+  const a = table[0][0];
+  const b = table[0][1];
+  const c = table[1][0];
+  const d = table[1][1];
+
+  if (a < 0 || b < 0 || c < 0 || d < 0) {
+    throw new InvalidParameterError("All values must be non-negative", "table", 0);
+  }
+
+  const n = a + b + c + d;
+  const r1 = a + b; // row 1 total
+  const r2 = c + d; // row 2 total
+  const c1 = a + c; // col 1 total
+
+  // Odds ratio
+  const oddsRatio = b === 0 || c === 0 ? (a * d === 0 ? 0 : Infinity) : (a * d) / (b * c);
+
+  // Log of hypergeometric PMF: P(X = k) = C(r1,k) * C(r2,c1-k) / C(n,c1)
+  const logHyperPmf = (k: number): number => {
+    if (k < 0 || k > r1 || k > c1 || c1 - k > r2) return -Infinity;
+    return logChoose(r1, k) + logChoose(r2, c1 - k) - logChoose(n, c1);
+  };
+
+  const pObs = logHyperPmf(a);
+  const kMin = Math.max(0, c1 - r2);
+  const kMax = Math.min(r1, c1);
+
+  let pvalue = 0;
+  if (alternative === "less") {
+    for (let k = kMin; k <= a; k++) {
+      pvalue += Math.exp(logHyperPmf(k));
+    }
+  } else if (alternative === "greater") {
+    for (let k = a; k <= kMax; k++) {
+      pvalue += Math.exp(logHyperPmf(k));
+    }
+  } else {
+    // two-sided: sum probabilities <= P(X = a)
+    for (let k = kMin; k <= kMax; k++) {
+      const lp = logHyperPmf(k);
+      if (lp <= pObs + 1e-10) {
+        pvalue += Math.exp(lp);
+      }
+    }
+  }
+
+  return { oddsRatio, pvalue: Math.min(1, pvalue) };
+}
+
+function logChoose(n: number, k: number): number {
+  if (k < 0 || k > n) return -Infinity;
+  if (k === 0 || k === n) return 0;
+  // Use log-gamma: log(C(n,k)) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1)
+  return logFactorial(n) - logFactorial(k) - logFactorial(n - k);
+}
+
+function logFactorial(n: number): number {
+  if (n <= 1) return 0;
+  let sum = 0;
+  for (let i = 2; i <= n; i++) {
+    sum += Math.log(i);
+  }
+  return sum;
+}
+
+// ─── Runs test ──────────────────────────────────────────────────────────────
+
+/**
+ * Wald-Wolfowitz runs test for randomness.
+ *
+ * Tests whether a sequence of binary (above/below median) values
+ * is random by counting the number of "runs" (consecutive sequences
+ * of the same type).
+ *
+ * @param x - Input tensor of numeric values
+ * @returns TestResult with z-statistic and p-value
+ *
+ * @example
+ * ```ts
+ * import { runs_test } from 'deepbox/stats';
+ * import { tensor } from 'deepbox/ndarray';
+ * const result = runs_test(tensor([1, 2, 1, 2, 1, 2, 1, 2]));
+ * ```
+ */
+export function runs_test(x: Tensor): TestResult {
+  const data = toDenseArray1D(x);
+  const n = data.length;
+  if (n < 2) {
+    throw new InvalidParameterError("runs_test requires at least 2 observations", "x.size", n);
+  }
+
+  // Compute median
+  const sorted = new Float64Array(data).sort();
+  const med =
+    n % 2 === 0
+      ? ((sorted[n / 2 - 1] ?? 0) + (sorted[n / 2] ?? 0)) / 2
+      : (sorted[Math.floor(n / 2)] ?? 0);
+
+  // Count runs
+  let nPlus = 0;
+  let nMinus = 0;
+  let runs = 1;
+  let prev = (data[0] ?? 0) >= med;
+  if (prev) nPlus++;
+  else nMinus++;
+
+  for (let i = 1; i < n; i++) {
+    const cur = (data[i] ?? 0) >= med;
+    if (cur) nPlus++;
+    else nMinus++;
+    if (cur !== prev) {
+      runs++;
+      prev = cur;
+    }
+  }
+
+  if (nPlus === 0 || nMinus === 0) {
+    // All values on one side of the median
+    return { statistic: 0, pvalue: 1 };
+  }
+
+  // Expected runs and variance under H0
+  const expectedRuns = 1 + (2 * nPlus * nMinus) / n;
+  const varRuns = (2 * nPlus * nMinus * (2 * nPlus * nMinus - n)) / (n * n * (n - 1));
+
+  if (varRuns <= 0) {
+    return { statistic: 0, pvalue: 1 };
+  }
+
+  const z = (runs - expectedRuns) / Math.sqrt(varRuns);
+  const pvalue = 2 * (1 - normalCdf(Math.abs(z)));
+
+  return { statistic: z, pvalue };
+}
+
+// ─── Lilliefors test ────────────────────────────────────────────────────────
+
+/**
+ * Lilliefors test for normality.
+ *
+ * A variant of the Kolmogorov-Smirnov test where the mean and variance
+ * are estimated from the data (rather than specified). Uses the KS
+ * statistic with critical values adjusted for estimated parameters.
+ *
+ * @param x - Input tensor of numeric values
+ * @returns TestResult with KS statistic and approximate p-value
+ *
+ * @example
+ * ```ts
+ * import { lilliefors } from 'deepbox/stats';
+ * import { tensor } from 'deepbox/ndarray';
+ * const result = lilliefors(tensor([1.2, 2.3, 1.8, 2.1, 1.5]));
+ * ```
+ */
+export function lilliefors(x: Tensor): TestResult {
+  const data = toDenseSortedArray1D(x);
+  const n = data.length;
+  if (n < 4) {
+    throw new InvalidParameterError(
+      "lilliefors test requires at least 4 observations",
+      "x.size",
+      n
+    );
+  }
+
+  // Estimate mean and std from data
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += data[i] ?? 0;
+  const mean = sum / n;
+
+  let ss = 0;
+  for (let i = 0; i < n; i++) {
+    const d = (data[i] ?? 0) - mean;
+    ss += d * d;
+  }
+  const std = Math.sqrt(ss / (n - 1));
+
+  if (std < 1e-15) {
+    // All values identical — cannot test
+    return { statistic: 0, pvalue: 1 };
+  }
+
+  // Compute KS statistic against N(mean, std)
+  let dMax = 0;
+  for (let i = 0; i < n; i++) {
+    const z = ((data[i] ?? 0) - mean) / std;
+    const empiricalCdf = (i + 1) / n;
+    const empiricalCdfPrev = i / n;
+    const theoreticalCdf = normalCdf(z);
+
+    const d1 = Math.abs(empiricalCdf - theoreticalCdf);
+    const d2 = Math.abs(empiricalCdfPrev - theoreticalCdf);
+    dMax = Math.max(dMax, d1, d2);
+  }
+
+  // Approximate p-value using Dallal-Wilkinson formula (1986)
+  // This is a well-known approximation for the Lilliefors test
+  const sqrtN = Math.sqrt(n);
+  const dn = dMax * (sqrtN - 0.01 + 0.85 / sqrtN);
+  let pvalue: number;
+  if (dn < 0.302) {
+    pvalue = 1;
+  } else if (dn > 1.8) {
+    pvalue = 0;
+  } else {
+    // Approximation formula
+    pvalue = Math.exp(
+      -7.01256 * dn * dn * (dn + 2.78019) +
+        2.99587 * dn * (dn + 2.78019) -
+        0.122119 +
+        0.974598 / sqrtN +
+        1.67997 / n
+    );
+    pvalue = Math.max(0, Math.min(1, pvalue));
+  }
+
+  return { statistic: dMax, pvalue };
+}
+
+// ─── Fligner-Killeen test ───────────────────────────────────────────────────
+
+/**
+ * Fligner-Killeen test for equality of variances.
+ *
+ * A non-parametric test that is robust against departures from normality.
+ * Uses the ranks of absolute deviations from group medians.
+ *
+ * @param groups - Array of tensors, one per group (at least 2 groups)
+ * @returns TestResult with chi-squared statistic and p-value
+ *
+ * @example
+ * ```ts
+ * import { fligner } from 'deepbox/stats';
+ * import { tensor } from 'deepbox/ndarray';
+ * const result = fligner([tensor([1, 2, 3]), tensor([4, 5, 6, 7])]);
+ * ```
+ */
+export function fligner(groups: readonly Tensor[]): TestResult {
+  if (groups.length < 2) {
+    throw new InvalidParameterError(
+      "fligner test requires at least 2 groups",
+      "groups.length",
+      groups.length
+    );
+  }
+
+  // Convert groups to arrays and compute group medians
+  const groupData: Float64Array[] = [];
+  let N = 0;
+  for (const g of groups) {
+    const arr = toDenseSortedArray1D(g);
+    if (arr.length < 2) {
+      throw new InvalidParameterError(
+        "Each group must have at least 2 observations",
+        "group.size",
+        arr.length
+      );
+    }
+    groupData.push(arr);
+    N += arr.length;
+  }
+
+  // Compute absolute deviations from group medians
+  const allDeviations: number[] = [];
+  const groupSizes: number[] = [];
+  const groupLabels: number[] = []; // which group each deviation belongs to
+
+  for (let g = 0; g < groupData.length; g++) {
+    const arr = groupData[g];
+    if (!arr) continue;
+    const n = arr.length;
+    groupSizes.push(n);
+
+    // Median of sorted array
+    const med =
+      n % 2 === 0 ? ((arr[n / 2 - 1] ?? 0) + (arr[n / 2] ?? 0)) / 2 : (arr[Math.floor(n / 2)] ?? 0);
+
+    for (let i = 0; i < n; i++) {
+      allDeviations.push(Math.abs((arr[i] ?? 0) - med));
+      groupLabels.push(g);
+    }
+  }
+
+  // Rank the absolute deviations
+  const indices = Array.from({ length: N }, (_, i) => i);
+  indices.sort((a, b) => (allDeviations[a] ?? 0) - (allDeviations[b] ?? 0));
+
+  const ranks = new Float64Array(N);
+  let i = 0;
+  while (i < N) {
+    let j = i;
+    while (
+      j < N - 1 &&
+      (allDeviations[indices[j + 1] ?? 0] ?? 0) === (allDeviations[indices[j] ?? 0] ?? 0)
+    ) {
+      j++;
+    }
+    const avgRank = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) {
+      ranks[indices[k] ?? 0] = avgRank;
+    }
+    i = j + 1;
+  }
+
+  // Transform ranks using normal scores. Fligner-Killeen uses the half-normal
+  // score a_i = Φ⁻¹(½ + rank_i / (2·(N+1))), reflecting that the absolute
+  // deviations are folded about zero.
+  const scores = new Float64Array(N);
+  for (let idx = 0; idx < N; idx++) {
+    const p = 0.5 + (ranks[idx] ?? 0) / (2 * (N + 1));
+    scores[idx] = normalPpf(p);
+  }
+
+  // Compute group means of scores
+  const groupScoreSums: number[] = new Array(groupData.length).fill(0);
+  for (let idx = 0; idx < N; idx++) {
+    const g = groupLabels[idx] ?? 0;
+    groupScoreSums[g] = (groupScoreSums[g] ?? 0) + (scores[idx] ?? 0);
+  }
+
+  let grandMean = 0;
+  for (let idx = 0; idx < N; idx++) {
+    grandMean += scores[idx] ?? 0;
+  }
+  grandMean /= N;
+
+  // Fligner-Killeen statistic (chi-squared)
+  let numerator = 0;
+  for (let g = 0; g < groupData.length; g++) {
+    const ng = groupSizes[g] ?? 0;
+    const gMean = (groupScoreSums[g] ?? 0) / ng;
+    numerator += ng * (gMean - grandMean) ** 2;
+  }
+
+  let denominator = 0;
+  for (let idx = 0; idx < N; idx++) {
+    denominator += ((scores[idx] ?? 0) - grandMean) ** 2;
+  }
+  denominator /= N - 1;
+
+  if (denominator < 1e-15) {
+    return { statistic: 0, pvalue: 1 };
+  }
+
+  const stat = numerator / denominator;
+  const dof = groupData.length - 1;
+  const pvalue = 1 - chiSquareCdf(stat, dof);
+
+  return { statistic: stat, pvalue };
+}
+
+/**
+ * Two-sample Kolmogorov-Smirnov test.
+ *
+ * Tests whether two samples are drawn from the same distribution.
+ * The test statistic is the maximum absolute difference between the
+ * empirical CDFs of the two samples.
+ *
+ * The p-value uses the asymptotic Kolmogorov distribution.
+ *
+ * @param x - First sample (1-D tensor)
+ * @param y - Second sample (1-D tensor)
+ * @returns Object with `statistic` (D) and `pvalue`
+ *
+ * @example
+ * ```ts
+ * const result = ks_2samp(tensor([1, 2, 3]), tensor([1.5, 2.5, 3.5]));
+ * console.log(result.statistic, result.pvalue);
+ * ```
+ * @deprecated Prefer {@link ks2samp}.
+ */
+export function ks_2samp(x: Tensor, y: Tensor): TestResult {
+  const xs = toDenseSortedArray1D(x);
+  const ys = toDenseSortedArray1D(y);
+  const nx = xs.length;
+  const ny = ys.length;
+  if (nx === 0 || ny === 0) {
+    throw new InvalidParameterError("ks_2samp() requires non-empty samples", "size", 0);
+  }
+
+  // Compute max |F1(t) - F2(t)| by merging sorted arrays
+  let d = 0;
+  let i = 0;
+  let j = 0;
+  while (i < nx && j < ny) {
+    const xi = xs[i] ?? 0;
+    const yj = ys[j] ?? 0;
+    if (xi <= yj) {
+      i++;
+    }
+    if (yj <= xi) {
+      j++;
+    }
+    const diff = Math.abs(i / nx - j / ny);
+    if (diff > d) d = diff;
+  }
+
+  // Asymptotic p-value using Kolmogorov distribution
+  const en = Math.sqrt((nx * ny) / (nx + ny));
+  const pvalue = kolmogorovPvalue(d, en);
+
+  return { statistic: d, pvalue };
+}
+
+/** Kolmogorov distribution survival function (asymptotic approximation). */
+function kolmogorovPvalue(d: number, sqrtN: number): number {
+  const lambda = (sqrtN + 0.12 + 0.11 / sqrtN) * d;
+  if (lambda < 1e-15) return 1;
+  // Series expansion: P(D > d) = 2 * sum_{k=1}^{inf} (-1)^(k-1) * exp(-2*k^2*lambda^2)
+  let sum = 0;
+  for (let k = 1; k <= 100; k++) {
+    const term = Math.exp(-2 * k * k * lambda * lambda);
+    if (k % 2 === 1) sum += term;
+    else sum -= term;
+    if (term < 1e-15) break;
+  }
+  return Math.max(0, Math.min(1, 2 * sum));
+}
+
+/**
+ * Mood's median test.
+ *
+ * Tests whether two or more samples have the same median.
+ * Computes a chi-squared statistic from the 2×k contingency table of
+ * counts above/below the grand median.
+ *
+ * @param samples - Two or more 1-D tensors
+ * @returns Object with `statistic` (chi-squared) and `pvalue`
+ *
+ * @example
+ * ```ts
+ * const result = median_test(tensor([1, 2, 3]), tensor([4, 5, 6]));
+ * console.log(result.statistic, result.pvalue);
+ * ```
+ */
+export function median_test(...samples: Tensor[]): TestResult {
+  const k = samples.length;
+  if (k < 2) {
+    throw new InvalidParameterError("median_test() requires at least 2 groups", "groups", k);
+  }
+
+  // Collect all values to find grand median
+  const groups: number[][] = [];
+  const allVals: number[] = [];
+  for (const s of samples) {
+    const vals: number[] = [];
+    forEachIndexOffset(s, (offset) => {
+      const v = getNumberAt(s, offset);
+      vals.push(v);
+      allVals.push(v);
+    });
+    if (vals.length === 0) {
+      throw new InvalidParameterError("median_test() requires non-empty samples", "size", 0);
+    }
+    groups.push(vals);
+  }
+
+  // Grand median
+  allVals.sort((a, b) => a - b);
+  const n = allVals.length;
+  const grandMedian =
+    n % 2 === 1
+      ? (allVals[Math.floor(n / 2)] ?? 0)
+      : ((allVals[n / 2 - 1] ?? 0) + (allVals[n / 2] ?? 0)) / 2;
+
+  // Build 2×k contingency table: [above, at-or-below] for each group
+  const above: number[] = new Array(k).fill(0);
+  const below: number[] = new Array(k).fill(0);
+  let totalAbove = 0;
+  let totalBelow = 0;
+
+  for (let g = 0; g < k; g++) {
+    const vals = groups[g] as number[];
+    for (const v of vals) {
+      if (v > grandMedian) {
+        above[g] = (above[g] ?? 0) + 1;
+        totalAbove++;
+      } else {
+        below[g] = (below[g] ?? 0) + 1;
+        totalBelow++;
+      }
+    }
+  }
+
+  // Chi-squared test on 2×k table
+  let chi2Stat = 0;
+  for (let g = 0; g < k; g++) {
+    const ng = (above[g] ?? 0) + (below[g] ?? 0);
+    const expAbove = (ng * totalAbove) / n;
+    const expBelow = (ng * totalBelow) / n;
+    if (expAbove > 0) {
+      chi2Stat += ((above[g] ?? 0) - expAbove) ** 2 / expAbove;
+    }
+    if (expBelow > 0) {
+      chi2Stat += ((below[g] ?? 0) - expBelow) ** 2 / expBelow;
+    }
+  }
+
+  const dof = k - 1;
+  const pvalue = 1 - chiSquareCdf(chi2Stat, dof);
+
+  return { statistic: chi2Stat, pvalue };
+}
+
+// ---------------------------------------------------------------------------
+// Canonical camelCase aliases
+//
+// The snake_case spellings above mirror SciPy and remain exported (marked
+// `@deprecated`) for backward compatibility. These camelCase aliases are the
+// recommended names on Deepbox's public surface and refer to the same function.
+// ---------------------------------------------------------------------------
+
+/** Canonical camelCase alias of {@link ttest_ind}. */
+export const ttestInd = ttest_ind;
+/** Canonical camelCase alias of {@link ttest_rel}. */
+export const ttestRel = ttest_rel;
+/** Canonical camelCase alias of {@link f_oneway}. */
+export const fOneway = f_oneway;
+/** Canonical camelCase alias of {@link chi2_contingency}. */
+export const chi2Contingency = chi2_contingency;
+/** Canonical camelCase alias of {@link ks_2samp}. */
+export const ks2samp = ks_2samp;
+/** Canonical camelCase alias of {@link fisher_exact}. */
+export const fisherExact = fisher_exact;

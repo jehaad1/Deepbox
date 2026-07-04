@@ -2151,3 +2151,204 @@ export class MultiLabelBinarizer {
     return result;
   }
 }
+
+/**
+ * Target-based encoding for categorical features.
+ *
+ * Replaces each category with the mean of the target variable for that category.
+ * Uses smoothing to regularize estimates for rare categories toward the global mean.
+ *
+ * @example
+ * ```ts
+ * import { TargetEncoder } from 'deepbox/preprocess';
+ *
+ * const enc = new TargetEncoder({ smooth: 10 });
+ * enc.fit(tensor([[0],[1],[0],[1],[2]]), tensor([10, 20, 12, 18, 15]));
+ * const encoded = enc.transform(tensor([[0],[1],[2]]));
+ * ```
+ *
+ * @category Encoders
+ */
+export class TargetEncoder {
+  private _smooth: number;
+  private _encodings: Map<number, Map<number, number>> = new Map();
+  private _globalMean = 0;
+  private _nFeatures = 0;
+  private _fitted = false;
+
+  constructor(options: { smooth?: number } = {}) {
+    this._smooth = options.smooth ?? 5;
+  }
+
+  get isFitted(): boolean {
+    return this._fitted;
+  }
+
+  /**
+   * Fit the encoder to training data.
+   *
+   * @param X - Feature matrix (2D Tensor of category indices)
+   * @param y - Target values (1D Tensor)
+   */
+  fit(X: Tensor, y: Tensor): this {
+    const xShape = X.shape;
+    const yShape = y.shape;
+
+    if (xShape.length !== 2) {
+      throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
+    }
+    if (yShape.length !== 1) {
+      throw new ShapeError(`y must be 1D, got ${yShape.length}D`);
+    }
+    const [nSamples, nFeatures] = xShape as [number, number];
+    if (nSamples !== yShape[0]) {
+      throw new ShapeError(`X and y must have same number of samples`);
+    }
+
+    this._nFeatures = nFeatures;
+
+    const xData = getNumericData(X);
+    const yData = getNumericData(y);
+    const [xStride0, xStride1] = getStrides2D(X);
+    const yStride = getStride1D(y);
+
+    // Compute global mean
+    let globalSum = 0;
+    for (let i = 0; i < nSamples; i++) {
+      globalSum += Number(yData[y.offset + i * yStride] ?? 0);
+    }
+    this._globalMean = globalSum / nSamples;
+
+    this._encodings.clear();
+
+    for (let f = 0; f < nFeatures; f++) {
+      const catSums = new Map<number, number>();
+      const catCounts = new Map<number, number>();
+
+      for (let i = 0; i < nSamples; i++) {
+        const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
+        const target = Number(yData[y.offset + i * yStride] ?? 0);
+        catSums.set(cat, (catSums.get(cat) ?? 0) + target);
+        catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+      }
+
+      const featureMap = new Map<number, number>();
+      for (const [cat, sum] of catSums) {
+        const count = catCounts.get(cat) ?? 0;
+        // Smoothed target encoding: (count * catMean + smooth * globalMean) / (count + smooth)
+        const catMean = sum / count;
+        const smoothed =
+          (count * catMean + this._smooth * this._globalMean) / (count + this._smooth);
+        featureMap.set(cat, smoothed);
+      }
+      this._encodings.set(f, featureMap);
+    }
+
+    this._fitted = true;
+    return this;
+  }
+
+  /**
+   * Transform categorical features to target-encoded values.
+   *
+   * @param X - Feature matrix (2D Tensor of category indices)
+   * @returns Encoded 2D Tensor
+   */
+  transform(X: Tensor): Tensor {
+    if (!this._fitted) {
+      throw new NotFittedError("TargetEncoder is not fitted yet");
+    }
+
+    const xShape = X.shape;
+    if (xShape.length !== 2) {
+      throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
+    }
+    const [nSamples, nFeatures] = xShape as [number, number];
+    if (nFeatures !== this._nFeatures) {
+      throw new ShapeError(`Expected ${this._nFeatures} features, got ${nFeatures}`);
+    }
+
+    const xData = getNumericData(X);
+    const [xStride0, xStride1] = getStrides2D(X);
+    const resultArr: number[][] = [];
+
+    for (let i = 0; i < nSamples; i++) {
+      const row: number[] = [];
+      for (let f = 0; f < nFeatures; f++) {
+        const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
+        const featureMap = this._encodings.get(f);
+        row.push(featureMap?.get(cat) ?? this._globalMean);
+      }
+      resultArr.push(row);
+    }
+
+    return tensor(resultArr);
+  }
+
+  /**
+   * Fit and transform in one step using internal cross-fitting (scikit-learn's
+   * TargetEncoder.fit_transform behavior): each row's encoding is computed from
+   * the OTHER folds, so a row never sees its own target. A plain
+   * fit(X,y)+transform(X) would leak the target and give optimistically biased
+   * cross-validation scores. The encoder is also fit on the full data so later
+   * `transform` calls use the complete statistics.
+   */
+  fitTransform(X: Tensor, y: Tensor): Tensor {
+    const xShape = X.shape;
+    const yShape = y.shape;
+    if (xShape.length !== 2) throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
+    if (yShape.length !== 1) throw new ShapeError(`y must be 1D, got ${yShape.length}D`);
+    const [nSamples, nFeatures] = xShape as [number, number];
+    if (nSamples !== yShape[0]) throw new ShapeError("X and y must have same number of samples");
+
+    const xData = getNumericData(X);
+    const yData = getNumericData(y);
+    const [xStride0, xStride1] = getStrides2D(X);
+    const yStride = getStride1D(y);
+
+    const nFolds = Math.min(5, nSamples);
+    // Deterministic fold assignment (contiguous is fine; sklearn shuffles, but
+    // determinism matters more than shuffle here and avoids an RNG dependency).
+    const foldOf = (i: number): number => (nFolds > 0 ? i % nFolds : 0);
+
+    const globalSum = (() => {
+      let s = 0;
+      for (let i = 0; i < nSamples; i++) s += Number(yData[y.offset + i * yStride] ?? 0);
+      return s;
+    })();
+    const globalMean = nSamples > 0 ? globalSum / nSamples : 0;
+
+    const result: number[][] = Array.from({ length: nSamples }, () => new Array(nFeatures).fill(0));
+
+    for (let f = 0; f < nFeatures; f++) {
+      for (let hold = 0; hold < Math.max(1, nFolds); hold++) {
+        // Statistics from all folds EXCEPT the held-out one.
+        const sums = new Map<number, number>();
+        const counts = new Map<number, number>();
+        for (let i = 0; i < nSamples; i++) {
+          if (foldOf(i) === hold) continue;
+          const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
+          const t = Number(yData[y.offset + i * yStride] ?? 0);
+          sums.set(cat, (sums.get(cat) ?? 0) + t);
+          counts.set(cat, (counts.get(cat) ?? 0) + 1);
+        }
+        // Encode the held-out rows with those out-of-fold statistics.
+        for (let i = 0; i < nSamples; i++) {
+          if (foldOf(i) !== hold) continue;
+          const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
+          const count = counts.get(cat) ?? 0;
+          if (count === 0) {
+            result[i]![f] = globalMean;
+          } else {
+            const catMean = (sums.get(cat) ?? 0) / count;
+            result[i]![f] = (count * catMean + this._smooth * globalMean) / (count + this._smooth);
+          }
+        }
+      }
+    }
+
+    // Fit the full-data encodings for subsequent transform() calls.
+    this.fit(X, y);
+    return tensor(result);
+  }
+}

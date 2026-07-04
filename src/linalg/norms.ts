@@ -7,8 +7,8 @@ import {
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { isContiguous } from "../ndarray/tensor/strides";
-import { assertFiniteTensor, at, getDim, getStride, toDenseVector1D } from "./_internal";
-import { svd } from "./decomposition/svd";
+import { assertFiniteTensor, getDim, getStride, toDenseVector1D } from "./_internal";
+import { svd, svdvals } from "./decomposition/svd";
 
 /**
  * Matrix or vector norm.
@@ -94,13 +94,8 @@ export function norm(
       }
       throw new InvalidParameterError("ord must be finite or ±Infinity", "ord", ordValue);
     }
-    if (ordValue < 0) {
-      throw new InvalidParameterError(
-        "Vector norm order must be non-negative or ±Infinity",
-        "ord",
-        ordValue
-      );
-    }
+    // Negative finite orders are valid vector "norms" in NumPy
+    // (e.g. ord=-1, -2); the generic (sum |v|^p)^(1/p) branch handles them.
     return ordValue;
   };
 
@@ -245,7 +240,7 @@ export function norm(
       }
     }
 
-    if (outShape.length === 0 && !keep) return at(out, 0);
+    if (outShape.length === 0 && !keep) return out[0] as number;
     return tensor(out).view(outShape);
   };
 
@@ -447,7 +442,8 @@ export function norm(
           if (sDense.length === 0) {
             val = 0;
           } else {
-            val = matOrd === 2 ? at(sDense, 0) : Math.abs(at(sDense, sDense.length - 1));
+            val =
+              matOrd === 2 ? (sDense[0] as number) : Math.abs(sDense[sDense.length - 1] as number);
           }
         }
 
@@ -462,7 +458,7 @@ export function norm(
         return tensor(results).view(kdShape);
       }
 
-      if (outerSize === 1 && outerShape.length === 0) return at(results, 0);
+      if (outerSize === 1 && outerShape.length === 0) return results[0] as number;
       return tensor(results).view(outerShape);
     }
 
@@ -512,6 +508,33 @@ export function norm(
   const cols = getDim(x, 1, "norm()");
 
   if (p === "fro") {
+    // Fast path: contiguous numeric data reads monomorphically over a
+    // zero-based view (the generic `Number(x.data[...])` path pays a
+    // megamorphic union access + Number() coercion per element, ~10x).
+    const data = x.data;
+    if (
+      !Array.isArray(data) &&
+      !(data instanceof BigInt64Array) &&
+      x.offset === 0 &&
+      s1 === 1 &&
+      s0 === cols
+    ) {
+      const n = rows * cols;
+      let s0acc = 0;
+      let s1acc = 0;
+      let i = 0;
+      for (; i + 2 <= n; i += 2) {
+        const a = data[i] as number;
+        const b = data[i + 1] as number;
+        s0acc += a * a;
+        s1acc += b * b;
+      }
+      if (i < n) {
+        const a = data[i] as number;
+        s0acc += a * a;
+      }
+      return Math.sqrt(s0acc + s1acc);
+    }
     let sum = 0;
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < cols; j++) {
@@ -526,7 +549,7 @@ export function norm(
     const [_U, s, _Vt] = svd(x);
     const sDense = toDenseVector1D(s);
     let sum = 0;
-    for (let i = 0; i < sDense.length; i++) sum += Math.abs(at(sDense, i));
+    for (let i = 0; i < sDense.length; i++) sum += Math.abs(sDense[i] as number);
     return sum;
   }
 
@@ -582,8 +605,8 @@ export function norm(
     const [_U, s, _Vt] = svd(x);
     const sDense = toDenseVector1D(s);
     if (sDense.length === 0) return 0;
-    const sMax = at(sDense, 0);
-    const sMin = at(sDense, sDense.length - 1);
+    const sMax = sDense[0] as number;
+    const sMin = sDense[sDense.length - 1] as number;
     return p === 2 ? sMax : Math.abs(sMin);
   }
 
@@ -643,24 +666,31 @@ export function cond(a: Tensor, _p?: number | "fro"): number {
   const k = Math.min(m, n);
   if (k === 0) return Infinity;
 
-  const [_U, s, _Vt] = svd(a);
-  const sDense = toDenseVector1D(s);
+  // Only singular values are needed — skip U/V accumulation.
+  const sDense = toDenseVector1D(svdvals(a));
+  if (sDense.length === 0) return Infinity;
+
+  // A rank-deficient matrix has a numerically-zero smallest singular value.
+  // Different SVD backends bottom it out at slightly different tiny values,
+  // so treat any singular value below a relative tolerance as exactly zero
+  // (→ infinite condition number) rather than testing `=== 0`.
+  const sMaxAll = sDense[0] as number;
+  const singularTol = sMaxAll * Number.EPSILON * Math.max(m, n);
 
   if (_p === "fro") {
-    if (sDense.length === 0) return Infinity;
     let sumSq = 0;
     let sumInvSq = 0;
     for (let i = 0; i < sDense.length; i++) {
-      const si = at(sDense, i);
+      const si = sDense[i] as number;
       sumSq += si * si;
-      if (si === 0) return Infinity;
+      if (si <= singularTol) return Infinity;
       sumInvSq += 1 / (si * si);
     }
     return Math.sqrt(sumSq) * Math.sqrt(sumInvSq);
   }
 
-  const sMax = at(sDense, 0);
-  const sMin = at(sDense, k - 1);
-  if (sMin === 0) return Infinity;
+  const sMax = sDense[0] as number;
+  const sMin = sDense[k - 1] as number;
+  if (sMin <= singularTol) return Infinity;
   return sMax / sMin;
 }

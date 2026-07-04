@@ -9,16 +9,29 @@ import {
   AdaDelta,
   Adagrad,
   Adam,
+  Adamax,
   AdamW,
+  ASGD,
   CosineAnnealingLR,
+  CosineAnnealingWarmRestarts,
+  CyclicLR,
   ExponentialLR,
+  LAMB,
+  LARS,
+  LambdaLR,
+  LBFGS,
   LinearLR,
   MultiStepLR,
   Nadam,
   OneCycleLR,
+  PolynomialLR,
+  RAdam,
   ReduceLROnPlateau,
   RMSprop,
+  Rprop,
+  SequentialLR,
   SGD,
+  SparseAdam,
   StepLR,
   WarmupLR,
 } from "deepbox/optim";
@@ -66,9 +79,23 @@ run(suite, "SGD create", "—", () => new SGD(params(), { lr: 0.01 }));
 run(suite, "SGD create (momentum)", "—", () => new SGD(params(), { lr: 0.01, momentum: 0.9 }));
 run(suite, "Adam create", "—", () => new Adam(params(), { lr: 0.001 }));
 run(suite, "AdamW create", "—", () => new AdamW(params(), { lr: 0.001 }));
+run(suite, "Adamax create", "—", () => new Adamax(params(), { lr: 0.002 }));
 run(suite, "Adagrad create", "—", () => new Adagrad(params(), { lr: 0.01 }));
 run(suite, "AdaDelta create", "—", () => new AdaDelta(params(), { lr: 1.0 }));
 run(suite, "Nadam create", "—", () => new Nadam(params(), { lr: 0.002 }));
+run(suite, "RAdam create", "—", () => new RAdam(params(), { lr: 0.002 }));
+run(suite, "ASGD create", "—", () => new ASGD(params(), { lr: 0.01 }));
+run(suite, "Rprop create", "—", () => new Rprop(params(), { lr: 0.01 }));
+run(suite, "LBFGS create", "—", () => new LBFGS(params(), { lr: 1.0 }));
+run(suite, "SparseAdam create", "—", () => new SparseAdam(params(), { lr: 0.01 }));
+run(suite, "LAMB create", "—", () => new LAMB(params(), { lr: 0.01 }), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
+run(suite, "LARS create", "—", () => new LARS(params(), { lr: 0.01 }), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
 run(suite, "RMSprop create", "—", () => new RMSprop(params(), { lr: 0.01 }));
 
 // ── Optimizer Step ──────────────────────────────────────
@@ -96,7 +123,11 @@ function makeStep(
 run(suite, "SGD step", "16x10→1", makeStep(SGD as never, { lr: 0.01 }));
 run(suite, "Adam step", "16x10→1", makeStep(Adam as never, { lr: 0.001 }));
 run(suite, "AdamW step", "16x10→1", makeStep(AdamW as never, { lr: 0.001 }));
+run(suite, "Adamax step", "16x10→1", makeStep(Adamax as never, { lr: 0.002 }));
 run(suite, "Adagrad step", "16x10→1", makeStep(Adagrad as never, { lr: 0.01 }));
+run(suite, "RAdam step", "16x10→1", makeStep(RAdam as never, { lr: 0.002 }));
+run(suite, "ASGD step", "16x10→1", makeStep(ASGD as never, { lr: 0.01 }));
+run(suite, "Rprop step", "16x10→1", makeStep(Rprop as never, { lr: 0.01 }));
 run(suite, "RMSprop step", "16x10→1", makeStep(RMSprop as never, { lr: 0.01 }));
 
 // ── Training Loops (per optimizer) ──────────────────────
@@ -232,6 +263,38 @@ run(
   "—",
   schedStep((o) => new WarmupLR(o, null, { warmupEpochs: 50 }), 100)
 );
+run(
+  suite,
+  "CosineAnnealingWarmRestarts (100 steps)",
+  "—",
+  schedStep((o) => new CosineAnnealingWarmRestarts(o, { T_0: 10 }), 100)
+);
+run(
+  suite,
+  "CyclicLR (100 steps)",
+  "—",
+  schedStep((o) => new CyclicLR(o, { baseLr: 0.001, maxLr: 0.01, stepSizeUp: 5 }), 100)
+);
+run(
+  suite,
+  "LambdaLR (100 steps)",
+  "—",
+  schedStep((o) => new LambdaLR(o, { lrLambda: () => 0.95 }), 100)
+);
+run(
+  suite,
+  "PolynomialLR (100 steps)",
+  "—",
+  schedStep((o) => new PolynomialLR(o, { totalIters: 100, power: 2 }), 100)
+);
+run(suite, "SequentialLR (100 steps)", "—", () => {
+  const m = makeModel(10, 16);
+  const opt = new SGD(m.parameters(), { lr: 0.1 });
+  const warm = new LambdaLR(opt, { lrLambda: () => 0.5 });
+  const decay = new StepLR(opt, { stepSize: 10, gamma: 0.1 });
+  const sched = new SequentialLR(opt, { schedulers: [warm, decay], milestones: [50] });
+  for (let i = 0; i < 100; i++) sched.step();
+});
 
 // ── State Dict ──────────────────────────────────────────
 

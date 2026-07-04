@@ -1,6 +1,6 @@
 import { ShapeError } from "../../core";
 import type { Tensor } from "../../ndarray";
-import { at, fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
+import { fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
 
 /**
  * QR decomposition.
@@ -56,6 +56,18 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
   // Convert to dense arrays for processing
   const { data: A_data } = toDenseMatrix2D(a);
 
+  // Threshold for skipping a Householder reflection, relative to the matrix
+  // magnitude. An absolute threshold (e.g. 1e-15 on the squared column norm)
+  // would skip reflections for matrices whose entries are all tiny, leaving R
+  // non-upper-triangular. Scale by the max |entry| so the criterion tracks the
+  // data range.
+  let maxAbs = 0;
+  for (let i = 0; i < A_data.length; i++) {
+    const v = Math.abs(A_data[i] as number);
+    if (v > maxAbs) maxAbs = v;
+  }
+  const colNormTolSq = maxAbs === 0 ? 0 : (maxAbs * m * Number.EPSILON) ** 2;
+
   // R starts as a copy of A
   // We use Float64Array for precision
   const R = new Float64Array(A_data);
@@ -77,16 +89,16 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
     // x = R[k:m, k]
     let normXSq = 0;
     for (let i = k; i < m; i++) {
-      const val = at(R, i * n + k);
+      const val = R[i * n + k] as number;
       normXSq += val * val;
     }
 
-    // If column is already close to zero, skip
-    // This handles rank-deficient matrices gracefully
-    if (normXSq < 1e-15) continue;
+    // If column is already close to zero (relative to matrix scale), skip.
+    // This handles rank-deficient matrices gracefully.
+    if (normXSq <= colNormTolSq) continue;
 
     const normX = Math.sqrt(normXSq);
-    const x0 = at(R, k * n + k);
+    const x0 = R[k * n + k] as number;
 
     // Choose sign to avoid catastrophic cancellation: alpha = -sign(x0) * ||x||
     const sign = x0 >= 0 ? 1 : -1;
@@ -104,13 +116,13 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
 
     v[k] = x0 - alpha;
     for (let i = k + 1; i < m; i++) {
-      v[i] = at(R, i * n + k);
+      v[i] = R[i * n + k] as number;
     }
 
     // Normalize v
     let normVSq = 0;
     for (let i = k; i < m; i++) {
-      const vi = at(v, i);
+      const vi = v[i] as number;
       normVSq += vi * vi;
     }
     const normV = Math.sqrt(normVSq);
@@ -119,7 +131,7 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
 
     const invNormV = 1.0 / normV;
     for (let i = k; i < m; i++) {
-      v[i] = at(v, i) * invNormV;
+      v[i] = (v[i] as number) * invNormV;
     }
 
     // 2. Apply H to R: R = H * R = (I - 2vv^T) R = R - 2 v (v^T R)
@@ -128,12 +140,12 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
       // Compute dot product: v^T * R[:, j]
       let dot = 0;
       for (let i = k; i < m; i++) {
-        dot += at(v, i) * at(R, i * n + j);
+        dot += (v[i] as number) * (R[i * n + j] as number);
       }
 
       // R[:, j] -= 2 * dot * v
       for (let i = k; i < m; i++) {
-        R[i * n + j] = at(R, i * n + j) - 2 * dot * at(v, i);
+        R[i * n + j] = (R[i * n + j] as number) - 2 * dot * (v[i] as number);
       }
     }
 
@@ -154,16 +166,16 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
     for (let i = 0; i < m; i++) {
       let dot = 0;
       for (let j = k; j < m; j++) {
-        dot += at(Q, i * m + j) * at(v, j);
+        dot += (Q[i * m + j] as number) * (v[j] as number);
       }
       w[i] = dot;
     }
 
     // Q[:, j] -= 2 * w * v[j] for each column j in k..m-1
     for (let j = k; j < m; j++) {
-      const vj = at(v, j);
+      const vj = v[j] as number;
       for (let i = 0; i < m; i++) {
-        Q[i * m + j] = at(Q, i * m + j) - 2 * at(w, i) * vj;
+        Q[i * m + j] = (Q[i * m + j] as number) - 2 * (w[i] as number) * vj;
       }
     }
   }
@@ -176,7 +188,7 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
     const Q_reduced = new Float64Array(m * k);
     for (let i = 0; i < m; i++) {
       for (let j = 0; j < k; j++) {
-        Q_reduced[i * k + j] = at(Q, i * m + j);
+        Q_reduced[i * k + j] = Q[i * m + j] as number;
       }
     }
 
@@ -184,7 +196,7 @@ export function qr(a: Tensor, mode: "reduced" | "complete" = "reduced"): [Tensor
     const R_reduced = new Float64Array(k * n);
     for (let i = 0; i < k; i++) {
       for (let j = 0; j < n; j++) {
-        R_reduced[i * n + j] = at(R, i * n + j);
+        R_reduced[i * n + j] = R[i * n + j] as number;
       }
     }
 

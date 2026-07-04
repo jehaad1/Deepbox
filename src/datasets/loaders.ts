@@ -1,7 +1,16 @@
-// ---- loaders.ts ----
+/**
+ * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
+ */
+
 import { reshape, type Tensor, tensor } from "../ndarray";
+import { BREAST_CANCER_DATA, BREAST_CANCER_TARGET } from "./data/breast-cancer.data";
+import { DIABETES_DATA, DIABETES_TARGET } from "./data/diabetes.data";
+import { decodeDigitsData, decodeDigitsTarget } from "./data/digits.data";
+import { IRIS_DATA, IRIS_TARGET } from "./data/iris.data";
+import { WINE_DATA, WINE_TARGET } from "./data/wine.data";
 import { createRng, normal01 } from "./utils";
 
+/** Standard dataset structure returned by all built-in dataset loaders. */
 export type Dataset = {
   data: Tensor;
   target: Tensor;
@@ -15,49 +24,25 @@ const SYNTHETIC_NOTE =
   "Synthetic (deterministic) dataset inspired by a common ML benchmark. " +
   "Values are generated, not the original reference dataset.";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 1. Iris
-// ─────────────────────────────────────────────────────────────────────────────
+const REFERENCE_NOTE =
+  "Real public-domain reference dataset mirrored from the UCI Machine Learning " +
+  "Repository via scikit-learn. Values match the canonical dataset.";
 
-let __iris: { data: number[][]; target: number[] } | undefined;
-
-function getIrisData() {
-  if (__iris !== undefined) return __iris;
-  const rng = createRng(1337);
-
-  const data: number[][] = [];
-  const target: number[] = [];
-
-  for (let i = 0; i < 50; i++) {
-    data.push([5.0 + rng() * 0.8, 3.4 + rng() * 0.4, 1.4 + rng() * 0.3, 0.2 + rng() * 0.2]);
-    target.push(0);
-  }
-  for (let i = 0; i < 50; i++) {
-    data.push([5.9 + rng() * 0.8, 2.8 + rng() * 0.4, 4.2 + rng() * 0.5, 1.3 + rng() * 0.3]);
-    target.push(1);
-  }
-  for (let i = 0; i < 50; i++) {
-    data.push([6.5 + rng() * 0.8, 3.0 + rng() * 0.4, 5.5 + rng() * 0.5, 2.0 + rng() * 0.4]);
-    target.push(2);
-  }
-
-  __iris = { data, target };
-  return __iris;
-}
+// ─── Iris ────────────────────────────────────────────────────────────────────
 
 /**
- * Load the synthetic Iris dataset.
+ * Load the Iris dataset (R. A. Fisher, 1936).
  *
- * 150 samples, 4 features, 3 classes (setosa, versicolor, virginica).
- * Deterministic — always returns the same data.
+ * The real, canonical measurements: 150 samples, 4 features, 3 classes
+ * (50 setosa, 50 versicolor, 50 virginica). Deterministic — the committed
+ * reference values are always returned unchanged.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 4]` and `target` shape `[150]` (int32).
  */
 export function loadIris(): Dataset {
-  const { data, target } = getIrisData();
   return {
-    data: tensor(data),
-    target: tensor(target, { dtype: "int32" }),
+    data: reshape(tensor(IRIS_DATA as number[]), [150, 4]),
+    target: tensor(IRIS_TARGET as number[], { dtype: "int32" }),
     featureNames: [
       "sepal length (cm)",
       "sepal width (cm)",
@@ -65,107 +50,84 @@ export function loadIris(): Dataset {
       "petal width (cm)",
     ],
     targetNames: ["setosa", "versicolor", "virginica"],
-    description: `${SYNTHETIC_NOTE} 150 samples, 4 features, 3 classes.`,
+    description: `${REFERENCE_NOTE} 150 samples, 4 features, 3 classes.`,
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. Digits
-// ─────────────────────────────────────────────────────────────────────────────
-
-let __digits: { data: number[][]; target: number[] } | undefined;
-
-function getDigitsData() {
-  if (__digits !== undefined) return __digits;
-  const rng = createRng(7);
-
-  const data: number[][] = [];
-  const target: number[] = [];
-
-  for (let digit = 0; digit < 10; digit++) {
-    const samplesPerDigit = digit === 9 ? 177 : 180;
-    for (let i = 0; i < samplesPerDigit; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < 64; j++) {
-        sample.push(Math.floor(rng() * 16));
-      }
-      data.push(sample);
-      target.push(digit);
-    }
-  }
-
-  __digits = { data, target };
-  return __digits;
-}
+// ─── Wine ────────────────────────────────────────────────────────────────────
 
 /**
- * Load the synthetic Digits dataset.
+ * Load the Wine recognition dataset (UCI).
  *
- * 1797 samples, 64 features (8×8 pixel values 0–15), 10 classes (digits 0–9).
- * Deterministic — always returns the same data.
+ * The real, canonical measurements: 178 samples, 13 chemical-analysis features,
+ * 3 cultivar classes (59 / 71 / 48). Deterministic — the committed reference
+ * values are always returned unchanged.
  *
- * @returns A {@link Dataset} with `data` shape `[1797, 64]` and `target` shape `[1797]` (int32).
+ * @returns A {@link Dataset} with `data` shape `[178, 13]` and `target` shape `[178]` (int32).
+ */
+export function loadWine(): Dataset {
+  return {
+    data: reshape(tensor(WINE_DATA as number[]), [178, 13]),
+    target: tensor(WINE_TARGET as number[], { dtype: "int32" }),
+    featureNames: [
+      "alcohol",
+      "malic_acid",
+      "ash",
+      "alcalinity_of_ash",
+      "magnesium",
+      "total_phenols",
+      "flavanoids",
+      "nonflavanoid_phenols",
+      "proanthocyanins",
+      "color_intensity",
+      "hue",
+      "od280/od315_of_diluted_wines",
+      "proline",
+    ],
+    targetNames: ["class_0", "class_1", "class_2"],
+    description: `${REFERENCE_NOTE} 178 samples, 13 features, 3 classes.`,
+  };
+}
+
+// ─── Digits ──────────────────────────────────────────────────────────────────
+
+/**
+ * Load the Optical Recognition of Handwritten Digits dataset (UCI).
+ *
+ * The real, canonical data: 1797 samples, 64 features (8×8 pixels, integer
+ * intensities in `[0, 16]`), 10 classes (digits 0–9). Deterministic — the
+ * committed reference values are always returned unchanged.
+ *
+ * @returns A {@link Dataset} with `data` shape `[1797, 64]`, `target` shape
+ *   `[1797]` (int32), and `images` shape `[1797, 8, 8]`.
  */
 export function loadDigits(): Dataset {
-  const { data, target } = getDigitsData();
-  const dataTensor = tensor(data);
+  const dataTensor = reshape(tensor(decodeDigitsData()), [1797, 64]);
   return {
     data: dataTensor,
-    target: tensor(target, { dtype: "int32" }),
+    target: tensor(decodeDigitsTarget(), { dtype: "int32" }),
     featureNames: Array.from({ length: 64 }, (_, i) => `pixel_${i}`),
     targetNames: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
-    description: `${SYNTHETIC_NOTE} 1797 samples, 64 features, 10 classes.`,
+    description: `${REFERENCE_NOTE} 1797 samples, 64 features, 10 classes.`,
     images: reshape(dataTensor, [1797, 8, 8]),
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. Breast Cancer
-// ─────────────────────────────────────────────────────────────────────────────
-
-let __breastCancer: { data: number[][]; target: number[] } | undefined;
-
-function getBreastCancerData() {
-  if (__breastCancer !== undefined) return __breastCancer;
-  const rng = createRng(99);
-
-  const data: number[][] = [];
-  const target: number[] = [];
-
-  for (let i = 0; i < 212; i++) {
-    const sample: number[] = [];
-    for (let j = 0; j < 30; j++) {
-      sample.push(15 + rng() * 10);
-    }
-    data.push(sample);
-    target.push(0);
-  }
-  for (let i = 0; i < 357; i++) {
-    const sample: number[] = [];
-    for (let j = 0; j < 30; j++) {
-      sample.push(10 + rng() * 8);
-    }
-    data.push(sample);
-    target.push(1);
-  }
-
-  __breastCancer = { data, target };
-  return __breastCancer;
-}
+// ─── Breast Cancer ───────────────────────────────────────────────────────────
 
 /**
- * Load the synthetic Breast Cancer dataset.
+ * Load the Breast Cancer Wisconsin (Diagnostic) dataset (UCI).
  *
- * 569 samples, 30 features, 2 classes (malignant, benign).
- * Deterministic — always returns the same data.
+ * The real, canonical measurements: 569 samples, 30 features, 2 classes
+ * (212 malignant, 357 benign). Deterministic — the committed reference values
+ * are always returned unchanged.
  *
  * @returns A {@link Dataset} with `data` shape `[569, 30]` and `target` shape `[569]` (int32).
  */
 export function loadBreastCancer(): Dataset {
-  const { data, target } = getBreastCancerData();
   return {
-    data: tensor(data),
-    target: tensor(target, { dtype: "int32" }),
+    data: reshape(tensor(BREAST_CANCER_DATA as number[]), [569, 30]),
+    target: tensor(BREAST_CANCER_TARGET as number[], { dtype: "int32" }),
     featureNames: [
       "mean radius",
       "mean texture",
@@ -199,57 +161,33 @@ export function loadBreastCancer(): Dataset {
       "worst fractal dimension",
     ],
     targetNames: ["malignant", "benign"],
-    description: `${SYNTHETIC_NOTE} 569 samples, 30 features, 2 classes.`,
+    description: `${REFERENCE_NOTE} 569 samples, 30 features, 2 classes.`,
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. Diabetes
-// ─────────────────────────────────────────────────────────────────────────────
-
-let __diabetes: { data: number[][]; target: number[] } | undefined;
-
-function getDiabetesData() {
-  if (__diabetes !== undefined) return __diabetes;
-  const rng = createRng(123);
-
-  const data: number[][] = [];
-  const target: number[] = [];
-
-  for (let i = 0; i < 442; i++) {
-    const sample: number[] = [];
-    for (let j = 0; j < 10; j++) {
-      sample.push(-0.1 + rng() * 0.2);
-    }
-    data.push(sample);
-    target.push(50 + rng() * 300);
-  }
-
-  __diabetes = { data, target };
-  return __diabetes;
-}
+// ─── Diabetes ────────────────────────────────────────────────────────────────
 
 /**
- * Load the synthetic Diabetes regression dataset.
+ * Load the Diabetes regression dataset (Efron et al., 2004).
  *
- * 442 samples, 10 features, continuous target.
- * Deterministic — always returns the same data.
+ * The real, canonical data: 442 samples, 10 baseline features (age, sex, BMI,
+ * blood pressure, and six blood-serum measurements; each column mean-centered
+ * and scaled to unit L2 norm), with a continuous disease-progression target
+ * (real values, genuinely correlated with the features). Deterministic — the
+ * committed reference values are always returned unchanged.
  *
  * @returns A {@link Dataset} with `data` shape `[442, 10]` and `target` shape `[442]`.
  */
 export function loadDiabetes(): Dataset {
-  const { data, target } = getDiabetesData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: reshape(tensor(DIABETES_DATA as number[]), [442, 10]),
+    target: tensor(DIABETES_TARGET as number[]),
     featureNames: ["age", "sex", "bmi", "bp", "s1", "s2", "s3", "s4", "s5", "s6"],
-    description: `${SYNTHETIC_NOTE} 442 samples, 10 features (regression).`,
+    description: `${REFERENCE_NOTE} 442 samples, 10 features (regression).`,
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. Linnerud
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Linnerud ────────────────────────────────────────────────────────────────
 
 let __linnerud: { data: number[][]; target: number[][] } | undefined;
 
@@ -292,9 +230,7 @@ export function loadLinnerud(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. Flowers Extended
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Flowers Extended ────────────────────────────────────────────────────────
 
 let __flowersExtended: { data: number[][]; target: number[] } | undefined;
 
@@ -383,9 +319,7 @@ export function loadFlowersExtended(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 7. Leaf Shapes
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Leaf Shapes ─────────────────────────────────────────────────────────────
 
 let __leafShapes: { data: number[][]; target: number[] } | undefined;
 
@@ -498,9 +432,7 @@ export function loadLeafShapes(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. Fruit Quality
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Fruit Quality ───────────────────────────────────────────────────────────
 
 let __fruitQuality: { data: number[][]; target: number[] } | undefined;
 
@@ -555,9 +487,7 @@ export function loadFruitQuality(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 9. Seed Morphology
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Seed Morphology ─────────────────────────────────────────────────────────
 
 let __seedMorphology: { data: number[][]; target: number[] } | undefined;
 
@@ -606,9 +536,7 @@ export function loadSeedMorphology(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. Moons-Multi
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Moons-Multi ─────────────────────────────────────────────────────────────
 
 let __moonsMulti: { data: number[][]; target: number[] } | undefined;
 
@@ -656,9 +584,7 @@ export function loadMoonsMulti(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11. Concentric Rings
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Concentric Rings ────────────────────────────────────────────────────────
 
 let __concentricRings: { data: number[][]; target: number[] } | undefined;
 
@@ -703,9 +629,7 @@ export function loadConcentricRings(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 12. Spiral Arms
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Spiral Arms ─────────────────────────────────────────────────────────────
 
 let __spiralArms: { data: number[][]; target: number[] } | undefined;
 
@@ -752,9 +676,7 @@ export function loadSpiralArms(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 13. Gaussian Islands
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Gaussian Islands ───────────────────────────────────────────────────────
 
 let __gaussianIslands: { data: number[][]; target: number[] } | undefined;
 
@@ -807,9 +729,7 @@ export function loadGaussianIslands(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 14. Plant Growth
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Plant Growth ────────────────────────────────────────────────────────────
 
 let __plantGrowth: { data: number[][]; target: number[] } | undefined;
 
@@ -851,9 +771,7 @@ export function loadPlantGrowth(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 15. Housing-Mini
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Housing-Mini ────────────────────────────────────────────────────────────
 
 let __housingMini: { data: number[][]; target: number[] } | undefined;
 
@@ -896,9 +814,7 @@ export function loadHousingMini(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 16. Energy Efficiency
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Energy Efficiency ───────────────────────────────────────────────────────
 
 let __energyEfficiency: { data: number[][]; target: number[] } | undefined;
 
@@ -942,9 +858,7 @@ export function loadEnergyEfficiency(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 17. Crop Yield
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Crop Yield ──────────────────────────────────────────────────────────────
 
 let __cropYield: { data: number[][]; target: number[] } | undefined;
 
@@ -987,9 +901,7 @@ export function loadCropYield(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 18. Customer Segments
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Customer Segments ───────────────────────────────────────────────────────
 
 let __customerSegments: { data: number[][]; target: number[] } | undefined;
 
@@ -1043,9 +955,7 @@ export function loadCustomerSegments(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 19. Sensor States
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Sensor States ──────────────────────────────────────────────────────────
 
 let __sensorStates: { data: number[][]; target: number[] } | undefined;
 
@@ -1122,9 +1032,7 @@ export function loadSensorStates(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 20. Student Performance
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Student Performance ─────────────────────────────────────────────────────
 
 let __studentPerformance: { data: number[][]; target: number[] } | undefined;
 
@@ -1173,9 +1081,7 @@ export function loadStudentPerformance(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 21. Traffic Conditions
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Traffic Conditions ──────────────────────────────────────────────────────
 
 let __trafficConditions: { data: number[][]; target: number[] } | undefined;
 
@@ -1232,9 +1138,7 @@ export function loadTrafficConditions(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 22. Fitness Scores
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Fitness Scores ──────────────────────────────────────────────────────────
 
 let __fitnessScores: { data: number[][]; target: number[][] } | undefined;
 
@@ -1279,9 +1183,7 @@ export function loadFitnessScores(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 23. Weather Outcomes
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Weather Outcomes ────────────────────────────────────────────────────────
 
 let __weatherOutcomes: { data: number[][]; target: number[][] } | undefined;
 
@@ -1328,9 +1230,7 @@ export function loadWeatherOutcomes(): Dataset {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 24. Perfectly Separable
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Perfectly Separable ─────────────────────────────────────────────────────
 
 let __perfectlySeparable: { data: number[][]; target: number[] } | undefined;
 

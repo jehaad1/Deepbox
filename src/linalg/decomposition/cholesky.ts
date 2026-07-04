@@ -1,6 +1,6 @@
 import { DataValidationError, ShapeError } from "../../core";
 import type { Tensor } from "../../ndarray";
-import { at, fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
+import { fromDenseMatrix2D, getDim, toDenseMatrix2D } from "../_internal";
 
 /**
  * Cholesky decomposition.
@@ -84,8 +84,8 @@ export function cholesky(a: Tensor): Tensor {
   // Validate symmetry (using tolerance for floating-point comparison)
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      const aij = at(A, i * n + j);
-      const aji = at(A, j * n + i);
+      const aij = A[i * n + j] as number;
+      const aji = A[j * n + i] as number;
       if (Math.abs(aij - aji) > 1e-10) {
         throw new DataValidationError("Matrix must be symmetric");
       }
@@ -106,11 +106,11 @@ export function cholesky(a: Tensor): Tensor {
         // Diagonal element: L[i,i] = sqrt(A[i,i] - sum(L[i,k]² for k < i))
         // Sum of squares of elements in row i before diagonal
         for (let k = 0; k < j; k++) {
-          const Lik = at(L, i * n + k);
+          const Lik = L[i * n + k] as number;
           sum += Lik * Lik;
         }
         // Compute diagonal element
-        const val = at(A, i * n + i) - sum;
+        const val = (A[i * n + i] as number) - sum;
         // Check positive definiteness
         if (val <= 0) {
           throw new DataValidationError("Matrix is not positive definite");
@@ -121,13 +121,13 @@ export function cholesky(a: Tensor): Tensor {
         // Off-diagonal element: L[i,j] = (A[i,j] - sum(L[i,k]*L[j,k] for k < j)) / L[j,j]
         // Dot product of partial rows i and j
         for (let k = 0; k < j; k++) {
-          sum += at(L, i * n + k) * at(L, j * n + k);
+          sum += (L[i * n + k] as number) * (L[j * n + k] as number);
         }
         // Compute off-diagonal element
-        const Ljj = at(L, j * n + j);
+        const Ljj = L[j * n + j] as number;
         // Ljj should never be 0 here since we check positive definiteness on diagonal
         // If it is 0, the matrix is not positive definite (caught earlier)
-        L[i * n + j] = (at(A, i * n + j) - sum) / Ljj;
+        L[i * n + j] = ((A[i * n + j] as number) - sum) / Ljj;
       }
     }
   }

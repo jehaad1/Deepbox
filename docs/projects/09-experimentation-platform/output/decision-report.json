@@ -1,0 +1,53 @@
+{
+  "winner": "streamlined-checkout",
+  "pairwiseInference": [
+    {
+      "variant": "streamlined-checkout",
+      "revenuePvalue": 0.014677915057374147,
+      "revenueCorrected": 0.029355830114748294,
+      "revenueDiffCi": {
+        "lower": 1.5986085914910309,
+        "upper": 14.633041408508978,
+        "mean": 8.115825000000005,
+        "marginOfError": 6.517216408508974,
+        "confidenceLevel": 0.95
+      },
+      "latencyPvalue": 0,
+      "latencyCorrected": 0
+    },
+    {
+      "variant": "smart-bundle",
+      "revenuePvalue": 0.16993307020397985,
+      "revenueCorrected": 0.16993307020397985,
+      "revenueDiffCi": {
+        "lower": -1.8977567698304894,
+        "upper": 10.757190103163826,
+        "mean": 4.429716666666668,
+        "marginOfError": 6.327473436497157,
+        "confidenceLevel": 0.95
+      },
+      "latencyPvalue": 8.590905764549461e-13,
+      "latencyCorrected": 8.590905764549461e-13
+    }
+  ],
+  "upliftBootstrap": {
+    "estimate": 9.410177800518182,
+    "ci": [
+      4.120493628581574,
+      14.830807313267043
+    ],
+    "nResamples": 5000
+  },
+  "currentPower": {
+    "effectSize": 0.0996942520451902,
+    "nObs": 1200,
+    "alpha": 0.05,
+    "power": 0.6851100224050066
+  },
+  "requiredSample": {
+    "effectSize": 0.0996942520451902,
+    "nObs": 2115,
+    "alpha": 0.05,
+    "power": 0.9000814552332256
+  }
+}

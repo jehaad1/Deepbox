@@ -52,6 +52,9 @@ run(suite, "forward (10→256→128→64→1)", "batch=32", lambda: model3(x32_1
 # ── Activation Layers ───────────────────────────────────
 
 act_in = torch.randn(32, 64)
+embed_idx = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+group_norm_input = torch.randn(2, 4)
+transformer_input = torch.randn(1, 4, 8)
 
 run(suite, "ReLU forward", "32x64", lambda: nn.ReLU()(act_in))
 run(suite, "Sigmoid forward", "32x64", lambda: nn.Sigmoid()(act_in))
@@ -161,5 +164,25 @@ run(suite, "inference (noGrad)", "batch=32", infer32)
 run(suite, "parameters()", "3-layer", lambda: list(model1.parameters()))
 run(suite, "stateDict()", "3-layer", lambda: model1.state_dict())
 run(suite, "train/eval toggle", "—", lambda: (model1.train(), model1.eval()))
+
+# ── Additional v1.0.0 neural network coverage ───────────
+
+run(suite, "Embedding create", "16x8", lambda: nn.Embedding(16, 8))
+embedding = nn.Embedding(16, 8)
+run(suite, "Embedding forward", "4 idx", lambda: embedding(embed_idx))
+run(suite, "GroupNorm create", "2 groups/4 ch", lambda: nn.GroupNorm(2, 4))
+group_norm = nn.GroupNorm(2, 4)
+run(suite, "GroupNorm forward", "2x4", lambda: group_norm(group_norm_input))
+run(suite, "PReLU forward", "32x64", lambda: nn.PReLU()(act_in))
+run(suite, "TransformerEncoderLayer create", "8/2/16", lambda: nn.TransformerEncoderLayer(d_model=8, nhead=2, dim_feedforward=16, batch_first=True))
+encoder_layer = nn.TransformerEncoderLayer(d_model=8, nhead=2, dim_feedforward=16, batch_first=True)
+run(suite, "TransformerEncoderLayer forward", "1x4x8", lambda: encoder_layer(transformer_input))
+
+def clip_norm_once():
+    p = torch.nn.Parameter(torch.tensor([1.0, 2.0, 3.0]))
+    p.grad = torch.tensor([3.0, 4.0, 0.0])
+    return torch.nn.utils.clip_grad_norm_([p], 1.0)
+
+run(suite, "clip_grad_norm_", "1 param", clip_norm_once)
 
 footer(suite, "pytorch-nn.json")

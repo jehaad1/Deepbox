@@ -15,7 +15,7 @@ import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
 import { mean, std } from "deepbox/stats";
 
 console.log("=".repeat(60));
-console.log("Example 20: Complete Machine Learning Pipeline");
+console.log("Example 12: Complete Machine Learning Pipeline");
 console.log("=".repeat(60));
 
 mkdirSync("docs/examples/12-complete-pipeline/output", { recursive: true });

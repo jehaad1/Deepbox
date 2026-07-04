@@ -6,15 +6,8 @@ import {
   ShapeError,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import {
-  at,
-  getDim,
-  getStride,
-  luFactorSquare,
-  toDenseMatrix2D,
-  toDenseVector1D,
-} from "./_internal";
-import { svd } from "./decomposition/svd";
+import { getDim, getStride, luFactorSquare, toDenseMatrix2D, toDenseVector1D } from "./_internal";
+import { svdvals } from "./decomposition/svd";
 
 /**
  * Compute the determinant of a matrix.
@@ -67,7 +60,7 @@ export function det(a: Tensor): number {
   try {
     const { lu, pivSign } = luFactorSquare(A, n);
     let detVal = pivSign;
-    for (let i = 0; i < n; i++) detVal *= at(lu, i * n + i);
+    for (let i = 0; i < n; i++) detVal *= lu[i * n + i] as number;
     return detVal;
   } catch (err) {
     // (Fix) Do NOT swallow all errors. Only treat the specific "singular matrix" case as det=0.
@@ -124,7 +117,7 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
   if (rows !== cols) throw new ShapeError("slogdet requires a square matrix");
 
   const n = rows;
-  if (n === 0) return [tensor([1]), tensor([0])];
+  if (n === 0) return [tensor(1, { dtype: "float64" }), tensor(0, { dtype: "float64" })];
 
   const { data: A } = toDenseMatrix2D(a);
 
@@ -134,19 +127,19 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
     let logAbsDet = 0;
 
     for (let i = 0; i < n; i++) {
-      const d = at(lu, i * n + i);
+      const d = lu[i * n + i] as number;
       if (d === 0) {
-        return [tensor([0]), tensor([-Infinity])];
+        return [tensor(0, { dtype: "float64" }), tensor(-Infinity, { dtype: "float64" })];
       }
       sign *= Math.sign(d);
       logAbsDet += Math.log(Math.abs(d));
     }
 
-    return [tensor([sign]), tensor([logAbsDet])];
+    return [tensor(sign, { dtype: "float64" }), tensor(logAbsDet, { dtype: "float64" })];
   } catch (err) {
     // (Fix) Do NOT swallow all errors. Only treat the specific "singular matrix" case specially.
     if (err instanceof DataValidationError && err.message === "Matrix is singular") {
-      return [tensor([0]), tensor([-Infinity])];
+      return [tensor(0, { dtype: "float64" }), tensor(-Infinity, { dtype: "float64" })];
     }
     throw err;
   }
@@ -268,7 +261,7 @@ export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): 
   }
 
   if (outerShape.length === 0) {
-    return tensor([at(out, 0)]);
+    return tensor([out[0] as number]);
   }
   return tensor(out).view(outerShape);
 }
@@ -326,15 +319,15 @@ export function matrixRank(a: Tensor, tol?: number): number {
   const k = Math.min(rows, cols);
   if (k === 0) return 0;
 
-  const [_U, s, _Vt] = svd(a);
-  const sDense = toDenseVector1D(s);
+  // Only singular values are needed — skip U/V accumulation.
+  const sDense = toDenseVector1D(svdvals(a));
 
-  const defaultTol = at(sDense, 0) * Number.EPSILON * Math.max(rows, cols);
+  const defaultTol = (sDense[0] as number) * Number.EPSILON * Math.max(rows, cols);
   const threshold = tol ?? defaultTol;
 
   let rank = 0;
   for (let i = 0; i < k; i++) {
-    if (at(sDense, i) > threshold) rank++;
+    if ((sDense[i] as number) > threshold) rank++;
   }
   return rank;
 }

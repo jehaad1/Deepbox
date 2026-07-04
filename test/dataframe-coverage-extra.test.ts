@@ -201,7 +201,7 @@ describe("DataFrame - Coverage Extras (Strict)", () => {
       value: [1, 2, 3, 4, 5],
     });
 
-    const rolled = df.rolling(3);
+    const rolled = df.rolling(3).mean();
     const result = rolled.get("value", isNullableNumber).data;
     // Window 3.
     // i=0: [1] (len 1 < 3) -> null (code says if i < window - 1 push null)

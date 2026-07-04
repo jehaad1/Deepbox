@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="520" viewBox="0 0 860 520">
+<rect x="0" y="0" width="860" height="520" fill="#ffffff" />
+<rect x="50" y="50" width="760" height="420" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-760-420"><path d="M50 50 L810 50 L810 470 L50 470 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-760-420)">
+<rect x="84.55" y="166.91" width="172.73" height="284.00" fill="#2563eb" stroke="#000000" />
+<rect x="300.45" y="69.09" width="172.73" height="381.82" fill="#2563eb" stroke="#000000" />
+<rect x="516.36" y="132.20" width="172.73" height="318.71" fill="#2563eb" stroke="#000000" />
+<rect x="170.91" y="264.73" width="172.73" height="186.18" fill="#059669" stroke="#000000" />
+<rect x="386.82" y="211.09" width="172.73" height="239.82" fill="#059669" stroke="#000000" />
+<rect x="602.73" y="223.71" width="172.73" height="227.20" fill="#059669" stroke="#000000" />
+</g>
+<line class="x-tick" x1="106.14" y1="470.00" x2="106.14" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="106.14" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0.5</text>
+<line class="x-tick" x1="214.09" y1="470.00" x2="214.09" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="214.09" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="322.05" y1="470.00" x2="322.05" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="322.05" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1.5</text>
+<line class="x-tick" x1="430.00" y1="470.00" x2="430.00" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="430.00" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="537.95" y1="470.00" x2="537.95" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="537.95" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2.5</text>
+<line class="x-tick" x1="645.91" y1="470.00" x2="645.91" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="645.91" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="753.86" y1="470.00" x2="753.86" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="753.86" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3.5</text>
+<line class="y-tick" x1="50.00" y1="450.91" x2="45.00" y2="450.91" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="450.91" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="356.24" x2="45.00" y2="356.24" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="356.24" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.03</text>
+<line class="y-tick" x1="50.00" y1="261.58" x2="45.00" y2="261.58" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="261.58" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.05</text>
+<line class="y-tick" x1="50.00" y1="166.91" x2="45.00" y2="166.91" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="166.91" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.08</text>
+<line class="y-tick" x1="50.00" y1="72.25" x2="45.00" y2="72.25" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="72.25" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.1</text>
+<g class="legend">
+<rect class="legend-box" x="652.60" y="56.00" width="151.40" height="44.00" fill="#ffffff" stroke="#000000" />
+<rect class="legend-swatch" x="658.60" y="64.50" width="11.00" height="11.00" fill="#2563eb" stroke="#000" />
+<text class="legend-label" x="675.60" y="70.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">conversion rate</text>
+<rect class="legend-swatch" x="658.60" y="80.50" width="11.00" height="11.00" fill="#059669" stroke="#000" />
+<text class="legend-label" x="675.60" y="86.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">7d retention rate</text>
+</g>
+</svg>

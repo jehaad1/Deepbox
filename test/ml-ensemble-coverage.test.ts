@@ -16,9 +16,10 @@ describe("ML Ensemble Coverage", () => {
       );
     });
 
-    it("should throw on setParams", () => {
+    it("setParams works and rejects unknown params", () => {
       const model = new GradientBoostingRegressor();
-      expect(() => model.setParams({ nEstimators: 10 })).toThrow(/does not support setParams/);
+      expect(model.setParams({ nEstimators: 10 })).toBe(model);
+      expect(() => model.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
     });
 
     it("should throw if predict called before fit", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DTypeError, InvalidParameterError, ShapeError } from "../src/core";
+import { DeviceError, DTypeError, InvalidParameterError, ShapeError } from "../src/core";
 import { addScalar, GradTensor, mulScalar, type Tensor, tensor } from "../src/ndarray";
 import { Linear, Module } from "../src/nn";
 
@@ -304,21 +304,24 @@ describe("deepbox/nn - Module", () => {
   });
 
   describe("device movement", () => {
-    it("should update device metadata for parameters and buffers", () => {
+    it("should update device metadata for cpu backend", () => {
       const model = new SimpleModel();
-      model.to("wasm");
+      model.to("cpu");
       for (const param of model.parameters()) {
-        expect(param.tensor.device).toBe("wasm");
+        expect(param.tensor.device).toBe("cpu");
       }
+    });
 
-      const bufferModel = new BufferModel();
-      bufferModel.to("webgpu");
-      for (const buffer of bufferModel.buffers()) {
-        expect(buffer.device).toBe("webgpu");
-      }
+    it("should reject devices without registered backends", () => {
+      const model = new SimpleModel();
+      expect(() => model.to("wasm")).toThrow(DeviceError);
+      expect(() => model.to("webgpu")).toThrow(DeviceError);
+    });
 
+    it("should reject invalid device strings", () => {
+      const model = new SimpleModel();
       // @ts-expect-error - invalid device should be rejected at runtime
-      expect(() => bufferModel.to("gpu")).toThrow(InvalidParameterError);
+      expect(() => model.to("gpu")).toThrow(InvalidParameterError);
     });
   });
 
@@ -512,23 +515,19 @@ describe("deepbox/nn - Module", () => {
   });
 
   describe("device propagation", () => {
-    it("should propagate device to nested modules", () => {
+    it("should propagate cpu device to nested modules", () => {
       const model = new SimpleModel();
-      model.to("webgpu");
+      model.to("cpu");
 
-      // Check all parameters in nested modules
       for (const param of model.parameters()) {
-        expect(param.tensor.device).toBe("webgpu");
+        expect(param.tensor.device).toBe("cpu");
       }
     });
 
-    it("should update device for buffers", () => {
+    it("should reject unavailable backends for buffers", () => {
       const bufferModel = new BufferModel();
-      bufferModel.to("wasm");
-
-      for (const buffer of bufferModel.buffers()) {
-        expect(buffer.device).toBe("wasm");
-      }
+      expect(() => bufferModel.to("wasm")).toThrow(DeviceError);
+      expect(() => bufferModel.to("webgpu")).toThrow(DeviceError);
     });
   });
 

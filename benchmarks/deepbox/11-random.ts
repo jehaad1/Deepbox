@@ -7,18 +7,26 @@ import { arange } from "deepbox/ndarray";
 import {
   beta,
   binomial,
+  categorical,
   choice,
+  dirichlet,
   exponential,
+  Generator,
   gamma,
+  lognormal,
+  multinomial,
   normal,
   permutation,
   poisson,
   rand,
   randint,
   randn,
+  rayleigh,
   setSeed,
   shuffle,
+  triangular,
   uniform,
+  weibull,
 } from "deepbox/random";
 import { createSuite, footer, header, run } from "../utils";
 
@@ -117,5 +125,21 @@ run(suite, "shuffle", "10K", () => {
 run(suite, "permutation", "1K", () => permutation(1000));
 run(suite, "permutation", "10K", () => permutation(10000));
 run(suite, "permutation", "100K", () => permutation(100000));
+
+// ── Advanced v1.0.0 Random Generation ──────────────────
+
+const probs = arange(1, 5);
+const dirichletAlpha = arange(1, 4);
+const categoricalProbs = arange(1, 6);
+
+run(suite, "Generator.randomArray", "100K", () => new Generator(42).randomArray(100000));
+run(suite, "Generator.normalArray", "100K", () => new Generator(42).normalArray(0, 1, 100000));
+run(suite, "multinomial", "1K draws", () => multinomial(10, probs, 1000));
+run(suite, "dirichlet", "1K draws", () => dirichlet(dirichletAlpha, 1000));
+run(suite, "categorical", "10K draws", () => categorical(categoricalProbs, 10000, true));
+run(suite, "lognormal", "100K", () => lognormal(0, 1, [100000]));
+run(suite, "weibull", "100K", () => weibull(1.5, 1, [100000]));
+run(suite, "triangular", "100K", () => triangular(0, 0.5, 1, [100000]));
+run(suite, "rayleigh", "100K", () => rayleigh(1, [100000]));
 
 footer(suite, "deepbox-random.json");

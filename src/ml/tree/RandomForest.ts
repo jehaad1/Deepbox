@@ -1,11 +1,6 @@
-import {
-  DataValidationError,
-  InvalidParameterError,
-  NotFittedError,
-  NotImplementedError,
-  ShapeError,
-} from "../../core";
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { __random } from "../../random/random";
 import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import { DecisionTreeClassifier, DecisionTreeRegressor } from "./DecisionTree";
@@ -34,18 +29,23 @@ import { DecisionTreeClassifier, DecisionTreeRegressor } from "./DecisionTree";
  * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class RandomForestClassifier implements Classifier {
-  private readonly nEstimators: number;
-  private readonly maxDepth: number;
-  private readonly minSamplesSplit: number;
-  private readonly minSamplesLeaf: number;
-  private readonly maxFeatures: "sqrt" | "log2" | number;
-  private readonly bootstrap: boolean;
-  private readonly randomState?: number;
+  private nEstimators: number;
+  private maxDepth: number;
+  private minSamplesSplit: number;
+  private minSamplesLeaf: number;
+  private maxFeatures: "sqrt" | "log2" | number;
+  private bootstrap: boolean;
+  private warmStart: boolean;
+  private randomState: number | undefined;
+  private maxSamples: number | undefined;
+  private oobScoreEnabled: boolean;
 
   private trees: DecisionTreeClassifier[] = [];
   private classLabels?: number[];
   private nFeatures?: number;
   private fitted = false;
+  private oobScore_?: number;
+  private oobSampleIndices_: number[][] = [];
 
   constructor(
     options: {
@@ -55,7 +55,10 @@ export class RandomForestClassifier implements Classifier {
       readonly minSamplesLeaf?: number;
       readonly maxFeatures?: "sqrt" | "log2" | number;
       readonly bootstrap?: boolean;
+      readonly warmStart?: boolean;
       readonly randomState?: number;
+      readonly maxSamples?: number;
+      readonly oobScore?: boolean;
     } = {}
   ) {
     this.nEstimators = options.nEstimators ?? 100;
@@ -64,8 +67,25 @@ export class RandomForestClassifier implements Classifier {
     this.minSamplesLeaf = options.minSamplesLeaf ?? 1;
     this.maxFeatures = options.maxFeatures ?? "sqrt";
     this.bootstrap = options.bootstrap ?? true;
+    this.warmStart = options.warmStart ?? false;
+    this.oobScoreEnabled = options.oobScore ?? false;
     if (options.randomState !== undefined) {
       this.randomState = options.randomState;
+    }
+    if (options.maxSamples !== undefined) {
+      this.maxSamples = options.maxSamples;
+    }
+    if (this.oobScoreEnabled && !this.bootstrap) {
+      throw new InvalidParameterError("oobScore requires bootstrap=true", "oobScore", true);
+    }
+    if (this.maxSamples !== undefined) {
+      if (this.maxSamples <= 0) {
+        throw new InvalidParameterError(
+          `maxSamples must be > 0; received ${this.maxSamples}`,
+          "maxSamples",
+          this.maxSamples
+        );
+      }
     }
 
     if (!Number.isInteger(this.nEstimators) || this.nEstimators < 1) {
@@ -128,7 +148,7 @@ export class RandomForestClassifier implements Classifier {
         return seed / 233280;
       };
     }
-    return Math.random;
+    return __random;
   }
 
   /**
@@ -177,13 +197,38 @@ export class RandomForestClassifier implements Classifier {
 
     const rng = this.createRNG();
 
-    this.trees = [];
+    // Warm start: keep existing trees and add more
+    let startIdx = 0;
+    if (this.warmStart && this.fitted && this.trees.length > 0) {
+      startIdx = this.trees.length;
+      if (startIdx >= this.nEstimators) {
+        return this;
+      }
+      // Advance RNG past existing trees
+      if (this.bootstrap) {
+        for (let skip = 0; skip < startIdx * nSamples; skip++) {
+          rng();
+        }
+      }
+    } else {
+      this.trees = [];
+    }
 
-    for (let t = 0; t < this.nEstimators; t++) {
+    // Determine bootstrap draw size
+    let drawSize = nSamples;
+    if (this.maxSamples !== undefined) {
+      if (this.maxSamples > 0 && this.maxSamples < 1) {
+        drawSize = Math.max(1, Math.round(this.maxSamples * nSamples));
+      } else if (Number.isInteger(this.maxSamples) && this.maxSamples >= 1) {
+        drawSize = Math.min(this.maxSamples, nSamples);
+      }
+    }
+
+    for (let t = startIdx; t < this.nEstimators; t++) {
       // Bootstrap sample
       const sampleIndices: number[] = [];
       if (this.bootstrap) {
-        for (let i = 0; i < nSamples; i++) {
+        for (let i = 0; i < drawSize; i++) {
           sampleIndices.push(Math.floor(rng() * nSamples));
         }
       } else {
@@ -191,6 +236,9 @@ export class RandomForestClassifier implements Classifier {
           sampleIndices.push(i);
         }
       }
+
+      // Track which samples were drawn (for OOB)
+      this.oobSampleIndices_.push(sampleIndices);
 
       // Create subset of data (all features, bootstrapped samples)
       const XSubset: number[][] = [];
@@ -223,6 +271,12 @@ export class RandomForestClassifier implements Classifier {
     }
 
     this.fitted = true;
+
+    // Compute OOB score if enabled
+    if (this.oobScoreEnabled && this.bootstrap) {
+      this.oobScore_ = this.computeOobScore(XData, yData, nSamples);
+    }
+
     return this;
   }
 
@@ -393,6 +447,98 @@ export class RandomForestClassifier implements Classifier {
   }
 
   /**
+   * Get the out-of-bag accuracy score.
+   * Only available when oobScore=true and bootstrap=true.
+   *
+   * @returns OOB accuracy score in range [0, 1]
+   * @throws {NotFittedError} If the model has not been fitted or oobScore was not enabled
+   */
+  get oobScore(): number {
+    if (!this.fitted || this.oobScore_ === undefined) {
+      throw new NotFittedError(
+        "RandomForestClassifier must be fitted with oobScore=true to access oob_score_"
+      );
+    }
+    return this.oobScore_;
+  }
+
+  /**
+   * Compute out-of-bag score by predicting each sample using only trees
+   * that did NOT include it in their bootstrap sample.
+   */
+  private computeOobScore(XData: number[][], yData: number[], nSamples: number): number {
+    const classLabels = this.classLabels ?? [];
+    const nClasses = classLabels.length;
+    const classIndex = new Map<number, number>();
+    for (let c = 0; c < nClasses; c++) {
+      const v = classLabels[c];
+      if (v !== undefined) classIndex.set(v, c);
+    }
+
+    // For each sample, accumulate class votes from OOB trees
+    const oobVotes: number[][] = Array.from({ length: nSamples }, () =>
+      new Array<number>(nClasses).fill(0)
+    );
+    const oobCount = new Array<number>(nSamples).fill(0);
+
+    for (let t = 0; t < this.trees.length; t++) {
+      const tree = this.trees[t];
+      if (!tree) continue;
+      const bagIndices = new Set(this.oobSampleIndices_[t] ?? []);
+
+      // Find OOB samples (not in this tree's bag)
+      const oobRows: number[][] = [];
+      const oobOrigIdx: number[] = [];
+      for (let i = 0; i < nSamples; i++) {
+        if (!bagIndices.has(i)) {
+          oobRows.push(XData[i] ?? []);
+          oobOrigIdx.push(i);
+        }
+      }
+
+      if (oobRows.length === 0) continue;
+
+      const oobX = tensor(oobRows);
+      const preds = tree.predict(oobX);
+      for (let j = 0; j < oobOrigIdx.length; j++) {
+        const idx = oobOrigIdx[j] ?? 0;
+        const pred = Number(preds.data[preds.offset + j]);
+        const ci = classIndex.get(pred);
+        if (ci !== undefined) {
+          const row = oobVotes[idx];
+          if (row) {
+            row[ci] = (row[ci] ?? 0) + 1;
+          }
+        }
+        oobCount[idx] = (oobCount[idx] ?? 0) + 1;
+      }
+    }
+
+    // Compute accuracy from OOB predictions
+    let correct = 0;
+    let total = 0;
+    for (let i = 0; i < nSamples; i++) {
+      if ((oobCount[i] ?? 0) === 0) continue;
+      const row = oobVotes[i];
+      if (!row) continue;
+      let bestClass = 0;
+      let bestVotes = -1;
+      for (let c = 0; c < nClasses; c++) {
+        if ((row[c] ?? 0) > bestVotes) {
+          bestVotes = row[c] ?? 0;
+          bestClass = c;
+        }
+      }
+      if (classLabels[bestClass] === yData[i]) {
+        correct++;
+      }
+      total++;
+    }
+
+    return total === 0 ? 0 : correct / total;
+  }
+
+  /**
    * Get the unique class labels discovered during fitting.
    *
    * @returns Tensor of class labels or undefined if not fitted
@@ -402,6 +548,40 @@ export class RandomForestClassifier implements Classifier {
       return undefined;
     }
     return tensor(this.classLabels, { dtype: "int32" });
+  }
+
+  /**
+   * Get feature importances averaged across all trees.
+   *
+   * @returns Tensor of shape (n_features,) with importance values summing to 1
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get featureImportances(): Tensor {
+    if (!this.fitted || this.trees.length === 0 || this.nFeatures === undefined) {
+      throw new NotFittedError(
+        "RandomForestClassifier must be fitted to access feature_importances_"
+      );
+    }
+    const nF = this.nFeatures;
+    const avg = new Array<number>(nF).fill(0);
+    for (const tree of this.trees) {
+      const treeImp = tree.featureImportances;
+      for (let j = 0; j < nF; j++) {
+        avg[j] = (avg[j] ?? 0) + Number(treeImp.data[treeImp.offset + j] ?? 0);
+      }
+    }
+    const nTrees = this.trees.length;
+    let total = 0;
+    for (let j = 0; j < nF; j++) {
+      avg[j] = (avg[j] ?? 0) / nTrees;
+      total += avg[j] ?? 0;
+    }
+    if (total > 0) {
+      for (let j = 0; j < nF; j++) {
+        avg[j] = (avg[j] ?? 0) / total;
+      }
+    }
+    return tensor(avg);
   }
 
   /**
@@ -417,19 +597,127 @@ export class RandomForestClassifier implements Classifier {
       minSamplesLeaf: this.minSamplesLeaf,
       maxFeatures: this.maxFeatures,
       bootstrap: this.bootstrap,
+      warmStart: this.warmStart,
       randomState: this.randomState,
+      maxSamples: this.maxSamples,
+      oobScore: this.oobScoreEnabled,
     };
   }
 
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError(
-      "RandomForestClassifier does not support setParams after construction"
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "nEstimators":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "nEstimators must be an integer >= 1",
+              "nEstimators",
+              value
+            );
+          }
+          this.nEstimators = value;
+          break;
+        case "maxDepth":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
+          }
+          this.maxDepth = value;
+          break;
+        case "minSamplesSplit":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+            throw new InvalidParameterError(
+              "minSamplesSplit must be an integer >= 2",
+              "minSamplesSplit",
+              value
+            );
+          }
+          this.minSamplesSplit = value;
+          break;
+        case "minSamplesLeaf":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "minSamplesLeaf must be an integer >= 1",
+              "minSamplesLeaf",
+              value
+            );
+          }
+          this.minSamplesLeaf = value;
+          break;
+        case "maxFeatures":
+          if (value !== "sqrt" && value !== "log2" && (typeof value !== "number" || value < 1)) {
+            throw new InvalidParameterError(
+              'maxFeatures must be "sqrt", "log2", or a number >= 1',
+              "maxFeatures",
+              value
+            );
+          }
+          this.maxFeatures = value;
+          break;
+        case "bootstrap":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("bootstrap must be a boolean", "bootstrap", value);
+          }
+          this.bootstrap = value;
+          break;
+        case "warmStart":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("warmStart must be a boolean", "warmStart", value);
+          }
+          this.warmStart = value;
+          break;
+        case "randomState":
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+            throw new InvalidParameterError(
+              "randomState must be a finite number",
+              "randomState",
+              value
+            );
+          }
+          this.randomState = value;
+          break;
+        case "maxSamples":
+          if (value !== undefined && (typeof value !== "number" || value <= 0)) {
+            throw new InvalidParameterError(
+              "maxSamples must be a positive number or undefined",
+              "maxSamples",
+              value
+            );
+          }
+          this.maxSamples = value;
+          break;
+        case "oobScore":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("oobScore must be a boolean", "oobScore", value);
+          }
+          this.oobScoreEnabled = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  clone(): RandomForestClassifier {
+    return new RandomForestClassifier(
+      this.getParams() as {
+        nEstimators?: number;
+        maxDepth?: number;
+        minSamplesSplit?: number;
+        minSamplesLeaf?: number;
+        maxFeatures?: "sqrt" | "log2" | number;
+        bootstrap?: boolean;
+        warmStart?: boolean;
+        randomState?: number;
+        maxSamples?: number;
+        oobScore?: boolean;
+      }
     );
   }
 }
@@ -458,17 +746,22 @@ export class RandomForestClassifier implements Classifier {
  * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
 export class RandomForestRegressor implements Regressor {
-  private readonly nEstimators: number;
-  private readonly maxDepth: number;
-  private readonly minSamplesSplit: number;
-  private readonly minSamplesLeaf: number;
-  private readonly maxFeatures: "sqrt" | "log2" | number;
-  private readonly bootstrap: boolean;
-  private readonly randomState?: number;
+  private nEstimators: number;
+  private maxDepth: number;
+  private minSamplesSplit: number;
+  private minSamplesLeaf: number;
+  private maxFeatures: "sqrt" | "log2" | number;
+  private bootstrap: boolean;
+  private warmStart: boolean;
+  private randomState: number | undefined;
+  private maxSamples: number | undefined;
+  private oobScoreEnabled: boolean;
 
   private trees: DecisionTreeRegressor[] = [];
   private nFeatures?: number;
   private fitted = false;
+  private oobScore_?: number;
+  private oobSampleIndices_: number[][] = [];
 
   constructor(
     options: {
@@ -478,7 +771,10 @@ export class RandomForestRegressor implements Regressor {
       readonly minSamplesLeaf?: number;
       readonly maxFeatures?: "sqrt" | "log2" | number;
       readonly bootstrap?: boolean;
+      readonly warmStart?: boolean;
       readonly randomState?: number;
+      readonly maxSamples?: number;
+      readonly oobScore?: boolean;
     } = {}
   ) {
     this.nEstimators = options.nEstimators ?? 100;
@@ -487,8 +783,25 @@ export class RandomForestRegressor implements Regressor {
     this.minSamplesLeaf = options.minSamplesLeaf ?? 1;
     this.maxFeatures = options.maxFeatures ?? 1.0;
     this.bootstrap = options.bootstrap ?? true;
+    this.warmStart = options.warmStart ?? false;
+    this.oobScoreEnabled = options.oobScore ?? false;
     if (options.randomState !== undefined) {
       this.randomState = options.randomState;
+    }
+    if (options.maxSamples !== undefined) {
+      this.maxSamples = options.maxSamples;
+    }
+    if (this.oobScoreEnabled && !this.bootstrap) {
+      throw new InvalidParameterError("oobScore requires bootstrap=true", "oobScore", true);
+    }
+    if (this.maxSamples !== undefined) {
+      if (this.maxSamples <= 0) {
+        throw new InvalidParameterError(
+          `maxSamples must be > 0; received ${this.maxSamples}`,
+          "maxSamples",
+          this.maxSamples
+        );
+      }
     }
 
     if (!Number.isInteger(this.nEstimators) || this.nEstimators < 1) {
@@ -554,7 +867,7 @@ export class RandomForestRegressor implements Regressor {
         return seed / 233280;
       };
     }
-    return Math.random;
+    return __random;
   }
 
   /**
@@ -604,12 +917,37 @@ export class RandomForestRegressor implements Regressor {
 
     const rng = this.createRNG();
 
-    this.trees = [];
+    // Warm start: keep existing trees and add more
+    let startIdx = 0;
+    if (this.warmStart && this.fitted && this.trees.length > 0) {
+      startIdx = this.trees.length;
+      if (startIdx >= this.nEstimators) {
+        return this;
+      }
+      // Advance RNG past existing trees
+      if (this.bootstrap) {
+        for (let skip = 0; skip < startIdx * nSamples; skip++) {
+          rng();
+        }
+      }
+    } else {
+      this.trees = [];
+    }
 
-    for (let t = 0; t < this.nEstimators; t++) {
+    // Determine bootstrap draw size
+    let drawSize = nSamples;
+    if (this.maxSamples !== undefined) {
+      if (this.maxSamples > 0 && this.maxSamples < 1) {
+        drawSize = Math.max(1, Math.round(this.maxSamples * nSamples));
+      } else if (Number.isInteger(this.maxSamples) && this.maxSamples >= 1) {
+        drawSize = Math.min(this.maxSamples, nSamples);
+      }
+    }
+
+    for (let t = startIdx; t < this.nEstimators; t++) {
       const sampleIndices: number[] = [];
       if (this.bootstrap) {
-        for (let i = 0; i < nSamples; i++) {
+        for (let i = 0; i < drawSize; i++) {
           sampleIndices.push(Math.floor(rng() * nSamples));
         }
       } else {
@@ -617,6 +955,9 @@ export class RandomForestRegressor implements Regressor {
           sampleIndices.push(i);
         }
       }
+
+      // Track which samples were drawn (for OOB)
+      this.oobSampleIndices_.push(sampleIndices);
 
       // Create subset of data (all features, bootstrapped samples)
       const XSubset: number[][] = [];
@@ -647,6 +988,12 @@ export class RandomForestRegressor implements Regressor {
     }
 
     this.fitted = true;
+
+    // Compute OOB score if enabled
+    if (this.oobScoreEnabled && this.bootstrap) {
+      this.oobScore_ = this.computeOobScore(XData, yData, nSamples);
+    }
+
     return this;
   }
 
@@ -747,6 +1094,115 @@ export class RandomForestRegressor implements Regressor {
   }
 
   /**
+   * Get the out-of-bag R² score.
+   * Only available when oobScore=true and bootstrap=true.
+   *
+   * @returns OOB R² score (best possible is 1.0, can be negative)
+   * @throws {NotFittedError} If the model has not been fitted or oobScore was not enabled
+   */
+  get oobScore(): number {
+    if (!this.fitted || this.oobScore_ === undefined) {
+      throw new NotFittedError(
+        "RandomForestRegressor must be fitted with oobScore=true to access oob_score_"
+      );
+    }
+    return this.oobScore_;
+  }
+
+  /**
+   * Compute out-of-bag R² score by predicting each sample using only trees
+   * that did NOT include it in their bootstrap sample.
+   */
+  private computeOobScore(XData: number[][], yData: number[], nSamples: number): number {
+    // For each sample, average OOB tree predictions
+    const oobSum = new Array<number>(nSamples).fill(0);
+    const oobCount = new Array<number>(nSamples).fill(0);
+
+    for (let t = 0; t < this.trees.length; t++) {
+      const tree = this.trees[t];
+      if (!tree) continue;
+      const bagIndices = new Set(this.oobSampleIndices_[t] ?? []);
+
+      const oobRows: number[][] = [];
+      const oobOrigIdx: number[] = [];
+      for (let i = 0; i < nSamples; i++) {
+        if (!bagIndices.has(i)) {
+          oobRows.push(XData[i] ?? []);
+          oobOrigIdx.push(i);
+        }
+      }
+
+      if (oobRows.length === 0) continue;
+
+      const oobX = tensor(oobRows);
+      const preds = tree.predict(oobX);
+      for (let j = 0; j < oobOrigIdx.length; j++) {
+        const idx = oobOrigIdx[j] ?? 0;
+        oobSum[idx] = (oobSum[idx] ?? 0) + Number(preds.data[preds.offset + j]);
+        oobCount[idx] = (oobCount[idx] ?? 0) + 1;
+      }
+    }
+
+    // Compute R² from OOB predictions
+    let yMean = 0;
+    let total = 0;
+    for (let i = 0; i < nSamples; i++) {
+      if ((oobCount[i] ?? 0) > 0) {
+        yMean += yData[i] ?? 0;
+        total++;
+      }
+    }
+    if (total === 0) return 0;
+    yMean /= total;
+
+    let ssRes = 0;
+    let ssTot = 0;
+    for (let i = 0; i < nSamples; i++) {
+      if ((oobCount[i] ?? 0) === 0) continue;
+      const yTrue = yData[i] ?? 0;
+      const yPred = (oobSum[i] ?? 0) / (oobCount[i] ?? 1);
+      ssRes += (yTrue - yPred) ** 2;
+      ssTot += (yTrue - yMean) ** 2;
+    }
+
+    return ssTot === 0 ? (ssRes === 0 ? 1.0 : 0.0) : 1 - ssRes / ssTot;
+  }
+
+  /**
+   * Get feature importances averaged across all trees.
+   *
+   * @returns Tensor of shape (n_features,) with importance values summing to 1
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get featureImportances(): Tensor {
+    if (!this.fitted || this.trees.length === 0 || this.nFeatures === undefined) {
+      throw new NotFittedError(
+        "RandomForestRegressor must be fitted to access feature_importances_"
+      );
+    }
+    const nF = this.nFeatures;
+    const avg = new Array<number>(nF).fill(0);
+    for (const tree of this.trees) {
+      const treeImp = tree.featureImportances;
+      for (let j = 0; j < nF; j++) {
+        avg[j] = (avg[j] ?? 0) + Number(treeImp.data[treeImp.offset + j] ?? 0);
+      }
+    }
+    const nTrees = this.trees.length;
+    let total = 0;
+    for (let j = 0; j < nF; j++) {
+      avg[j] = (avg[j] ?? 0) / nTrees;
+      total += avg[j] ?? 0;
+    }
+    if (total > 0) {
+      for (let j = 0; j < nF; j++) {
+        avg[j] = (avg[j] ?? 0) / total;
+      }
+    }
+    return tensor(avg);
+  }
+
+  /**
    * Get hyperparameters for this estimator.
    *
    * @returns Object containing all hyperparameters
@@ -759,19 +1215,127 @@ export class RandomForestRegressor implements Regressor {
       minSamplesLeaf: this.minSamplesLeaf,
       maxFeatures: this.maxFeatures,
       bootstrap: this.bootstrap,
+      warmStart: this.warmStart,
       randomState: this.randomState,
+      maxSamples: this.maxSamples,
+      oobScore: this.oobScoreEnabled,
     };
   }
 
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError(
-      "RandomForestRegressor does not support setParams after construction"
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "nEstimators":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "nEstimators must be an integer >= 1",
+              "nEstimators",
+              value
+            );
+          }
+          this.nEstimators = value;
+          break;
+        case "maxDepth":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
+          }
+          this.maxDepth = value;
+          break;
+        case "minSamplesSplit":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+            throw new InvalidParameterError(
+              "minSamplesSplit must be an integer >= 2",
+              "minSamplesSplit",
+              value
+            );
+          }
+          this.minSamplesSplit = value;
+          break;
+        case "minSamplesLeaf":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "minSamplesLeaf must be an integer >= 1",
+              "minSamplesLeaf",
+              value
+            );
+          }
+          this.minSamplesLeaf = value;
+          break;
+        case "maxFeatures":
+          if (value !== "sqrt" && value !== "log2" && (typeof value !== "number" || value < 1)) {
+            throw new InvalidParameterError(
+              'maxFeatures must be "sqrt", "log2", or a number >= 1',
+              "maxFeatures",
+              value
+            );
+          }
+          this.maxFeatures = value;
+          break;
+        case "bootstrap":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("bootstrap must be a boolean", "bootstrap", value);
+          }
+          this.bootstrap = value;
+          break;
+        case "warmStart":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("warmStart must be a boolean", "warmStart", value);
+          }
+          this.warmStart = value;
+          break;
+        case "randomState":
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+            throw new InvalidParameterError(
+              "randomState must be a finite number",
+              "randomState",
+              value
+            );
+          }
+          this.randomState = value;
+          break;
+        case "maxSamples":
+          if (value !== undefined && (typeof value !== "number" || value <= 0)) {
+            throw new InvalidParameterError(
+              "maxSamples must be a positive number or undefined",
+              "maxSamples",
+              value
+            );
+          }
+          this.maxSamples = value;
+          break;
+        case "oobScore":
+          if (typeof value !== "boolean") {
+            throw new InvalidParameterError("oobScore must be a boolean", "oobScore", value);
+          }
+          this.oobScoreEnabled = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  clone(): RandomForestRegressor {
+    return new RandomForestRegressor(
+      this.getParams() as {
+        nEstimators?: number;
+        maxDepth?: number;
+        minSamplesSplit?: number;
+        minSamplesLeaf?: number;
+        maxFeatures?: "sqrt" | "log2" | number;
+        bootstrap?: boolean;
+        warmStart?: boolean;
+        randomState?: number;
+        maxSamples?: number;
+        oobScore?: boolean;
+      }
     );
   }
 }

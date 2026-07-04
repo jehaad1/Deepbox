@@ -1,10 +1,4 @@
-import {
-  DataValidationError,
-  InvalidParameterError,
-  NotFittedError,
-  NotImplementedError,
-  ShapeError,
-} from "../../core";
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
@@ -38,13 +32,16 @@ import type { Classifier, Regressor } from "../base";
  */
 export class LinearSVC implements Classifier {
   /** Regularization parameter (inverse of regularization strength) */
-  private readonly C: number;
+  private C: number;
 
   /** Maximum number of iterations for optimization */
-  private readonly maxIter: number;
+  private maxIter: number;
 
   /** Tolerance for stopping criterion */
-  private readonly tol: number;
+  private tol: number;
+
+  /** Class weight strategy */
+  private classWeight: "balanced" | Record<number, number> | undefined;
 
   /** Per-class weight vectors (OvR for multiclass, single for binary) */
   private weightsPerClass: number[][] = [];
@@ -68,17 +65,20 @@ export class LinearSVC implements Classifier {
    * @param options.C - Regularization parameter (default: 1.0). Larger C = stronger penalty on errors = harder margin.
    * @param options.maxIter - Maximum iterations (default: 1000)
    * @param options.tol - Convergence tolerance (default: 1e-4)
+   * @param options.classWeight - Class weights: 'balanced' or {classLabel: weight} (default: undefined = equal weights)
    */
   constructor(
     options: {
       readonly C?: number;
       readonly maxIter?: number;
       readonly tol?: number;
+      readonly classWeight?: "balanced" | Record<number, number>;
     } = {}
   ) {
     this.C = options.C ?? 1.0;
     this.maxIter = options.maxIter ?? 1000;
     this.tol = options.tol ?? 1e-4;
+    this.classWeight = options.classWeight;
 
     // Validate parameters
     if (!Number.isFinite(this.C) || this.C <= 0) {
@@ -104,7 +104,8 @@ export class LinearSVC implements Classifier {
     XData: number[][],
     yMapped: number[],
     nSamples: number,
-    nFeatures: number
+    nFeatures: number,
+    sampleWeights?: Float64Array
   ): { weights: number[]; bias: number } {
     const weights = new Array<number>(nFeatures).fill(0);
     let bias = 0;
@@ -128,14 +129,15 @@ export class LinearSVC implements Classifier {
           maxViolation = Math.max(maxViolation, 1 - margin);
         }
 
+        const sw = sampleWeights ? (sampleWeights[i] ?? 1) : 1;
         const effectiveLR = Math.min(learningRate, 1.0 / (this.C * 10));
 
         if (margin < 1) {
           for (let j = 0; j < nFeatures; j++) {
             weights[j] =
-              (weights[j] ?? 0) * (1 - effectiveLR) + effectiveLR * this.C * yi * (xi[j] ?? 0);
+              (weights[j] ?? 0) * (1 - effectiveLR) + effectiveLR * this.C * sw * yi * (xi[j] ?? 0);
           }
-          bias += effectiveLR * this.C * yi;
+          bias += effectiveLR * this.C * sw * yi;
         } else {
           for (let j = 0; j < nFeatures; j++) {
             weights[j] = (weights[j] ?? 0) * (1 - effectiveLR);
@@ -208,17 +210,44 @@ export class LinearSVC implements Classifier {
     this.weightsPerClass = [];
     this.biasPerClass = [];
 
+    // Compute sample weights from class_weight
+    let sampleWeights: Float64Array | undefined;
+    if (this.classWeight !== undefined) {
+      sampleWeights = new Float64Array(nSamples);
+      if (this.classWeight === "balanced") {
+        const classCounts = new Map<number, number>();
+        for (const label of yData) {
+          classCounts.set(label, (classCounts.get(label) ?? 0) + 1);
+        }
+        const nClasses = this.classLabels.length;
+        for (let i = 0; i < nSamples; i++) {
+          const count = classCounts.get(yData[i] ?? 0) ?? 1;
+          sampleWeights[i] = nSamples / (nClasses * count);
+        }
+      } else {
+        for (let i = 0; i < nSamples; i++) {
+          sampleWeights[i] = this.classWeight[yData[i] ?? 0] ?? 1;
+        }
+      }
+    }
+
     if (this.classLabels.length === 2) {
       // Binary: single SVM, map to {-1, +1}
       const yMapped = yData.map((label) => (label === this.classLabels[0] ? -1 : 1));
-      const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures);
+      const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures, sampleWeights);
       this.weightsPerClass.push(weights);
       this.biasPerClass.push(bias);
     } else {
       // Multiclass: One-vs-Rest — one binary SVM per class
       for (const classLabel of this.classLabels) {
         const yMapped = yData.map((label) => (label === classLabel ? 1 : -1));
-        const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures);
+        const { weights, bias } = this.fitBinary(
+          XData,
+          yMapped,
+          nSamples,
+          nFeatures,
+          sampleWeights
+        );
         this.weightsPerClass.push(weights);
         this.biasPerClass.push(bias);
       }
@@ -399,11 +428,45 @@ export class LinearSVC implements Classifier {
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError("LinearSVC does not support setParams after construction");
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "C":
+          if (typeof value !== "number" || value <= 0) {
+            throw new InvalidParameterError("C must be > 0", "C", value);
+          }
+          this.C = value;
+          break;
+        case "maxIter":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
+          }
+          this.maxIter = value;
+          break;
+        case "tol":
+          if (typeof value !== "number" || value < 0) {
+            throw new InvalidParameterError("tol must be >= 0", "tol", value);
+          }
+          this.tol = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  clone(): LinearSVC {
+    return new LinearSVC(
+      this.getParams() as {
+        C?: number;
+        maxIter?: number;
+        tol?: number;
+      }
+    );
   }
 }
 
@@ -429,16 +492,16 @@ export class LinearSVC implements Classifier {
  */
 export class LinearSVR implements Regressor {
   /** Regularization parameter */
-  private readonly C: number;
+  private C: number;
 
   /** Epsilon in the epsilon-SVR model */
-  private readonly epsilon: number;
+  private epsilon: number;
 
   /** Maximum number of iterations */
-  private readonly maxIter: number;
+  private maxIter: number;
 
   /** Tolerance for stopping criterion */
-  private readonly tol: number;
+  private tol: number;
 
   /** Weight vector */
   private weights: number[] = [];
@@ -660,10 +723,51 @@ export class LinearSVR implements Regressor {
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError("LinearSVR does not support setParams after construction");
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "C":
+          if (typeof value !== "number" || value <= 0) {
+            throw new InvalidParameterError("C must be > 0", "C", value);
+          }
+          this.C = value;
+          break;
+        case "epsilon":
+          if (typeof value !== "number" || value < 0) {
+            throw new InvalidParameterError("epsilon must be >= 0", "epsilon", value);
+          }
+          this.epsilon = value;
+          break;
+        case "maxIter":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
+          }
+          this.maxIter = value;
+          break;
+        case "tol":
+          if (typeof value !== "number" || value < 0) {
+            throw new InvalidParameterError("tol must be >= 0", "tol", value);
+          }
+          this.tol = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
+  }
+
+  clone(): LinearSVR {
+    return new LinearSVR(
+      this.getParams() as {
+        C?: number;
+        epsilon?: number;
+        maxIter?: number;
+        tol?: number;
+      }
+    );
   }
 }

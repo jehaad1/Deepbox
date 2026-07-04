@@ -39,13 +39,15 @@ describe("ml error branch coverage", () => {
     expect(() => clf.fit(tensor([1, 2]), tensor([1, 2]))).toThrow(/2-dimensional/);
     expect(() => clf.fit(X, tensor([[1], [2]]))).toThrow(/1-dimensional/);
     expect(() => clf.fit(X, y)).toThrow(/same number of samples/);
-    expect(() => clf.setParams({})).toThrow(/does not support setParams/);
+    expect(clf.setParams({})).toBe(clf);
+    expect(() => clf.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
 
     const reg = new DecisionTreeRegressor();
     expect(() => reg.fit(tensor([1, 2]), tensor([1, 2]))).toThrow(/2-dimensional/);
     expect(() => reg.fit(X, tensor([[1], [2]]))).toThrow(/1-dimensional/);
     expect(() => reg.fit(X, y)).toThrow(/same number of samples/);
-    expect(() => reg.setParams({})).toThrow(/does not support setParams/);
+    expect(reg.setParams({})).toBe(reg);
+    expect(() => reg.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
   });
 
   it("validates random forest inputs and setParams", () => {
@@ -60,14 +62,16 @@ describe("ml error branch coverage", () => {
     expect(() => clf.fit(X, tensor([[1], [2]]))).toThrow(ShapeError);
     clf.fit(X, tensor([0, 1]));
     expect(() => clf.predict(tensor([[1, 2, 3]]))).toThrow(/features/);
-    expect(() => clf.setParams({})).toThrow(/does not support setParams/);
+    expect(clf.setParams({})).toBe(clf);
+    expect(() => clf.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
 
     const reg = new RandomForestRegressor();
     expect(() => reg.fit(tensor([1, 2]), tensor([1, 2]))).toThrow(ShapeError);
     expect(() => reg.fit(X, tensor([[1], [2]]))).toThrow(ShapeError);
     reg.fit(X, tensor([1, 2]));
     expect(() => reg.predict(tensor([[1, 2, 3]]))).toThrow(/features/);
-    expect(() => reg.setParams({})).toThrow(/does not support setParams/);
+    expect(reg.setParams({})).toBe(reg);
+    expect(() => reg.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
   });
 
   it("validates gradient boosting configuration and inputs", () => {
@@ -83,7 +87,8 @@ describe("ml error branch coverage", () => {
     expect(() => gbr.fit(tensor([1, 2]), tensor([1, 2]))).toThrow(/2-dimensional/);
     expect(() => gbr.fit(X, tensor([[1], [2]]))).toThrow(/1-dimensional/);
     expect(() => gbr.fit(X, y)).toThrow(/same number of samples/);
-    expect(() => gbr.setParams({})).toThrow(/does not support setParams/);
+    expect(gbr.setParams({})).toBe(gbr);
+    expect(() => gbr.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
 
     const gbc = new GradientBoostingClassifier();
     const X3 = tensor([
@@ -93,7 +98,8 @@ describe("ml error branch coverage", () => {
     ]);
     // Multiclass is now supported via OvR; test that single-class still throws
     expect(() => gbc.fit(X3, tensor([0, 0, 0]))).toThrow(/at least 2 classes/);
-    expect(() => gbc.setParams({})).toThrow(/does not support setParams/);
+    expect(gbc.setParams({})).toBe(gbc);
+    expect(() => gbc.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
   });
 
   it("validates linear models and SVM inputs", () => {

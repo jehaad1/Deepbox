@@ -39,12 +39,25 @@ export type Shape = readonly number[];
 export type TypedArray = Float32Array | Float64Array | Int32Array | BigInt64Array | Uint8Array;
 
 /**
+ * Extended array types for half-precision and complex dtypes.
+ *
+ * These are software-emulated typed arrays that provide the same
+ * indexed-access interface as native TypedArrays but for types
+ * not natively supported by JavaScript.
+ */
+export type ExtendedTypedArray =
+  | import("../../ndarray/tensor/float16").Float16Array
+  | import("../../ndarray/tensor/float16").BFloat16Array
+  | import("../../ndarray/tensor/complex").Complex64Array
+  | import("../../ndarray/tensor/complex").Complex128Array;
+
+/**
  * Backing storage for a tensor.
  *
- * Numeric tensors are backed by TypedArrays.
+ * Numeric tensors are backed by TypedArrays or ExtendedTypedArrays.
  * String tensors are backed by a string array.
  */
-export type TensorStorage = TypedArray | string[];
+export type TensorStorage = TypedArray | ExtendedTypedArray | string[];
 
 /**
  * Axis identifier.

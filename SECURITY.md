@@ -2,95 +2,94 @@
 
 ## Supported Versions
 
-We release patches for security vulnerabilities. Currently supported versions:
+Security fixes are issued for supported release lines only.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
+| Version | Supported |
+| --- | --- |
+| `1.0.x` | Yes |
+| `0.2.x` | No |
+| `< 0.2.0` | No |
 
 ## Reporting a Vulnerability
 
-The Deepbox team takes security bugs seriously. We appreciate your efforts to responsibly disclose your findings.
+Do not open public GitHub issues for security reports.
 
-### How to Report
+Report vulnerabilities to:
 
-**Please do NOT report security vulnerabilities through public GitHub issues.**
+- Email: [hi@jehaad.com](mailto:hi@jehaad.com)
 
-Instead, report vulnerabilities by emailing: **[hi@jehaad.com](mailto:hi@jehaad.com)**
+Please include:
 
-Please include the following information in your report:
+- a short description of the issue
+- affected Deepbox version, commit, or tag
+- operating system and Node.js version
+- reproduction steps
+- proof of concept if available
+- expected impact and likely attack surface
 
-- Type of issue (e.g., buffer overflow, SQL injection, cross-site scripting, etc.)
-- Full paths of source file(s) related to the manifestation of the issue
-- The location of the affected source code (tag/branch/commit or direct URL)
-- Any special configuration required to reproduce the issue
-- Step-by-step instructions to reproduce the issue
-- Proof-of-concept or exploit code (if possible)
-- Impact of the issue, including how an attacker might exploit it
+## Response Process
 
-### What to Expect
+- Initial acknowledgment target: within 48 hours
+- Triage target: within 7 days
+- Fix and disclosure timing: coordinated case by case based on severity and reproducibility
 
-- **Acknowledgment**: We'll acknowledge receipt of your vulnerability report within 48 hours
-- **Updates**: We'll send you regular updates about our progress
-- **Disclosure**: Once we've resolved the issue, we'll publicly disclose the vulnerability (with credit to you, if desired)
-
-### Security Best Practices
-
-When using Deepbox:
-
-1. **Keep Dependencies Updated**: Although Deepbox has zero runtime dependencies, keep your development dependencies up to date
-2. **Validate Input**: Always validate and sanitize user input before passing to Deepbox functions
-3. **Use Type Safety**: Leverage TypeScript's type system to catch potential issues at compile time
-4. **Review Code**: Review any code that processes untrusted data
-5. **Monitor for Updates**: Watch the repository for security updates and patches
-
-## Security Features
-
-Deepbox is designed with security in mind:
-
-- ✅ **Zero Runtime Dependencies**: No supply chain vulnerabilities from third-party packages
-- ✅ **Type Safety**: Strict TypeScript prevents common bugs and vulnerabilities
-- ✅ **Input Validation**: Comprehensive validation of all inputs
-- ✅ **No Eval**: No use of `eval()` or other unsafe code execution
-- ✅ **Memory Safety**: TypedArrays and proper bounds checking
-- ✅ **No External Network Calls**: Library operates entirely locally
-
-## Known Issues
-
-Currently, there are no known security vulnerabilities in Deepbox 0.2.0.
-
-## Security Updates
-
-Security updates will be released as patch versions (e.g., 0.2.1, 0.2.2) and documented in the [CHANGELOG.md](CHANGELOG.md).
+If the report is valid, fixes are generally shipped in the next appropriate patch release on the supported line.
 
 ## Scope
 
-This security policy applies to:
+This policy applies to:
 
-- The Deepbox npm package
-- All code in the main repository
-- Official examples and documentation
+- the published `deepbox` npm package
+- code in the main Deepbox repository
+- official examples and documentation maintained in this repo
 
-This policy does NOT apply to:
+This policy does not apply to:
 
-- Third-party packages that use Deepbox
-- Unofficial forks or modifications
-- User applications built with Deepbox
+- unofficial forks or downstream wrappers
+- third-party packages that depend on Deepbox
+- vulnerabilities in user applications that merely import Deepbox
+- issues caused only by unsupported runtime environments
+
+## Network-Aware Surfaces
+
+Most Deepbox modules are local-only numerical code, but some dataset helpers can access external resources. Treat remote data and credentials as untrusted input.
+
+Examples include:
+
+- `fetchCSVDataset()`
+- image dataset fetchers such as MNIST and CIFAR helpers
+- text dataset fetchers such as IMDB and 20 Newsgroups helpers
+- Kaggle integration helpers in `deepbox/datasets`
+
+When using these features:
+
+- validate downloaded content before using it in production pipelines
+- scope and rotate Kaggle credentials appropriately
+- avoid writing fetched artifacts to sensitive locations
+
+## Secure Usage Guidance
+
+- Keep Node.js and npm current on supported releases.
+- Pin Deepbox to a supported version in production systems.
+- Validate shapes, dtypes, paths, URLs, and untrusted payloads before passing them into your own application logic.
+- Prefer Deepbox custom errors and strict TypeScript checks when building extensions around the library.
+- Review file-system interactions around serialization and figure export when paths are influenced by user input.
+
+## Disclosure
+
+Security fixes are documented in:
+
+- [CHANGELOG.md](CHANGELOG.md)
+- GitHub releases
+- the npm package release history
+
+Public disclosure happens after a fix is available or a coordinated disclosure window has been agreed.
 
 ## Contact
 
-For security concerns, please contact the maintainer:
+- Maintainer: Jehaad Aljohani
+- Security email: [hi@jehaad.com](mailto:hi@jehaad.com)
+- Repository: [https://github.com/jehaad1/Deepbox](https://github.com/jehaad1/Deepbox)
+- Website: [https://deepbox.dev](https://deepbox.dev)
 
-- **Security Email**: [hi@jehaad.com](mailto:hi@jehaad.com)
-- **Author**: Jehaad Aljohani
-- **Website**: [https://deepbox.dev](https://deepbox.dev)
-- **Repository**: [https://github.com/jehaad1/Deepbox](https://github.com/jehaad1/Deepbox)
-- **Issues**: [https://github.com/jehaad1/Deepbox/issues](https://github.com/jehaad1/Deepbox/issues) (for non-security issues only)
-
-## Acknowledgments
-
-We thank the security researchers and community members who help keep Deepbox secure.
-
----
-
-**Last Updated**: February 14, 2026
+Last updated: July 2, 2026

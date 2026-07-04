@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="520" viewBox="0 0 840 520">
+<rect x="0" y="0" width="840" height="520" fill="#ffffff" />
+<rect x="50" y="50" width="740" height="420" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-740-420"><path d="M50 50 L790 50 L790 470 L50 470 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-740-420)">
+<rect x="83.64" y="449.06" width="128.14" height="1.85" fill="#2563eb" stroke="#000000" />
+<rect x="243.81" y="450.91" width="128.14" height="0.00" fill="#2563eb" stroke="#000000" />
+<rect x="403.98" y="69.09" width="128.14" height="381.82" fill="#2563eb" stroke="#000000" />
+<rect x="564.16" y="450.85" width="128.14" height="0.06" fill="#2563eb" stroke="#000000" />
+<rect x="147.71" y="448.45" width="128.14" height="2.46" fill="#f97316" stroke="#000000" />
+<rect x="307.88" y="450.91" width="128.14" height="0.00" fill="#f97316" stroke="#000000" />
+<rect x="468.05" y="69.09" width="128.14" height="381.82" fill="#f97316" stroke="#000000" />
+<rect x="628.23" y="450.79" width="128.14" height="0.12" fill="#f97316" stroke="#000000" />
+</g>
+<line class="axhline" x1="50.00" y1="-15721.55" x2="790.00" y2="-15721.55" stroke="#991b1b" stroke-width="2" stroke-dasharray="4,3" />
+<line class="x-tick" x1="99.65" y1="470.00" x2="99.65" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="99.65" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0.5</text>
+<line class="x-tick" x1="179.74" y1="470.00" x2="179.74" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="179.74" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="259.83" y1="470.00" x2="259.83" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="259.83" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1.5</text>
+<line class="x-tick" x1="339.91" y1="470.00" x2="339.91" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="339.91" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="420.00" y1="470.00" x2="420.00" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="420.00" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2.5</text>
+<line class="x-tick" x1="500.09" y1="470.00" x2="500.09" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="500.09" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="580.17" y1="470.00" x2="580.17" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="580.17" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3.5</text>
+<line class="x-tick" x1="660.26" y1="470.00" x2="660.26" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="660.26" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="740.35" y1="470.00" x2="740.35" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="740.35" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4.5</text>
+<line class="y-tick" x1="50.00" y1="450.91" x2="45.00" y2="450.91" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="450.91" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="370.05" x2="45.00" y2="370.05" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="370.05" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.0003</text>
+<line class="y-tick" x1="50.00" y1="289.18" x2="45.00" y2="289.18" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="289.18" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.0005</text>
+<line class="y-tick" x1="50.00" y1="208.32" x2="45.00" y2="208.32" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="208.32" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.0008</text>
+<line class="y-tick" x1="50.00" y1="127.46" x2="45.00" y2="127.46" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="127.46" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.001</text>
+<g class="legend">
+<rect class="legend-box" x="668.60" y="56.00" width="115.40" height="44.00" fill="#ffffff" stroke="#000000" />
+<rect class="legend-swatch" x="674.60" y="64.50" width="11.00" height="11.00" fill="#2563eb" stroke="#000" />
+<text class="legend-label" x="691.60" y="70.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">raw p-values</text>
+<rect class="legend-swatch" x="674.60" y="80.50" width="11.00" height="11.00" fill="#f97316" stroke="#000" />
+<text class="legend-label" x="691.60" y="86.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">BH corrected</text>
+</g>
+</svg>

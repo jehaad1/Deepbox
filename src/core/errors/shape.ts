@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
+ */
+
 import type { Shape } from "../types/common";
 import { DeepboxError } from "./base";
 
@@ -21,7 +25,7 @@ export type ShapeErrorDetails = {
 /**
  * Error thrown when tensor shapes are incompatible or invalid.
  *
- * This error is used throughout the library when operations require specific
+ * This error is used throughout the framework when operations require specific
  * tensor shapes that don't match the provided tensors.
  *
  * @example

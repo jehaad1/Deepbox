@@ -1,5 +1,6 @@
 /**
  * @internal
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 export type Tick = {
   readonly value: number;
@@ -70,6 +71,28 @@ export function generateTicks(min: number, max: number, maxTicks = 5): readonly 
   for (let v = niceMin; v <= niceMax + epsilon; v += step) {
     if (v + epsilon < m || v - epsilon > M) continue;
     ticks.push({ value: v, label: formatTick(v, step) });
+  }
+  return ticks;
+}
+
+/**
+ * Log-scale ticks: one per decade (…, 0.1, 1, 10, 100, …) with the data value
+ * as the label. `min`/`max` are the DATA-space bounds; only positive bounds
+ * are meaningful on a log axis.
+ */
+export function generateLogTicks(min: number, max: number): readonly Tick[] {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  if (!(lo > 0) || !(hi > 0) || !Number.isFinite(lo) || !Number.isFinite(hi)) return [];
+  const startExp = Math.floor(Math.log10(lo));
+  const endExp = Math.ceil(Math.log10(hi));
+  const ticks: Tick[] = [];
+  for (let e = startExp; e <= endExp; e++) {
+    const v = 10 ** e;
+    if (v < lo * (1 - 1e-9) || v > hi * (1 + 1e-9)) continue;
+    // Label decades in plain or exponential form depending on magnitude.
+    const label = e >= -4 && e <= 6 ? String(v) : `1e${e}`;
+    ticks.push({ value: v, label });
   }
   return ticks;
 }

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">
+<rect x="0" y="0" width="800" height="480" fill="#ffffff" />
+<rect x="50" y="50" width="700" height="380" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-700-380"><path d="M50 50 L750 50 L750 430 L50 430 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-700-380)">
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="81.82,119.42 209.09,210.68 336.36,160.16 463.64,67.27 590.91,140.60 718.18,253.04" />
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="81.82,412.72 209.09,412.71 336.36,412.72 463.64,412.73 590.91,412.72 718.18,412.70" />
+</g>
+<line class="x-tick" x1="81.82" y1="430.00" x2="81.82" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="81.82" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
+<line class="x-tick" x1="209.09" y1="430.00" x2="209.09" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="209.09" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2</text>
+<line class="x-tick" x1="336.36" y1="430.00" x2="336.36" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="336.36" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<line class="x-tick" x1="463.64" y1="430.00" x2="463.64" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="463.64" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">4</text>
+<line class="x-tick" x1="590.91" y1="430.00" x2="590.91" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="590.91" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
+<line class="x-tick" x1="718.18" y1="430.00" x2="718.18" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="718.18" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">6</text>
+<line class="y-tick" x1="50.00" y1="412.74" x2="45.00" y2="412.74" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="412.74" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="331.26" x2="45.00" y2="331.26" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="331.26" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">50000</text>
+<line class="y-tick" x1="50.00" y1="249.78" x2="45.00" y2="249.78" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="249.78" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">100000</text>
+<line class="y-tick" x1="50.00" y1="168.31" x2="45.00" y2="168.31" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="168.31" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">150000</text>
+<line class="y-tick" x1="50.00" y1="86.83" x2="45.00" y2="86.83" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="86.83" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">200000</text>
+<text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Revenue vs Support Load</text>
+<text x="400" y="465" text-anchor="middle" font-size="12" fill="#000">day</text>
+<g class="legend">
+<rect class="legend-box" x="614.20" y="56.00" width="129.80" height="44.00" fill="#ffffff" stroke="#000000" />
+<line class="legend-line" x1="620.20" y1="70.00" x2="631.20" y2="70.00" stroke="#1f77b4" stroke-width="2" />
+<text class="legend-label" x="637.20" y="70.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">revenue</text>
+<line class="legend-line" x1="620.20" y1="86.00" x2="631.20" y2="86.00" stroke="#1f77b4" stroke-width="2" />
+<text class="legend-label" x="637.20" y="86.00" text-anchor="start" dominant-baseline="middle" font-size="12" fill="#000">supportTickets</text>
+</g>
+</svg>

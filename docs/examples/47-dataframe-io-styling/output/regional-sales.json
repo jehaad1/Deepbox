@@ -1,0 +1,68 @@
+{
+  "columns": [
+    "orderDate",
+    "region",
+    "segment",
+    "revenue",
+    "supportTickets",
+    "activeCampaign"
+  ],
+  "index": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "data": {
+    "orderDate": [
+      "2026-02-28",
+      "2026-03-01",
+      "2026-03-02",
+      "2026-03-03",
+      "2026-03-04",
+      "2026-03-05"
+    ],
+    "region": [
+      "GCC",
+      "North Africa",
+      "GCC",
+      "Levant",
+      "North Africa",
+      "Levant"
+    ],
+    "segment": [
+      "Enterprise",
+      "SMB",
+      "Mid-Market",
+      "Enterprise",
+      "Enterprise",
+      "SMB"
+    ],
+    "revenue": [
+      180000,
+      124000,
+      155000,
+      212000,
+      167000,
+      98000
+    ],
+    "supportTickets": [
+      12,
+      21,
+      16,
+      9,
+      13,
+      24
+    ],
+    "activeCampaign": [
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  }
+}

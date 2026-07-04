@@ -18,9 +18,11 @@ export default defineConfig({
     "datasets/index": "src/datasets/index.ts",
   },
   format: ["cjs", "esm"],
-  dts: true,
+  dts: false,
   splitting: true,
-  sourcemap: true,
+  // Sourcemaps reference ../src which is not shipped in the npm package —
+  // emitting them only bloats the tarball with broken maps.
+  sourcemap: false,
   clean: true,
   treeshake: true,
   target: "es2024",

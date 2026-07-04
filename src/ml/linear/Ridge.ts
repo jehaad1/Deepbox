@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ */
+
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { cholesky } from "../../linalg/decomposition/cholesky";
 import { svd } from "../../linalg/decomposition/svd";
@@ -486,9 +490,15 @@ export class Ridge implements Regressor {
     maxIter: number,
     tol: number
   ): { x: number[]; nIter: number } {
+    // Full-batch gradient descent on the averaged ridge objective
+    //   (1/2n)·||Xw - y||² + (alpha/2n)·||w||²
+    // whose minimizer is identical to the closed-form (XᵀX + αI)w = Xᵀy.
+    // One update per epoch with step 1/L (L = max‖x_i‖² + alpha/n bounds the
+    // averaged Hessian) is unconditionally stable — unlike the previous
+    // per-sample scheme, which took n oversized steps per epoch and diverged
+    // to ±Infinity on ordinary data.
+    const n = nSamples === 0 ? 1 : nSamples;
     const w = new Array<number>(nFeatures).fill(0);
-    const avgGrad = new Array<number>(nFeatures).fill(0);
-    const residuals = new Array<number>(nSamples).fill(0);
 
     let maxNormSq = 0;
     for (let i = 0; i < nSamples; i++) {
@@ -497,50 +507,41 @@ export class Ridge implements Regressor {
         const xij = getX(i, j);
         normSq += xij * xij;
       }
-      if (normSq > maxNormSq) {
-        maxNormSq = normSq;
-      }
+      if (normSq > maxNormSq) maxNormSq = normSq;
     }
 
-    const scale = nSamples === 0 ? 1 : nSamples;
-    const L = maxNormSq * scale + alpha;
+    const L = maxNormSq + alpha / n;
     const step = L > 0 ? 1 / L : 1;
 
     let nIter = 0;
     for (let iter = 0; iter < maxIter; iter++) {
-      let maxUpdate = 0;
-
+      // Full averaged gradient: (1/n) Xᵀ(Xw - y) + (alpha/n) w
+      const grad = new Array<number>(nFeatures).fill(0);
       for (let i = 0; i < nSamples; i++) {
         let dotProd = 0;
+        for (let j = 0; j < nFeatures; j++) dotProd += (w[j] ?? 0) * getX(i, j);
+        const residual = dotProd - getY(i);
         for (let j = 0; j < nFeatures; j++) {
-          dotProd += (w[j] ?? 0) * getX(i, j);
+          grad[j] = (grad[j] ?? 0) + residual * getX(i, j);
         }
+      }
 
-        const yi = getY(i);
-        const newResidual = dotProd - yi;
-        const delta = newResidual - (residuals[i] ?? 0);
-        residuals[i] = newResidual;
-
-        if (delta !== 0) {
-          for (let j = 0; j < nFeatures; j++) {
-            avgGrad[j] = (avgGrad[j] ?? 0) + delta * getX(i, j);
-          }
-        }
-
-        for (let j = 0; j < nFeatures; j++) {
-          const grad = (avgGrad[j] ?? 0) + alpha * (w[j] ?? 0);
-          const update = step * grad;
-          w[j] = (w[j] ?? 0) - update;
-          if (Math.abs(update) > maxUpdate) {
-            maxUpdate = Math.abs(update);
-          }
-        }
+      let maxUpdate = 0;
+      for (let j = 0; j < nFeatures; j++) {
+        const g = (grad[j] ?? 0) / n + (alpha / n) * (w[j] ?? 0);
+        const update = step * g;
+        w[j] = (w[j] ?? 0) - update;
+        if (Math.abs(update) > maxUpdate) maxUpdate = Math.abs(update);
       }
 
       nIter = iter + 1;
-      if (maxUpdate < tol) {
-        break;
-      }
+      if (maxUpdate < tol) break;
+    }
+
+    if (w.some((v) => !Number.isFinite(v))) {
+      throw new DataValidationError(
+        "Ridge sag solver diverged to non-finite values; try scaling features or a different solver"
+      );
     }
 
     return { x: w, nIter };
@@ -780,6 +781,19 @@ export class Ridge implements Regressor {
       }
     }
     return this;
+  }
+
+  clone(): Ridge {
+    return new Ridge(
+      this.getParams() as {
+        alpha?: number;
+        fitIntercept?: boolean;
+        normalize?: boolean;
+        solver?: "auto" | "svd" | "cholesky" | "lsqr" | "sag";
+        maxIter?: number;
+        tol?: number;
+      }
+    );
   }
 
   /**

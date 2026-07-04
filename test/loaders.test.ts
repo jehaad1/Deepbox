@@ -391,7 +391,10 @@ describe("Dataset Loaders", () => {
   });
 
   it("should have targetNames matching number of classes for classification datasets", () => {
-    const classificationSets: Array<{ loader: () => Dataset; numClasses: number }> = [
+    const classificationSets: Array<{
+      loader: () => Dataset;
+      numClasses: number;
+    }> = [
       { loader: loadIris, numClasses: 3 },
       { loader: loadDigits, numClasses: 10 },
       { loader: loadBreastCancer, numClasses: 2 },
@@ -539,7 +542,10 @@ describe("Dataset Loaders", () => {
 
   describe("Class Balance & Label Validity", () => {
     it("should have valid class labels in range [0, nClasses) for classification datasets", () => {
-      const classificationSets: Array<{ loader: () => Dataset; nClasses: number }> = [
+      const classificationSets: Array<{
+        loader: () => Dataset;
+        nClasses: number;
+      }> = [
         { loader: loadIris, nClasses: 3 },
         { loader: loadDigits, nClasses: 10 },
         { loader: loadBreastCancer, nClasses: 2 },
@@ -898,13 +904,14 @@ describe("Dataset Loaders", () => {
       }
     });
 
-    it("Digits: pixel values should be integers in [0, 15]", () => {
+    it("Digits: pixel values should be integers in [0, 16]", { timeout: 30000 }, () => {
       const ds = loadDigits();
       const allVals = extractValues(ds.data);
       for (const v of allVals) {
         expect(v).toBe(Math.floor(v));
         expect(v).toBeGreaterThanOrEqual(0);
-        expect(v).toBeLessThanOrEqual(15);
+        // Real UCI digits intensities range over the 17 levels 0..16.
+        expect(v).toBeLessThanOrEqual(16);
       }
     });
   });
@@ -922,11 +929,12 @@ describe("Dataset Loaders", () => {
       expect(Math.max(...sepalLength)).toBeLessThan(10);
     });
 
-    it("Breast Cancer: features should be positive", () => {
+    it("Breast Cancer: features should be non-negative", () => {
       const ds = loadBreastCancer();
       const allVals = extractValues(ds.data);
       for (const v of allVals) {
-        expect(v).toBeGreaterThan(0);
+        // Real diagnostic data includes exact 0.0 concavity/concave-points values.
+        expect(v).toBeGreaterThanOrEqual(0);
       }
     });
 

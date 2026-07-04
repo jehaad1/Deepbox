@@ -2,7 +2,7 @@
  * Quick Start Guide
  *
  * A rapid introduction to Deepbox's core features.
- * Run this first to get a feel for the library!
+ * Run this first to get a feel for the framework!
  */
 
 import { DataFrame } from "deepbox/dataframe";
@@ -50,5 +50,5 @@ console.log("   Predictions:", predictions.toString());
 console.log("   Actual:     ", y_test.toString());
 
 console.log("\n✨ That's Deepbox in a nutshell!");
-console.log("📖 Explore the numbered examples (01-32) to learn more.");
+console.log("📖 Explore the numbered examples (01-49) to learn more.");
 console.log("💡 Each example focuses on a specific feature with detailed comments.\n");

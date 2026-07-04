@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-types | Deepbox documentation}
+ */
+
 import type { Shape, TensorStorage } from "./common";
 import type { Device } from "./device";
 import type { DType } from "./dtype";

@@ -1,5 +1,6 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { __random } from "../../random/random";
 import { validatePredictInputs, validateUnsupervisedFitInputs } from "../_validation";
 import type { Clusterer } from "../base";
 
@@ -43,7 +44,10 @@ export class KMeans implements Clusterer {
   private maxIter: number;
   private tol: number;
   private init: "random" | "kmeans++";
+  private nInit: number;
+  private warmStart: boolean;
   private randomState: number | undefined;
+  private algorithm: "lloyd" | "elkan" | "auto";
 
   private clusterCenters_?: Tensor;
   private labels_?: Tensor;
@@ -60,7 +64,10 @@ export class KMeans implements Clusterer {
    * @param options.maxIter - Maximum number of iterations (default: 300)
    * @param options.tol - Tolerance for convergence (default: 1e-4)
    * @param options.init - Initialization method: 'random' or 'kmeans++' (default: 'kmeans++')
+   * @param options.nInit - Number of times to run with different seeds, keeping the best result (default: 10)
+   * @param options.warmStart - If true, use previous centroids as initialization (default: false)
    * @param options.randomState - Random seed for reproducibility
+   * @param options.algorithm - Algorithm: 'lloyd', 'elkan', or 'auto' (default: 'auto')
    */
   constructor(
     options: {
@@ -68,13 +75,19 @@ export class KMeans implements Clusterer {
       readonly maxIter?: number;
       readonly tol?: number;
       readonly init?: "random" | "kmeans++";
+      readonly nInit?: number;
+      readonly warmStart?: boolean;
       readonly randomState?: number;
+      readonly algorithm?: "lloyd" | "elkan" | "auto";
     } = {}
   ) {
     this.nClusters = options.nClusters ?? 8;
     this.maxIter = options.maxIter ?? 300;
     this.tol = options.tol ?? 1e-4;
     this.init = options.init ?? "kmeans++";
+    this.nInit = options.nInit ?? 10;
+    this.warmStart = options.warmStart ?? false;
+    this.algorithm = options.algorithm ?? "auto";
     if (options.randomState !== undefined) {
       this.randomState = options.randomState;
     }
@@ -99,11 +112,21 @@ export class KMeans implements Clusterer {
         this.init
       );
     }
+    if (!Number.isInteger(this.nInit) || this.nInit < 1) {
+      throw new InvalidParameterError("nInit must be an integer >= 1", "nInit", this.nInit);
+    }
     if (options.randomState !== undefined && !Number.isFinite(options.randomState)) {
       throw new InvalidParameterError(
         `randomState must be a finite number; received ${String(options.randomState)}`,
         "randomState",
         options.randomState
+      );
+    }
+    if (this.algorithm !== "lloyd" && this.algorithm !== "elkan" && this.algorithm !== "auto") {
+      throw new InvalidParameterError(
+        `algorithm must be 'lloyd', 'elkan', or 'auto'; received ${String(this.algorithm)}`,
+        "algorithm",
+        this.algorithm
       );
     }
   }
@@ -130,67 +153,150 @@ export class KMeans implements Clusterer {
       );
     }
 
-    // Initialize centroids
-    let centroids = this.initializeCentroids(X);
+    let bestCentroids: Tensor | undefined;
+    let bestLabels: Tensor | undefined;
+    let bestInertia = Number.POSITIVE_INFINITY;
+    let bestNIter = 0;
 
-    let prevInertia = Number.POSITIVE_INFINITY;
+    // Warm start: use previous centroids as initialization (single run)
+    if (this.warmStart && this.fitted && this.clusterCenters_) {
+      let centroids = this.clusterCenters_;
+      let prevInertia = Number.POSITIVE_INFINITY;
+      let runNIter = 0;
 
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      // Assign points to nearest centroid
-      const labels = this.assignClusters(X, centroids);
-
-      // Update centroids
-      const newCentroids: number[][] = [];
-      for (let k = 0; k < this.nClusters; k++) {
-        const clusterPoints: number[][] = [];
-        for (let i = 0; i < nSamples; i++) {
-          if (Number(labels.data[labels.offset + i]) === k) {
-            const point: number[] = [];
+      for (let iter = 0; iter < this.maxIter; iter++) {
+        const labels = this.assignClusters(X, centroids);
+        const newCentroids: number[][] = [];
+        for (let k = 0; k < this.nClusters; k++) {
+          const clusterPoints: number[][] = [];
+          for (let i = 0; i < nSamples; i++) {
+            if (Number(labels.data[labels.offset + i]) === k) {
+              const point: number[] = [];
+              for (let j = 0; j < nFeatures; j++) {
+                point.push(Number(X.data[X.offset + i * nFeatures + j]));
+              }
+              clusterPoints.push(point);
+            }
+          }
+          if (clusterPoints.length > 0) {
+            const centroid: number[] = [];
             for (let j = 0; j < nFeatures; j++) {
-              point.push(Number(X.data[X.offset + i * nFeatures + j]));
+              let sum = 0;
+              for (const point of clusterPoints) sum += point[j] ?? 0;
+              centroid.push(sum / clusterPoints.length);
             }
-            clusterPoints.push(point);
+            newCentroids.push(centroid);
+          } else {
+            const oldCentroid: number[] = [];
+            for (let j = 0; j < nFeatures; j++) {
+              oldCentroid.push(Number(centroids.data[centroids.offset + k * nFeatures + j]));
+            }
+            newCentroids.push(oldCentroid);
           }
         }
-
-        if (clusterPoints.length > 0) {
-          const centroid: number[] = [];
-          for (let j = 0; j < nFeatures; j++) {
-            let sum = 0;
-            for (const point of clusterPoints) {
-              sum += point[j] ?? 0;
-            }
-            centroid.push(sum / clusterPoints.length);
-          }
-          newCentroids.push(centroid);
-        } else {
-          // Keep old centroid if no points assigned
-          const oldCentroid: number[] = [];
-          for (let j = 0; j < nFeatures; j++) {
-            oldCentroid.push(Number(centroids.data[centroids.offset + k * nFeatures + j]));
-          }
-          newCentroids.push(oldCentroid);
-        }
+        centroids = tensor(newCentroids);
+        const inertia = this.calculateInertia(X, centroids, labels);
+        runNIter = iter + 1;
+        if (Math.abs(prevInertia - inertia) < this.tol) break;
+        prevInertia = inertia;
       }
 
-      centroids = tensor(newCentroids);
-
-      // Calculate inertia (sum of squared distances to centroids)
-      const inertia = this.calculateInertia(X, centroids, labels);
-
-      // Check convergence
-      if (Math.abs(prevInertia - inertia) < this.tol) {
-        this.nIter_ = iter + 1;
-        break;
-      }
-
-      prevInertia = inertia;
-      this.nIter_ = iter + 1;
+      const finalLabels = this.assignClusters(X, centroids);
+      this.clusterCenters_ = centroids;
+      this.labels_ = finalLabels;
+      this.inertia_ = this.calculateInertia(X, centroids, finalLabels);
+      this.nIter_ = runNIter;
+      return this;
     }
 
-    this.clusterCenters_ = centroids;
-    this.labels_ = this.assignClusters(X, centroids);
-    this.inertia_ = this.calculateInertia(X, centroids, this.labels_);
+    // Resolve algorithm
+    const useElkan =
+      this.algorithm === "elkan" || (this.algorithm === "auto" && this.nClusters >= 4);
+
+    // Save original seed so each run uses a different but deterministic seed
+    const baseSeed = this.randomState;
+
+    for (let run = 0; run < this.nInit; run++) {
+      // Vary the seed for each run if a randomState is provided
+      if (baseSeed !== undefined) {
+        this.randomState = baseSeed + run * 7919; // offset by a prime
+      }
+
+      // Initialize centroids
+      let centroids = this.initializeCentroids(X);
+      let runNIter = 0;
+
+      if (useElkan) {
+        const result = this.runElkan(X, centroids, nSamples, nFeatures);
+        centroids = result.centroids;
+        runNIter = result.nIter;
+      } else {
+        let prevInertia = Number.POSITIVE_INFINITY;
+
+        for (let iter = 0; iter < this.maxIter; iter++) {
+          const labels = this.assignClusters(X, centroids);
+
+          const newCentroids: number[][] = [];
+          for (let k = 0; k < this.nClusters; k++) {
+            const clusterPoints: number[][] = [];
+            for (let i = 0; i < nSamples; i++) {
+              if (Number(labels.data[labels.offset + i]) === k) {
+                const point: number[] = [];
+                for (let j = 0; j < nFeatures; j++) {
+                  point.push(Number(X.data[X.offset + i * nFeatures + j]));
+                }
+                clusterPoints.push(point);
+              }
+            }
+
+            if (clusterPoints.length > 0) {
+              const centroid: number[] = [];
+              for (let j = 0; j < nFeatures; j++) {
+                let sum = 0;
+                for (const point of clusterPoints) {
+                  sum += point[j] ?? 0;
+                }
+                centroid.push(sum / clusterPoints.length);
+              }
+              newCentroids.push(centroid);
+            } else {
+              const oldCentroid: number[] = [];
+              for (let j = 0; j < nFeatures; j++) {
+                oldCentroid.push(Number(centroids.data[centroids.offset + k * nFeatures + j]));
+              }
+              newCentroids.push(oldCentroid);
+            }
+          }
+
+          centroids = tensor(newCentroids);
+          const inertia = this.calculateInertia(X, centroids, labels);
+
+          runNIter = iter + 1;
+          if (Math.abs(prevInertia - inertia) < this.tol) {
+            break;
+          }
+          prevInertia = inertia;
+        }
+      }
+
+      const finalLabels = this.assignClusters(X, centroids);
+      const finalInertia = this.calculateInertia(X, centroids, finalLabels);
+
+      if (finalInertia < bestInertia) {
+        bestCentroids = centroids;
+        bestLabels = finalLabels;
+        bestInertia = finalInertia;
+        bestNIter = runNIter;
+      }
+    }
+
+    // Restore original seed
+    this.randomState = baseSeed;
+
+    this.clusterCenters_ = bestCentroids!;
+    this.labels_ = bestLabels!;
+    this.inertia_ = bestInertia;
+    this.nIter_ = bestNIter;
     this.fitted = true;
 
     return this;
@@ -370,6 +476,206 @@ export class KMeans implements Clusterer {
   }
 
   /**
+   * Euclidean distance between point at row i in X and centroid c in cData.
+   */
+  private distPointCentroid(
+    X: Tensor,
+    i: number,
+    cData: Float64Array,
+    c: number,
+    nFeatures: number
+  ): number {
+    let s = 0;
+    const xBase = X.offset + i * nFeatures;
+    const cBase = c * nFeatures;
+    for (let j = 0; j < nFeatures; j++) {
+      const diff = Number(X.data[xBase + j] ?? 0) - (cData[cBase + j] ?? 0);
+      s += diff * diff;
+    }
+    return Math.sqrt(s);
+  }
+
+  /**
+   * Euclidean distance between two centroids in cData.
+   */
+  private distCentroids(cData: Float64Array, a: number, b: number, nFeatures: number): number {
+    let s = 0;
+    const aBase = a * nFeatures;
+    const bBase = b * nFeatures;
+    for (let j = 0; j < nFeatures; j++) {
+      const diff = (cData[aBase + j] ?? 0) - (cData[bBase + j] ?? 0);
+      s += diff * diff;
+    }
+    return Math.sqrt(s);
+  }
+
+  /**
+   * Run Elkan's algorithm with triangle inequality bounds.
+   */
+  private runElkan(
+    X: Tensor,
+    initialCentroids: Tensor,
+    nSamples: number,
+    nFeatures: number
+  ): { centroids: Tensor; nIter: number } {
+    const K = this.nClusters;
+
+    // Flatten centroid data into mutable array
+    let cData = new Float64Array(K * nFeatures);
+    for (let i = 0; i < K * nFeatures; i++) {
+      cData[i] = Number(initialCentroids.data[initialCentroids.offset + i] ?? 0);
+    }
+
+    // Lower bounds: lower[i * K + c] = lower bound on d(x_i, c_c)
+    const lower = new Float64Array(nSamples * K);
+    // Upper bounds: upper[i] = upper bound on d(x_i, assigned centroid)
+    const upper = new Float64Array(nSamples);
+    // Assignments
+    const assign = new Int32Array(nSamples);
+
+    // Initial full assignment
+    for (let i = 0; i < nSamples; i++) {
+      let minD = Infinity;
+      let minC = 0;
+      for (let c = 0; c < K; c++) {
+        const d = this.distPointCentroid(X, i, cData, c, nFeatures);
+        lower[i * K + c] = d;
+        if (d < minD) {
+          minD = d;
+          minC = c;
+        }
+      }
+      assign[i] = minC;
+      upper[i] = minD;
+    }
+
+    let nIter = 0;
+
+    for (let iter = 0; iter < this.maxIter; iter++) {
+      // Compute half inter-centroid distances: s[c] = 0.5 * min_{c'!=c} d(c, c')
+      const halfMinInterCentroid = new Float64Array(K).fill(Infinity);
+      const centroidDist = new Float64Array(K * K);
+      for (let a = 0; a < K; a++) {
+        for (let b = a + 1; b < K; b++) {
+          const d = this.distCentroids(cData, a, b, nFeatures);
+          centroidDist[a * K + b] = d;
+          centroidDist[b * K + a] = d;
+          const halfD = 0.5 * d;
+          if (halfD < (halfMinInterCentroid[a] ?? Infinity)) {
+            halfMinInterCentroid[a] = halfD;
+          }
+          if (halfD < (halfMinInterCentroid[b] ?? Infinity)) {
+            halfMinInterCentroid[b] = halfD;
+          }
+        }
+      }
+
+      // Assignment step with pruning
+      for (let i = 0; i < nSamples; i++) {
+        // Skip if upper bound <= half min inter-centroid distance
+        if ((upper[i] ?? 0) <= (halfMinInterCentroid[assign[i] ?? 0] ?? 0)) {
+          continue;
+        }
+
+        for (let c = 0; c < K; c++) {
+          if (c === (assign[i] ?? 0)) continue;
+
+          // Pruning: skip if upper bound <= lower bound to c
+          if ((upper[i] ?? 0) <= (lower[i * K + c] ?? 0)) continue;
+
+          // Pruning: skip if upper bound <= half distance between assigned and c
+          const halfCC = 0.5 * (centroidDist[(assign[i] ?? 0) * K + c] ?? 0);
+          if ((upper[i] ?? 0) <= halfCC) continue;
+
+          // Tighten upper bound if needed
+          const dAssigned = this.distPointCentroid(X, i, cData, assign[i] ?? 0, nFeatures);
+          upper[i] = dAssigned;
+          lower[i * K + (assign[i] ?? 0)] = dAssigned;
+
+          if (dAssigned <= (lower[i * K + c] ?? 0)) continue;
+          if (dAssigned <= halfCC) continue;
+
+          // Compute actual distance to c
+          const dC = this.distPointCentroid(X, i, cData, c, nFeatures);
+          lower[i * K + c] = dC;
+
+          if (dC < dAssigned) {
+            assign[i] = c;
+            upper[i] = dC;
+          }
+        }
+      }
+
+      // Update centroids
+      const newCData = new Float64Array(K * nFeatures);
+      const counts = new Int32Array(K);
+      for (let i = 0; i < nSamples; i++) {
+        const c = assign[i] ?? 0;
+        counts[c] = (counts[c] ?? 0) + 1;
+        const cBase = c * nFeatures;
+        const xBase = X.offset + i * nFeatures;
+        for (let j = 0; j < nFeatures; j++) {
+          newCData[cBase + j] = (newCData[cBase + j] ?? 0) + Number(X.data[xBase + j] ?? 0);
+        }
+      }
+      for (let c = 0; c < K; c++) {
+        const cnt = counts[c] ?? 0;
+        if (cnt > 0) {
+          const cBase = c * nFeatures;
+          for (let j = 0; j < nFeatures; j++) {
+            newCData[cBase + j] = (newCData[cBase + j] ?? 0) / cnt;
+          }
+        } else {
+          // Keep old centroid for empty clusters
+          const cBase = c * nFeatures;
+          for (let j = 0; j < nFeatures; j++) {
+            newCData[cBase + j] = cData[cBase + j] ?? 0;
+          }
+        }
+      }
+
+      // Compute centroid movement distances
+      const movement = new Float64Array(K);
+      let maxMovement = 0;
+      for (let c = 0; c < K; c++) {
+        let s = 0;
+        const cBase = c * nFeatures;
+        for (let j = 0; j < nFeatures; j++) {
+          const diff = (newCData[cBase + j] ?? 0) - (cData[cBase + j] ?? 0);
+          s += diff * diff;
+        }
+        movement[c] = Math.sqrt(s);
+        maxMovement = Math.max(maxMovement, movement[c] ?? 0);
+      }
+
+      // Update bounds
+      for (let i = 0; i < nSamples; i++) {
+        for (let c = 0; c < K; c++) {
+          lower[i * K + c] = Math.max(0, (lower[i * K + c] ?? 0) - (movement[c] ?? 0));
+        }
+        upper[i] = (upper[i] ?? 0) + (movement[assign[i] ?? 0] ?? 0);
+      }
+
+      cData = newCData;
+      nIter = iter + 1;
+
+      // Check convergence
+      if (maxMovement < this.tol) break;
+    }
+
+    // Build result tensor
+    const centroidArr: number[][] = [];
+    for (let c = 0; c < K; c++) {
+      const row: number[] = [];
+      for (let j = 0; j < nFeatures; j++) {
+        row.push(cData[c * nFeatures + j] ?? 0);
+      }
+      centroidArr.push(row);
+    }
+    return { centroids: tensor(centroidArr), nIter };
+  }
+
+  /**
    * Create a simple RNG for reproducibility.
    */
   private createRNG(): () => number {
@@ -380,7 +686,7 @@ export class KMeans implements Clusterer {
         return seed / 233280;
       };
     }
-    return Math.random;
+    return __random;
   }
 
   /**
@@ -434,7 +740,10 @@ export class KMeans implements Clusterer {
       maxIter: this.maxIter,
       tol: this.tol,
       init: this.init,
+      nInit: this.nInit,
+      warmStart: this.warmStart,
       randomState: this.randomState,
+      algorithm: this.algorithm,
     };
   }
 
@@ -476,6 +785,12 @@ export class KMeans implements Clusterer {
           }
           this.init = value;
           break;
+        case "nInit":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError("nInit must be an integer >= 1", "nInit", value);
+          }
+          this.nInit = value;
+          break;
         case "randomState":
           if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
             throw new InvalidParameterError(
@@ -486,10 +801,35 @@ export class KMeans implements Clusterer {
           }
           this.randomState = value === undefined ? undefined : value;
           break;
+        case "algorithm":
+          if (value !== "lloyd" && value !== "elkan" && value !== "auto") {
+            throw new InvalidParameterError(
+              `algorithm must be 'lloyd', 'elkan', or 'auto'`,
+              "algorithm",
+              value
+            );
+          }
+          this.algorithm = value;
+          break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
     return this;
+  }
+
+  clone(): KMeans {
+    return new KMeans(
+      this.getParams() as {
+        nClusters?: number;
+        maxIter?: number;
+        tol?: number;
+        init?: "random" | "kmeans++";
+        nInit?: number;
+        warmStart?: boolean;
+        randomState?: number;
+        algorithm?: "lloyd" | "elkan" | "auto";
+      }
+    );
   }
 }

@@ -11,9 +11,11 @@
  *   score: [85.5, 92.0, 78.5]
  * };
  * ```
+ * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox documentation}
  */
 export type DataValue = number | string | boolean | null | undefined;
 
+/** Column-oriented data for DataFrame construction. Maps column names to value arrays. */
 export type DataFrameData = Record<string, unknown[]>;
 
 /**

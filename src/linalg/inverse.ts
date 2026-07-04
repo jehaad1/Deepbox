@@ -1,7 +1,6 @@
 import { DeepboxError, InvalidParameterError, ShapeError } from "../core";
 import type { Tensor } from "../ndarray";
 import {
-  at,
   fromDenseMatrix2D,
   getDim,
   luFactorSquare,
@@ -135,13 +134,13 @@ export function pinv(a: Tensor, rcond?: number): Tensor {
   if (uRows !== m || uCols !== k) throw new DeepboxError("Internal error: unexpected U shape");
   if (vtRows !== k || vtCols !== n) throw new DeepboxError("Internal error: unexpected Vt shape");
 
-  const s0 = at(s, 0);
+  const s0 = s[0] as number;
   const rcondVal = rcond ?? Number.EPSILON * Math.max(m, n);
   const cutoff = rcondVal * s0;
 
   const sInv = new Float64Array(k);
   for (let i = 0; i < k; i++) {
-    const si = at(s, i);
+    const si = s[i] as number;
     sInv[i] = si > cutoff ? 1 / si : 0;
   }
 
@@ -152,9 +151,9 @@ export function pinv(a: Tensor, rcond?: number): Tensor {
     for (let j = 0; j < m; j++) {
       let sum = 0;
       for (let r = 0; r < k; r++) {
-        const v_ir = at(Vt, r * n + i); // Vt[r,i] = V[i,r]
-        const u_jr = at(U, j * k + r); // U[j,r]
-        sum += v_ir * at(sInv, r) * u_jr;
+        const v_ir = Vt[r * n + i] as number; // Vt[r,i] = V[i,r]
+        const u_jr = U[j * k + r] as number; // U[j,r]
+        sum += v_ir * (sInv[r] as number) * u_jr;
       }
       out[i * m + j] = sum;
     }

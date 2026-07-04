@@ -26,7 +26,7 @@ console.log(`Determinant: ${detValue.toFixed(4)}\n`);
 
 // Trace
 const traceA = trace(A);
-const traceValue = typeof traceA === "number" ? traceA : Number(traceA);
+const traceValue = Number(traceA.at(0));
 console.log(`Trace: ${traceValue.toFixed(4)}\n`);
 
 // Matrix inverse
@@ -87,15 +87,16 @@ const D = tensor([
 ]);
 
 const luResult = lu(D);
-const L = luResult[0];
-const U_lu = luResult[1];
-const P = luResult[2];
+const P = luResult[0];
+const L = luResult[1];
+const U_lu = luResult[2];
+console.log("P (permutation):");
+console.log(P.toString());
 console.log("L (lower triangular):");
 console.log(L.toString());
 console.log("\nU (upper triangular):");
 console.log(U_lu.toString());
-console.log("\nP (permutation):");
-console.log(`${P.toString()}\n`);
+console.log();
 
 // Solving linear systems: Ax = b
 console.log("Solving Linear System Ax = b:");

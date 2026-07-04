@@ -1,9 +1,17 @@
 /**
- * Supported compute devices for tensor operations.
+ * Logical compute devices for tensors and modules.
  *
- * - `cpu`: Standard CPU execution (always available)
- * - `webgpu`: GPU acceleration via WebGPU API (when supported)
- * - `wasm`: WebAssembly acceleration for better CPU performance
+ * - `cpu`: Default; CPU execution is always available for built-in ndarray ops.
+ * - `webgpu`: GPU execution. Register `WebGpuBackend` from `deepbox/core`
+ *   (after `await backend.init()`); tensors created on (or moved to) this
+ *   device store their data in GPU memory and the accelerated op set
+ *   (element-wise arithmetic, activations, matmul, full reductions)
+ *   dispatches to WGSL compute kernels automatically. Read results back
+ *   with `await t.cpu()`.
+ * - `wasm`: WASM SIMD host accelerator. Register `WasmBackend`; tensors on
+ *   this device keep zero-copy host storage, and eligible ops (contiguous
+ *   float32 arithmetic) run through embedded SIMD kernels with bit-identical
+ *   results, falling back to the CPU implementation otherwise.
  *
  * @example
  * ```ts
@@ -13,6 +21,7 @@
  * const device: Device = 'cpu';
  * setDevice(device);
  * ```
+ * @see {@link https://deepbox.dev/docs/core-types | Deepbox documentation}
  */
 export type Device = "cpu" | "webgpu" | "wasm";
 

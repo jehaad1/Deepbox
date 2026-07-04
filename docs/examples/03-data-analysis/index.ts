@@ -26,7 +26,7 @@ const expectNumberArray = (value: unknown): number[] => {
 };
 
 console.log("=".repeat(60));
-console.log("Example 1: Data Analysis & Visualization");
+console.log("Example 03: Data Analysis & Visualization");
 console.log("=".repeat(60));
 
 mkdirSync("docs/examples/03-data-analysis/output", { recursive: true });
@@ -157,8 +157,10 @@ console.log(`\nEngineering Department: ${engineeringDept.shape[0]} employees`);
 console.log("\n📊 Correlation Analysis");
 console.log("-".repeat(60));
 
-// Create matrix for correlation analysis
-const dataMatrix = tensor([salaries, experiences, ages]);
+// corrcoef expects rows=observations and columns=variables.
+const dataMatrix = tensor(
+  salaries.map((salary, index) => [salary, experiences[index] ?? 0, ages[index] ?? 0])
+);
 const correlationMatrix = corrcoef(dataMatrix);
 
 console.log("Correlation Matrix (Salary, Experience, Age):");

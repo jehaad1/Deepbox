@@ -1,5 +1,6 @@
 import { DeepboxError, InvalidParameterError, ShapeError } from "../core/errors";
 import { type Tensor, zeros } from "../ndarray";
+import { __random } from "../random/random";
 import { createSeededRandom, getShape2D, shuffleIndicesInPlace } from "./_internal";
 
 /**
@@ -267,7 +268,7 @@ export function trainTestSplit(
   const [nTrain, nTest] = resolveTrainTestCounts(nSamples, opts.trainSize, opts.testSize);
 
   const indices = Array.from({ length: nSamples }, (_, i) => i);
-  const random = randomState !== undefined ? createSeededRandom(randomState) : Math.random;
+  const random = randomState !== undefined ? createSeededRandom(randomState) : __random;
   const maybeShuffle = (arr: number[]): void => {
     if (!shuffle) return;
     shuffleIndicesInPlace(arr, random);
@@ -294,7 +295,10 @@ export function trainTestSplit(
     const classSizes = labels.map((label) => labelMap.get(label)?.length ?? 0);
     const hasSingleton = classSizes.some((size) => size < 2);
 
-    if (hasSingleton && shuffle && randomState === undefined) {
+    // sklearn raises unconditionally when a class has fewer than 2 members —
+    // the singleton can't appear in both train and test. Gating this on
+    // `randomState === undefined` let a seeded call silently drop the class.
+    if (hasSingleton) {
       throw new InvalidParameterError(
         "stratify requires at least 2 samples per class",
         "stratify",
@@ -446,7 +450,7 @@ export class KFold {
 
     if (this.shuffle) {
       const random =
-        this.randomState !== undefined ? createSeededRandom(this.randomState) : Math.random;
+        this.randomState !== undefined ? createSeededRandom(this.randomState) : __random;
       shuffleIndicesInPlace(indices, random);
     }
 
@@ -520,8 +524,7 @@ export class StratifiedKFold {
       throw new ShapeError(`y must be a 1D tensor, got ${y.ndim}D`);
     }
     const labelMap = new Map<string | number | bigint, number[]>();
-    const random =
-      this.randomState !== undefined ? createSeededRandom(this.randomState) : Math.random;
+    const random = this.randomState !== undefined ? createSeededRandom(this.randomState) : __random;
 
     for (let i = 0; i < nSamples; i++) {
       const label = readTensorValue(y, [i]);
@@ -801,5 +804,533 @@ export class LeavePOut {
       result = (result * (n - i)) / (i + 1);
     }
     return Math.round(result);
+  }
+}
+
+/**
+ * Time Series cross-validator.
+ *
+ * Provides train/test indices for time series data.
+ * In each split, test indices must be higher than before,
+ * and thus shuffling in cross validator is inappropriate.
+ *
+ * @example
+ * ```ts
+ * import { TimeSeriesSplit } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const tscv = new TimeSeriesSplit({ nSplits: 3 });
+ * const X = tensor([[1], [2], [3], [4], [5], [6]]);
+ * const splits = tscv.split(X);
+ * // Split 0: train=[0,1,2], test=[3]
+ * // Split 1: train=[0,1,2,3], test=[4]
+ * // Split 2: train=[0,1,2,3,4], test=[5]
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
+ */
+export class TimeSeriesSplit {
+  private nSplits: number;
+  private maxTrainSize: number | undefined;
+  private testSize: number | undefined;
+  private gap: number;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      maxTrainSize?: number;
+      testSize?: number;
+      gap?: number;
+    } = {}
+  ) {
+    this.nSplits = options.nSplits ?? 5;
+    this.maxTrainSize = options.maxTrainSize;
+    this.testSize = options.testSize;
+    this.gap = options.gap ?? 0;
+
+    validateNSplits(this.nSplits);
+    if (this.gap < 0 || !Number.isInteger(this.gap)) {
+      throw new InvalidParameterError("gap must be a non-negative integer", "gap", this.gap);
+    }
+  }
+
+  split(X: Tensor): SplitResult[] {
+    const shape0 = X.shape[0];
+    if (shape0 === undefined) {
+      throw new ShapeError("X must have valid shape[0]");
+    }
+    const nSamples = shape0;
+    const nSplits = this.nSplits;
+
+    const testSz = this.testSize ?? Math.floor(nSamples / (nSplits + 1));
+    const nFolds = nSplits + 1;
+
+    if (nFolds > nSamples) {
+      throw new InvalidParameterError(
+        `Cannot have nSplits+1=${nFolds} folds with ${nSamples} samples`,
+        "nSplits",
+        nSplits
+      );
+    }
+
+    const splits: SplitResult[] = [];
+    let testStart = nSamples - testSz;
+
+    for (let i = nSplits - 1; i >= 0; i--) {
+      const testEnd = testStart + testSz;
+      const trainEnd = testStart - this.gap;
+      let trainStart = 0;
+
+      if (this.maxTrainSize !== undefined && trainEnd - trainStart > this.maxTrainSize) {
+        trainStart = trainEnd - this.maxTrainSize;
+      }
+
+      if (trainEnd <= trainStart) {
+        testStart -= testSz;
+        continue;
+      }
+
+      const trainIndex: number[] = [];
+      for (let j = trainStart; j < trainEnd; j++) trainIndex.push(j);
+
+      const testIndex: number[] = [];
+      for (let j = testStart; j < Math.min(testEnd, nSamples); j++) testIndex.push(j);
+
+      splits.push({ trainIndex, testIndex });
+      testStart -= testSz;
+    }
+
+    splits.reverse();
+    return splits;
+  }
+
+  getNSplits(): number {
+    return this.nSplits;
+  }
+}
+
+/**
+ * Repeated K-Fold cross-validator.
+ *
+ * Repeats K-Fold n times with different randomization in each repetition.
+ *
+ * @example
+ * ```ts
+ * import { RepeatedKFold } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const rkf = new RepeatedKFold({ nSplits: 5, nRepeats: 3 });
+ * const X = tensor([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]]);
+ * const splits = rkf.split(X); // 15 splits (5 folds × 3 repeats)
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
+ */
+export class RepeatedKFold {
+  private nSplits: number;
+  private nRepeats: number;
+  private randomState: number | undefined;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      nRepeats?: number;
+      randomState?: number;
+    } = {}
+  ) {
+    this.nSplits = options.nSplits ?? 5;
+    this.nRepeats = options.nRepeats ?? 10;
+    this.randomState = options.randomState;
+
+    validateNSplits(this.nSplits);
+    if (!Number.isInteger(this.nRepeats) || this.nRepeats < 1) {
+      throw new InvalidParameterError(
+        "nRepeats must be a positive integer",
+        "nRepeats",
+        this.nRepeats
+      );
+    }
+  }
+
+  split(X: Tensor): SplitResult[] {
+    const allSplits: SplitResult[] = [];
+
+    for (let r = 0; r < this.nRepeats; r++) {
+      const opts: { nSplits: number; shuffle: boolean; randomState?: number } = {
+        nSplits: this.nSplits,
+        shuffle: true,
+      };
+      if (this.randomState !== undefined) {
+        opts.randomState = this.randomState + r;
+      }
+      const kf = new KFold(opts);
+      allSplits.push(...kf.split(X));
+    }
+
+    return allSplits;
+  }
+
+  getNSplits(): number {
+    return this.nSplits * this.nRepeats;
+  }
+}
+
+/**
+ * Repeated Stratified K-Fold cross-validator.
+ *
+ * Repeats Stratified K-Fold n times with different randomization.
+ */
+export class RepeatedStratifiedKFold {
+  private nSplits: number;
+  private nRepeats: number;
+  private randomState: number | undefined;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      nRepeats?: number;
+      randomState?: number;
+    } = {}
+  ) {
+    this.nSplits = options.nSplits ?? 5;
+    this.nRepeats = options.nRepeats ?? 10;
+    this.randomState = options.randomState;
+
+    validateNSplits(this.nSplits);
+    if (!Number.isInteger(this.nRepeats) || this.nRepeats < 1) {
+      throw new InvalidParameterError(
+        "nRepeats must be a positive integer",
+        "nRepeats",
+        this.nRepeats
+      );
+    }
+  }
+
+  split(X: Tensor, y: Tensor): SplitResult[] {
+    const allSplits: SplitResult[] = [];
+
+    for (let r = 0; r < this.nRepeats; r++) {
+      const opts: { nSplits: number; shuffle: boolean; randomState?: number } = {
+        nSplits: this.nSplits,
+        shuffle: true,
+      };
+      if (this.randomState !== undefined) {
+        opts.randomState = this.randomState + r;
+      }
+      const skf = new StratifiedKFold(opts);
+      allSplits.push(...skf.split(X, y));
+    }
+
+    return allSplits;
+  }
+
+  getNSplits(): number {
+    return this.nSplits * this.nRepeats;
+  }
+}
+
+/**
+ * Random permutation cross-validator.
+ *
+ * Yields indices to split data into train and test sets using random
+ * permutations. Unlike KFold, ShuffleSplit allows controlling the
+ * train/test size independently and produces overlapping test sets
+ * across iterations.
+ *
+ * @example
+ * ```ts
+ * import { ShuffleSplit } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const ss = new ShuffleSplit({ nSplits: 5, testSize: 0.2, randomState: 42 });
+ * const X = tensor([[1,2],[3,4],[5,6],[7,8],[9,10]]);
+ * const splits = ss.split(X);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
+ */
+export class ShuffleSplit {
+  private readonly nSplits: number;
+  private readonly testSize: number | undefined;
+  private readonly trainSize: number | undefined;
+  private readonly randomState: number | undefined;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      testSize?: number;
+      trainSize?: number;
+      randomState?: number;
+    } = {}
+  ) {
+    this.nSplits = options.nSplits ?? 10;
+    this.testSize = options.testSize;
+    this.trainSize = options.trainSize;
+    this.randomState = options.randomState;
+
+    if (!Number.isInteger(this.nSplits) || this.nSplits < 1) {
+      throw new InvalidParameterError(
+        "nSplits must be a positive integer",
+        "nSplits",
+        this.nSplits
+      );
+    }
+  }
+
+  split(X: Tensor): SplitResult[] {
+    const shape0 = X.shape[0];
+    if (shape0 === undefined) {
+      throw new ShapeError("X must have valid shape[0]");
+    }
+    const nSamples = shape0;
+
+    const [nTrain, nTest] = resolveTrainTestCounts(nSamples, this.trainSize, this.testSize);
+
+    const splits: SplitResult[] = [];
+
+    for (let i = 0; i < this.nSplits; i++) {
+      const random =
+        this.randomState !== undefined ? createSeededRandom(this.randomState + i) : __random;
+
+      const indices = Array.from({ length: nSamples }, (_, j) => j);
+      shuffleIndicesInPlace(indices, random);
+
+      const testIndex = indices.slice(0, nTest);
+      const trainIndex = indices.slice(nTest, nTest + nTrain);
+      splits.push({ trainIndex, testIndex });
+    }
+
+    return splits;
+  }
+
+  getNSplits(): number {
+    return this.nSplits;
+  }
+}
+
+/**
+ * Stratified ShuffleSplit cross-validator.
+ *
+ * Provides train/test indices that preserve the percentage of samples
+ * for each class. Like ShuffleSplit but with stratification.
+ *
+ * @example
+ * ```ts
+ * import { StratifiedShuffleSplit } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const sss = new StratifiedShuffleSplit({ nSplits: 5, testSize: 0.2, randomState: 42 });
+ * const X = tensor([[1],[2],[3],[4],[5],[6],[7],[8],[9],[10]]);
+ * const y = tensor([0,0,0,0,0,1,1,1,1,1]);
+ * const splits = sss.split(X, y);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-splitting | Deepbox Data Splitting}
+ */
+export class StratifiedShuffleSplit {
+  private readonly nSplits: number;
+  private readonly testSize: number | undefined;
+  private readonly trainSize: number | undefined;
+  private readonly randomState: number | undefined;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      testSize?: number;
+      trainSize?: number;
+      randomState?: number;
+    } = {}
+  ) {
+    this.nSplits = options.nSplits ?? 10;
+    this.testSize = options.testSize;
+    this.trainSize = options.trainSize;
+    this.randomState = options.randomState;
+
+    if (!Number.isInteger(this.nSplits) || this.nSplits < 1) {
+      throw new InvalidParameterError(
+        "nSplits must be a positive integer",
+        "nSplits",
+        this.nSplits
+      );
+    }
+  }
+
+  split(X: Tensor, y: Tensor): SplitResult[] {
+    const shape0 = X.shape[0];
+    if (shape0 === undefined) {
+      throw new ShapeError("X must have valid shape[0]");
+    }
+    const nSamples = shape0;
+
+    if (y.size !== nSamples) {
+      throw new ShapeError(
+        `X and y must have same number of samples; got ${nSamples} vs ${y.size}`
+      );
+    }
+
+    const [nTrain, nTest] = resolveTrainTestCounts(nSamples, this.trainSize, this.testSize);
+
+    // Group indices by class label. Use readTensorValue (dtype- and
+    // stride-aware) rather than Number(y.data[...]): the latter turns string
+    // labels into NaN, collapsing every class into a single NaN key so
+    // stratification silently disappears.
+    const classIndices = new Map<string | number | bigint, number[]>();
+    for (let i = 0; i < nSamples; i++) {
+      const label = readTensorValue(y, [i]);
+      let arr = classIndices.get(label);
+      if (!arr) {
+        arr = [];
+        classIndices.set(label, arr);
+      }
+      arr.push(i);
+    }
+
+    const classes = [...classIndices.keys()].sort((a, b) => {
+      if (typeof a === "number" && typeof b === "number") return a - b;
+      return String(a).localeCompare(String(b));
+    });
+    const splits: SplitResult[] = [];
+
+    for (let iter = 0; iter < this.nSplits; iter++) {
+      const random =
+        this.randomState !== undefined ? createSeededRandom(this.randomState + iter) : __random;
+
+      const testIdx: number[] = [];
+      const trainIdx: number[] = [];
+
+      for (const cls of classes) {
+        const indices = classIndices.get(cls)!;
+        const classCopy = [...indices];
+        shuffleIndicesInPlace(classCopy, random);
+
+        const classTestCount = Math.max(1, Math.round((nTest / nSamples) * indices.length));
+        const classTrainCount = Math.max(
+          1,
+          Math.min(
+            indices.length - classTestCount,
+            Math.round((nTrain / nSamples) * indices.length)
+          )
+        );
+
+        testIdx.push(...classCopy.slice(0, classTestCount));
+        trainIdx.push(...classCopy.slice(classTestCount, classTestCount + classTrainCount));
+      }
+
+      splits.push({ trainIndex: trainIdx, testIndex: testIdx });
+    }
+
+    return splits;
+  }
+
+  getNSplits(): number {
+    return this.nSplits;
+  }
+}
+
+/**
+ * Shuffle-Group(s)-Out cross-validation iterator.
+ *
+ * Provides randomized train/test indices to split data by groups.
+ * Ensures that the same group is not in both test and train sets.
+ *
+ * @example
+ * ```ts
+ * import { GroupShuffleSplit } from 'deepbox/preprocess';
+ *
+ * const gss = new GroupShuffleSplit({ nSplits: 5, testSize: 0.2, randomState: 42 });
+ * const splits = gss.split(X, y, groups);
+ * ```
+ *
+ * @category Cross-Validation
+ */
+export class GroupShuffleSplit {
+  private readonly _nSplits: number;
+  private readonly _testSize: number;
+  private readonly _randomState: number | undefined;
+
+  constructor(
+    options: {
+      nSplits?: number;
+      testSize?: number;
+      randomState?: number;
+    } = {}
+  ) {
+    this._nSplits = options.nSplits ?? 5;
+    this._testSize = options.testSize ?? 0.2;
+    this._randomState = options.randomState ?? undefined;
+
+    if (this._nSplits < 1) {
+      throw new InvalidParameterError("nSplits must be >= 1", "nSplits", this._nSplits);
+    }
+    if (this._testSize <= 0 || this._testSize >= 1) {
+      throw new InvalidParameterError("testSize must be in (0, 1)", "testSize", this._testSize);
+    }
+  }
+
+  /**
+   * Generate train/test split indices based on groups.
+   *
+   * @param X - Feature matrix (used for nSamples)
+   * @param _y - Target (unused, for API consistency)
+   * @param groups - Group labels for each sample (number array)
+   */
+  split(X: Tensor, _y?: Tensor, groups?: number[]): SplitResult[] {
+    if (!groups) {
+      throw new InvalidParameterError(
+        "groups parameter is required for GroupShuffleSplit",
+        "groups",
+        groups
+      );
+    }
+
+    const nSamples = X.shape[0]!;
+
+    if (groups.length !== nSamples) {
+      throw new ShapeError(`groups length (${groups.length}) must match nSamples (${nSamples})`);
+    }
+
+    // Build group -> sample indices map
+    const groupIndices = new Map<number, number[]>();
+    for (let i = 0; i < nSamples; i++) {
+      const g = groups[i]!;
+      if (!groupIndices.has(g)) groupIndices.set(g, []);
+      groupIndices.get(g)!.push(i);
+    }
+
+    const uniqueGroups = [...groupIndices.keys()];
+    const nGroups = uniqueGroups.length;
+    const nTestGroups = Math.max(1, Math.round(nGroups * this._testSize));
+
+    const splitResults: SplitResult[] = [];
+
+    for (let iter = 0; iter < this._nSplits; iter++) {
+      const random =
+        this._randomState !== undefined ? createSeededRandom(this._randomState + iter) : __random;
+
+      // Shuffle group order
+      const shuffled = [...uniqueGroups];
+      shuffleIndicesInPlace(shuffled, random);
+
+      const testGroups = new Set(shuffled.slice(0, nTestGroups));
+
+      const trainIdx: number[] = [];
+      const testIdx: number[] = [];
+
+      for (const [g, indices] of groupIndices) {
+        if (testGroups.has(g)) {
+          testIdx.push(...indices);
+        } else {
+          trainIdx.push(...indices);
+        }
+      }
+
+      splitResults.push({ trainIndex: trainIdx, testIndex: testIdx });
+    }
+
+    return splitResults;
+  }
+
+  getNSplits(): number {
+    return this._nSplits;
   }
 }

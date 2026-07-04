@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IndexError } from "../src/core";
-import { dtypeToTypedArrayCtor } from "../src/core/utils/dtypeUtils";
+import { dtypeToTypedArrayCtor } from "../src/core/utils/dtype_utils";
 import {
   getArrayElement,
   getBigIntElement,
@@ -10,7 +10,7 @@ import {
   getStringElement,
   isBigInt64Array,
   isNumericTypedArray,
-} from "../src/core/utils/typedArrayAccess";
+} from "../src/core/utils/typed_array_access";
 
 describe("core utils branch coverage", () => {
   it("handles dtype constructor mapping and errors", () => {

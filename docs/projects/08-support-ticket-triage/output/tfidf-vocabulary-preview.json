@@ -1,0 +1,51 @@
+{
+  "columns": [
+    "topTerms"
+  ],
+  "index": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "data": {
+    "topTerms": [
+      "503",
+      "503 for",
+      "above",
+      "above ten",
+      "admin",
+      "admin locked",
+      "after",
+      "after password",
+      "after renewal",
+      "all",
+      "all users",
+      "amount",
+      "amount is",
+      "an",
+      "an update",
+      "api",
+      "api latency",
+      "approval",
+      "approval enterprise",
+      "approval migration"
+    ]
+  }
+}

@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
+ */
+
 import { DeepboxError } from "./base";
 
 /**

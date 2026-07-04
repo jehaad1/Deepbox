@@ -9,16 +9,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, fbeta_score,
+    brier_score_loss,
     confusion_matrix, hamming_loss, jaccard_score, cohen_kappa_score,
-    matthews_corrcoef, balanced_accuracy_score, log_loss, roc_auc_score,
+    coverage_error, matthews_corrcoef, balanced_accuracy_score, log_loss, roc_auc_score,
     average_precision_score,
-    mean_squared_error, root_mean_squared_error, mean_absolute_error,
+    mean_pinball_loss, mean_squared_error, ndcg_score, root_mean_squared_error, mean_absolute_error,
     r2_score, explained_variance_score, max_error, median_absolute_error,
     mean_absolute_percentage_error,
     silhouette_score, calinski_harabasz_score, davies_bouldin_score,
+    top_k_accuracy_score, zero_one_loss,
     adjusted_rand_score, adjusted_mutual_info_score, normalized_mutual_info_score,
     homogeneity_score, completeness_score, v_measure_score, fowlkes_mallows_score,
 )
+from sklearn.metrics.pairwise import cosine_similarity, manhattan_distances, pairwise_distances
 from utils import run, create_suite, header, footer
 
 suite = create_suite("metrics", "scikit-learn")
@@ -61,6 +64,25 @@ clab_b500 = rng9.randint(0, 4, 500)
 rng10 = np.random.RandomState(123)
 clab_a1k = np.array([i % 5 for i in range(1000)])
 clab_b1k = rng10.randint(0, 5, 1000)
+rank_true = np.array([
+    [1, 0, 1, 0],
+    [0, 1, 0, 1],
+    [1, 0, 0, 1],
+])
+rank_score = np.array([
+    [0.9, 0.2, 0.8, 0.1],
+    [0.3, 0.7, 0.2, 0.6],
+    [0.8, 0.1, 0.4, 0.7],
+])
+multiclass_true = np.array([i % 4 for i in range(1000)])
+multiclass_score = np.array([
+    [0.7 if j == (i % 4) else 0.1 for j in range(4)]
+    for i in range(1000)
+], dtype=float)
+pairwise_x = np.array([
+    [((i * 3 + j * 5) % 17) / 17 for j in range(8)]
+    for i in range(300)
+], dtype=float)
 
 # ── Classification Metrics ──────────────────────────────
 
@@ -92,6 +114,11 @@ run(suite, "rocAucScore", "1K", lambda: roc_auc_score(prob_yt1k, prob_yp1k))
 run(suite, "rocAucScore", "10K", lambda: roc_auc_score(prob_yt10k, prob_yp10k))
 run(suite, "averagePrecision", "1K", lambda: average_precision_score(prob_yt1k, prob_yp1k))
 run(suite, "averagePrecision", "10K", lambda: average_precision_score(prob_yt10k, prob_yp10k))
+run(suite, "brierScoreLoss", "1K", lambda: brier_score_loss(prob_yt1k, prob_yp1k))
+run(suite, "zeroOneLoss", "1K", lambda: zero_one_loss(yt1k, yp1k))
+run(suite, "topKAccuracyScore", "1Kx4", lambda: top_k_accuracy_score(multiclass_true, multiclass_score, k=2))
+run(suite, "coverageError", "3x4", lambda: coverage_error(rank_true, rank_score))
+run(suite, "ndcgScore", "3x4", lambda: ndcg_score(rank_true, rank_score))
 
 # ── Regression Metrics ──────────────────────────────────
 
@@ -119,6 +146,7 @@ run(suite, "medianAbsoluteError", "1K", lambda: median_absolute_error(rt1k, rp1k
 run(suite, "medianAbsoluteError", "10K", lambda: median_absolute_error(rt10k, rp10k))
 run(suite, "mape", "1K", lambda: mean_absolute_percentage_error(rt1k, rp1k))
 run(suite, "mape", "10K", lambda: mean_absolute_percentage_error(rt10k, rp10k))
+run(suite, "meanPinballLoss", "1K", lambda: mean_pinball_loss(rt1k, rp1k, alpha=0.9))
 
 # ── Clustering Metrics ──────────────────────────────────
 
@@ -139,5 +167,42 @@ run(suite, "completenessScore", "500", lambda: completeness_score(clab_a500, cla
 run(suite, "vMeasureScore", "500", lambda: v_measure_score(clab_a500, clab_b500))
 run(suite, "fowlkesMallows", "500", lambda: fowlkes_mallows_score(clab_a500, clab_b500))
 run(suite, "fowlkesMallows", "1K", lambda: fowlkes_mallows_score(clab_a1k, clab_b1k))
+run(suite, "pairwiseEuclidean", "300x8", lambda: pairwise_distances(pairwise_x, metric="euclidean"))
+run(suite, "pairwiseCosine", "300x8", lambda: cosine_similarity(pairwise_x))
+run(suite, "pairwiseManhattan", "300x8", lambda: manhattan_distances(pairwise_x))
+
+# ── Extended coverage (v1.1 benchmark expansion) ────────
+_mrng = np.random.RandomState(7)
+cls_sizes = {}
+prob_sizes = {}
+reg_sizes = {}
+for _sz, _n in [("100", 100), ("500", 500), ("5K", 5000)]:
+    cls_sizes[_sz] = (_mrng.randint(0, 2, _n), _mrng.randint(0, 2, _n))
+    prob_sizes[_sz] = (_mrng.randint(0, 2, _n), np.clip(_mrng.rand(_n), 0.001, 0.999))
+    _t = _mrng.rand(_n) * 10
+    reg_sizes[_sz] = (_t, _t + (_mrng.rand(_n) - 0.5) * 2)
+
+for _sz, (_yt, _yp) in cls_sizes.items():
+    run(suite, "accuracy", _sz, lambda yt=_yt, yp=_yp: accuracy_score(yt, yp))
+    run(suite, "precision", _sz, lambda yt=_yt, yp=_yp: precision_score(yt, yp, zero_division=0))
+    run(suite, "recall", _sz, lambda yt=_yt, yp=_yp: recall_score(yt, yp, zero_division=0))
+    run(suite, "f1Score", _sz, lambda yt=_yt, yp=_yp: f1_score(yt, yp, zero_division=0))
+    run(suite, "hammingLoss", _sz, lambda yt=_yt, yp=_yp: hamming_loss(yt, yp))
+    run(suite, "jaccardScore", _sz, lambda yt=_yt, yp=_yp: jaccard_score(yt, yp))
+    run(suite, "cohenKappaScore", _sz, lambda yt=_yt, yp=_yp: cohen_kappa_score(yt, yp))
+    run(suite, "matthewsCorrcoef", _sz, lambda yt=_yt, yp=_yp: matthews_corrcoef(yt, yp))
+    run(suite, "balancedAccuracy", _sz, lambda yt=_yt, yp=_yp: balanced_accuracy_score(yt, yp))
+    run(suite, "zeroOneLoss", _sz, lambda yt=_yt, yp=_yp: zero_one_loss(yt, yp))
+for _sz, (_yt, _yp) in prob_sizes.items():
+    run(suite, "logLoss", _sz, lambda yt=_yt, yp=_yp: log_loss(yt, yp))
+    run(suite, "brierScoreLoss", _sz, lambda yt=_yt, yp=_yp: brier_score_loss(yt, yp))
+for _sz, (_yt, _yp) in reg_sizes.items():
+    run(suite, "mse", _sz, lambda yt=_yt, yp=_yp: mean_squared_error(yt, yp))
+    run(suite, "rmse", _sz, lambda yt=_yt, yp=_yp: root_mean_squared_error(yt, yp))
+    run(suite, "mae", _sz, lambda yt=_yt, yp=_yp: mean_absolute_error(yt, yp))
+    run(suite, "r2Score", _sz, lambda yt=_yt, yp=_yp: r2_score(yt, yp))
+    run(suite, "explainedVariance", _sz, lambda yt=_yt, yp=_yp: explained_variance_score(yt, yp))
+    run(suite, "maxError", _sz, lambda yt=_yt, yp=_yp: max_error(yt, yp))
+    run(suite, "mape", _sz, lambda yt=_yt, yp=_yp: mean_absolute_percentage_error(yt, yp))
 
 footer(suite, "sklearn-metrics.json")

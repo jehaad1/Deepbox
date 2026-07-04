@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MemoryError } from "../src/core";
 import {
   arange,
   empty,
@@ -277,6 +278,73 @@ describe("deepbox/ndarray - Tensor Creation", () => {
       const t = randn([100, 100]);
       expect(t.shape).toEqual([100, 100]);
       expect(t.size).toBe(10000);
+    });
+  });
+
+  describe("oversized-allocation guard", () => {
+    // ~2 GiB per-tensor ceiling: ~500M float32 / ~250M float64 elements.
+    // These shapes fire the O(1) guard BEFORE any allocation is attempted, so
+    // the tests are instant and never touch multiple gigabytes of memory.
+    const OVERSIZED_FLOAT64: readonly number[] = [1_000_000_000]; // 8e9 bytes
+    const OVERSIZED_FLOAT32: readonly number[] = [600_000_000]; // 2.4e9 bytes
+
+    it("throws a clear MemoryError from zeros for an oversized float64 tensor", () => {
+      expect(() => zeros([...OVERSIZED_FLOAT64], { dtype: "float64" })).toThrow(MemoryError);
+    });
+
+    it("reports shape, element count, byte size, ceiling, and a suggestion", () => {
+      let caught: unknown;
+      try {
+        zeros([...OVERSIZED_FLOAT64], { dtype: "float64" });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(MemoryError);
+      const mem = caught as MemoryError;
+      // Shape is echoed back to the caller.
+      expect(mem.message).toContain("[1,000,000,000]");
+      // Element count and per-element byte width.
+      expect(mem.message).toContain("1,000,000,000 elements");
+      expect(mem.message).toContain("× 8 bytes");
+      // Resulting byte size and the ceiling.
+      expect(mem.message).toContain("8,000,000,000 bytes");
+      expect(mem.message).toContain("2,147,483,648 bytes");
+      // Actionable suggestions: chunk the data and/or narrow the dtype.
+      expect(mem.message).toMatch(/chunk/i);
+      expect(mem.message).toMatch(/float32/i);
+      // Structured details are populated.
+      expect(mem.requestedBytes).toBe(8_000_000_000);
+      expect(mem.availableBytes).toBe(2 ** 31);
+    });
+
+    it("guards ones(), empty(), and randn() alike", () => {
+      expect(() => ones([...OVERSIZED_FLOAT32], { dtype: "float32" })).toThrow(MemoryError);
+      expect(() => empty([...OVERSIZED_FLOAT32], { dtype: "float32" })).toThrow(MemoryError);
+      expect(() => randn([...OVERSIZED_FLOAT64], { dtype: "float64" })).toThrow(MemoryError);
+    });
+
+    it("omits the float32 hint for narrow dtypes but still guards them", () => {
+      let caught: unknown;
+      try {
+        ones([...OVERSIZED_FLOAT32], { dtype: "float32" });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(MemoryError);
+      // float32 is already 4 bytes/elem, so no "narrow the dtype" suggestion.
+      expect((caught as MemoryError).message).not.toMatch(/narrower dtype/i);
+    });
+
+    it("guards arange() and linspace() by element count", () => {
+      expect(() => arange(0, 1_000_000_000, 1, { dtype: "float64" })).toThrow(MemoryError);
+      expect(() => linspace(0, 1, 1_000_000_000, true, { dtype: "float64" })).toThrow(MemoryError);
+    });
+
+    it("does not affect normally-sized tensors", () => {
+      expect(() => zeros([1000, 1000], { dtype: "float64" })).not.toThrow();
+      expect(() => randn([256, 256])).not.toThrow();
+      const t = ones([500, 500], { dtype: "float32" });
+      expect(t.size).toBe(250_000);
     });
   });
 });

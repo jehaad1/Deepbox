@@ -3,7 +3,7 @@
  * Deepbox vs Pandas
  */
 
-import { DataFrame } from "deepbox/dataframe";
+import { DataFrame, Series, to_datetime } from "deepbox/dataframe";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("dataframe");
@@ -61,6 +61,19 @@ const df50k = makeMixedDF(50000, 42);
 const numDf100 = makeNumericDF(100, 5, 42);
 const numDf1k = makeNumericDF(1000, 5, 42);
 const numDf10k = makeNumericDF(10000, 5, 42);
+const strSeries1k = new Series(Array.from({ length: 1000 }, (_, i) => `user_${i}@deepbox.dev`));
+const strSeries10k = new Series(Array.from({ length: 10000 }, (_, i) => `user_${i}@deepbox.dev`));
+const dateSeries1k = to_datetime(
+  Array.from({ length: 1000 }, (_, i) => `2026-03-${String((i % 28) + 1).padStart(2, "0")}`)
+);
+const dateSeries10k = to_datetime(
+  Array.from({ length: 10000 }, (_, i) => `2026-03-${String((i % 28) + 1).padStart(2, "0")}`)
+);
+const salesPivotDf = new DataFrame({
+  region: Array.from({ length: 4000 }, (_, i) => ["east", "west", "north", "south"][i % 4]),
+  quarter: Array.from({ length: 4000 }, (_, i) => `Q${(i % 4) + 1}`),
+  revenue: Array.from({ length: 4000 }, (_, i) => 100 + (i % 97)),
+});
 
 // ── Creation ─────────────────────────────────────────────
 
@@ -180,6 +193,32 @@ run(suite, "describe", "10Kx5", () => numDf10k.describe());
 
 run(suite, "corr", "100x5", () => numDf100.corr());
 run(suite, "corr", "1Kx5", () => numDf1k.corr());
+
+// ── Advanced v1.0.0 DataFrame Operations ──────────────
+
+run(suite, "rolling(5).mean", "1K rows", () => numDf1k.rolling(5).mean());
+run(suite, "rolling(5).mean", "10K rows", () => numDf10k.rolling(5).mean());
+run(suite, "expanding().sum", "1K rows", () => numDf1k.expanding().sum());
+run(suite, "ewm(span=5).mean", "1K rows", () => numDf1k.ewm({ span: 5 }).mean());
+run(suite, "ewm(span=5).mean", "10K rows", () => numDf10k.ewm({ span: 5 }).mean());
+run(suite, "query", "1K rows", () => df1k.query("age > 40 and score > 50"));
+run(suite, "query", "10K rows", () => df10k.query("age > 40 and score > 50"));
+run(suite, "eval (derived col)", "1K rows", () => df1k.eval("score2 = score * 1.1"));
+run(suite, "eval (derived col)", "10K rows", () => df10k.eval("score2 = score * 1.1"));
+run(suite, "pivot_table(sum)", "4K rows", () =>
+  salesPivotDf.pivot_table({
+    index: "region",
+    columns: "quarter",
+    values: "revenue",
+    aggFunc: "sum",
+  })
+);
+run(suite, "crosstab", "10K rows", () => df10k.crosstab("category", "age"));
+run(suite, "Series.str.upper", "1K", () => strSeries1k.str.upper());
+run(suite, "Series.str.upper", "10K", () => strSeries10k.str.upper());
+run(suite, "Series.dt.month", "1K", () => dateSeries1k.dt.month());
+run(suite, "Series.dt.month", "10K", () => dateSeries10k.dt.month());
+run(suite, "CSV roundtrip", "1K rows", () => DataFrame.fromCsvString(df1k.toCsvString()));
 
 // ── Drop ─────────────────────────────────────────────────
 

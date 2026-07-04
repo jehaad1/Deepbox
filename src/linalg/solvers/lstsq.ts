@@ -1,7 +1,6 @@
 import { DeepboxError, InvalidParameterError, ShapeError } from "../../core";
-import { type Tensor, tensor } from "../../ndarray";
+import type { Tensor } from "../../ndarray";
 import {
-  at,
   fromDenseMatrix2D,
   fromDenseVector1D,
   getDim,
@@ -91,7 +90,9 @@ export function lstsq(
             new Float64Array(n * getDim(b, 1, "lstsq()"))
           );
     const zeroResiduals =
-      b.ndim === 1 ? tensor([0]) : fromDenseVector1D(new Float64Array(getDim(b, 1, "lstsq()")));
+      b.ndim === 1
+        ? fromDenseVector1D(new Float64Array([0]))
+        : fromDenseVector1D(new Float64Array(getDim(b, 1, "lstsq()")));
     return {
       x: zeroX,
       residuals: zeroResiduals,
@@ -117,11 +118,11 @@ export function lstsq(
   }
 
   // Compute rank and inverse singular values
-  const cutoff = at(sDense, 0) * rcondVal;
+  const cutoff = (sDense[0] as number) * rcondVal;
   let rank = 0;
   const sInv = new Float64Array(k);
   for (let i = 0; i < k; i++) {
-    const si = at(sDense, i);
+    const si = sDense[i] as number;
     if (si > cutoff) {
       rank++;
       sInv[i] = 1 / si;
@@ -136,9 +137,9 @@ export function lstsq(
     for (let j = 0; j < m; j++) {
       let sum = 0;
       for (let r = 0; r < k; r++) {
-        const v_ir = at(Vt, r * n + i); // Vt[r,i] = V[i,r]
-        const u_jr = at(U, j * k + r); // U[j,r]
-        sum += v_ir * at(sInv, r) * u_jr;
+        const v_ir = Vt[r * n + i] as number; // Vt[r,i] = V[i,r]
+        const u_jr = U[j * k + r] as number; // U[j,r]
+        sum += v_ir * (sInv[r] as number) * u_jr;
       }
       P[i * m + j] = sum;
     }
@@ -150,7 +151,7 @@ export function lstsq(
     for (let i = 0; i < n; i++) {
       let sum = 0;
       for (let j = 0; j < m; j++) {
-        sum += at(P, i * m + j) * at(bv, j);
+        sum += (P[i * m + j] as number) * (bv[j] as number);
       }
       x[i] = sum;
     }
@@ -161,15 +162,17 @@ export function lstsq(
     for (let i = 0; i < m; i++) {
       let pred = 0;
       for (let j = 0; j < n; j++) {
-        pred += at(A, i * n + j) * at(x, j);
+        pred += (A[i * n + j] as number) * (x[j] as number);
       }
-      const err = at(bv, i) - pred;
+      const err = (bv[i] as number) - pred;
       residual += err * err;
     }
 
     return {
       x: fromDenseVector1D(x),
-      residuals: tensor([residual]),
+      // fromDenseVector1D keeps float64; a bare tensor([residual]) would
+      // downcast to the default float32 dtype, inconsistent with the 2-D-b path
+      residuals: fromDenseVector1D(new Float64Array([residual])),
       rank,
       s,
     };
@@ -184,7 +187,7 @@ export function lstsq(
     for (let k2 = 0; k2 < nrhs; k2++) {
       let sum = 0;
       for (let j = 0; j < m; j++) {
-        sum += at(P, i * m + j) * at(B, j * nrhs + k2);
+        sum += (P[i * m + j] as number) * (B[j * nrhs + k2] as number);
       }
       X[i * nrhs + k2] = sum;
     }
@@ -197,9 +200,9 @@ export function lstsq(
     for (let i = 0; i < m; i++) {
       let pred = 0;
       for (let j = 0; j < n; j++) {
-        pred += at(A, i * n + j) * at(X, j * nrhs + k2);
+        pred += (A[i * n + j] as number) * (X[j * nrhs + k2] as number);
       }
-      const err = at(B, i * nrhs + k2) - pred;
+      const err = (B[i * nrhs + k2] as number) - pred;
       rsum += err * err;
     }
     residuals[k2] = rsum;

@@ -356,6 +356,7 @@ describe("docs example 06: ML Pipeline (Iris)", () => {
     expect(iris.data.shape).toEqual([150, 4]);
 
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });
@@ -457,6 +458,7 @@ describe("docs example 11: Tree & Ensemble Models", () => {
   it("4 classifiers on Iris", () => {
     const iris = loadIris();
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });
@@ -955,6 +957,7 @@ describe("docs example 12: Complete ML Pipeline", () => {
   it("Iris classification with f1Score macro + KFold", () => {
     const iris = loadIris();
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });

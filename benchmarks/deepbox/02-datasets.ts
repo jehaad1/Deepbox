@@ -4,17 +4,34 @@
  */
 
 import {
+  DataLoader,
+  filterDataset,
   loadBreastCancer,
+  loadCustomerSegments,
   loadDiabetes,
   loadDigits,
   loadIris,
   loadLinnerud,
+  makeBiclusters,
   makeBlobs,
+  makeCheckerboard,
   makeCircles,
   makeClassification,
+  makeFriedman1,
+  makeFriedman2,
+  makeFriedman3,
   makeGaussianQuantiles,
+  makeLowRankMatrix,
   makeMoons,
   makeRegression,
+  makeSCurve,
+  makeSPDMatrix,
+  makeSparseUncorrelated,
+  makeSwissRoll,
+  mapDataset,
+  parseCSV,
+  randomSplit,
+  WeightedRandomSampler,
 } from "deepbox/datasets";
 import { createSuite, footer, header, run } from "../utils";
 
@@ -116,5 +133,102 @@ run(suite, "makeGaussianQuantiles", "5Kx10 k=5", () =>
 run(suite, "makeGaussianQuantiles", "10Kx10 k=5", () =>
   makeGaussianQuantiles({ nSamples: 10000, nFeatures: 10, nClasses: 5 })
 );
+
+// ── Additional v1.0.0 generators ───────────────────────
+
+run(suite, "makeFriedman1", "1Kx10", () =>
+  makeFriedman1({ nSamples: 1000, nFeatures: 10, noise: 1.0, randomState: 42 })
+);
+run(suite, "makeFriedman2", "1K", () =>
+  makeFriedman2({ nSamples: 1000, noise: 1.0, randomState: 42 })
+);
+run(suite, "makeFriedman3", "1K", () =>
+  makeFriedman3({ nSamples: 1000, noise: 1.0, randomState: 42 })
+);
+run(suite, "makeSwissRoll", "2K", () =>
+  makeSwissRoll({ nSamples: 2000, noise: 0.2, randomState: 42 })
+);
+run(suite, "makeSCurve", "2K", () => makeSCurve({ nSamples: 2000, noise: 0.2, randomState: 42 }));
+run(suite, "makeSparseUncorrelated", "2Kx20", () =>
+  makeSparseUncorrelated({ nSamples: 2000, nFeatures: 20, randomState: 42 })
+);
+run(suite, "makeLowRankMatrix", "500x100 rank=10", () =>
+  makeLowRankMatrix({ nSamples: 500, nFeatures: 100, effectiveRank: 10, randomState: 42 })
+);
+run(suite, "makeSPDMatrix", "100x100", () => makeSPDMatrix({ nDim: 100, randomState: 42 }));
+run(suite, "makeBiclusters", "200x200 k=4", () =>
+  makeBiclusters({ shape: [200, 200], nClusters: 4, noise: 0.1, randomState: 42 })
+);
+run(suite, "makeCheckerboard", "200x200 k=4x4", () =>
+  makeCheckerboard({ shape: [200, 200], nClusters: [4, 4], noise: 0.1, randomState: 42 })
+);
+
+// ── Deepbox-only dataset coverage ──────────────────────
+
+run(suite, "loadCustomerSegments", "200x3", () => loadCustomerSegments(), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
+
+const iris = loadIris();
+const irisCsv = ["f1,f2,f3,target", "1,2,3,0", "4,5,6,1", "7,8,9,0", "10,11,12,1"].join("\n");
+
+run(suite, "randomSplit", "150→105/30/15", () => randomSplit(iris, [105, 30, 15], 42), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
+run(
+  suite,
+  "filterDataset",
+  "iris target!=2",
+  () => filterDataset(iris, (_row, target) => target !== 2),
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(
+  suite,
+  "mapDataset",
+  "iris center first 2 cols",
+  () =>
+    mapDataset(iris, (row, target) => ({
+      data: row.map((value, index) => (index < 2 ? value - 5 : value)),
+      target,
+    })),
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(
+  suite,
+  "DataLoader iterate",
+  "150 batch=16",
+  () => {
+    const loader = new DataLoader(iris.data, iris.target, {
+      batchSize: 16,
+      shuffle: true,
+      seed: 42,
+    });
+    let batches = 0;
+    for (const [xBatch] of loader) {
+      batches += xBatch.shape[0] ?? 0;
+    }
+    return batches;
+  },
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(
+  suite,
+  "WeightedRandomSampler",
+  "100 weights→64",
+  () => {
+    const sampler = new WeightedRandomSampler(
+      Array.from({ length: 100 }, (_, i) => (i % 5 === 0 ? 3 : 1)),
+      { numSamples: 64, replacement: true, seed: 7 }
+    );
+    return Array.from(sampler).length;
+  },
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(suite, "parseCSV", "4 rows × 3 cols", () => parseCSV(irisCsv), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
 
 footer(suite, "deepbox-datasets.json");

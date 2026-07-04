@@ -322,6 +322,7 @@ describe("docs/contents ml: supervised learning", () => {
   it("LogisticRegression on Iris", () => {
     const iris = loadIris();
     const [X_tr, X_te, y_tr, y_te] = trainTestSplit(iris.data, iris.target, {
+      stratify: iris.target,
       testSize: 0.2,
       randomState: 42,
     });

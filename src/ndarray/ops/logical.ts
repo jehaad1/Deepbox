@@ -7,7 +7,7 @@ import {
 } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, isBigIntArray, Tensor } from "../tensor/Tensor";
-import { flatOffset } from "./_internal";
+import { flatOffset, readNumericContiguous } from "./_internal";
 import {
   broadcastApply,
   ensureBroadcastableScalar,
@@ -47,6 +47,44 @@ function isTruthy(data: TypedArray, offset: number): boolean {
  *
  * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
+/**
+ * Same-shape contiguous fast path for binary logical ops: tight loops over
+ * zero-based views (the generic closure path costs ~15x on small tensors).
+ * Returns null when ineligible.
+ */
+function fastLogicalBinary(
+  a: Tensor,
+  b: Tensor,
+  out: Uint8Array,
+  result: Tensor,
+  op: "and" | "or" | "xor"
+): Tensor | null {
+  const aData = a.data;
+  const bData = b.data;
+  if (Array.isArray(aData) || Array.isArray(bData)) return null;
+  if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) return null;
+  if (a.ndim !== b.ndim) return null;
+  for (let d = 0; d < a.ndim; d++) {
+    if (a.shape[d] !== b.shape[d]) return null;
+  }
+  if (!isContiguous(a.shape, a.strides) || !isContiguous(b.shape, b.strides)) return null;
+
+  const aArr = a.offset === 0 ? aData : aData.subarray(a.offset, a.offset + a.size);
+  const bArr = b.offset === 0 ? bData : bData.subarray(b.offset, b.offset + b.size);
+  const n = a.size;
+  if (op === "and") {
+    for (let i = 0; i < n; i++)
+      out[i] = (aArr[i] as number) !== 0 && (bArr[i] as number) !== 0 ? 1 : 0;
+  } else if (op === "or") {
+    for (let i = 0; i < n; i++)
+      out[i] = (aArr[i] as number) !== 0 || (bArr[i] as number) !== 0 ? 1 : 0;
+  } else {
+    for (let i = 0; i < n; i++)
+      out[i] = ((aArr[i] as number) !== 0) !== ((bArr[i] as number) !== 0) ? 1 : 0;
+  }
+  return result;
+}
+
 export function logicalAnd(a: Tensor, b: Tensor): Tensor {
   if (a.dtype === "string" || b.dtype === "string") {
     throw new DTypeError("logical operations are not implemented for string dtype");
@@ -70,6 +108,9 @@ export function logicalAnd(a: Tensor, b: Tensor): Tensor {
 
   const aData = requireTypedArray(a);
   const bData = requireTypedArray(b);
+
+  const fast = fastLogicalBinary(a, b, out, result, "and");
+  if (fast) return fast;
 
   broadcastApply(a, b, result, (offA, offB, offOut) => {
     const ax = isTruthy(aData, offA);
@@ -125,6 +166,9 @@ export function logicalOr(a: Tensor, b: Tensor): Tensor {
   const aData = requireTypedArray(a);
   const bData = requireTypedArray(b);
 
+  const fast = fastLogicalBinary(a, b, out, result, "or");
+  if (fast) return fast;
+
   // Element-wise OR operation
   broadcastApply(a, b, result, (offA, offB, offOut) => {
     const ax = isTruthy(aData, offA);
@@ -177,6 +221,9 @@ export function logicalXor(a: Tensor, b: Tensor): Tensor {
   const aData = requireTypedArray(a);
   const bData = requireTypedArray(b);
 
+  const fast = fastLogicalBinary(a, b, out, result, "xor");
+  if (fast) return fast;
+
   // Element-wise XOR: true if exactly one is true
   broadcastApply(a, b, result, (offA, offB, offOut) => {
     const ax = isTruthy(aData, offA);
@@ -210,15 +257,21 @@ export function logicalNot(t: Tensor): Tensor {
   }
 
   const out = new Uint8Array(t.size);
-  const logicalStrides = computeStrides(t.shape);
-  const contiguous = isContiguous(t.shape, t.strides);
   const data = requireTypedArray(t);
 
-  // Element-wise NOT operation
-  for (let i = 0; i < t.size; i++) {
+  const src = readNumericContiguous(t);
+  if (src) {
     // Invert: 0 becomes 1, non-zero becomes 0
-    const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-    out[i] = isTruthy(data, srcOffset) ? 0 : 1;
+    for (let i = 0; i < t.size; i++) {
+      out[i] = (src[i] as number) === 0 ? 1 : 0;
+    }
+  } else {
+    const logicalStrides = computeStrides(t.shape);
+    const contiguous = isContiguous(t.shape, t.strides);
+    for (let i = 0; i < t.size; i++) {
+      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
+      out[i] = isTruthy(data, srcOffset) ? 0 : 1;
+    }
   }
 
   return Tensor.fromTypedArray({

@@ -2,6 +2,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
 <rect x="0" y="0" width="640" height="480" fill="#ffffff" />
 <rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-540-380"><path d="M50 50 L590 50 L590 430 L50 430 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-540-380)">
 <circle cx="221.82" cy="182.42" r="8" fill="#1f77b4" />
 <circle cx="123.64" cy="355.15" r="8" fill="#1f77b4" />
 <circle cx="369.09" cy="124.85" r="8" fill="#1f77b4" />
@@ -22,6 +24,7 @@
 <circle cx="221.82" cy="309.09" r="8" fill="#1f77b4" />
 <circle cx="516.36" cy="84.55" r="8" fill="#1f77b4" />
 <circle cx="123.64" cy="349.39" r="8" fill="#1f77b4" />
+</g>
 <line class="x-tick" x1="99.09" y1="430.00" x2="99.09" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="99.09" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
 <line class="x-tick" x1="221.82" y1="430.00" x2="221.82" y2="435.00" stroke="#000" />

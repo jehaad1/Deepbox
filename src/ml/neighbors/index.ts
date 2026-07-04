@@ -1,21 +1,20 @@
-import {
-  DataValidationError,
-  InvalidParameterError,
-  NotFittedError,
-  NotImplementedError,
-  ShapeError,
-} from "../../core";
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import {
+  assertContiguous,
+  validateFitInputs,
+  validatePredictInputs,
+  validateUnsupervisedFitInputs,
+} from "../_validation";
 import type { Classifier, Regressor } from "../base";
 
 /**
  * K-Nearest Neighbors base class.
  */
 abstract class KNeighborsBase {
-  protected readonly nNeighbors: number;
-  protected readonly weights: "uniform" | "distance";
-  protected readonly metric: "euclidean" | "manhattan";
+  protected nNeighbors: number;
+  protected weights: "uniform" | "distance";
+  protected metric: "euclidean" | "manhattan";
 
   protected XTrain_?: Tensor;
   protected yTrain_?: Tensor;
@@ -73,17 +72,23 @@ abstract class KNeighborsBase {
     }
   }
 
-  protected findKNearest(sample: number[]): Array<{ index: number; distance: number }> {
+  protected findNearest(
+    sample: number[],
+    k: number,
+    excludeIndex?: number
+  ): Array<{ index: number; distance: number }> {
     if (!this.XTrain_) {
       throw new NotFittedError("Model must be fitted before finding neighbors");
     }
 
     const nSamples = this.XTrain_.shape[0] ?? 0;
     const nFeatures = this.XTrain_.shape[1] ?? 0;
-
     const distances: Array<{ index: number; distance: number }> = [];
 
     for (let i = 0; i < nSamples; i++) {
+      if (excludeIndex !== undefined && i === excludeIndex) {
+        continue;
+      }
       const trainSample: number[] = [];
       for (let j = 0; j < nFeatures; j++) {
         trainSample.push(Number(this.XTrain_.data[this.XTrain_.offset + i * nFeatures + j]));
@@ -93,7 +98,42 @@ abstract class KNeighborsBase {
     }
 
     distances.sort((a, b) => a.distance - b.distance);
-    return distances.slice(0, this.nNeighbors);
+    return distances.slice(0, k);
+  }
+
+  protected findWithinRadius(
+    sample: number[],
+    radius: number,
+    excludeIndex?: number
+  ): Array<{ index: number; distance: number }> {
+    if (!this.XTrain_) {
+      throw new NotFittedError("Model must be fitted before finding neighbors");
+    }
+
+    const nSamples = this.XTrain_.shape[0] ?? 0;
+    const nFeatures = this.XTrain_.shape[1] ?? 0;
+    const distances: Array<{ index: number; distance: number }> = [];
+
+    for (let i = 0; i < nSamples; i++) {
+      if (excludeIndex !== undefined && i === excludeIndex) {
+        continue;
+      }
+      const trainSample: number[] = [];
+      for (let j = 0; j < nFeatures; j++) {
+        trainSample.push(Number(this.XTrain_.data[this.XTrain_.offset + i * nFeatures + j]));
+      }
+      const dist = this.calculateDistance(sample, trainSample);
+      if (dist <= radius) {
+        distances.push({ index: i, distance: dist });
+      }
+    }
+
+    distances.sort((a, b) => a.distance - b.distance);
+    return distances;
+  }
+
+  protected findKNearest(sample: number[]): Array<{ index: number; distance: number }> {
+    return this.findNearest(sample, this.nNeighbors);
   }
 
   /**
@@ -112,11 +152,47 @@ abstract class KNeighborsBase {
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError("KNeighbors does not support setParams after construction");
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "nNeighbors":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "nNeighbors must be an integer >= 1",
+              "nNeighbors",
+              value
+            );
+          }
+          this.nNeighbors = value;
+          break;
+        case "weights":
+          if (value !== "uniform" && value !== "distance") {
+            throw new InvalidParameterError(
+              `weights must be "uniform" or "distance"; got ${String(value)}`,
+              "weights",
+              value
+            );
+          }
+          this.weights = value;
+          break;
+        case "metric":
+          if (value !== "euclidean" && value !== "manhattan") {
+            throw new InvalidParameterError(
+              `metric must be "euclidean" or "manhattan"; got ${String(value)}`,
+              "metric",
+              value
+            );
+          }
+          this.metric = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
   }
 }
 
@@ -482,5 +558,162 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
     }
 
     return 1 - ssRes / ssTot;
+  }
+}
+
+export class NearestNeighbors extends KNeighborsBase {
+  private radius: number;
+
+  constructor(
+    options: {
+      readonly nNeighbors?: number;
+      readonly radius?: number;
+      readonly metric?: "euclidean" | "manhattan";
+    } = {}
+  ) {
+    const baseOptions: {
+      readonly nNeighbors?: number;
+      readonly metric?: "euclidean" | "manhattan";
+    } = {
+      ...(options.nNeighbors !== undefined ? { nNeighbors: options.nNeighbors } : {}),
+      ...(options.metric !== undefined ? { metric: options.metric } : {}),
+    };
+    super(baseOptions);
+    this.radius = options.radius ?? 1;
+
+    if (!Number.isFinite(this.radius) || this.radius <= 0) {
+      throw new InvalidParameterError("radius must be a finite number > 0", "radius", this.radius);
+    }
+  }
+
+  fit(X: Tensor, _y?: Tensor): this {
+    validateUnsupervisedFitInputs(X);
+    this.XTrain_ = X;
+    this.nFeaturesIn_ = X.shape[1] ?? 0;
+    this.fitted = true;
+    return this;
+  }
+
+  kneighbors(X?: Tensor): { distances: Tensor; indices: Tensor } {
+    if (!this.fitted || !this.XTrain_) {
+      throw new NotFittedError("NearestNeighbors must be fitted before querying neighbors");
+    }
+
+    const query = X ?? this.XTrain_;
+    const queryingTrainingData = X === undefined;
+    if (!queryingTrainingData) {
+      validatePredictInputs(query, this.nFeaturesIn_ ?? 0, "NearestNeighbors");
+    }
+
+    const trainSamples = this.XTrain_.shape[0] ?? 0;
+    const maxNeighbors = queryingTrainingData ? trainSamples - 1 : trainSamples;
+    if (this.nNeighbors > maxNeighbors) {
+      throw new InvalidParameterError(
+        `nNeighbors must be <= ${maxNeighbors} for this query; received ${this.nNeighbors}`,
+        "nNeighbors",
+        this.nNeighbors
+      );
+    }
+
+    const nSamples = query.shape[0] ?? 0;
+    const nFeatures = query.shape[1] ?? 0;
+    const distanceRows: number[][] = [];
+    const indexRows: number[][] = [];
+
+    for (let i = 0; i < nSamples; i++) {
+      const sample: number[] = [];
+      for (let j = 0; j < nFeatures; j++) {
+        sample.push(Number(query.data[query.offset + i * nFeatures + j]));
+      }
+      const neighbors = this.findNearest(
+        sample,
+        this.nNeighbors,
+        queryingTrainingData ? i : undefined
+      );
+      distanceRows.push(neighbors.map((neighbor) => neighbor.distance));
+      indexRows.push(neighbors.map((neighbor) => neighbor.index));
+    }
+
+    return {
+      distances: tensor(distanceRows),
+      indices: tensor(indexRows, { dtype: "int32" }),
+    };
+  }
+
+  radiusNeighbors(X?: Tensor): { distances: number[][]; indices: number[][] } {
+    if (!this.fitted || !this.XTrain_) {
+      throw new NotFittedError("NearestNeighbors must be fitted before querying neighbors");
+    }
+
+    const query = X ?? this.XTrain_;
+    const queryingTrainingData = X === undefined;
+    if (!queryingTrainingData) {
+      validatePredictInputs(query, this.nFeaturesIn_ ?? 0, "NearestNeighbors");
+    }
+
+    const nSamples = query.shape[0] ?? 0;
+    const nFeatures = query.shape[1] ?? 0;
+    const distanceRows: number[][] = [];
+    const indexRows: number[][] = [];
+
+    for (let i = 0; i < nSamples; i++) {
+      const sample: number[] = [];
+      for (let j = 0; j < nFeatures; j++) {
+        sample.push(Number(query.data[query.offset + i * nFeatures + j]));
+      }
+      const neighbors = this.findWithinRadius(
+        sample,
+        this.radius,
+        queryingTrainingData ? i : undefined
+      );
+      distanceRows.push(neighbors.map((neighbor) => neighbor.distance));
+      indexRows.push(neighbors.map((neighbor) => neighbor.index));
+    }
+
+    return { distances: distanceRows, indices: indexRows };
+  }
+
+  override getParams(): Record<string, unknown> {
+    return {
+      nNeighbors: this.nNeighbors,
+      radius: this.radius,
+      metric: this.metric,
+    };
+  }
+
+  override setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "nNeighbors":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+            throw new InvalidParameterError(
+              "nNeighbors must be an integer >= 1",
+              "nNeighbors",
+              value
+            );
+          }
+          this.nNeighbors = value;
+          break;
+        case "radius":
+          if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+            throw new InvalidParameterError("radius must be a finite number > 0", "radius", value);
+          }
+          this.radius = value;
+          break;
+        case "metric":
+          if (value !== "euclidean" && value !== "manhattan") {
+            throw new InvalidParameterError(
+              `metric must be "euclidean" or "manhattan"; got ${String(value)}`,
+              "metric",
+              value
+            );
+          }
+          this.metric = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
   }
 }

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520">
+<rect x="0" y="0" width="720" height="520" fill="#ffffff" />
+<rect x="50" y="50" width="620" height="420" fill="#ffffff" stroke="#000" />
+<clipPath id="dbclip-50-50-620-420"><path d="M50 50 L670 50 L670 470 L50 470 Z" /></clipPath>
+<g clip-path="url(#dbclip-50-50-620-420)">
+<rect x="78.18" y="355.45" width="140.91" height="95.45" fill="rgb(69,189,112)" />
+<rect x="219.09" y="355.45" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="360.00" y="355.45" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="500.91" y="355.45" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="78.18" y="260.00" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="219.09" y="260.00" width="140.91" height="95.45" fill="rgb(41,169,130)" />
+<rect x="360.00" y="260.00" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="500.91" y="260.00" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="78.18" y="164.55" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="219.09" y="164.55" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="360.00" y="164.55" width="140.91" height="95.45" fill="rgb(57,185,119)" />
+<rect x="500.91" y="164.55" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="78.18" y="69.09" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="219.09" y="69.09" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="360.00" y="69.09" width="140.91" height="95.45" fill="rgb(68,1,84)" />
+<rect x="500.91" y="69.09" width="140.91" height="95.45" fill="rgb(253,231,37)" />
+</g>
+<line class="x-tick" x1="148.64" y1="470.00" x2="148.64" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="148.64" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">billing</text>
+<line class="x-tick" x1="289.55" y1="470.00" x2="289.55" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="289.55" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">account_access</text>
+<line class="x-tick" x1="430.45" y1="470.00" x2="430.45" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="430.45" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">outage</text>
+<line class="x-tick" x1="571.36" y1="470.00" x2="571.36" y2="475.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="571.36" y="477.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">bug_report</text>
+<line class="y-tick" x1="50.00" y1="403.18" x2="45.00" y2="403.18" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="403.18" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">billing</text>
+<line class="y-tick" x1="50.00" y1="307.73" x2="45.00" y2="307.73" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="307.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">account_access</text>
+<line class="y-tick" x1="50.00" y1="212.27" x2="45.00" y2="212.27" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="212.27" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">outage</text>
+<line class="y-tick" x1="50.00" y1="116.82" x2="45.00" y2="116.82" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="116.82" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">bug_report</text>
+<text x="360" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Confusion Matrix</text>
+<text x="360" y="505" text-anchor="middle" font-size="12" fill="#000">Predicted</text>
+<text x="15" y="260" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 260)">Actual</text>
+</svg>

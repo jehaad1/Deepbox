@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
 import type { LegendEntry } from "../types";
 
 /**

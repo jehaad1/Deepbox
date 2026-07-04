@@ -66,6 +66,11 @@ export function reshape(t: Tensor, rawShape: Shape): Tensor {
     throw new ShapeError(`Cannot reshape tensor of size ${t.size} to shape [${newShape}]`);
   }
 
+  // Device tensors: the Tensor method handles views and on-device copies.
+  if (t.isDeviceTensor) {
+    return t.reshape(newShape);
+  }
+
   const contiguous = isContiguous(t.shape, t.strides);
 
   if (isStringTensor(t)) {
@@ -226,6 +231,10 @@ export function transpose(t: Tensor, axes?: readonly number[]): Tensor {
   }
 
   validateShape(newShape);
+
+  if (t.isDeviceTensor) {
+    return t.view(newShape, newStrides, t.offset);
+  }
 
   if (isStringTensor(t)) {
     return Tensor.fromStringArray({

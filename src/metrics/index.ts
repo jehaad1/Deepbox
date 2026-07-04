@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox documentation}
+ */
+
 export {
   accuracy,
   averagePrecisionScore,
@@ -30,6 +34,29 @@ export {
   silhouetteScore,
   vMeasureScore,
 } from "./clustering";
+export {
+  brierScoreLoss,
+  coverageError,
+  d2TweedieScore,
+  detCurve,
+  hingeLoss,
+  labelRankingLoss,
+  meanGammaDeviance,
+  meanPinballLoss,
+  meanPoissonDeviance,
+  meanSquaredLogError,
+  multilabelConfusionMatrix,
+  smape,
+  topKAccuracyScore,
+  zeroOneLoss,
+} from "./extra";
+export {
+  ndcgScore,
+  pairwiseCosine,
+  pairwiseEuclidean,
+  pairwiseManhattan,
+  reciprocalRank,
+} from "./pairwise";
 export {
   adjustedR2Score,
   explainedVarianceScore,

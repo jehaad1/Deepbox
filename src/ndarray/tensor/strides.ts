@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import type { Shape } from "../../core";
 
 export function isContiguous(shape: Shape, strides: readonly number[]): boolean {

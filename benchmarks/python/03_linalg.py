@@ -50,6 +50,16 @@ b100 = rand_matrix(100, 1, 99)
 b200 = rand_matrix(200, 1, 99)
 rect50x30 = rand_matrix(50, 30)
 rect100x50 = rand_matrix(100, 50)
+band_ab = np.array([
+    [0, 1, 1, 1],
+    [4, 4, 4, 4],
+    [1, 1, 1, 0],
+], dtype=float)
+band_b = np.array([5, 6, 6, 5], dtype=float)
+toeplitz_col = np.array([(i % 7) + 1 for i in range(500)], dtype=float)
+sylA = sym_pos_def(10, 7)
+sylB = sym_pos_def(10, 13)
+sylC = rand_matrix(10, 10, 19)
 
 # ── Determinant ─────────────────────────────────────────
 
@@ -155,5 +165,19 @@ run(suite, "matmul", "25x25", lambda: m25 @ m25)
 run(suite, "matmul", "50x50", lambda: m50 @ m50)
 run(suite, "matmul", "100x100", lambda: m100 @ m100)
 run(suite, "matmul", "200x200", lambda: m200 @ m200, iterations=10)
+
+# ── Additional v1.0.0 linalg coverage ───────────────────
+
+run(suite, "hessenberg", "50x50", lambda: la.hessenberg(m50, calc_q=True))
+run(suite, "schur", "25x25", lambda: la.schur(m25))
+run(suite, "polar", "25x25", lambda: la.polar(m25))
+run(suite, "expm", "25x25", lambda: la.expm(sym25))
+run(suite, "logm", "25x25", lambda: la.logm(sym25))
+run(suite, "sqrtm", "25x25", lambda: la.sqrtm(sym25))
+run(suite, "kron", "10x10⊗10x10", lambda: np.kron(m10, m10))
+run(suite, "block_diag", "25x25+25x25", lambda: la.block_diag(m25, m25))
+run(suite, "toeplitz", "500", lambda: la.toeplitz(toeplitz_col))
+run(suite, "solve_banded", "4x4 (1,1)", lambda: la.solve_banded((1, 1), band_ab, band_b))
+run(suite, "sylvester", "10x10", lambda: la.solve_sylvester(sylA, sylB, sylC))
 
 footer(suite, "numpy-linalg.json")

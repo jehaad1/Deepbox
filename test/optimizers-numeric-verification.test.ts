@@ -95,13 +95,16 @@ describe("deepbox/optim - Numeric Verification Tests", () => {
         dampening: 0.5,
       });
 
+      // PyTorch: first step initializes the momentum buffer to d_p WITHOUT
+      // dampening, so step1 buf=1 → p=1-0.1*1=0.9. Step2 buf=0.9*1+0.5*1=1.4 →
+      // p=0.9-0.1*1.4=0.76.
       p.setGrad(tensor([1.0], { dtype: "float64" }));
       optimizer.step();
-      expect(getParamValue(p, 0, "SGD param")).toBeCloseTo(0.95, 10);
+      expect(getParamValue(p, 0, "SGD param")).toBeCloseTo(0.9, 10);
 
       p.setGrad(tensor([1.0], { dtype: "float64" }));
       optimizer.step();
-      expect(getParamValue(p, 0, "SGD param")).toBeCloseTo(0.855, 10);
+      expect(getParamValue(p, 0, "SGD param")).toBeCloseTo(0.76, 10);
     });
   });
 

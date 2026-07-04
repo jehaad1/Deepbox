@@ -1,9 +1,12 @@
 import { type Axis, normalizeAxis } from "../core";
-import { DataValidationError, IndexError, InvalidParameterError } from "../core/errors/index.js";
-import { reshape, type Tensor, tensor } from "../ndarray/index.js";
-import { Series } from "./Series.js";
-import type { AggregateFunction, DataFrameData, DataFrameOptions } from "./types.js";
-import { createKey, isRecord, isValidNumber } from "./utils.js";
+import { DataValidationError, IndexError, InvalidParameterError } from "../core/errors/index";
+import { reshape, type Tensor, tensor } from "../ndarray/index";
+import { __random } from "../random/random";
+import { PlotAccessor } from "./PlotAccessor";
+import { Series } from "./Series";
+import { StyleAccessor } from "./StyleAccessor";
+import type { AggregateFunction, DataFrameData, DataFrameOptions } from "./types";
+import { createKey, isRecord, isValidNumber } from "./utils";
 
 const isNumberValue = (value: unknown): value is number => typeof value === "number";
 
@@ -172,6 +175,48 @@ export class DataFrame {
   }
 
   /**
+   * Plotting accessor. Provides pandas-like `df.plot.line()`, `df.plot.bar()`, etc.
+   *
+   * @example
+   * ```ts
+   * const fig = df.plot.line({ x: 'date', y: 'price' });
+   * const fig2 = df.plot.scatter({ x: 'x', y: 'y' });
+   * ```
+   */
+  get plot(): PlotAccessor {
+    return new PlotAccessor(() => ({
+      columns: this._columns.slice(),
+      getColumn: (name: string) => {
+        const col = this._data.get(name);
+        if (!col) return [];
+        return col.slice();
+      },
+      nRows: this._index.length,
+    }));
+  }
+
+  /**
+   * Style accessor. Provides pandas-like conditional formatting with
+   * `df.style.highlight_max()`, `df.style.background_gradient()`, etc.
+   *
+   * @example
+   * ```ts
+   * const html = df.style.highlight_max().toHTML();
+   * ```
+   */
+  get style(): StyleAccessor {
+    return new StyleAccessor(() => ({
+      columns: this._columns.slice(),
+      getColumn: (name: string) => {
+        const col = this._data.get(name);
+        if (!col) return [];
+        return col.slice();
+      },
+      nRows: this._index.length,
+    }));
+  }
+
+  /**
    * Get the column names.
    *
    * @returns Array of column names (copy)
@@ -237,6 +282,23 @@ export class DataFrame {
       name: column,
       copy: false,
     });
+  }
+
+  /**
+   * Raw column data without constructing a Series (no copies, no index map).
+   *
+   * @internal
+   */
+  getColumnData(column: string): readonly unknown[] {
+    const data = this._data.get(column);
+    if (!data) {
+      throw new InvalidParameterError(
+        `Column '${column}' not found in DataFrame`,
+        "column",
+        column
+      );
+    }
+    return data;
   }
 
   /**
@@ -552,6 +614,19 @@ export class DataFrame {
         const colArr = sortColArrays[c] as unknown[];
         const aVal = colArr[ai];
         const bVal = colArr[bi];
+
+        // Missing values (null/undefined/NaN) always sort LAST, regardless of
+        // ascending/descending (pandas na_position='last' default). Without
+        // this, nulls fall into the string fallback and negating for
+        // descending puts them first.
+        const aMissing =
+          aVal === null || aVal === undefined || (isNumberValue(aVal) && Number.isNaN(aVal));
+        const bMissing =
+          bVal === null || bVal === undefined || (isNumberValue(bVal) && Number.isNaN(bVal));
+        if (aMissing || bMissing) {
+          if (aMissing && bMissing) continue;
+          return aMissing ? 1 : -1;
+        }
 
         // Handle numeric comparison (NaN sorts to end)
         if (isNumberValue(aVal) && isNumberValue(bVal)) {
@@ -1330,18 +1405,36 @@ export class DataFrame {
       const colData = this._data.get(col);
       if (!colData) continue;
 
-      const numericData = colData.filter(isValidNumber);
-      if (numericData.length === 0) continue;
+      // Collect valid numbers into a typed buffer: the comparator-free typed
+      // sort and plain loops are ~5x faster than filter/spread/sort/reduce.
+      let validCount = 0;
+      for (const v of colData) {
+        if (isValidNumber(v)) validCount++;
+      }
+      if (validCount === 0) continue;
+      const numericData = new Float64Array(validCount);
+      {
+        let w = 0;
+        for (const v of colData) {
+          if (isValidNumber(v)) numericData[w++] = v;
+        }
+      }
 
-      const sorted = [...numericData].sort((a, b) => a - b);
-      const sum = numericData.reduce((acc, val) => acc + val, 0);
-      const mean = sum / numericData.length;
+      const sorted = numericData.slice();
+      sorted.sort();
+      let sum = 0;
+      for (let i = 0; i < validCount; i++) sum += numericData[i]!;
+      const mean = sum / validCount;
       let variance: number;
       let std: number;
 
-      if (numericData.length > 1) {
-        variance =
-          numericData.reduce((acc, val) => acc + (val - mean) ** 2, 0) / (numericData.length - 1);
+      if (validCount > 1) {
+        let sq = 0;
+        for (let i = 0; i < validCount; i++) {
+          const d = numericData[i]! - mean;
+          sq += d * d;
+        }
+        variance = sq / (validCount - 1);
         std = Math.sqrt(variance);
       } else {
         variance = NaN;
@@ -1402,7 +1495,70 @@ export class DataFrame {
       }
     }
 
+    const nRows = this._index.length;
+    const kCols = numericCols.length;
+
+    // Fast path: when no column contains a missing/invalid value, center each
+    // column once and reuse the centered vectors for every pair, exploiting
+    // the matrix's symmetry (diagonal = 1). The general path rebuilds the
+    // pairwise-valid vectors and recomputes means for all k^2 pairs.
+    const centered: (Float64Array | null)[] = new Array(kCols);
+    let allValid = true;
+    for (let c = 0; c < kCols; c++) {
+      const data = this._data.get(numericCols[c] as string);
+      if (!data) {
+        allValid = false;
+        break;
+      }
+      const col = new Float64Array(nRows);
+      let mean = 0;
+      let ok = true;
+      for (let i = 0; i < nRows; i++) {
+        const v = data[i];
+        if (!isValidNumber(v)) {
+          ok = false;
+          break;
+        }
+        col[i] = v;
+        mean += v;
+      }
+      if (!ok) {
+        allValid = false;
+        break;
+      }
+      mean /= nRows;
+      for (let i = 0; i < nRows; i++) col[i] = (col[i] as number) - mean;
+      centered[c] = col;
+    }
+
     const corrMatrix: DataFrameData = {};
+
+    if (allValid && nRows >= 2) {
+      const norms = new Float64Array(kCols);
+      for (let c = 0; c < kCols; c++) {
+        const col = centered[c] as Float64Array;
+        let ss = 0;
+        for (let i = 0; i < nRows; i++) ss += col[i]! * col[i]!;
+        norms[c] = Math.sqrt(ss);
+      }
+      const out: number[][] = [];
+      for (let a = 0; a < kCols; a++) out.push(new Array(kCols).fill(NaN));
+      for (let a = 0; a < kCols; a++) {
+        out[a]![a] = norms[a] === 0 ? NaN : 1;
+        const ca = centered[a] as Float64Array;
+        for (let b = a + 1; b < kCols; b++) {
+          const cb = centered[b] as Float64Array;
+          let num = 0;
+          for (let i = 0; i < nRows; i++) num += ca[i]! * cb[i]!;
+          const denom = norms[a]! * norms[b]!;
+          const r = denom === 0 ? NaN : num / denom;
+          out[a]![b] = r;
+          out[b]![a] = r;
+        }
+      }
+      for (let a = 0; a < kCols; a++) corrMatrix[numericCols[a] as string] = out[a] as number[];
+      return new DataFrame(corrMatrix, { index: numericCols, columns: numericCols });
+    }
 
     for (const col1 of numericCols) {
       corrMatrix[col1] = [];
@@ -1738,11 +1894,21 @@ export class DataFrame {
     const hasHeader = options.hasHeader ?? true;
     const skipRows = options.skipRows ?? 0;
 
+    // Strip a leading UTF-8 BOM (common in Excel-exported CSVs); otherwise the
+    // first column name becomes "﻿<name>" and lookups fail.
+    if (csvString.charCodeAt(0) === 0xfeff) {
+      csvString = csvString.slice(1);
+    }
+
     const rows: string[][] = [];
     let fields: string[] = [];
     let currentField = "";
     let inQuotes = false;
     let rowCount = 0;
+
+    // A row is a blank line (skippable) only when it is a single empty field.
+    // A multi-field all-empty row like ",," is a real all-null record.
+    const isBlankLine = (fs: string[]): boolean => fs.length === 1 && (fs[0] ?? "").trim() === "";
 
     // Parse character by character to handle newlines in quoted fields
     for (let i = 0; i < csvString.length; i++) {
@@ -1770,8 +1936,9 @@ export class DataFrame {
         fields.push(currentField);
         currentField = "";
 
-        // Skip empty rows and rows before skipRows
-        if (fields.some((f) => f.trim() !== "")) {
+        // Skip only truly blank lines and rows before skipRows; keep all-empty
+        // multi-field rows (",," → an all-null record, like pandas).
+        if (!isBlankLine(fields)) {
           if (rowCount >= skipRows) {
             rows.push(fields);
           }
@@ -1787,7 +1954,7 @@ export class DataFrame {
     // Handle last row if no trailing newline
     if (currentField !== "" || fields.length > 0) {
       fields.push(currentField);
-      if (fields.some((f) => f.trim() !== "") && rowCount >= skipRows) {
+      if (!isBlankLine(fields) && rowCount >= skipRows) {
         rows.push(fields);
       }
     }
@@ -1831,17 +1998,18 @@ export class DataFrame {
 
       for (const row of dataRows) {
         const value = row[colIdx];
-        if (value === undefined || value === "" || value === "null" || value === "undefined") {
+        const trimmed = value === undefined ? "" : value.trim();
+        if (trimmed === "" || trimmed === "null" || trimmed === "undefined") {
+          // Empty or whitespace-only cells are missing (NaN), NOT numeric 0.
           colData.push(null);
         } else if (
-          !Number.isNaN(Number(value)) &&
-          value !== "" &&
-          // Allow "0", "0.5", "10", but not "01" (unless it's "0.1")
-          (value === "0" || !value.startsWith("0") || value.startsWith("0."))
+          !Number.isNaN(Number(trimmed)) &&
+          // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
+          (trimmed === "0" || !trimmed.startsWith("0") || trimmed.startsWith("0."))
         ) {
-          colData.push(Number(value));
-        } else if (value === "true" || value === "false") {
-          colData.push(value === "true");
+          colData.push(Number(trimmed));
+        } else if (trimmed === "true" || trimmed === "false") {
+          colData.push(trimmed === "true");
         } else {
           colData.push(value);
         }
@@ -2696,7 +2864,7 @@ export class DataFrame {
       throw new DataValidationError(`Sample size ${n} must be between 0 and ${this._index.length}`);
     }
 
-    const rng = random_state !== undefined ? this.seededRandom(random_state) : Math.random;
+    const rng = random_state !== undefined ? this.seededRandom(random_state) : __random;
 
     const indices = Array.from({ length: this._index.length }, (_, i) => i);
 
@@ -3419,75 +3587,348 @@ export class DataFrame {
   }
 
   /**
-   * Rolling window mean calculation.
+   * Stack (pivot) specified value columns into rows.
+   *
+   * Converts a wide-format DataFrame into a long-format one by taking
+   * the specified columns and stacking their values into two new columns:
+   * one for the variable name and one for the value.
+   *
+   * Non-stacked columns are repeated for each stacked variable.
+   * Null/undefined values are preserved in the output.
+   *
+   * @param options - Configuration options
+   * @param options.columns - Columns to stack (default: all columns)
+   * @param options.varName - Name for the new variable column (default: 'variable')
+   * @param options.valueName - Name for the new value column (default: 'value')
+   * @returns New DataFrame in long format
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({
+   *   city: ['NYC', 'LA'],
+   *   pop_2020: [8.3, 3.9],
+   *   pop_2021: [8.4, 4.0]
+   * });
+   * df.stack({ columns: ['pop_2020', 'pop_2021'], varName: 'year', valueName: 'population' });
+   * // city | year     | population
+   * // NYC  | pop_2020 | 8.3
+   * // NYC  | pop_2021 | 8.4
+   * // LA   | pop_2020 | 3.9
+   * // LA   | pop_2021 | 4.0
+   * ```
+   */
+  stack(
+    options: {
+      readonly columns?: string[];
+      readonly varName?: string;
+      readonly valueName?: string;
+    } = {}
+  ): DataFrame {
+    const varName = options.varName ?? "variable";
+    const valueName = options.valueName ?? "value";
+
+    if (varName === valueName) {
+      throw new DataValidationError("varName and valueName must be different");
+    }
+
+    const stackCols = options.columns ?? [...this._columns];
+    for (const col of stackCols) {
+      if (!this._columns.includes(col)) {
+        throw new DataValidationError(`Column '${col}' not found in DataFrame`);
+      }
+    }
+
+    const stackSet = new Set(stackCols);
+    const idCols = this._columns.filter((c) => !stackSet.has(c));
+
+    // Build output
+    const newData: DataFrameData = {};
+    for (const id of idCols) {
+      newData[id] = [];
+    }
+    newData[varName] = [];
+    newData[valueName] = [];
+
+    const nRows = this._index.length;
+    for (let i = 0; i < nRows; i++) {
+      for (const sc of stackCols) {
+        for (const id of idCols) {
+          newData[id]?.push(this._data.get(id)?.[i]);
+        }
+        newData[varName]?.push(sc);
+        newData[valueName]?.push(this._data.get(sc)?.[i]);
+      }
+    }
+
+    return new DataFrame(newData, {
+      columns: [...idCols, varName, valueName],
+    });
+  }
+
+  /**
+   * Unstack (pivot) a column's values into new columns.
+   *
+   * Converts a long-format DataFrame into a wide-format one by taking
+   * the unique values of a specified column and creating a new column
+   * for each, filled with the corresponding values from a value column.
+   *
+   * Requires an index column whose values (combined with the unstacked
+   * column values) uniquely identify each row.
+   *
+   * @param options - Configuration options
+   * @param options.index - Column to use as the row index
+   * @param options.column - Column whose unique values become new columns
+   * @param options.value - Column containing the values to fill
+   * @returns New DataFrame in wide format
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({
+   *   city: ['NYC', 'NYC', 'LA', 'LA'],
+   *   year: ['2020', '2021', '2020', '2021'],
+   *   pop: [8.3, 8.4, 3.9, 4.0]
+   * });
+   * df.unstack({ index: 'city', column: 'year', value: 'pop' });
+   * // city | 2020 | 2021
+   * // NYC  | 8.3  | 8.4
+   * // LA   | 3.9  | 4.0
+   * ```
+   */
+  unstack(options: {
+    readonly index: string;
+    readonly column: string;
+    readonly value: string;
+  }): DataFrame {
+    const { index: indexCol, column: pivotCol, value: valueCol } = options;
+
+    for (const col of [indexCol, pivotCol, valueCol]) {
+      if (!this._columns.includes(col)) {
+        throw new DataValidationError(`Column '${col}' not found in DataFrame`);
+      }
+    }
+
+    const indexData = this._data.get(indexCol);
+    const pivotData = this._data.get(pivotCol);
+    const valueData = this._data.get(valueCol);
+
+    if (!indexData || !pivotData || !valueData) {
+      throw new DataValidationError("Unstack columns have no data");
+    }
+
+    // Collect unique index values and unique pivot column values
+    const uniqueIdx: (string | number)[] = [];
+    const idxSet = new Set<string | number>();
+    const uniquePivot: string[] = [];
+    const pivotSet = new Set<string>();
+
+    for (const val of indexData) {
+      if (val === null || val === undefined) continue;
+      const key = typeof val === "string" || typeof val === "number" ? val : String(val);
+      if (!idxSet.has(key)) {
+        idxSet.add(key);
+        uniqueIdx.push(key);
+      }
+    }
+
+    for (const val of pivotData) {
+      if (val === null || val === undefined) continue;
+      const key = String(val);
+      if (!pivotSet.has(key)) {
+        pivotSet.add(key);
+        uniquePivot.push(key);
+      }
+    }
+
+    // Build row position lookup
+    const rowPos = new Map<string | number, number>();
+    for (let i = 0; i < uniqueIdx.length; i++) {
+      const key = uniqueIdx[i];
+      if (key !== undefined) rowPos.set(key, i);
+    }
+
+    // Initialize output columns
+    const newData: DataFrameData = {};
+    for (const pv of uniquePivot) {
+      newData[pv] = new Array<unknown>(uniqueIdx.length).fill(null);
+    }
+
+    // Fill values
+    const nRows = indexData.length;
+    for (let i = 0; i < nRows; i++) {
+      const idx = indexData[i];
+      const pv = pivotData[i];
+      if (idx === null || idx === undefined || pv === null || pv === undefined) {
+        continue;
+      }
+      const idxKey = typeof idx === "string" || typeof idx === "number" ? idx : String(idx);
+      const pvKey = String(pv);
+      const rp = rowPos.get(idxKey);
+      if (rp !== undefined) {
+        const col = newData[pvKey];
+        if (col) {
+          col[rp] = valueData[i];
+        }
+      }
+    }
+
+    return new DataFrame(newData, {
+      columns: uniquePivot,
+      index: uniqueIdx,
+    });
+  }
+
+  /**
+   * Create a Rolling object for window-based calculations.
    *
    * @param window - Size of the rolling window
-   * @param on - Column to apply rolling calculation to (if omitted, applies to all columns)
-   * @returns New DataFrame with rolling mean values
+   * @param on - Column to apply rolling calculation to (if omitted, applies to all numeric columns)
+   * @returns Rolling object with mean(), sum(), std(), var(), min(), max(), apply() methods
    *
    * @example
    * ```ts
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5] });
-   * df.rolling(3);  // [[null], [null], [2], [3], [4]]
+   * df.rolling(3).mean();  // rolling mean
+   * df.rolling(3).sum();   // rolling sum
+   * df.rolling(3).std();   // rolling standard deviation
    * ```
    */
-  rolling(window: number, on?: string): DataFrame {
-    const newData: DataFrameData = {};
-
+  rolling(window: number, on?: string): Rolling {
     if (!Number.isFinite(window) || !Number.isInteger(window) || window <= 0) {
       throw new InvalidParameterError("window must be a positive integer", "window", window);
     }
-
     if (on && !this._columns.includes(on)) {
       throw new DataValidationError(`Column '${on}' not found in DataFrame`);
     }
+    return new Rolling(this, window, on);
+  }
 
+  /**
+   * Apply a function element-wise to the DataFrame.
+   *
+   * @param fn - Function to apply to each element
+   * @returns New DataFrame with transformed values
+   */
+  applymap(fn: (value: unknown) => unknown): DataFrame {
+    const newData: DataFrameData = {};
     for (const col of this._columns) {
-      if (col === on || !on) {
-        const colData = this._data.get(col);
-        if (!colData) continue;
+      const colData = this._data.get(col);
+      if (!colData) continue;
+      newData[col] = colData.map(fn);
+    }
+    return new DataFrame(newData, {
+      columns: this._columns,
+      index: this._index,
+    });
+  }
 
-        const rollingData: unknown[] = [];
+  /**
+   * Pass the DataFrame through a function chain.
+   *
+   * Useful for method chaining with custom functions.
+   *
+   * @param fn - Function that takes a DataFrame and returns a value
+   * @param args - Additional arguments to pass to the function
+   * @returns The result of fn(this, ...args)
+   */
+  pipe<T>(fn: (df: DataFrame, ...args: unknown[]) => T, ...args: unknown[]): T {
+    return fn(this, ...args);
+  }
 
-        // Sliding window: maintain running sum and count for O(n) performance
-        let windowSum = 0;
-        let windowCount = 0;
+  /**
+   * Explode a list-like column into separate rows.
+   *
+   * Each element in the specified column that is an array will produce
+   * one row per element. Non-array values are kept as-is.
+   *
+   * @param column - Column name containing array values
+   * @returns New DataFrame with exploded rows
+   */
+  explode(column: string): DataFrame {
+    if (!this._columns.includes(column)) {
+      throw new DataValidationError(`Column '${column}' not found in DataFrame`);
+    }
+    const colData = this._data.get(column);
+    if (!colData) {
+      throw new DataValidationError(`Column '${column}' has no data`);
+    }
 
-        for (let i = 0; i < colData.length; i++) {
-          // Add incoming element
-          const incoming = colData[i];
-          if (isValidNumber(incoming)) {
-            windowSum += incoming;
-            windowCount++;
-          }
+    const newData: Map<string, unknown[]> = new Map();
+    for (const c of this._columns) {
+      newData.set(c, []);
+    }
+    const newIndex: (string | number)[] = [];
 
-          // Remove outgoing element (element leaving the window)
-          if (i >= window) {
-            const outgoing = colData[i - window];
-            if (isValidNumber(outgoing)) {
-              windowSum -= outgoing;
-              windowCount--;
-            }
-          }
-
-          if (i < window - 1) {
-            rollingData.push(null);
-          } else if (windowCount === 0) {
-            rollingData.push(null);
+    for (let i = 0; i < this._index.length; i++) {
+      const val = colData[i];
+      const items = Array.isArray(val) ? val : [val];
+      for (const item of items) {
+        for (const c of this._columns) {
+          if (c === column) {
+            newData.get(c)!.push(item);
           } else {
-            rollingData.push(windowSum / windowCount);
+            newData.get(c)!.push(this._data.get(c)?.[i]);
           }
         }
-
-        newData[col] = rollingData;
+        newIndex.push(this._index[i]!);
       }
     }
 
-    const outColumns = on ? [on] : this._columns;
-    return new DataFrame(newData, {
-      columns: outColumns,
-      index: this._index,
-    });
+    const obj: DataFrameData = {};
+    for (const c of this._columns) {
+      obj[c] = newData.get(c)!;
+    }
+    // Use numeric index to avoid duplicate label errors after explosion
+    const numericIndex = Array.from({ length: newIndex.length }, (_, i) => i);
+    return new DataFrame(obj, { columns: this._columns, index: numericIndex });
+  }
+
+  /**
+   * Convert categorical column(s) into dummy/indicator variables.
+   *
+   * @param columns - Column name(s) to encode. If omitted, encodes all string columns.
+   * @param options - Options: prefix (column name prefix), dropFirst (drop first category)
+   * @returns New DataFrame with dummy columns
+   */
+  getDummies(
+    columns?: string | string[],
+    options: { prefix?: string; dropFirst?: boolean } = {}
+  ): DataFrame {
+    const cols = columns
+      ? Array.isArray(columns)
+        ? columns
+        : [columns]
+      : this._columns.filter((c) => {
+          const d = this._data.get(c);
+          return d?.some((v) => typeof v === "string") ?? false;
+        });
+
+    const newData: DataFrameData = {};
+    const newColumns: string[] = [];
+
+    // Copy non-dummy columns
+    for (const c of this._columns) {
+      if (!cols.includes(c)) {
+        newData[c] = [...(this._data.get(c) ?? [])];
+        newColumns.push(c);
+      }
+    }
+
+    // Create dummy columns for each selected column
+    for (const col of cols) {
+      const colData = this._data.get(col);
+      if (!colData) continue;
+      const categories = [...new Set(colData.map(String))].sort();
+      const startIdx = options.dropFirst ? 1 : 0;
+      for (let ci = startIdx; ci < categories.length; ci++) {
+        const cat = categories[ci]!;
+        const prefix = options.prefix ?? col;
+        const dummyName = `${prefix}_${cat}`;
+        newData[dummyName] = colData.map((v) => (String(v) === cat ? 1 : 0));
+        newColumns.push(dummyName);
+      }
+    }
+
+    return new DataFrame(newData, { columns: newColumns, index: this._index });
   }
 
   /**
@@ -3573,6 +4014,1213 @@ export class DataFrame {
 
     return lines.join("\n");
   }
+
+  /** Element-wise absolute value for all numeric columns. */
+  abs(): DataFrame {
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      data[col] = colData.map((v) => (typeof v === "number" ? Math.abs(v) : v));
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /** Round numeric columns to given number of decimal places. */
+  round(decimals = 0): DataFrame {
+    const factor = 10 ** decimals;
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      data[col] = colData.map((v) => (typeof v === "number" ? Math.round(v * factor) / factor : v));
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /** Count unique values per column. Returns a Series. */
+  nunique(): Series {
+    const counts: number[] = [];
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      counts.push(new Set(colData).size);
+    }
+    return new Series(counts, { index: this._columns });
+  }
+
+  /** Return the first n rows ordered by column values (largest). */
+  nlargest(n: number, column: string): DataFrame {
+    const colData = this._data.get(column);
+    if (!colData) throw new IndexError(`Column '${column}' not found`);
+    const indices = Array.from({ length: this._index.length }, (_, i) => i);
+    indices.sort((a, b) => {
+      const va = colData[a],
+        vb = colData[b];
+      if (typeof va === "number" && typeof vb === "number") return vb - va;
+      return 0;
+    });
+    const selected = indices.slice(0, n);
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const cd = this._data.get(col)!;
+      data[col] = selected.map((i) => cd[i]);
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: selected.map((i) => this._index[i]!),
+    });
+  }
+
+  /** Return the first n rows ordered by column values (smallest). */
+  nsmallest(n: number, column: string): DataFrame {
+    const colData = this._data.get(column);
+    if (!colData) throw new IndexError(`Column '${column}' not found`);
+    const indices = Array.from({ length: this._index.length }, (_, i) => i);
+    indices.sort((a, b) => {
+      const va = colData[a],
+        vb = colData[b];
+      if (typeof va === "number" && typeof vb === "number") return va - vb;
+      return 0;
+    });
+    const selected = indices.slice(0, n);
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const cd = this._data.get(col)!;
+      data[col] = selected.map((i) => cd[i]);
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: selected.map((i) => this._index[i]!),
+    });
+  }
+
+  /** Return index label of minimum value for each numeric column. */
+  idxmin(): Series {
+    const result: (string | number | null)[] = [];
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      let minVal = Infinity;
+      let minIdx: string | number | null = null;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (typeof v === "number" && v < minVal) {
+          minVal = v;
+          minIdx = this._index[i]!;
+        }
+      }
+      result.push(minIdx);
+    }
+    return new Series(result, { index: this._columns });
+  }
+
+  /** Return index label of maximum value for each numeric column. */
+  idxmax(): Series {
+    const result: (string | number | null)[] = [];
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      let maxVal = -Infinity;
+      let maxIdx: string | number | null = null;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (typeof v === "number" && v > maxVal) {
+          maxVal = v;
+          maxIdx = this._index[i]!;
+        }
+      }
+      result.push(maxIdx);
+    }
+    return new Series(result, { index: this._columns });
+  }
+
+  /** Check if values are between left and right (inclusive by default). */
+  between(column: string, left: number, right: number, inclusive = true): DataFrame {
+    const colData = this._data.get(column);
+    if (!colData) throw new IndexError(`Column '${column}' not found`);
+    const selected: number[] = [];
+    for (let i = 0; i < colData.length; i++) {
+      const v = colData[i];
+      if (typeof v !== "number") continue;
+      if (inclusive ? v >= left && v <= right : v > left && v < right) selected.push(i);
+    }
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const cd = this._data.get(col)!;
+      data[col] = selected.map((i) => cd[i]);
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: selected.map((i) => this._index[i]!),
+    });
+  }
+
+  /** Add or modify columns functionally. */
+  assign(
+    columns: Record<string, unknown[] | ((row: Record<string, unknown>, i: number) => unknown)>
+  ): DataFrame {
+    const nRows = this._index.length;
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      data[col] = [...this._data.get(col)!];
+    }
+    const colNames = [...this._columns];
+    for (const [name, valueOrFn] of Object.entries(columns)) {
+      if (typeof valueOrFn === "function") {
+        const fn = valueOrFn as (row: Record<string, unknown>, i: number) => unknown;
+        const arr: unknown[] = [];
+        for (let i = 0; i < nRows; i++) {
+          const row: Record<string, unknown> = {};
+          for (const col of this._columns) row[col] = this._data.get(col)![i];
+          arr.push(fn(row, i));
+        }
+        data[name] = arr;
+      } else {
+        data[name] = [...(valueOrFn as unknown[])];
+      }
+      if (!colNames.includes(name)) colNames.push(name);
+    }
+    return new DataFrame(data, { columns: colNames, index: [...this._index] });
+  }
+
+  /** Replace values where condition is false with other. */
+  where(
+    cond: boolean[] | ((val: unknown, i: number) => boolean),
+    other: unknown = null
+  ): DataFrame {
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      data[col] = colData.map((v, i) => {
+        const keep = typeof cond === "function" ? cond(v, i) : cond[i];
+        return keep ? v : other;
+      });
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /** Replace values where condition is true with other. Inverse of where(). */
+  mask(cond: boolean[] | ((val: unknown, i: number) => boolean), other: unknown = null): DataFrame {
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col)!;
+      data[col] = colData.map((v, i) => {
+        const shouldMask = typeof cond === "function" ? cond(v, i) : cond[i];
+        return shouldMask ? other : v;
+      });
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /** Cast columns to a target type. */
+  astype(column: string, dtype: "number" | "string" | "boolean"): DataFrame {
+    const colData = this._data.get(column);
+    if (!colData) throw new IndexError(`Column '${column}' not found`);
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      if (col === column) {
+        switch (dtype) {
+          case "number":
+            data[col] = colData.map((v) => Number(v));
+            break;
+          case "string":
+            data[col] = colData.map((v) => String(v));
+            break;
+          case "boolean":
+            data[col] = colData.map((v) => Boolean(v));
+            break;
+        }
+      } else {
+        data[col] = [...this._data.get(col)!];
+      }
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /** Print summary of DataFrame (dtypes, non-null counts). */
+  info(): string {
+    const lines: string[] = [];
+    lines.push(`<DataFrame>`);
+    lines.push(`RangeIndex: ${this._index.length} entries`);
+    lines.push(`Data columns (total ${this._columns.length} columns):`);
+    lines.push(` #   Column  Non-Null Count  Dtype`);
+    lines.push(`---  ------  --------------  -----`);
+    for (let i = 0; i < this._columns.length; i++) {
+      const col = this._columns[i]!;
+      const colData = this._data.get(col)!;
+      const nonNull = colData.filter((v) => v !== null && v !== undefined).length;
+      let dtype = "object";
+      const first = colData.find((v) => v !== null && v !== undefined);
+      if (typeof first === "number") dtype = "float64";
+      else if (typeof first === "boolean") dtype = "bool";
+      else if (typeof first === "string") dtype = "string";
+      lines.push(` ${i}   ${col.padEnd(8)}${String(nonNull).padStart(4)} non-null    ${dtype}`);
+    }
+    return lines.join("\n");
+  }
+
+  /** Return whether any element is true (per column). */
+  any(axis: 0 | 1 = 0): Series | boolean[] {
+    if (axis === 0) {
+      const result: boolean[] = [];
+      for (const col of this._columns) {
+        const colData = this._data.get(col)!;
+        result.push(colData.some((v) => Boolean(v)));
+      }
+      return new Series(result, { index: this._columns });
+    }
+    return this._index.map((_, i) => {
+      for (const col of this._columns) {
+        if (this._data.get(col)![i]) return true;
+      }
+      return false;
+    });
+  }
+
+  /** Return whether all elements are true (per column). */
+  all(axis: 0 | 1 = 0): Series | boolean[] {
+    if (axis === 0) {
+      const result: boolean[] = [];
+      for (const col of this._columns) {
+        const colData = this._data.get(col)!;
+        result.push(colData.every((v) => Boolean(v)));
+      }
+      return new Series(result, { index: this._columns });
+    }
+    return this._index.map((_, i) => {
+      for (const col of this._columns) {
+        if (!this._data.get(col)![i]) return false;
+      }
+      return true;
+    });
+  }
+
+  /** Count occurrences of unique value combinations across specified columns. */
+  value_counts(...columns: string[]): DataFrame {
+    const cols = columns.length > 0 ? columns : this._columns;
+    for (const c of cols) {
+      if (!this._data.has(c)) throw new IndexError(`Column '${c}' not found`);
+    }
+    const counts = new Map<string, number>();
+    const keyRows = new Map<string, unknown[]>();
+    for (let i = 0; i < this._index.length; i++) {
+      const vals = cols.map((c) => this._data.get(c)![i]);
+      const key = vals.map((v) => String(v)).join("|||");
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (!keyRows.has(key)) keyRows.set(key, vals);
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const data: DataFrameData = {};
+    for (const c of cols) data[c] = [];
+    data["count"] = [];
+    for (const [key, count] of sorted) {
+      const vals = keyRows.get(key)!;
+      for (let j = 0; j < cols.length; j++) {
+        (data[cols[j]!] as unknown[]).push(vals[j]);
+      }
+      (data["count"] as unknown[]).push(count);
+    }
+    return new DataFrame(data, { columns: [...cols, "count"] });
+  }
+
+  /**
+   * Filter rows using a simple expression string.
+   *
+   * Supports: `column op value` with `and`/`or` connectors.
+   * Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`.
+   *
+   * @param expr - Query expression string, e.g. `"age > 30 and salary > 50000"`
+   */
+  query(expr: string): DataFrame {
+    const tokens = expr.split(/\s+(and|or)\s+/i);
+    const conditions: {
+      col: string;
+      op: string;
+      val: unknown;
+      connector: string;
+      valColumn?: string;
+    }[] = [];
+    let connector = "and";
+    for (const token of tokens) {
+      const t = token.trim();
+      if (t.toLowerCase() === "and" || t.toLowerCase() === "or") {
+        connector = t.toLowerCase();
+        continue;
+      }
+      const match = t.match(/^(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+      if (!match) {
+        throw new InvalidParameterError(`Invalid query expression: '${t}'`, "expr", expr);
+      }
+      const col = match[1]!;
+      const op = match[2]!;
+      const valStr = match[3]!.trim();
+      let val: unknown;
+      let valColumn: string | undefined;
+      if (
+        (valStr.startsWith("'") && valStr.endsWith("'")) ||
+        (valStr.startsWith('"') && valStr.endsWith('"'))
+      ) {
+        val = valStr.slice(1, -1);
+      } else if (valStr === "true") {
+        val = true;
+      } else if (valStr === "false") {
+        val = false;
+      } else if (valStr === "null" || valStr === "NaN") {
+        val = null;
+      } else if (/^[a-zA-Z_]\w*$/.test(valStr) && this._data.has(valStr)) {
+        // Bare identifier matching a column name → column-vs-column comparison
+        // (e.g. `a > b`), not the string literal "b".
+        valColumn = valStr;
+      } else {
+        const num = Number(valStr);
+        val = Number.isNaN(num) ? valStr : num;
+      }
+      if (!this._data.has(col)) throw new IndexError(`Column '${col}' not found`);
+      conditions.push({ col, op, val, connector, ...(valColumn ? { valColumn } : {}) });
+    }
+    const evalCondition = (
+      c: { col: string; op: string; val: unknown; valColumn?: string },
+      i: number
+    ): boolean => {
+      const cellVal = this._data.get(c.col)![i];
+      // For column-vs-column comparisons, resolve the RHS from that column.
+      const rhs = c.valColumn !== undefined ? this._data.get(c.valColumn)![i] : c.val;
+      c = { ...c, val: rhs };
+      switch (c.op) {
+        case "==":
+          return cellVal === c.val;
+        case "!=":
+          return cellVal !== c.val;
+        case ">":
+          return typeof cellVal === "number" && typeof c.val === "number" && cellVal > c.val;
+        case ">=":
+          return typeof cellVal === "number" && typeof c.val === "number" && cellVal >= c.val;
+        case "<":
+          return typeof cellVal === "number" && typeof c.val === "number" && cellVal < c.val;
+        case "<=":
+          return typeof cellVal === "number" && typeof c.val === "number" && cellVal <= c.val;
+        default:
+          return false;
+      }
+    };
+    const newData: DataFrameData = {};
+    for (const col of this._columns) newData[col] = [];
+    const newIndex: (string | number)[] = [];
+    for (let i = 0; i < this._index.length; i++) {
+      let result = evalCondition(conditions[0]!, i);
+      for (let c = 1; c < conditions.length; c++) {
+        const cond = conditions[c]!;
+        const val = evalCondition(cond, i);
+        if (cond.connector === "and") result = result && val;
+        else result = result || val;
+      }
+      if (result) {
+        for (const col of this._columns) {
+          (newData[col] as unknown[]).push(this._data.get(col)![i]);
+        }
+        newIndex.push(this._index[i]!);
+      }
+    }
+    return new DataFrame(newData, { columns: this._columns, index: newIndex });
+  }
+
+  /** Return approximate memory usage in bytes per column. */
+  memory_usage(): DataFrame {
+    const cols: string[] = [];
+    const bytes: number[] = [];
+    for (const col of this._columns) {
+      const data = this._data.get(col)!;
+      let size = 0;
+      for (const v of data) {
+        if (typeof v === "number") size += 8;
+        else if (typeof v === "string") size += v.length * 2;
+        else if (typeof v === "boolean") size += 4;
+        else size += 8;
+      }
+      cols.push(col);
+      bytes.push(size);
+    }
+    return new DataFrame({ column: cols, bytes }, { columns: ["column", "bytes"] });
+  }
+
+  /**
+   * Fill NaN/null values by interpolation.
+   *
+   * @param method - Interpolation method: 'linear' (default) or 'nearest'
+   */
+  interpolate(method: "linear" | "nearest" = "linear"): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this._columns) {
+      const data = this._data.get(col)!;
+      const result = [...data];
+      if (method === "linear") {
+        for (let i = 0; i < result.length; i++) {
+          if (!isValidNumber(result[i])) {
+            let prevIdx = -1;
+            let nextIdx = -1;
+            for (let j = i - 1; j >= 0; j--) {
+              if (isValidNumber(result[j])) {
+                prevIdx = j;
+                break;
+              }
+            }
+            for (let j = i + 1; j < result.length; j++) {
+              if (isValidNumber(data[j])) {
+                nextIdx = j;
+                break;
+              }
+            }
+            if (prevIdx >= 0 && nextIdx >= 0) {
+              const prevVal = result[prevIdx] as number;
+              const nextVal = data[nextIdx] as number;
+              const frac = (i - prevIdx) / (nextIdx - prevIdx);
+              result[i] = prevVal + frac * (nextVal - prevVal);
+            } else if (prevIdx >= 0) {
+              result[i] = result[prevIdx];
+            } else if (nextIdx >= 0) {
+              result[i] = data[nextIdx];
+            }
+          }
+        }
+      } else {
+        for (let i = 0; i < result.length; i++) {
+          if (!isValidNumber(result[i])) {
+            let prevIdx = -1;
+            let nextIdx = -1;
+            for (let j = i - 1; j >= 0; j--) {
+              if (isValidNumber(result[j])) {
+                prevIdx = j;
+                break;
+              }
+            }
+            for (let j = i + 1; j < result.length; j++) {
+              if (isValidNumber(data[j])) {
+                nextIdx = j;
+                break;
+              }
+            }
+            if (prevIdx >= 0 && nextIdx >= 0) {
+              result[i] = i - prevIdx <= nextIdx - i ? result[prevIdx] : data[nextIdx];
+            } else if (prevIdx >= 0) {
+              result[i] = result[prevIdx];
+            } else if (nextIdx >= 0) {
+              result[i] = data[nextIdx];
+            }
+          }
+        }
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this._columns,
+      index: [...this._index],
+    });
+  }
+
+  /**
+   * Pivot with aggregation (unlike pivot() which requires unique index/column pairs).
+   *
+   * @param options.index - Column to use as new index
+   * @param options.columns - Column whose values become new columns
+   * @param options.values - Column to aggregate
+   * @param options.aggFunc - Aggregation function: 'mean', 'sum', 'count', 'min', 'max', 'first', 'last' (default: 'mean')
+   */
+  pivot_table(options: {
+    index: string;
+    columns: string;
+    values: string;
+    aggFunc?: "mean" | "sum" | "count" | "min" | "max" | "first" | "last";
+  }): DataFrame {
+    const { index: idxCol, columns: colCol, values: valCol } = options;
+    const aggFunc = options.aggFunc ?? "mean";
+    for (const c of [idxCol, colCol, valCol]) {
+      if (!this._data.has(c)) throw new IndexError(`Column '${c}' not found`);
+    }
+    const idxData = this._data.get(idxCol)!;
+    const colData = this._data.get(colCol)!;
+    const valData = this._data.get(valCol)!;
+
+    const rowKeys: unknown[] = [];
+    const colKeys: unknown[] = [];
+    const groups = new Map<string, number[]>();
+
+    for (let i = 0; i < this._index.length; i++) {
+      const rk = idxData[i];
+      const ck = colData[i];
+      if (!rowKeys.includes(rk)) rowKeys.push(rk);
+      if (!colKeys.includes(ck)) colKeys.push(ck);
+      // Type-aware composite key so distinct values that stringify the same
+      // (e.g. number 1 vs string "1") don't collapse into one group and
+      // double-count. `createKey` includes type tags and is collision-safe.
+      const key = createKey([rk, ck]);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(i);
+    }
+
+    const agg = (indices: number[]): unknown => {
+      const vals = indices.map((i) => valData[i]).filter(isValidNumber) as number[];
+      if (vals.length === 0) return null;
+      switch (aggFunc) {
+        case "sum":
+          return vals.reduce((a, b) => a + b, 0);
+        case "count":
+          return vals.length;
+        case "min":
+          return Math.min(...vals);
+        case "max":
+          return Math.max(...vals);
+        case "first":
+          return vals[0];
+        case "last":
+          return vals[vals.length - 1];
+        default:
+          return vals.reduce((a, b) => a + b, 0) / vals.length;
+      }
+    };
+
+    const result: DataFrameData = {};
+    const newCols = colKeys.map(String);
+    for (const ck of newCols) result[ck] = [];
+    const newIndex: (string | number)[] = [];
+
+    for (const rk of rowKeys) {
+      newIndex.push(rk as string | number);
+      for (const ck of colKeys) {
+        const key = createKey([rk, ck]);
+        const indices = groups.get(key);
+        (result[String(ck)] as unknown[]).push(indices ? agg(indices) : null);
+      }
+    }
+
+    return new DataFrame(result, { columns: newCols, index: newIndex });
+  }
+
+  /**
+   * Expanding (cumulative) window calculations.
+   *
+   * @param minPeriods - Minimum number of observations to produce a result (default: 1)
+   */
+  expanding(minPeriods = 1): Expanding {
+    return new Expanding(this, minPeriods);
+  }
+
+  /**
+   * Exponentially weighted moving calculations.
+   *
+   * @param options.span - Decay span (alpha = 2 / (span + 1))
+   * @param options.alpha - Smoothing factor directly (overrides span)
+   */
+  ewm(options: { span?: number; alpha?: number }): EWM {
+    let alpha: number;
+    if (options.alpha !== undefined) {
+      alpha = options.alpha;
+    } else if (options.span !== undefined) {
+      alpha = 2 / (options.span + 1);
+    } else {
+      throw new InvalidParameterError("ewm requires span or alpha", "options", options);
+    }
+    if (alpha <= 0 || alpha > 1) {
+      throw new InvalidParameterError("alpha must be in (0, 1]", "alpha", alpha);
+    }
+    return new EWM(this, alpha);
+  }
+
+  /**
+   * Return a deep copy of the DataFrame.
+   *
+   * All column data and index labels are copied so that mutations to the
+   * copy do not affect the original and vice-versa.
+   *
+   * @returns A new DataFrame that is a deep copy of this one
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({ a: [1, 2], b: [3, 4] });
+   * const df2 = df.copy();
+   * ```
+   */
+  copy(): DataFrame {
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col);
+      data[col] = colData ? [...colData] : [];
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /**
+   * Test whether each element is contained in the given values.
+   *
+   * Returns a DataFrame of booleans indicating whether each element
+   * is found in the provided iterable of values.
+   *
+   * @param values - Values to test for membership
+   * @returns DataFrame of booleans with same shape
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
+   * df.isin([2, 4]);
+   * // DataFrame({ a: [false, true, false], b: [true, false, false] })
+   * ```
+   */
+  isin(values: readonly unknown[]): DataFrame {
+    const valueSet = new Set(values);
+    const data: DataFrameData = {};
+    for (const col of this._columns) {
+      const colData = this._data.get(col);
+      data[col] = colData ? colData.map((v) => valueSet.has(v)) : [];
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /**
+   * Apply a function to each column (axis=0) or each row (axis=1),
+   * producing a result with the same shape as the input.
+   *
+   * Unlike {@link apply}, `transform` enforces that the output has
+   * the same number of elements as the input along the given axis.
+   *
+   * @param fn - Function to apply to each Series
+   * @param axis - 0 = columns, 1 = rows
+   * @returns New DataFrame with same shape
+   * @throws {DataValidationError} If the result shape does not match the input
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
+   * df.transform(series => series.map(x => Number(x) * 2));
+   * ```
+   */
+  transform(fn: (series: Series<unknown>) => Series<unknown>, axis: Axis = 0): DataFrame {
+    const ax = normalizeAxis(axis, 2);
+    if (ax === 0) {
+      const newData: DataFrameData = {};
+      for (const col of this._columns) {
+        const series = this.get(col);
+        const result = fn(series);
+        if (!(result instanceof Series)) {
+          throw new DataValidationError("transform function must return a Series when axis=0");
+        }
+        if (result.data.length !== this._index.length) {
+          throw new DataValidationError(
+            `transform: result length (${result.data.length}) must match input length (${this._index.length})`
+          );
+        }
+        newData[col] = [...result.data];
+      }
+      return new DataFrame(newData, {
+        columns: [...this._columns],
+        index: [...this._index],
+      });
+    }
+    // axis === 1: apply to each row
+    const newData: DataFrameData = {};
+    for (const col of this._columns) {
+      newData[col] = [];
+    }
+    for (let i = 0; i < this._index.length; i++) {
+      const rowValues: unknown[] = [];
+      for (const col of this._columns) {
+        rowValues.push(this._data.get(col)?.[i]);
+      }
+      const rowSeries = new Series(rowValues, {
+        name: "row",
+        index: this._columns,
+        copy: false,
+      });
+      const result = fn(rowSeries);
+      if (!(result instanceof Series)) {
+        throw new DataValidationError("transform function must return a Series when axis=1");
+      }
+      if (result.data.length !== this._columns.length) {
+        throw new DataValidationError(
+          `transform: result length (${result.data.length}) must match column count (${this._columns.length})`
+        );
+      }
+      for (let c = 0; c < this._columns.length; c++) {
+        const col = this._columns[c];
+        if (col !== undefined) {
+          (newData[col] as unknown[]).push(result.data[c]);
+        }
+      }
+    }
+    return new DataFrame(newData, {
+      columns: [...this._columns],
+      index: [...this._index],
+    });
+  }
+
+  /**
+   * Evaluate a string expression on the DataFrame, producing a new column or filtering rows.
+   *
+   * Supports simple arithmetic expressions referencing column names.
+   * Operators: `+`, `-`, `*`, `/`, `**` (power).
+   * The expression must be an assignment like `"c = a + b"` to create a new column,
+   * or a comparison like `"a > 2"` to filter rows.
+   *
+   * @param expr - Expression string
+   * @returns New DataFrame with the result
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
+   * df.eval('c = a + b');  // adds column c = [5, 7, 9]
+   * df.eval('a > 1');      // filters to rows where a > 1
+   * ```
+   */
+  eval(expr: string): DataFrame {
+    const trimmed = expr.trim();
+
+    // Check if it's an assignment: "newCol = expression".
+    // The `=` must be a lone assignment, NOT part of ==, >=, <=, or != — the
+    // negative lookahead/lookbehind prevents `eval("a == 3")` from being
+    // parsed as `a = (= 3)` and silently overwriting column `a`.
+    const assignMatch = trimmed.match(/^([a-zA-Z_]\w*)\s*(?<![=<>!])=(?!=)\s*(.+)$/);
+    if (assignMatch) {
+      const newColName = assignMatch[1]!;
+      const rhsExpr = assignMatch[2]!;
+      const values = this.evalExprPerRow(rhsExpr);
+      const data: DataFrameData = {};
+      for (const col of this._columns) {
+        data[col] = [...(this._data.get(col) ?? [])];
+      }
+      data[newColName] = values;
+      const cols = this._columns.includes(newColName)
+        ? [...this._columns]
+        : [...this._columns, newColName];
+      return new DataFrame(data, { columns: cols, index: [...this._index] });
+    }
+
+    // Otherwise treat as a boolean filter expression
+    const mask = this.evalExprPerRow(trimmed);
+    const data: DataFrameData = {};
+    for (const col of this._columns) data[col] = [];
+    const newIndex: (string | number)[] = [];
+    for (let i = 0; i < this._index.length; i++) {
+      if (mask[i]) {
+        for (const col of this._columns) {
+          (data[col] as unknown[]).push(this._data.get(col)?.[i]);
+        }
+        newIndex.push(this._index[i]!);
+      }
+    }
+    return new DataFrame(data, {
+      columns: [...this._columns],
+      index: newIndex,
+    });
+  }
+
+  private evalExprPerRow(expr: string): unknown[] {
+    // Tokenize: split into tokens preserving operators and column names
+    const tokens = expr.match(/[a-zA-Z_]\w*|\d+(?:\.\d+)?|\*\*|>=|<=|==|!=|[+\-*/()<>!=%]/g);
+    if (!tokens || tokens.length === 0) {
+      throw new InvalidParameterError(`eval: could not parse expression '${expr}'`, "expr", expr);
+    }
+
+    const n = this._index.length;
+    const results: unknown[] = new Array(n);
+
+    // Compile the expression once into a closure tree; the previous
+    // implementation re-tokenized, stringified and re-parsed per row
+    // (~50x slower on 10K rows). Column leaves reproduce the original
+    // Number(String(value)) coercion exactly.
+    const identRe = /^[a-zA-Z_]\w*$/;
+    type Leaf = { col: unknown[] | null; constVal: number };
+    const leaves: Leaf[] = tokens.map((token) => {
+      if (identRe.test(token) && this._data.has(token)) {
+        return { col: this._data.get(token) as unknown[], constVal: 0 };
+      }
+      return { col: null, constVal: Number(token) };
+    });
+
+    let pos = 0;
+    let row = 0;
+    const colValue = (leaf: Leaf): number => {
+      const val = (leaf.col as unknown[])[row];
+      if (val === null || val === undefined) return NaN;
+      return Number(String(val));
+    };
+
+    type Node = () => number;
+    const parseAtom = (): Node => {
+      const t = tokens[pos];
+      if (t === "(") {
+        pos++;
+        const inner = parseAdd();
+        pos++; // )
+        return inner;
+      }
+      if (t === "-") {
+        pos++;
+        const inner = parseAtom();
+        return () => -inner();
+      }
+      if (t === undefined) {
+        throw new InvalidParameterError("eval: unexpected end of expression", "expr", expr);
+      }
+      const leaf = leaves[pos]!;
+      pos++;
+      if (leaf.col) {
+        return () => colValue(leaf);
+      }
+      const c = leaf.constVal;
+      return () => c;
+    };
+    const parsePow = (): Node => {
+      let left = parseAtom();
+      while (tokens[pos] === "**") {
+        pos++;
+        const right = parseAtom();
+        const l = left;
+        left = () => l() ** right();
+      }
+      return left;
+    };
+    const parseMul = (): Node => {
+      let left = parsePow();
+      while (tokens[pos] === "*" || tokens[pos] === "/") {
+        const op = tokens[pos];
+        pos++;
+        const right = parsePow();
+        const l = left;
+        left = op === "*" ? () => l() * right() : () => l() / right();
+      }
+      return left;
+    };
+    const parseAdd = (): Node => {
+      let left = parseMul();
+      while (tokens[pos] === "+" || tokens[pos] === "-") {
+        const op = tokens[pos];
+        pos++;
+        const right = parseMul();
+        const l = left;
+        left = op === "+" ? () => l() + right() : () => l() - right();
+      }
+      return left;
+    };
+
+    const leftNode = parseAdd();
+    let evalRow: () => unknown = leftNode;
+    const cmp = tokens[pos];
+    if (
+      cmp === ">=" ||
+      cmp === "<=" ||
+      cmp === "==" ||
+      cmp === "!=" ||
+      cmp === ">" ||
+      cmp === "<"
+    ) {
+      pos++;
+      const rightNode = parseAdd();
+      if (cmp === ">=") evalRow = () => leftNode() >= rightNode();
+      else if (cmp === "<=") evalRow = () => leftNode() <= rightNode();
+      else if (cmp === "==") evalRow = () => leftNode() === rightNode();
+      else if (cmp === "!=") evalRow = () => leftNode() !== rightNode();
+      else if (cmp === ">") evalRow = () => leftNode() > rightNode();
+      else evalRow = () => leftNode() < rightNode();
+    }
+
+    for (let i = 0; i < n; i++) {
+      row = i;
+      results[i] = evalRow();
+    }
+    return results;
+  }
+
+  /**
+   * Compute a cross-tabulation of two columns.
+   *
+   * Returns a DataFrame where rows correspond to unique values of `rowCol`,
+   * columns correspond to unique values of `colCol`, and cell values are counts.
+   *
+   * @param rowCol - Column name for row grouping
+   * @param colCol - Column name for column grouping
+   * @returns Cross-tabulation DataFrame
+   *
+   * @example
+   * ```ts
+   * const df = new DataFrame({
+   *   gender: ['M', 'F', 'M', 'F', 'M'],
+   *   handed: ['R', 'R', 'L', 'R', 'R'],
+   * });
+   * df.crosstab('gender', 'handed');
+   * // DataFrame with rows M/F, columns L/R, values are counts
+   * ```
+   */
+  crosstab(rowCol: string, colCol: string): DataFrame {
+    if (!this._data.has(rowCol)) throw new IndexError(`Column '${rowCol}' not found`);
+    if (!this._data.has(colCol)) throw new IndexError(`Column '${colCol}' not found`);
+
+    const rowData = this._data.get(rowCol)!;
+    const colData = this._data.get(colCol)!;
+
+    const rowKeys: unknown[] = [];
+    const colKeys: unknown[] = [];
+    const counts = new Map<string, number>();
+
+    for (let i = 0; i < this._index.length; i++) {
+      const rk = rowData[i];
+      const ck = colData[i];
+      if (!rowKeys.includes(rk)) rowKeys.push(rk);
+      if (!colKeys.includes(ck)) colKeys.push(ck);
+      const key = `${String(rk)}|||${String(ck)}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    const newCols = colKeys.map(String);
+    const result: DataFrameData = {};
+    for (const ck of newCols) result[ck] = [];
+    const newIndex: (string | number)[] = [];
+
+    for (const rk of rowKeys) {
+      newIndex.push(rk as string | number);
+      for (const ck of colKeys) {
+        const key = `${String(rk)}|||${String(ck)}`;
+        (result[String(ck)] as unknown[]).push(counts.get(key) ?? 0);
+      }
+    }
+
+    return new DataFrame(result, { columns: newCols, index: newIndex });
+  }
+}
+
+/**
+ * Expanding (cumulative) window calculations on DataFrame columns.
+ */
+class Expanding {
+  private df: DataFrame;
+  private minPeriods: number;
+
+  constructor(df: DataFrame, minPeriods: number) {
+    this.df = df;
+    this.minPeriods = minPeriods;
+  }
+
+  private compute(fn: (vals: number[]) => number | null): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      const acc: number[] = [];
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (isValidNumber(v)) acc.push(v);
+        if (acc.length < this.minPeriods) {
+          result.push(null);
+        } else {
+          // fn must not mutate acc; passing it directly avoids an O(n^2)
+          // copy per row.
+          result.push(fn(acc));
+        }
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this.df.columns,
+      index: this.df.index,
+    });
+  }
+
+  /**
+   * O(n) streaming aggregation with a running accumulator (same
+   * left-to-right accumulation order as the previous per-prefix reduce,
+   * so results are bit-identical).
+   */
+  private computeStreaming(update: (acc: number, v: number, count: number) => number): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      let acc = 0;
+      let count = 0;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (isValidNumber(v)) {
+          acc = update(acc, v, count);
+          count++;
+        }
+        result.push(count < this.minPeriods ? null : acc);
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this.df.columns,
+      index: this.df.index,
+    });
+  }
+
+  mean(): DataFrame {
+    // Running sum matches reduce()'s accumulation order; divide per row.
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      let sum = 0;
+      let count = 0;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (isValidNumber(v)) {
+          sum += v;
+          count++;
+        }
+        result.push(count < this.minPeriods ? null : sum / count);
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, { columns: this.df.columns, index: this.df.index });
+  }
+
+  sum(): DataFrame {
+    return this.computeStreaming((acc, v) => acc + v);
+  }
+
+  std(): DataFrame {
+    return this.compute((vals) => {
+      if (vals.length < 2) return null;
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return Math.sqrt(vals.reduce((a, b) => a + (b - m) ** 2, 0) / (vals.length - 1));
+    });
+  }
+
+  var(): DataFrame {
+    return this.compute((vals) => {
+      if (vals.length < 2) return null;
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return vals.reduce((a, b) => a + (b - m) ** 2, 0) / (vals.length - 1);
+    });
+  }
+
+  min(): DataFrame {
+    return this.computeStreaming((acc, v, count) => (count === 0 ? v : Math.min(acc, v)));
+  }
+
+  max(): DataFrame {
+    return this.computeStreaming((acc, v, count) => (count === 0 ? v : Math.max(acc, v)));
+  }
+}
+
+/**
+ * Exponentially weighted moving calculations on DataFrame columns.
+ */
+class EWM {
+  private df: DataFrame;
+  private alpha: number;
+
+  constructor(df: DataFrame, alpha: number) {
+    this.df = df;
+    this.alpha = alpha;
+  }
+
+  mean(): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      let ewm: number | null = null;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (!isValidNumber(v)) {
+          result.push(ewm);
+          continue;
+        }
+        if (ewm === null) {
+          ewm = v;
+        } else {
+          ewm = this.alpha * v + (1 - this.alpha) * ewm;
+        }
+        result.push(ewm);
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this.df.columns,
+      index: this.df.index,
+    });
+  }
+
+  std(): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      let ewmMean: number | null = null;
+      let ewmVar = 0;
+      let count = 0;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (!isValidNumber(v)) {
+          result.push(null);
+          continue;
+        }
+        count++;
+        if (ewmMean === null) {
+          ewmMean = v;
+          result.push(null);
+        } else {
+          const diff = v - ewmMean;
+          ewmMean = this.alpha * v + (1 - this.alpha) * ewmMean;
+          ewmVar = (1 - this.alpha) * (ewmVar + this.alpha * diff * diff);
+          result.push(count >= 2 ? Math.sqrt(ewmVar) : null);
+        }
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this.df.columns,
+      index: this.df.index,
+    });
+  }
+
+  var(): DataFrame {
+    const newData: DataFrameData = {};
+    for (const col of this.df.columns) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      let ewmMean: number | null = null;
+      let ewmVar = 0;
+      let count = 0;
+      for (let i = 0; i < colData.length; i++) {
+        const v = colData[i];
+        if (!isValidNumber(v)) {
+          result.push(null);
+          continue;
+        }
+        count++;
+        if (ewmMean === null) {
+          ewmMean = v;
+          result.push(null);
+        } else {
+          const diff = v - ewmMean;
+          ewmMean = this.alpha * v + (1 - this.alpha) * ewmMean;
+          ewmVar = (1 - this.alpha) * (ewmVar + this.alpha * diff * diff);
+          result.push(count >= 2 ? ewmVar : null);
+        }
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, {
+      columns: this.df.columns,
+      index: this.df.index,
+    });
+  }
 }
 
 /**
@@ -3625,24 +5273,54 @@ export class DataFrameGroupBy {
 
     // Fast path: single column groupBy — avoid array allocation and composite key
     if (groupByCols.length === 1) {
-      const colData = this.df.get(groupByCols[0] as string).data;
+      const colData = this.df.getColumnData(groupByCols[0] as string);
+      // When every value is a primitive, the value itself is a collision-free
+      // Map key (SameValueZero matches createKey semantics for numbers,
+      // strings, booleans, null and NaN) — skipping per-row key-string
+      // construction. Any object value falls back to createKey for all rows.
+      let allPrimitive = true;
       for (let i = 0; i < numRows; i++) {
-        const val = colData[i];
-        const key = createKey(val);
-
-        let bucket = groupMap.get(key);
-        if (bucket === undefined) {
-          bucket = [];
+        const v = colData[i];
+        if (v !== null && (typeof v === "object" || typeof v === "function")) {
+          allPrimitive = false;
+          break;
+        }
+      }
+      if (allPrimitive) {
+        const rawMap = new Map<unknown, number[]>();
+        for (let i = 0; i < numRows; i++) {
+          const val = colData[i];
+          let bucket = rawMap.get(val);
+          if (bucket === undefined) {
+            bucket = [];
+            rawMap.set(val, bucket);
+          }
+          bucket.push(i);
+        }
+        for (const [val, bucket] of rawMap) {
+          const key = createKey(val);
           groupMap.set(key, bucket);
           keyValuesMap.set(key, [val]);
         }
-        bucket.push(i);
+      } else {
+        for (let i = 0; i < numRows; i++) {
+          const val = colData[i];
+          const key = createKey(val);
+
+          let bucket = groupMap.get(key);
+          if (bucket === undefined) {
+            bucket = [];
+            groupMap.set(key, bucket);
+            keyValuesMap.set(key, [val]);
+          }
+          bucket.push(i);
+        }
       }
     } else {
       // Multi-column: pre-fetch all column data arrays
       const colDataArrays: (readonly unknown[])[] = [];
       for (let c = 0; c < groupByCols.length; c++) {
-        colDataArrays.push(this.df.get(groupByCols[c] as string).data);
+        colDataArrays.push(this.df.getColumnData(groupByCols[c] as string));
       }
 
       for (let i = 0; i < numRows; i++) {
@@ -3720,7 +5398,7 @@ export class DataFrameGroupBy {
       // Apply aggregation functions
       for (const [col, aggFunc] of Object.entries(operations)) {
         // Use raw data array to avoid allocation
-        const seriesData = this.df.get(col).data;
+        const seriesData = this.df.getColumnData(col);
         const funcs = Array.isArray(aggFunc) ? aggFunc : [aggFunc];
 
         for (const func of funcs) {
@@ -4042,5 +5720,222 @@ export class DataFrameGroupBy {
    */
   median(): DataFrame {
     return this.aggNumeric("median");
+  }
+}
+
+/**
+ * Rolling window calculations on DataFrame columns.
+ *
+ * Created by DataFrame.rolling(). Provides mean, sum, std, var, min, max, apply.
+ */
+class Rolling {
+  private df: DataFrame;
+  private window: number;
+  private on: string | undefined;
+
+  constructor(df: DataFrame, window: number, on?: string) {
+    this.df = df;
+    this.window = window;
+    this.on = on;
+  }
+
+  private getWindowValues(colData: unknown[], i: number): number[] {
+    const start = i - this.window + 1;
+    const vals: number[] = [];
+    for (let j = Math.max(0, start); j <= i; j++) {
+      const v = colData[j];
+      if (isValidNumber(v)) vals.push(v);
+    }
+    return vals;
+  }
+
+  private compute(fn: (vals: number[]) => number | null): DataFrame {
+    const newData: DataFrameData = {};
+    const cols = this.on ? [this.on] : this.df.columns;
+    // pandas default: min_periods equals the window, so a window that isn't
+    // fully observed (out of bounds OR containing any NaN/null) yields NaN
+    // rather than silently averaging over the remaining values.
+    const minPeriods = this.window;
+    for (const col of cols) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const result: unknown[] = [];
+      for (let i = 0; i < colData.length; i++) {
+        if (i < this.window - 1) {
+          result.push(null);
+        } else {
+          const vals = this.getWindowValues(colData, i);
+          result.push(vals.length < minPeriods ? null : fn(vals));
+        }
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, { columns: cols, index: this.df.index });
+  }
+
+  mean(): DataFrame {
+    // Sliding running sum in O(n) instead of the generic O(n·window) rebuild:
+    // add the entering value, drop the value leaving the window, and track how
+    // many of the `window` slots are valid so the min_periods=window rule
+    // (any NaN/null in the window ⇒ null) is preserved exactly.
+    const cols = this.on ? [this.on] : this.df.columns;
+    const w = this.window;
+    const newData: DataFrameData = {};
+    for (const col of cols) {
+      const colData = this.df.getColumnData(col) as unknown[];
+      const n = colData.length;
+      const result: unknown[] = new Array(n);
+      let windowSum = 0;
+      let validCount = 0;
+      for (let i = 0; i < n; i++) {
+        const v = colData[i];
+        if (isValidNumber(v)) {
+          windowSum += v;
+          validCount++;
+        }
+        if (i >= w) {
+          const old = colData[i - w];
+          if (isValidNumber(old)) {
+            windowSum -= old;
+            validCount--;
+          }
+        }
+        result[i] = i < w - 1 || validCount < w ? null : windowSum / w;
+      }
+      newData[col] = result;
+    }
+    return new DataFrame(newData, { columns: cols, index: this.df.index });
+  }
+
+  sum(): DataFrame {
+    return this.compute((vals) => vals.reduce((a, b) => a + b, 0));
+  }
+
+  std(): DataFrame {
+    return this.compute((vals) => {
+      if (vals.length < 2) return null;
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const variance = vals.reduce((a, b) => a + (b - m) ** 2, 0) / (vals.length - 1);
+      return Math.sqrt(variance);
+    });
+  }
+
+  var(): DataFrame {
+    return this.compute((vals) => {
+      if (vals.length < 2) return null;
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return vals.reduce((a, b) => a + (b - m) ** 2, 0) / (vals.length - 1);
+    });
+  }
+
+  min(): DataFrame {
+    return this.compute((vals) => Math.min(...vals));
+  }
+
+  max(): DataFrame {
+    return this.compute((vals) => Math.max(...vals));
+  }
+
+  apply(fn: (vals: number[]) => number | null): DataFrame {
+    return this.compute(fn);
+  }
+
+  /**
+   * Compute rolling pairwise correlation between two columns.
+   *
+   * @param col1 - First column name
+   * @param col2 - Second column name
+   * @returns DataFrame with a single column "{col1}_{col2}" containing rolling Pearson correlation
+   */
+  corr(col1: string, col2: string): DataFrame {
+    const data1 = this.df.getColumnData(col1) as unknown[];
+    const data2 = this.df.getColumnData(col2) as unknown[];
+    const n = data1.length;
+    const result: unknown[] = [];
+    const label = `${col1}_${col2}`;
+
+    for (let i = 0; i < n; i++) {
+      if (i < this.window - 1) {
+        result.push(null);
+        continue;
+      }
+      const start = i - this.window + 1;
+      const v1: number[] = [];
+      const v2: number[] = [];
+      for (let j = Math.max(0, start); j <= i; j++) {
+        const a = data1[j];
+        const b = data2[j];
+        if (isValidNumber(a) && isValidNumber(b)) {
+          v1.push(a);
+          v2.push(b);
+        }
+      }
+      if (v1.length < 2) {
+        result.push(null);
+        continue;
+      }
+      const m1 = v1.reduce((a, b) => a + b, 0) / v1.length;
+      const m2 = v2.reduce((a, b) => a + b, 0) / v2.length;
+      let num = 0,
+        d1 = 0,
+        d2 = 0;
+      for (let k = 0; k < v1.length; k++) {
+        const diff1 = (v1[k] ?? 0) - m1;
+        const diff2 = (v2[k] ?? 0) - m2;
+        num += diff1 * diff2;
+        d1 += diff1 * diff1;
+        d2 += diff2 * diff2;
+      }
+      result.push(d1 === 0 || d2 === 0 ? NaN : num / Math.sqrt(d1 * d2));
+    }
+
+    return new DataFrame({ [label]: result }, { index: this.df.index });
+  }
+
+  /**
+   * Compute rolling pairwise covariance between two columns.
+   *
+   * Uses sample covariance (ddof=1).
+   *
+   * @param col1 - First column name
+   * @param col2 - Second column name
+   * @returns DataFrame with a single column "{col1}_{col2}" containing rolling covariance
+   */
+  cov(col1: string, col2: string): DataFrame {
+    const data1 = this.df.getColumnData(col1) as unknown[];
+    const data2 = this.df.getColumnData(col2) as unknown[];
+    const n = data1.length;
+    const result: unknown[] = [];
+    const label = `${col1}_${col2}`;
+
+    for (let i = 0; i < n; i++) {
+      if (i < this.window - 1) {
+        result.push(null);
+        continue;
+      }
+      const start = i - this.window + 1;
+      const v1: number[] = [];
+      const v2: number[] = [];
+      for (let j = Math.max(0, start); j <= i; j++) {
+        const a = data1[j];
+        const b = data2[j];
+        if (isValidNumber(a) && isValidNumber(b)) {
+          v1.push(a);
+          v2.push(b);
+        }
+      }
+      if (v1.length < 2) {
+        result.push(null);
+        continue;
+      }
+      const m1 = v1.reduce((a, b) => a + b, 0) / v1.length;
+      const m2 = v2.reduce((a, b) => a + b, 0) / v2.length;
+      let covSum = 0;
+      for (let k = 0; k < v1.length; k++) {
+        covSum += ((v1[k] ?? 0) - m1) * ((v2[k] ?? 0) - m2);
+      }
+      result.push(covSum / (v1.length - 1));
+    }
+
+    return new DataFrame({ [label]: result }, { index: this.df.index });
   }
 }

@@ -3,14 +3,13 @@ import {
   DTypeError,
   dtypeToTypedArrayCtor,
   getBigIntElement,
-  getNumericElement,
   normalizeAxis,
-  type ScalarDType,
-  type Shape,
 } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
-import { bigintToNumberSafe, flatOffset } from "./_internal";
+import { bigintToNumberSafe, flatOffset, readNumericContiguous } from "./_internal";
+import { clip as clipOp } from "./arithmetic";
+import { dispatchUnary } from "./device_dispatch";
 
 function floatOutputDType(dtype: Tensor["dtype"]): "float32" | "float64" {
   // Preserve float32 precision, promote all other types to float64
@@ -25,7 +24,17 @@ function softplusScalar(x: number): number {
   return Math.log1p(Math.exp(x));
 }
 
+/**
+ * Read a tensor's logical elements as a dense float64 array. The result may
+ * alias the tensor's buffer when it is already contiguous float64 — callers
+ * must treat it as read-only.
+ */
 function toFloat64Dense(t: Tensor): Float64Array {
+  const src = readNumericContiguous(t);
+  if (src) {
+    return src instanceof Float64Array ? src : Float64Array.from(src as Float32Array);
+  }
+
   const out = new Float64Array(t.size);
   const logicalStrides = computeStrides(t.shape);
   const contiguous = isContiguous(t.shape, t.strides);
@@ -39,11 +48,6 @@ function toFloat64Dense(t: Tensor): Float64Array {
     for (let i = 0; i < t.size; i++) {
       const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
       out[i] = bigintToNumberSafe(getBigIntElement(data, srcOffset));
-    }
-  } else {
-    for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      out[i] = getNumericElement(data, srcOffset);
     }
   }
   return out;
@@ -74,6 +78,11 @@ export function sigmoid(t: Tensor): Tensor {
     throw new DTypeError("sigmoid is not defined for string dtype");
   }
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("sigmoid", t);
+    if (onDevice) return onDevice;
+  }
+
   const dtype = floatOutputDType(t.dtype);
   const Ctor = dtypeToTypedArrayCtor(dtype);
   const out = new Ctor(t.size);
@@ -92,10 +101,12 @@ export function sigmoid(t: Tensor): Tensor {
       out[i] = 1 / (1 + Math.exp(-val));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("sigmoid is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
-      out[i] = 1 / (1 + Math.exp(-val));
+      out[i] = 1 / (1 + Math.exp(-(src[i] as number)));
     }
   }
 
@@ -127,9 +138,14 @@ export function sigmoid(t: Tensor): Tensor {
  *
  * @see {@link https://deepbox.dev/docs/ndarray-activations | Deepbox Activation Functions}
  */
-export function relu(t: Tensor): Tensor<Shape, ScalarDType> {
+export function relu(t: Tensor): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError("relu is not defined for string dtype");
+  }
+
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("relu", t);
+    if (onDevice) return onDevice;
   }
 
   const dtype = floatOutputDType(t.dtype);
@@ -150,10 +166,12 @@ export function relu(t: Tensor): Tensor<Shape, ScalarDType> {
       out[i] = Math.max(0, val);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("relu is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
-      out[i] = Math.max(0, val);
+      out[i] = Math.max(0, src[i] as number);
     }
   }
 
@@ -182,7 +200,7 @@ export function relu(t: Tensor): Tensor<Shape, ScalarDType> {
  * const result = leakyRelu(x, 0.1);  // [-0.1, 0, 1]
  * ```
  */
-export function leakyRelu(t: Tensor, alpha = 0.01): Tensor<Shape, ScalarDType> {
+export function leakyRelu(t: Tensor, alpha = 0.01): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError("leakyRelu is not defined for string dtype");
   }
@@ -205,9 +223,12 @@ export function leakyRelu(t: Tensor, alpha = 0.01): Tensor<Shape, ScalarDType> {
       out[i] = val > 0 ? val : alpha * val;
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("leakyRelu is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
+      const val = src[i] as number;
       out[i] = val > 0 ? val : alpha * val;
     }
   }
@@ -239,7 +260,7 @@ export function leakyRelu(t: Tensor, alpha = 0.01): Tensor<Shape, ScalarDType> {
  * const result = elu(x);
  * ```
  */
-export function elu(t: Tensor, alpha: number = 1.0): Tensor<Shape, ScalarDType> {
+export function elu(t: Tensor, alpha: number = 1.0): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError("elu is not defined for string dtype");
   }
@@ -260,9 +281,12 @@ export function elu(t: Tensor, alpha: number = 1.0): Tensor<Shape, ScalarDType> 
       out[i] = val > 0 ? val : alpha * (Math.exp(val) - 1);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("elu is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
+      const val = src[i] as number;
       out[i] = val > 0 ? val : alpha * (Math.exp(val) - 1);
     }
   }
@@ -298,6 +322,11 @@ export function gelu(t: Tensor): Tensor {
     throw new DTypeError("gelu is not defined for string dtype");
   }
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchUnary("gelu", t);
+    if (onDevice) return onDevice;
+  }
+
   const out = new Float64Array(t.size);
   const sqrt2OverPi = Math.sqrt(2 / Math.PI);
   const logicalStrides = computeStrides(t.shape);
@@ -316,9 +345,12 @@ export function gelu(t: Tensor): Tensor {
       out[i] = 0.5 * x * (1 + Math.tanh(sqrt2OverPi * (x + 0.044715 * x3)));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("gelu is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const x = getNumericElement(data, srcOffset);
+      const x = src[i] as number;
       const x3 = x * x * x;
       out[i] = 0.5 * x * (1 + Math.tanh(sqrt2OverPi * (x + 0.044715 * x3)));
     }
@@ -563,13 +595,18 @@ export function swish(t: Tensor): Tensor {
     for (let i = 0; i < t.size; i++) {
       const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
       const val = bigintToNumberSafe(getBigIntElement(data, srcOffset));
-      out[i] = val / (1 + Math.exp(-val));
+      // swish(-Inf) limit is 0; the raw formula gives -Inf/Inf = NaN
+      out[i] = val === Number.NEGATIVE_INFINITY ? 0 : val / (1 + Math.exp(-val));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("swish is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
-      out[i] = val / (1 + Math.exp(-val));
+      const val = src[i] as number;
+      // swish(-Inf) limit is 0; the raw formula gives -Inf/Inf = NaN
+      out[i] = val === Number.NEGATIVE_INFINITY ? 0 : val / (1 + Math.exp(-val));
     }
   }
 
@@ -618,9 +655,12 @@ export function mish(t: Tensor): Tensor {
       out[i] = x * Math.tanh(softplusScalar(x));
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("mish is not defined for string dtype");
+    }
     for (let i = 0; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const x = getNumericElement(data, srcOffset);
+      const x = src[i] as number;
       out[i] = x * Math.tanh(softplusScalar(x));
     }
   }
@@ -667,10 +707,67 @@ export function softplus(t: Tensor): Tensor {
       out[i] = softplusScalar(val);
     }
   } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("softplus is not defined for string dtype");
+    }
+    for (let i = 0; i < t.size; i++) {
+      out[i] = softplusScalar(src[i] as number);
+    }
+  }
+
+  return Tensor.fromTypedArray({
+    data: out,
+    shape: t.shape,
+    dtype: "float64",
+    device: t.device,
+  });
+}
+
+/**
+ * Applies the HardTanh activation function element-wise.
+ *
+ * HardTanh(x) = max(minVal, min(maxVal, x))
+ */
+export function hardtanh(t: Tensor, minVal = -1, maxVal = 1): Tensor {
+  return clipOp(t, minVal, maxVal);
+}
+
+/**
+ * Applies the Tanhshrink activation element-wise.
+ * Tanhshrink(x) = x - tanh(x)
+ *
+ * Output dtype is float64, matching `tanh` (composing `sub(t, tanh(t))`
+ * directly would throw a dtype mismatch for float32 inputs).
+ */
+export function tanhshrink(t: Tensor): Tensor {
+  if (t.dtype === "string") {
+    throw new DTypeError("tanhshrink is not defined for string dtype");
+  }
+
+  const out = new Float64Array(t.size);
+  const logicalStrides = computeStrides(t.shape);
+  const contiguous = isContiguous(t.shape, t.strides);
+
+  const data = t.data;
+  if (Array.isArray(data)) {
+    throw new DTypeError("tanhshrink is not defined for string dtype");
+  }
+
+  if (data instanceof BigInt64Array) {
     for (let i = 0; i < t.size; i++) {
       const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(data, srcOffset);
-      out[i] = softplusScalar(val);
+      const val = bigintToNumberSafe(getBigIntElement(data, srcOffset));
+      out[i] = val - Math.tanh(val);
+    }
+  } else {
+    const src = readNumericContiguous(t);
+    if (src === null) {
+      throw new DTypeError("tanhshrink is not defined for string dtype");
+    }
+    for (let i = 0; i < t.size; i++) {
+      const val = src[i] as number;
+      out[i] = val - Math.tanh(val);
     }
   }
 

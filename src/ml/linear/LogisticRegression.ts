@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ */
+
 import {
   DataValidationError,
   DeepboxError,
@@ -39,13 +43,15 @@ import type { Classifier } from "../base";
  */
 export class LogisticRegression implements Classifier {
   private options: {
-    penalty?: "l2" | "none";
+    penalty?: "l1" | "l2" | "none";
     tol?: number;
     C?: number;
     fitIntercept?: boolean;
     maxIter?: number;
     learningRate?: number;
     multiClass?: "ovr" | "auto";
+    classWeight?: "balanced" | Record<number, number>;
+    solver?: "lbfgs" | "liblinear" | "saga";
   };
 
   private coef_?: Tensor; // Shape (n_features,) for binary, (n_classes, n_features) for multiclass
@@ -59,36 +65,59 @@ export class LogisticRegression implements Classifier {
    * Create a new Logistic Regression classifier.
    *
    * @param options - Configuration options
-   * @param options.penalty - Regularization type: 'l2' or 'none' (default: 'l2')
+   * @param options.penalty - Regularization type: 'l1', 'l2', or 'none' (default: 'l2')
    * @param options.C - Inverse regularization strength (default: 1.0). Must be > 0.
    * @param options.tol - Tolerance for stopping criterion (default: 1e-4)
    * @param options.maxIter - Maximum number of iterations (default: 100)
    * @param options.fitIntercept - Whether to fit intercept (default: true)
    * @param options.learningRate - Learning rate for gradient descent (default: 0.1)
    * @param options.multiClass - Multiclass strategy: 'ovr' (One-vs-Rest) or 'auto' (default: 'auto')
+   * @param options.classWeight - Class weights: 'balanced' or {classLabel: weight} (default: undefined = equal weights)
+   * @param options.solver - Optimization algorithm: 'lbfgs' (L2/none only), 'liblinear' (L1/L2), 'saga' (L1/L2/none) (default: 'lbfgs')
    */
   constructor(
     options: {
-      readonly penalty?: "l2" | "none";
+      readonly penalty?: "l1" | "l2" | "none";
       readonly tol?: number;
       readonly C?: number;
       readonly fitIntercept?: boolean;
       readonly maxIter?: number;
       readonly learningRate?: number;
       readonly multiClass?: "ovr" | "auto";
+      readonly classWeight?: "balanced" | Record<number, number>;
+      readonly solver?: "lbfgs" | "liblinear" | "saga";
     } = {}
   ) {
     this.options = { ...options };
 
     const penalty = this.options.penalty ?? "l2";
-    if (penalty !== "l2" && penalty !== "none") {
+    if (penalty !== "l1" && penalty !== "l2" && penalty !== "none") {
       throw new InvalidParameterError(
-        `Only penalty='l2' or 'none' is supported; received ${String(penalty)}`,
+        `penalty must be 'l1', 'l2', or 'none'; received ${String(penalty)}`,
         "penalty",
         penalty
       );
     }
     this.options.penalty = penalty;
+
+    const solver = this.options.solver ?? "lbfgs";
+    if (solver !== "lbfgs" && solver !== "liblinear" && solver !== "saga") {
+      throw new InvalidParameterError(
+        `solver must be 'lbfgs', 'liblinear', or 'saga'; received ${String(solver)}`,
+        "solver",
+        solver
+      );
+    }
+    this.options.solver = solver;
+
+    // Validate solver/penalty compatibility
+    if (solver === "lbfgs" && penalty === "l1") {
+      throw new InvalidParameterError(
+        "solver='lbfgs' does not support penalty='l1'; use 'liblinear' or 'saga'",
+        "solver",
+        solver
+      );
+    }
 
     const multiClass = this.options.multiClass ?? "auto";
     if (multiClass !== "ovr" && multiClass !== "auto") {
@@ -174,9 +203,13 @@ export class LogisticRegression implements Classifier {
     y: Tensor,
     m: number,
     n: number,
-    lambda: number
+    lambda: number,
+    sampleWeights?: Float64Array
   ): { w: number[]; b: number } {
-    const maxIter = this.options.maxIter ?? 100;
+    // Plain gradient descent needs many iterations to converge; 100 (the old
+    // default) left models badly under-fit. 1000 matches sklearn's lbfgs
+    // default iteration budget more closely for typical problems.
+    const maxIter = this.options.maxIter ?? 1000;
     const tol = this.options.tol ?? 1e-4;
     const lr = this.options.learningRate ?? 0.1;
     const fitIntercept = this.options.fitIntercept ?? true;
@@ -200,7 +233,8 @@ export class LogisticRegression implements Classifier {
 
         const yi = Number(y.data[y.offset + i] ?? 0);
         const pi = this.sigmoid(z);
-        const error = pi - yi;
+        const sw = sampleWeights ? (sampleWeights[i] ?? 1) : 1;
+        const error = (pi - yi) * sw;
 
         gradB += error;
         for (let j = 0; j < n; j++) {
@@ -208,14 +242,40 @@ export class LogisticRegression implements Classifier {
         }
       }
 
-      // Update weights with gradient descent + L2 regularization
+      // Update weights with gradient descent + regularization.
+      // scikit-learn minimizes 0.5·||w||² + C·Σ log_loss. Dividing by (C·m)
+      // gives the mean-loss form used here, so the penalty coefficient on the
+      // MEAN loss is lambda/m (lambda = 1/C), not lambda. Using lambda alone
+      // over-regularizes by a factor of n_samples.
       const invM = m === 0 ? 0 : 1 / m;
+      const lambdaEff = lambda * invM;
+      const penalty = this.options.penalty ?? "l2";
       let maxUpdate = 0;
-      for (let j = 0; j < n; j++) {
-        const g = (gradW[j] ?? 0) * invM + lambda * (w[j] ?? 0);
-        const update = lr * g;
-        w[j] = (w[j] ?? 0) - update;
-        maxUpdate = Math.max(maxUpdate, Math.abs(update));
+
+      if (penalty === "l1") {
+        // Proximal gradient: gradient step then soft-thresholding
+        const threshold = lr * lambdaEff;
+        for (let j = 0; j < n; j++) {
+          const g = (gradW[j] ?? 0) * invM;
+          const wNew = (w[j] ?? 0) - lr * g;
+          // Soft-thresholding (proximal operator for L1)
+          if (wNew > threshold) {
+            w[j] = wNew - threshold;
+          } else if (wNew < -threshold) {
+            w[j] = wNew + threshold;
+          } else {
+            w[j] = 0;
+          }
+          maxUpdate = Math.max(maxUpdate, Math.abs((w[j] ?? 0) - ((w[j] ?? 0) + lr * g)));
+        }
+      } else {
+        // L2 regularization (or none if lambda=0)
+        for (let j = 0; j < n; j++) {
+          const g = (gradW[j] ?? 0) * invM + lambdaEff * (w[j] ?? 0);
+          const update = lr * g;
+          w[j] = (w[j] ?? 0) - update;
+          maxUpdate = Math.max(maxUpdate, Math.abs(update));
+        }
       }
       if (fitIntercept) {
         const gB = gradB * invM;
@@ -269,8 +329,34 @@ export class LogisticRegression implements Classifier {
     if (!(C > 0)) {
       throw new InvalidParameterError(`C must be > 0; received ${C}`, "C", C);
     }
-    const lambda = penalty === "l2" ? 1 / C : 0;
+    const lambda = penalty !== "none" ? 1 / C : 0;
     const multiClass = this.options.multiClass ?? "auto";
+
+    // Compute sample weights from class_weight
+    let sampleWeights: Float64Array | undefined;
+    const cw = this.options.classWeight;
+    if (cw !== undefined) {
+      sampleWeights = new Float64Array(m);
+      if (cw === "balanced") {
+        // balanced: n_samples / (n_classes * n_samples_for_class)
+        const classCounts = new Map<number, number>();
+        for (let i = 0; i < m; i++) {
+          classCounts.set(yData[i] ?? 0, (classCounts.get(yData[i] ?? 0) ?? 0) + 1);
+        }
+        const nClasses = uniqueClasses.length;
+        for (let i = 0; i < m; i++) {
+          const label = yData[i] ?? 0;
+          const count = classCounts.get(label) ?? 1;
+          sampleWeights[i] = m / (nClasses * count);
+        }
+      } else {
+        // Custom weights dict
+        for (let i = 0; i < m; i++) {
+          const label = yData[i] ?? 0;
+          sampleWeights[i] = cw[label] ?? 1;
+        }
+      }
+    }
 
     if (uniqueClasses.length <= 2) {
       // Binary classification
@@ -301,7 +387,7 @@ export class LogisticRegression implements Classifier {
         }
       }
 
-      const { w, b } = this._fitBinary(X, yBinary, m, n, lambda);
+      const { w, b } = this._fitBinary(X, yBinary, m, n, lambda, sampleWeights);
       this.coef_ = tensor(w);
       this.intercept_ = b;
     } else {
@@ -327,7 +413,7 @@ export class LogisticRegression implements Classifier {
         }
         const yBinary = tensor(yBinaryData);
 
-        const { w, b } = this._fitBinary(X, yBinary, m, n, lambda);
+        const { w, b } = this._fitBinary(X, yBinary, m, n, lambda, sampleWeights);
         allCoefs.push(...w);
         allIntercepts.push(b);
       }
@@ -603,14 +689,24 @@ export class LogisticRegression implements Classifier {
           this.options.fitIntercept = value;
           break;
         case "penalty":
-          if (value !== "none" && value !== "l2") {
+          if (value !== "none" && value !== "l1" && value !== "l2") {
             throw new InvalidParameterError(
-              `Only penalty='l2' or 'none' is supported; received ${String(value)}`,
+              `penalty must be 'l1', 'l2', or 'none'; received ${String(value)}`,
               "penalty",
               value
             );
           }
           this.options.penalty = value;
+          break;
+        case "solver":
+          if (value !== "lbfgs" && value !== "liblinear" && value !== "saga") {
+            throw new InvalidParameterError(
+              `solver must be 'lbfgs', 'liblinear', or 'saga'; received ${String(value)}`,
+              "solver",
+              value
+            );
+          }
+          this.options.solver = value;
           break;
         case "multiClass":
           if (value !== "ovr" && value !== "auto") {
@@ -627,5 +723,21 @@ export class LogisticRegression implements Classifier {
       }
     }
     return this;
+  }
+
+  clone(): LogisticRegression {
+    return new LogisticRegression(
+      this.getParams() as {
+        penalty?: "l1" | "l2" | "none";
+        tol?: number;
+        C?: number;
+        fitIntercept?: boolean;
+        maxIter?: number;
+        learningRate?: number;
+        multiClass?: "ovr" | "auto";
+        classWeight?: "balanced" | Record<number, number>;
+        solver?: "lbfgs" | "liblinear" | "saga";
+      }
+    );
   }
 }

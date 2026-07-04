@@ -13,6 +13,7 @@ suite = create_suite("random", "NumPy")
 header("Benchmark 11 — Random Number Generation", "NumPy")
 
 rng = np.random.RandomState(42)
+default_rng = np.random.default_rng(42)
 
 # ── rand ────────────────────────────────────────────────
 
@@ -102,5 +103,17 @@ run(suite, "shuffle", "10K", lambda: do_shuffle(10000))
 run(suite, "permutation", "1K", lambda: rng.permutation(1000))
 run(suite, "permutation", "10K", lambda: rng.permutation(10000))
 run(suite, "permutation", "100K", lambda: rng.permutation(100000))
+
+# ── Advanced v1.0.0 Random Generation ──────────────────
+
+run(suite, "Generator.randomArray", "100K", lambda: np.random.default_rng(42).random(100000))
+run(suite, "Generator.normalArray", "100K", lambda: np.random.default_rng(42).normal(0, 1, 100000))
+run(suite, "multinomial", "1K draws", lambda: default_rng.multinomial(10, np.array([0.1, 0.2, 0.3, 0.4]), 1000))
+run(suite, "dirichlet", "1K draws", lambda: default_rng.dirichlet(np.array([1.0, 2.0, 3.0]), 1000))
+run(suite, "categorical", "10K draws", lambda: default_rng.choice(np.arange(5), size=10000, replace=True, p=np.array([1, 2, 3, 4, 5]) / 15.0))
+run(suite, "lognormal", "100K", lambda: default_rng.lognormal(0, 1, 100000))
+run(suite, "weibull", "100K", lambda: default_rng.weibull(1.5, 100000))
+run(suite, "triangular", "100K", lambda: default_rng.triangular(0, 0.5, 1, 100000))
+run(suite, "rayleigh", "100K", lambda: default_rng.rayleigh(1, 100000))
 
 footer(suite, "numpy-random.json")

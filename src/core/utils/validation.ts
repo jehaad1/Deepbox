@@ -1,3 +1,8 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-utils | Utilities, serialization & parallelism}
+ */
+
+import { NotFittedError } from "../errors/not_fitted";
 import { DataValidationError } from "../errors/validation";
 import type { Shape } from "../types/common";
 import { DEVICES, type Device, isDevice } from "../types/device";
@@ -232,4 +237,189 @@ export function validateArray(arr: unknown, name: string): asserts arr is unknow
   if (!Array.isArray(arr)) {
     throw new DataValidationError(`${name} must be an array; received ${typeof arr}`);
   }
+}
+
+/**
+ * Check that an estimator has been fitted.
+ *
+ * Verifies that the given object has at least one attribute ending with `_`
+ * (the sklearn convention for fitted attributes) that is not undefined,
+ * or checks for specific attribute names if provided.
+ *
+ * @param estimator - The estimator object to check
+ * @param attributes - Optional list of attribute names to check. If not provided,
+ *   checks for any attribute ending with `_`.
+ * @param msgOverride - Optional custom error message
+ * @throws {NotFittedError} If the estimator has not been fitted
+ *
+ * @example
+ * ```ts
+ * check_is_fitted(model); // checks for any fitted attribute
+ * check_is_fitted(model, ['coef_', 'intercept_']); // checks specific attrs
+ * ```
+ */
+export function check_is_fitted(
+  estimator: Record<string, unknown>,
+  attributes?: string[],
+  msgOverride?: string
+): void {
+  if (attributes !== undefined && attributes.length > 0) {
+    const missing = attributes.filter(
+      (attr) => !(attr in estimator) || estimator[attr] === undefined
+    );
+    if (missing.length > 0) {
+      throw new NotFittedError(
+        msgOverride ??
+          `This ${estimator.constructor?.name ?? "estimator"} is not fitted yet. ` +
+            `Missing attributes: ${missing.join(", ")}. ` +
+            `Call 'fit' with appropriate arguments before using this estimator.`
+      );
+    }
+    return;
+  }
+
+  // Check for any attribute ending with _ (sklearn convention)
+  const keys = Object.keys(estimator);
+  const hasFittedAttr = keys.some((k) => k.endsWith("_") && estimator[k] !== undefined);
+  if (!hasFittedAttr) {
+    throw new NotFittedError(
+      msgOverride ??
+        `This ${estimator.constructor?.name ?? "estimator"} is not fitted yet. ` +
+          `Call 'fit' with appropriate arguments before using this estimator.`
+    );
+  }
+}
+
+/**
+ * Input validation on an array-like (Tensor).
+ *
+ * Checks dtype, dimensionality, and that the tensor is non-empty.
+ *
+ * @param array - Input tensor to validate
+ * @param options - Validation options
+ * @returns The validated tensor (same reference)
+ * @throws {DataValidationError} If validation fails
+ *
+ * @example
+ * ```ts
+ * const X = check_array(input, { dtype: 'float32', ensureNdim: 2 });
+ * ```
+ */
+export function check_array(
+  array: unknown,
+  options: {
+    dtype?: DType;
+    ensureNdim?: number;
+    allowEmpty?: boolean;
+  } = {}
+): unknown {
+  if (array === null || array === undefined) {
+    throw new DataValidationError("Input array must not be null or undefined");
+  }
+
+  // Check it has shape and data (duck-type Tensor)
+  const t = array as {
+    shape?: number[];
+    ndim?: number;
+    dtype?: string;
+    data?: unknown;
+  };
+  if (!t.shape || !Array.isArray(t.shape)) {
+    throw new DataValidationError("Input must be a Tensor with a valid shape");
+  }
+
+  if (options.ensureNdim !== undefined && t.ndim !== options.ensureNdim) {
+    throw new DataValidationError(
+      `Expected ${options.ensureNdim}D array, got ${t.ndim ?? "unknown"}D`
+    );
+  }
+
+  if (options.dtype !== undefined && t.dtype !== options.dtype) {
+    throw new DataValidationError(
+      `Expected dtype '${options.dtype}', got '${t.dtype ?? "unknown"}'`
+    );
+  }
+
+  if (!options.allowEmpty) {
+    const nSamples = t.shape[0] ?? 0;
+    if (nSamples === 0) {
+      throw new DataValidationError("Input array must not be empty (0 samples)");
+    }
+  }
+
+  return array;
+}
+
+/**
+ * Input validation for standard estimators (X and y).
+ *
+ * Checks that X is 2D, y is 1D, and they have consistent first dimensions.
+ *
+ * @param X - Feature matrix
+ * @param y - Target vector
+ * @param options - Validation options
+ * @returns Tuple of [X, y] after validation
+ * @throws {DataValidationError} If validation fails
+ *
+ * @example
+ * ```ts
+ * const [Xv, yv] = check_X_y(X, y);
+ * ```
+ */
+export function check_X_y(
+  X: unknown,
+  y: unknown,
+  options: {
+    allowEmpty?: boolean;
+    dtype?: DType;
+    multiOutput?: boolean;
+  } = {}
+): [unknown, unknown] {
+  const xOpts: { dtype?: DType; ensureNdim?: number; allowEmpty?: boolean } = {
+    ensureNdim: 2,
+  };
+  if (options.dtype !== undefined) xOpts.dtype = options.dtype;
+  if (options.allowEmpty !== undefined) xOpts.allowEmpty = options.allowEmpty;
+  check_array(X, xOpts);
+
+  const yOpts: { ensureNdim?: number; allowEmpty?: boolean } = {};
+  if (!options.multiOutput) yOpts.ensureNdim = 1;
+  if (options.allowEmpty !== undefined) yOpts.allowEmpty = options.allowEmpty;
+  check_array(y, yOpts);
+
+  const Xt = X as { shape: number[] };
+  const yt = y as { shape: number[] };
+  const nSamplesX = Xt.shape[0] ?? 0;
+  const nSamplesY = yt.shape[0] ?? 0;
+
+  if (nSamplesX !== nSamplesY) {
+    throw new DataValidationError(
+      `Inconsistent number of samples: X has ${nSamplesX}, y has ${nSamplesY}`
+    );
+  }
+
+  return [X, y];
+}
+
+/**
+ * Check if two shapes are equal element-wise.
+ *
+ * @param a - First shape
+ * @param b - Second shape
+ * @returns True if shapes have the same length and each dimension matches
+ *
+ * @example
+ * ```ts
+ * import { shapesEqual } from 'deepbox/core';
+ *
+ * shapesEqual([2, 3], [2, 3]); // true
+ * shapesEqual([2, 3], [3, 2]); // false
+ * ```
+ */
+export function shapesEqual(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

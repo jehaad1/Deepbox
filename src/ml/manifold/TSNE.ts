@@ -514,38 +514,6 @@ export class TSNE {
   /**
    * Compute Q distribution (Student-t with 1 degree of freedom).
    */
-  private computeQ(Y: number[][]): { Q: number[][]; sumQ: number } {
-    const n = Y.length;
-    const Q: number[][] = [];
-    let sumQ = 0;
-
-    for (let i = 0; i < n; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < n; j++) {
-        if (i === j) {
-          row.push(0);
-        } else {
-          let dist = 0;
-          const yi = Y[i];
-          const yj = Y[j];
-          if (yi && yj) {
-            for (let k = 0; k < this.nComponents; k++) {
-              const diff = (yi[k] ?? 0) - (yj[k] ?? 0);
-              dist += diff * diff;
-            }
-          }
-          // Student-t distribution with 1 degree of freedom
-          const qij = 1 / (1 + dist);
-          row.push(qij);
-          sumQ += qij;
-        }
-      }
-      Q.push(row);
-    }
-
-    return { Q, sumQ };
-  }
-
   /**
    * Compute approximate Q using sampled pairs.
    */
@@ -587,39 +555,58 @@ export class TSNE {
   /**
    * Compute gradients of KL divergence.
    */
-  private computeGradients(P: number[][], Q: number[][], sumQ: number, Y: number[][]): number[][] {
+  /**
+   * Fused exact-path gradient computation over flat buffers.
+   *
+   * Computes q_ij into a persistent scratch (pass 1: sumQ), then gradients
+   * (pass 2) — replacing the per-iteration construction of two n x n nested
+   * arrays (P with exaggeration and Q), which dominated runtime and GC.
+   */
+  private computeExactGradients(
+    PFlat: Float64Array,
+    exaggeration: number,
+    Y: number[][],
+    QBuf: Float64Array
+  ): number[][] {
     const n = Y.length;
-    const gradients: number[][] = [];
-
+    const dims = this.nComponents;
+    let sumQ = 0;
     for (let i = 0; i < n; i++) {
-      const grad: number[] = new Array(this.nComponents).fill(0);
-
-      for (let j = 0; j < n; j++) {
-        if (i !== j) {
-          const pij = P[i]?.[j] ?? 0;
-          const qij = (Q[i]?.[j] ?? 0) / (sumQ + 1e-10);
-
-          const yi = Y[i];
-          const yj = Y[j];
-          if (yi && yj) {
-            // Compute (1 + ||y_i - y_j||^2)^-1
-            let dist = 0;
-            for (let k = 0; k < this.nComponents; k++) {
-              const diff = (yi[k] ?? 0) - (yj[k] ?? 0);
-              dist += diff * diff;
-            }
-            const mult = (pij - qij) * (1 / (1 + dist));
-
-            for (let k = 0; k < this.nComponents; k++) {
-              grad[k] = (grad[k] ?? 0) + 4 * mult * ((yi[k] ?? 0) - (yj[k] ?? 0));
-            }
-          }
+      const yi = Y[i]!;
+      const base = i * n;
+      for (let j = i + 1; j < n; j++) {
+        const yj = Y[j]!;
+        let dist = 0;
+        for (let k = 0; k < dims; k++) {
+          const diff = (yi[k] ?? 0) - (yj[k] ?? 0);
+          dist += diff * diff;
         }
+        const qij = 1 / (1 + dist);
+        QBuf[base + j] = qij;
+        QBuf[j * n + i] = qij;
+        sumQ += 2 * qij;
       }
-
-      gradients.push(grad);
+      QBuf[base + i] = 0;
     }
 
+    const invSumQ = 1 / (sumQ + 1e-10);
+    const gradients: number[][] = [];
+    for (let i = 0; i < n; i++) {
+      const yi = Y[i]!;
+      const grad: number[] = new Array(dims).fill(0);
+      const base = i * n;
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const qij = QBuf[base + j]!;
+        const mult = 4 * ((PFlat[base + j] ?? 0) * exaggeration - qij * invSumQ) * qij;
+        if (mult === 0) continue;
+        const yj = Y[j]!;
+        for (let k = 0; k < dims; k++) {
+          grad[k]! += mult * ((yi[k] ?? 0) - (yj[k] ?? 0));
+        }
+      }
+      gradients.push(grad);
+    }
     return gradients;
   }
 
@@ -737,6 +724,19 @@ export class TSNE {
 
     // Compute joint probabilities P
     const PExact = useApproximate ? null : this.computeProbabilities(this.computeDistances(XData));
+    let PFlat: Float64Array | null = null;
+    let QBuf: Float64Array | null = null;
+    if (!useApproximate && PExact) {
+      PFlat = new Float64Array(nSamples * nSamples);
+      for (let i = 0; i < nSamples; i++) {
+        const row = PExact[i];
+        if (!row) continue;
+        for (let j = 0; j < nSamples; j++) {
+          PFlat[i * nSamples + j] = row[j] ?? 0;
+        }
+      }
+      QBuf = new Float64Array(nSamples * nSamples);
+    }
     const PSparse = useApproximate
       ? this.computeProbabilitiesSparse(XData, neighborCount, rng)
       : null;
@@ -777,21 +777,10 @@ export class TSNE {
         const { rows: QRows, sumQ } = this.computeQApprox(Y, PSparse, negativeCount, rng);
         gradients = this.computeGradientsApprox(PMaps, QRows, sumQ, Y, exaggeration);
       } else {
-        // Apply exaggeration to P
-        const Pexag: number[][] = [];
-        for (let i = 0; i < nSamples; i++) {
-          const row: number[] = [];
-          for (let j = 0; j < nSamples; j++) {
-            row.push((PExact?.[i]?.[j] ?? 0) * exaggeration);
-          }
-          Pexag.push(row);
+        if (!PFlat || !QBuf) {
+          throw new Error("Internal error: exact t-SNE buffers not initialized");
         }
-
-        // Compute Q
-        const { Q, sumQ } = this.computeQ(Y);
-
-        // Compute gradients
-        gradients = this.computeGradients(Pexag, Q, sumQ, Y);
+        gradients = this.computeExactGradients(PFlat, exaggeration, Y, QBuf);
       }
 
       // Check convergence

@@ -1,10 +1,4 @@
-import {
-  DataValidationError,
-  InvalidParameterError,
-  NotFittedError,
-  NotImplementedError,
-  ShapeError,
-} from "../../core";
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
@@ -40,10 +34,9 @@ import type { Classifier } from "../base";
  * ```
  *
  * @see {@link https://deepbox.dev/docs/ml-naive-bayes | Deepbox Naive Bayes}
- * @see {@link https://deepbox.dev/docs/ml-naive-bayes | Deepbox Naive Bayes}
  */
 export class GaussianNB implements Classifier {
-  private readonly varSmoothing: number;
+  private varSmoothing: number;
 
   private classes_?: number[];
   private classPrior_?: Map<number, number>;
@@ -323,10 +316,26 @@ export class GaussianNB implements Classifier {
   /**
    * Set the parameters of this estimator.
    *
-   * @param _params - Parameters to set
-   * @throws {NotImplementedError} Always — parameters cannot be changed after construction
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
-  setParams(_params: Record<string, unknown>): this {
-    throw new NotImplementedError("GaussianNB does not support setParams after construction");
+  setParams(params: Record<string, unknown>): this {
+    for (const [key, value] of Object.entries(params)) {
+      switch (key) {
+        case "varSmoothing":
+          if (typeof value !== "number" || value < 0) {
+            throw new InvalidParameterError(
+              `varSmoothing must be a non-negative number; got ${String(value)}`,
+              "varSmoothing",
+              value
+            );
+          }
+          this.varSmoothing = value;
+          break;
+        default:
+          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+    }
+    return this;
   }
 }

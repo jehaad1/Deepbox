@@ -2,167 +2,105 @@
 
 > **Browse online:** https://deepbox.dev/examples
 
-This directory contains 33 self-contained examples demonstrating Deepbox capabilities.
+This directory contains **50 runnable examples (00-49)**. Execute them from the Deepbox package root.
 
 ## Prerequisites
 
-- Node.js >= 24.13.0
-- npm installed
-- Deepbox library built (run `npm run build` from parent directory)
+- Node.js `>= 24.13.0`
+- `npm install`
+- Working directory: the `Deepbox` package root
 
-## Running Examples
-
-All examples should be run from the **root Deepbox directory** (not from the examples directory).
-
-### Individual Examples
-
-From the root Deepbox directory, run:
+## Individual Example Commands
 
 ```bash
-# Getting Started
-npm run example:00   # Quick Start
-npm run example:01   # Tensor Basics
-npm run example:02   # Tensor Operations
+# Foundations
+npm run example:00
+npm run example:01
+npm run example:02
+npm run example:03
+npm run example:04
+npm run example:05
 
-# DataFrames
-npm run example:03   # Data Analysis & Visualization
-npm run example:04   # DataFrame Basics
-npm run example:05   # DataFrame GroupBy
+# Classical ML
+npm run example:06
+npm run example:07
+npm run example:08
+npm run example:09
+npm run example:10
+npm run example:11
+npm run example:12
 
-# Classical Machine Learning
-npm run example:06   # ML Pipeline
-npm run example:07   # Linear Regression
-npm run example:08   # Logistic Regression
-npm run example:09   # Ridge & Lasso
-npm run example:10   # Advanced ML Models
-npm run example:11   # Tree & Ensemble Models
-npm run example:12   # Complete Pipeline
+# Neural nets and optimization
+npm run example:13
+npm run example:14
+npm run example:15
+npm run example:16
+npm run example:27
+npm run example:28
+npm run example:29
+npm run example:30
+npm run example:32
+npm run example:39
+npm run example:40
+npm run example:41
 
-# Neural Networks & Autograd
-npm run example:13   # Neural Network Training
-npm run example:14   # Autograd
-npm run example:15   # Activation Functions
+# Data, statistics, and math
+npm run example:17
+npm run example:18
+npm run example:19
+npm run example:20
+npm run example:21
+npm run example:22
+npm run example:23
+npm run example:24
+npm run example:26
+npm run example:31
+npm run example:33
+npm run example:35
+npm run example:37
+npm run example:38
+npm run example:42
+npm run example:43
+npm run example:48
+npm run example:49
 
-# Optimization
-npm run example:16   # LR Schedulers
-
-# Preprocessing
-npm run example:17   # Encoders
-npm run example:18   # Scalers
-
-# Statistics & Linear Algebra
-npm run example:19   # Statistics
-npm run example:20   # Linear Algebra
-
-# Utilities
-npm run example:21   # Random Sampling
-npm run example:22   # Datasets
-npm run example:23   # Cross-Validation
-npm run example:24   # Metrics
-
-# Visualization & Special Topics
-npm run example:25   # Plotting
-npm run example:26   # Sparse Matrices
-
-# Deep Learning Layers
-npm run example:27   # CNN Layers (Conv1d, Conv2d, Pooling)
-npm run example:28   # RNN, LSTM, GRU
-npm run example:29   # Attention & Transformer
-npm run example:30   # Normalization & Dropout
-npm run example:31   # DataLoader
-npm run example:32   # Module System
+# Specialized v1.0 additions
+npm run example:25
+npm run example:34
+npm run example:36
+npm run example:44
+npm run example:45
+npm run example:46
+npm run example:47
 ```
 
-### Run All Examples
-
-To run all examples sequentially:
+## Run Everything
 
 ```bash
 npm run examples:all
 ```
 
-## Example Descriptions
+## Notable Outputs
 
-### 00 – Quick Start
-
-- **Duration**: ~1 second
-- **Features**: Tensors, DataFrames, linear regression
-- **Output**: Console only
-
-### 03 – Data Analysis
-
-- **Duration**: ~2 seconds
-- **Features**: DataFrames, statistics, groupby, visualization
-- **Output**: 4 SVG visualizations in `03-data-analysis/output/`
-
-### 06 – ML Pipeline
-
-- **Duration**: ~3 seconds
-- **Features**: Classification, regression, model comparison, cross-validation
-- **Output**: 1 SVG visualization in `06-ml-pipeline/output/`
-
-### 12 – Complete Pipeline
-
-- **Duration**: ~2 seconds
-- **Features**: End-to-end ML workflow with visualization
-- **Output**: 1 SVG visualization in `12-complete-pipeline/output/`
-
-### 15 – Activation Functions
-
-- **Duration**: ~1 second
-- **Features**: 9 activation functions with comparison plot
-- **Output**: 1 SVG visualization in `15-activation-functions/output/`
-
-### 25 – Plotting
-
-- **Duration**: ~1 second
-- **Features**: 5 plot types (line, scatter, bar, histogram, heatmap)
-- **Output**: 5 SVG visualizations in `25-plotting/output/`
-
-## Output Files
-
-Examples that generate visualizations write SVG files to their respective `output/` directories. All visualizations are publication-ready.
+- `example:03`, `example:12`, `example:15`, `example:25`, and `example:44` render SVG charts.
+- `example:45` writes serialized JSON payloads under `docs/examples/45-core-runtime-tooling/output/`.
+- `example:47` writes JSON, XLSX, Parquet, HTML, ANSI, and SVG artifacts under `docs/examples/47-dataframe-io-styling/output/`.
+- `example:48` writes inference-oriented SVG artifacts under `docs/examples/48-statistical-inference-playbook/output/`.
 
 ## Troubleshooting
 
-### "Cannot find module 'deepbox/...'"
+If you hit module resolution errors:
 
-Make sure you:
+1. Run from the Deepbox package root, not from inside `docs/examples/`.
+2. Use the provided npm scripts so `docs/examples/tsconfig.json` path aliases are applied.
+3. If you need a clean rebuild first, run `npm run build`.
 
-1. Are running from the **root Deepbox directory** (not from `docs/examples/`)
-2. Have built the library: `npm run build`
-3. Are using the npm scripts (not running tsx directly)
+## Development Notes
 
-### Examples run but show errors
-
-Ensure the library is properly built:
-
-```bash
-npm run build
-npm run example:00  # Test with quick start
-```
-
-## Technical Details
-
-- All examples use TypeScript with tsx for execution
-- Path resolution configured via `docs/examples/tsconfig.json`
-- Examples import from source files during development
-- Production-ready code with proper error handling
-
-## Development
-
-To add a new example:
-
-1. Create a new directory: `docs/examples/NN-example-name/`
-2. Add `index.ts` as the entry point
-3. Add `README.md` with description and modules used
-4. Create `output/` directory with `.gitkeep`
-5. Add npm script to root `package.json`:
-   ```json
-   "example:NN": "npx tsx --tsconfig docs/examples/tsconfig.json docs/examples/NN-example-name/index.ts"
-   ```
-6. Update this README and `docs/examples/README.md`
+- Add new example entry points under `docs/examples/NN-name/index.ts`.
+- Register a matching `example:NN` script in [`package.json`](../../package.json).
+- Update this runbook and [`docs/examples/README.md`](./README.md).
 
 ## License
 
-MIT – See LICENSE file in parent directory
+MIT — See the parent directory.

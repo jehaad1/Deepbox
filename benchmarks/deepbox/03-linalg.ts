@@ -4,21 +4,32 @@
  */
 
 import {
+  block_diag,
   cholesky,
   cond,
   det,
   eigvalsh,
+  expm,
+  hessenberg,
   inv,
+  kron,
+  logm,
   lstsq,
   lu,
   matrixRank,
   norm,
   pinv,
+  polar,
   qr,
+  schur,
   slogdet,
   solve,
+  solve_banded,
   solveTriangular,
+  sqrtm,
   svd,
+  sylvester,
+  toeplitz,
   trace,
 } from "deepbox/linalg";
 import { dot, tensor } from "deepbox/ndarray";
@@ -99,6 +110,16 @@ const b100 = randMatrix(100, 1, 99);
 const _b200 = randMatrix(200, 1, 99);
 const rect50x30 = randMatrix(50, 30, 42);
 const rect100x50 = randMatrix(100, 50, 42);
+const bandAb = tensor([
+  [0, 1, 1, 1],
+  [4, 4, 4, 4],
+  [1, 1, 1, 0],
+]);
+const bandB = tensor([5, 6, 6, 5]);
+const toeplitzCol = tensor(Array.from({ length: 500 }, (_, i) => (i % 7) + 1));
+const sylA = symPosDefMatrix(10, 7);
+const sylB = symPosDefMatrix(10, 13);
+const sylC = randMatrix(10, 10, 19);
 
 // ── Determinant ─────────────────────────────────────────
 
@@ -204,5 +225,19 @@ run(suite, "matmul", "25x25", () => dot(m25, m25));
 run(suite, "matmul", "50x50", () => dot(m50, m50));
 run(suite, "matmul", "100x100", () => dot(m100, m100));
 run(suite, "matmul", "200x200", () => dot(m200, m200), { iterations: 10 });
+
+// ── Additional v1.0.0 linalg coverage ──────────────────
+
+run(suite, "hessenberg", "50x50", () => hessenberg(m50));
+run(suite, "schur", "25x25", () => schur(m25));
+run(suite, "polar", "25x25", () => polar(m25));
+run(suite, "expm", "25x25", () => expm(sym25));
+run(suite, "logm", "25x25", () => logm(sym25));
+run(suite, "sqrtm", "25x25", () => sqrtm(sym25));
+run(suite, "kron", "10x10⊗10x10", () => kron(m10, m10));
+run(suite, "block_diag", "25x25+25x25", () => block_diag(m25, m25));
+run(suite, "toeplitz", "500", () => toeplitz(Array.from(toeplitzCol.data, Number)));
+run(suite, "solve_banded", "4x4 (1,1)", () => solve_banded([1, 1], bandAb, bandB));
+run(suite, "sylvester", "10x10", () => sylvester(sylA, sylB, sylC));
 
 footer(suite, "deepbox-linalg.json");

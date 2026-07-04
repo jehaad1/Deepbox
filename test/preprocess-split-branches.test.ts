@@ -36,14 +36,23 @@ describe("preprocess split branches", () => {
     expect(Xtr.shape[0]).toBe(2);
     expect(Xte.shape[0]).toBe(1);
 
-    const y = tensor([0, 1, 0]);
-    const [Xs, Xt, ys, yt] = trainTestSplit(X, y, {
-      testSize: 0.34,
-      stratify: y,
+    // A singleton class (class 1 appears once) cannot be stratified — sklearn
+    // raises unconditionally, even with a fixed randomState.
+    const ySingleton = tensor([0, 1, 0]);
+    expect(() =>
+      trainTestSplit(X, ySingleton, { testSize: 0.34, stratify: ySingleton, randomState: 1 })
+    ).toThrow(/at least 2 samples/i);
+
+    // With ≥2 samples per class, stratified split succeeds.
+    const X4 = tensor([[1], [2], [3], [4]]);
+    const y4 = tensor([0, 1, 0, 1]);
+    const [Xs, Xt, ys, yt] = trainTestSplit(X4, y4, {
+      testSize: 0.5,
+      stratify: y4,
       randomState: 1,
     });
-    expect(Xs.shape[0] + Xt.shape[0]).toBe(3);
-    expect(ys.shape[0] + yt.shape[0]).toBe(3);
+    expect(Xs.shape[0] + Xt.shape[0]).toBe(4);
+    expect(ys.shape[0] + yt.shape[0]).toBe(4);
   });
 
   it("validates stratified train/test minimum class counts", () => {

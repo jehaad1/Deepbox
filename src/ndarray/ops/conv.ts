@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import type { Shape } from "../../core";
 import {
   DTypeError,
@@ -8,6 +12,7 @@ import {
   ShapeError,
 } from "../../core";
 import { computeStrides, Tensor } from "../tensor/Tensor";
+import { dispatchCol2im, dispatchIm2col } from "./device_dispatch";
 
 function validateConvPair(
   name: "kernelSize" | "stride" | "padding",
@@ -71,6 +76,11 @@ export function im2col(
       "output_dimensions",
       { outH, outW }
     );
+  }
+
+  if (input.device !== "cpu") {
+    const onDevice = dispatchIm2col(input, kernelSize, stride, padding);
+    if (onDevice) return onDevice;
   }
 
   // Output shape: (batch, outH * outW, channels * kH * kW)
@@ -255,6 +265,11 @@ export function col2im(
     throw new ShapeError(
       `col2im input shape mismatch: expected [${batch}, ${outPixels}, ${colSize}], got [${cols.shape}]`
     );
+  }
+
+  if (cols.device !== "cpu") {
+    const onDevice = dispatchCol2im(cols, inputShape, kernelSize, stride, padding);
+    if (onDevice) return onDevice;
   }
 
   const Ctor = dtypeToTypedArrayCtor(cols.dtype);

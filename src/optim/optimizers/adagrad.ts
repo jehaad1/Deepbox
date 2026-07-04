@@ -1,11 +1,26 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import {
+  add,
+  addScalar,
+  div,
+  type GradTensor,
+  mulScalar,
+  sqrt,
+  square,
+  sub,
+  type Tensor,
+} from "../../ndarray";
 import {
   assertBufferSize,
   assertFinite,
   assertFiniteNonNegative,
   assertFinitePositive,
   assertHasGradFloat,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -20,6 +35,9 @@ type AdagradOptions = {
 type AdagradState = {
   step: number;
   sum: Float64Array;
+  /** Device state (used when the parameter lives on a kernel device). */
+  sumTensor?: Tensor;
+  deviceStep?: number;
 };
 
 /**
@@ -132,6 +150,27 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
       assertFiniteNonNegative("lr_decay", lrDecay);
 
       for (const param of group.params) {
+        // Device path: compose the Adagrad update from device-dispatched ops.
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let dstate = this.state.get(param);
+          if (!dstate) {
+            dstate = { step: 0, sum: new Float64Array(0) };
+            this.state.set(param, dstate);
+          }
+          const t = (dstate.deviceStep ?? 0) + 1;
+          dstate.deviceStep = t;
+          const clr = lr / (1 + (t - 1) * lrDecay);
+          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const sumPrev = dstate.sumTensor;
+          const sumNew = sumPrev ? add(sumPrev, square(grad)) : square(grad);
+          dstate.sumTensor = sumNew;
+          const std = addScalar(sqrt(sumNew), eps);
+          replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(div(grad, std), clr)));
+          continue;
+        }
+
         const {
           grad: gradData,
           gradOffset: gOff,

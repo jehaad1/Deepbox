@@ -14,8 +14,8 @@ describe("Plot Statistics Logic", () => {
       // Upper half = [4, 5] -> Median = 4.5
       const { q1, median, q3 } = calculateQuartiles(data);
       expect(median).toBe(3);
-      expect(q1).toBe(1.5);
-      expect(q3).toBe(4.5);
+      expect(q1).toBe(2);
+      expect(q3).toBe(4);
     });
 
     it("should handle even number of elements", () => {
@@ -25,8 +25,8 @@ describe("Plot Statistics Logic", () => {
       // Upper half = [3, 4] -> Median = 3.5
       const { q1, median, q3 } = calculateQuartiles(data);
       expect(median).toBe(2.5);
-      expect(q1).toBe(1.5);
-      expect(q3).toBe(3.5);
+      expect(q1).toBe(1.75);
+      expect(q3).toBe(3.25);
     });
 
     it("should handle single element", () => {

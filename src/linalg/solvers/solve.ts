@@ -1,7 +1,6 @@
 import { DataValidationError, ShapeError } from "../../core";
 import type { Tensor } from "../../ndarray";
 import {
-  at,
   fromDenseMatrix2D,
   fromDenseVector1D,
   getDim,
@@ -72,7 +71,7 @@ export function solve(a: Tensor, b: Tensor): Tensor {
   if (b.ndim === 1) {
     const rhs = toDenseVector1D(b);
     const rhsMat = new Float64Array(n * 1);
-    for (let i = 0; i < n; i++) rhsMat[i] = at(rhs, i);
+    for (let i = 0; i < n; i++) rhsMat[i] = rhs[i] as number;
     luSolveInPlace(lu, piv, n, rhsMat, 1);
     return fromDenseVector1D(rhsMat);
   }
@@ -131,21 +130,21 @@ export function solveTriangular(a: Tensor, b: Tensor, lower = true): Tensor {
 
     if (lower) {
       for (let i = 0; i < n; i++) {
-        let sum = at(rhs, i);
+        let sum = rhs[i] as number;
         for (let j = 0; j < i; j++) {
-          sum -= at(A, i * n + j) * at(x, j);
+          sum -= (A[i * n + j] as number) * (x[j] as number);
         }
-        const diag = at(A, i * n + i);
+        const diag = A[i * n + i] as number;
         if (diag === 0) throw new DataValidationError("Matrix is singular");
         x[i] = sum / diag;
       }
     } else {
       for (let i = n - 1; i >= 0; i--) {
-        let sum = at(rhs, i);
+        let sum = rhs[i] as number;
         for (let j = i + 1; j < n; j++) {
-          sum -= at(A, i * n + j) * at(x, j);
+          sum -= (A[i * n + j] as number) * (x[j] as number);
         }
-        const diag = at(A, i * n + i);
+        const diag = A[i * n + i] as number;
         if (diag === 0) throw new DataValidationError("Matrix is singular");
         x[i] = sum / diag;
       }
@@ -161,11 +160,11 @@ export function solveTriangular(a: Tensor, b: Tensor, lower = true): Tensor {
   if (lower) {
     for (let k = 0; k < nrhs; k++) {
       for (let i = 0; i < n; i++) {
-        let sum = at(B, i * nrhs + k);
+        let sum = B[i * nrhs + k] as number;
         for (let j = 0; j < i; j++) {
-          sum -= at(A, i * n + j) * at(X, j * nrhs + k);
+          sum -= (A[i * n + j] as number) * (X[j * nrhs + k] as number);
         }
-        const diag = at(A, i * n + i);
+        const diag = A[i * n + i] as number;
         if (diag === 0) throw new DataValidationError("Matrix is singular");
         X[i * nrhs + k] = sum / diag;
       }
@@ -173,11 +172,11 @@ export function solveTriangular(a: Tensor, b: Tensor, lower = true): Tensor {
   } else {
     for (let k = 0; k < nrhs; k++) {
       for (let i = n - 1; i >= 0; i--) {
-        let sum = at(B, i * nrhs + k);
+        let sum = B[i * nrhs + k] as number;
         for (let j = i + 1; j < n; j++) {
-          sum -= at(A, i * n + j) * at(X, j * nrhs + k);
+          sum -= (A[i * n + j] as number) * (X[j * nrhs + k] as number);
         }
-        const diag = at(A, i * n + i);
+        const diag = A[i * n + i] as number;
         if (diag === 0) throw new DataValidationError("Matrix is singular");
         X[i * nrhs + k] = sum / diag;
       }

@@ -15,8 +15,9 @@ import {
 } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
-import { bigintToNumberSafe, flatOffset } from "./_internal";
+import { bigintToNumberSafe, flatOffset, readNumericContiguous } from "./_internal";
 import { mulScalar } from "./arithmetic";
+import { dispatchReduce } from "./device_dispatch";
 
 const INT64_MIN = -(1n << 63n);
 const INT64_MAX = (1n << 63n) - 1n;
@@ -71,6 +72,11 @@ function outDtypeForSum(inDtype: Tensor["dtype"]): NumericDType {
 export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
   ensureNumericTensor(t, "sum");
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchReduce("sum", t, axis, keepdims);
+    if (onDevice) return onDevice;
+  }
+
   const outDtype = outDtypeForSum(t.dtype);
 
   if (axis === undefined) {
@@ -101,26 +107,36 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
     if (t.data instanceof BigInt64Array) {
       for (let i = 0; i < t.size; i++) {
         const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-        acc += Number(getBigIntElement(t.data, srcOffset));
+        acc += bigintToNumberSafe(getBigIntElement(t.data, srcOffset));
       }
     } else {
-      const numericData = t.data;
-      if (Array.isArray(numericData)) {
+      const src = readNumericContiguous(t);
+      if (src === null) {
         throw new DTypeError("sum not supported for string dtype");
       }
-      // Fast path: contiguous zero-offset — direct TypedArray loop
-      if (contiguous && t.offset === 0) {
-        for (let i = 0; i < t.size; i++) {
-          acc += numericData[i] as number;
-        }
-      } else {
-        for (let i = 0; i < t.size; i++) {
-          const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-          acc += getNumericElement(numericData, srcOffset);
-        }
+      // Four independent accumulators so the FP adds don't serialize on a
+      // single dependency chain (~3-4x on large tensors).
+      const n = src.length;
+      let s0 = 0;
+      let s1 = 0;
+      let s2 = 0;
+      let s3 = 0;
+      let i = 0;
+      for (; i + 4 <= n; i += 4) {
+        s0 += src[i] as number;
+        s1 += src[i + 1] as number;
+        s2 += src[i + 2] as number;
+        s3 += src[i + 3] as number;
       }
+      for (; i < n; i++) s0 += src[i] as number;
+      acc = s0 + s1 + s2 + s3;
     }
 
+    if (outDtype === "int32" && (acc > 2147483647 || acc < -2147483648)) {
+      // Storing into Int32Array would silently wrap; fail loudly instead
+      // (same policy as the int64 accumulation path).
+      throw new DataValidationError("int32 sum overflow");
+    }
     const out = outDtype === "float64" ? new Float64Array(1) : new Int32Array(1);
     out[0] = acc;
     const outShape: Shape = keepdims ? new Array<number>(t.ndim).fill(1) : [];
@@ -236,7 +252,7 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
       let acc = 0;
       if (t.data instanceof BigInt64Array) {
         for (let k = 0; k < axisDim; k++) {
-          acc += Number(getBigIntElement(t.data, baseOffset + k * axisStride));
+          acc += bigintToNumberSafe(getBigIntElement(t.data, baseOffset + k * axisStride));
         }
       } else {
         const numericData = expectNumericData(t.data, "sum");
@@ -247,6 +263,9 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
 
       if (out instanceof BigInt64Array) {
         throw new DTypeError("sum output dtype mismatch");
+      }
+      if (outDtype === "int32" && (acc > 2147483647 || acc < -2147483648)) {
+        throw new DataValidationError("int32 sum overflow");
       }
       const numericOut = out;
       numericOut[outFlat] = acc;
@@ -288,6 +307,11 @@ export function sum(t: Tensor, axis?: Axis, keepdims = false): Tensor {
  */
 export function mean(t: Tensor, axis?: Axis, keepdims = false): Tensor {
   ensureNumericTensor(t, "mean");
+
+  if (t.device !== "cpu") {
+    const onDevice = dispatchReduce("mean", t, axis, keepdims);
+    if (onDevice) return onDevice;
+  }
 
   // Empty full-reduction: return NaN scalar (matches Deepbox behavior)
   if (axis === undefined && t.size === 0) {
@@ -718,29 +742,53 @@ export function variance(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Te
 
     // Pass 1: Compute mean
     let meanValue = 0;
-    if (t.data instanceof BigInt64Array) {
+    let sumSquaredDev = 0;
+    const src = readNumericContiguous(t);
+    if (src) {
+      // Tight zero-based loops with independent accumulators so the FP adds
+      // don't serialize on one dependency chain.
+      const n = src.length;
+      let s0 = 0;
+      let s1 = 0;
+      let s2 = 0;
+      let s3 = 0;
+      let i = 0;
+      for (; i + 4 <= n; i += 4) {
+        s0 += src[i] as number;
+        s1 += src[i + 1] as number;
+        s2 += src[i + 2] as number;
+        s3 += src[i + 3] as number;
+      }
+      for (; i < n; i++) s0 += src[i] as number;
+      meanValue = (s0 + s1 + s2 + s3) / n;
+
+      let q0 = 0;
+      let q1 = 0;
+      let q2 = 0;
+      let q3 = 0;
+      i = 0;
+      for (; i + 4 <= n; i += 4) {
+        const d0 = (src[i] as number) - meanValue;
+        const d1 = (src[i + 1] as number) - meanValue;
+        const d2 = (src[i + 2] as number) - meanValue;
+        const d3 = (src[i + 3] as number) - meanValue;
+        q0 += d0 * d0;
+        q1 += d1 * d1;
+        q2 += d2 * d2;
+        q3 += d3 * d3;
+      }
+      for (; i < n; i++) {
+        const d = (src[i] as number) - meanValue;
+        q0 += d * d;
+      }
+      sumSquaredDev = q0 + q1 + q2 + q3;
+    } else if (t.data instanceof BigInt64Array) {
       let sum = 0;
       for (let i = 0; i < t.size; i++) {
         const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
         sum += bigintToNumberSafe(getBigIntElement(t.data, srcOffset));
       }
       meanValue = sum / t.size;
-    } else {
-      const numericData = t.data;
-      if (Array.isArray(numericData)) {
-        throw new DTypeError("variance not supported for string dtype");
-      }
-      let sum = 0;
-      for (let i = 0; i < t.size; i++) {
-        const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-        sum += getNumericElement(numericData, srcOffset);
-      }
-      meanValue = sum / t.size;
-    }
-
-    // Pass 2: Compute sum of squared deviations
-    let sumSquaredDev = 0;
-    if (t.data instanceof BigInt64Array) {
       for (let i = 0; i < t.size; i++) {
         const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
         const val = bigintToNumberSafe(getBigIntElement(t.data, srcOffset));
@@ -748,16 +796,7 @@ export function variance(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Te
         sumSquaredDev += deviation * deviation;
       }
     } else {
-      const numericData = t.data;
-      if (Array.isArray(numericData)) {
-        throw new DTypeError("variance not supported for string dtype");
-      }
-      for (let i = 0; i < t.size; i++) {
-        const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-        const val = getNumericElement(numericData, srcOffset);
-        const deviation = val - meanValue;
-        sumSquaredDev += deviation * deviation;
-      }
+      throw new DTypeError("variance not supported for string dtype");
     }
 
     // Compute variance: divide by (N - ddof)
@@ -945,6 +984,11 @@ export function variance(t: Tensor, axis?: Axis, keepdims = false, ddof = 0): Te
 export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   ensureNumericTensor(t, "min");
 
+  if (t.device !== "cpu") {
+    const onDevice = dispatchReduce("min", t, axis, keepdims);
+    if (onDevice) return onDevice;
+  }
+
   const minAxis = (
     input: Tensor<Shape, NumericDType>,
     ax: number,
@@ -1105,32 +1149,27 @@ export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   }
 
   // Handle numeric types (float64, int32, etc.)
-  const numericData = expectNumericData(t.data, "min");
-
-  let minVal: number;
-  // Fast path: contiguous zero-offset — direct TypedArray loop
-  if (contiguous && t.offset === 0) {
-    minVal = numericData[0] as number;
-    for (let i = 1; i < t.size; i++) {
-      const val = numericData[i] as number;
-      if (val < minVal || Number.isNaN(val)) {
-        minVal = val;
-      }
-    }
-  } else {
-    minVal = getNumericElement(
-      numericData,
-      flatOffset(0, t.offset, contiguous, logicalStrides, t.strides)
-    );
-    // Find minimum value (propagate NaN to match Deepbox min behavior)
-    for (let i = 1; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(numericData, srcOffset);
-      if (val < minVal || Number.isNaN(val)) {
-        minVal = val;
-      }
-    }
+  const src = readNumericContiguous(t);
+  if (src === null) {
+    throw new DTypeError("min not supported for string dtype");
   }
+
+  // Two independent lanes; NaN propagates (NumPy min semantics).
+  const n = src.length;
+  let m0 = src[0] as number;
+  let m1 = n > 1 ? (src[1] as number) : m0;
+  let i = 2;
+  // `Math.min` compiles to a branchless scalar min (V8 `minsd`), ~1.6x faster
+  // than a compare-and-conditional-store loop, and propagates NaN exactly like
+  // NumPy (Math.min with a NaN operand yields NaN).
+  for (; i + 2 <= n; i += 2) {
+    m0 = Math.min(m0, src[i] as number);
+    m1 = Math.min(m1, src[i + 1] as number);
+  }
+  for (; i < n; i++) {
+    m0 = Math.min(m0, src[i] as number);
+  }
+  const minVal = Math.min(m0, m1);
 
   // Create output array based on input dtype
   const Ctor = dtypeToTypedArrayCtor(t.dtype);
@@ -1170,6 +1209,11 @@ export function min(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
  */
 export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   ensureNumericTensor(t, "max");
+
+  if (t.device !== "cpu") {
+    const onDevice = dispatchReduce("max", t, axis, keepdims);
+    if (onDevice) return onDevice;
+  }
 
   const maxAxis = (
     input: Tensor<Shape, NumericDType>,
@@ -1328,32 +1372,27 @@ export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
   }
 
   // Handle numeric types (float64, int32, etc.)
-  const numericData = expectNumericData(t.data, "max");
-
-  let maxVal: number;
-  // Fast path: contiguous zero-offset — direct TypedArray loop
-  if (contiguous && t.offset === 0) {
-    maxVal = numericData[0] as number;
-    for (let i = 1; i < t.size; i++) {
-      const val = numericData[i] as number;
-      if (val > maxVal || Number.isNaN(val)) {
-        maxVal = val;
-      }
-    }
-  } else {
-    maxVal = getNumericElement(
-      numericData,
-      flatOffset(0, t.offset, contiguous, logicalStrides, t.strides)
-    );
-    // Find maximum value (propagate NaN to match Deepbox max behavior)
-    for (let i = 1; i < t.size; i++) {
-      const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-      const val = getNumericElement(numericData, srcOffset);
-      if (val > maxVal || Number.isNaN(val)) {
-        maxVal = val;
-      }
-    }
+  const src = readNumericContiguous(t);
+  if (src === null) {
+    throw new DTypeError("max not supported for string dtype");
   }
+
+  // Two independent lanes; NaN propagates (NumPy max semantics).
+  const n = src.length;
+  let m0 = src[0] as number;
+  let m1 = n > 1 ? (src[1] as number) : m0;
+  let i = 2;
+  // `Math.max` compiles to a branchless scalar max (V8 `maxsd`), ~1.6x faster
+  // than a compare-and-conditional-store loop, and propagates NaN exactly like
+  // NumPy (Math.max with a NaN operand yields NaN).
+  for (; i + 2 <= n; i += 2) {
+    m0 = Math.max(m0, src[i] as number);
+    m1 = Math.max(m1, src[i + 1] as number);
+  }
+  for (; i < n; i++) {
+    m0 = Math.max(m0, src[i] as number);
+  }
+  const maxVal = Math.max(m0, m1);
 
   // Create output array based on input dtype
   const Ctor = dtypeToTypedArrayCtor(t.dtype);
@@ -1398,10 +1437,79 @@ export function max(t: Tensor, axis?: Axis | Axis[], keepdims = false): Tensor {
  * ```
  *
  * Performance:
- * - This implementation copies and sorts values (O(n log n) time, O(n) memory).
+ * - This implementation uses quickselect (O(n) average time, O(n) memory).
  *
  * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
+/**
+ * O(n) average-case quickselect to find the k-th smallest element.
+ * Mutates the input array.
+ */
+function quickSelect(arr: number[] | Float64Array, k: number): number {
+  let lo = 0;
+  let hi = arr.length - 1;
+
+  while (lo < hi) {
+    // Median-of-three pivot selection for better average performance
+    const mid = (lo + hi) >>> 1;
+    const a = arr[lo] ?? 0;
+    const b = arr[mid] ?? 0;
+    const c = arr[hi] ?? 0;
+    let pivotIdx: number;
+    if ((a <= b && b <= c) || (c <= b && b <= a)) pivotIdx = mid;
+    else if ((b <= a && a <= c) || (c <= a && a <= b)) pivotIdx = lo;
+    else pivotIdx = hi;
+
+    // Move pivot to end
+    const pivotVal = arr[pivotIdx] ?? 0;
+    arr[pivotIdx] = arr[hi] ?? 0;
+    arr[hi] = pivotVal;
+
+    let storeIdx = lo;
+    for (let i = lo; i < hi; i++) {
+      if ((arr[i] ?? 0) < pivotVal) {
+        const tmp = arr[storeIdx] ?? 0;
+        arr[storeIdx] = arr[i] ?? 0;
+        arr[i] = tmp;
+        storeIdx++;
+      }
+    }
+    arr[hi] = arr[storeIdx] ?? 0;
+    arr[storeIdx] = pivotVal;
+
+    if (storeIdx === k) return pivotVal;
+    if (storeIdx < k) lo = storeIdx + 1;
+    else hi = storeIdx - 1;
+  }
+
+  return arr[lo] ?? 0;
+}
+
+/**
+ * Compute the median of a mutable number array using O(n) quickselect.
+ */
+function quickMedian(arr: number[] | Float64Array): number {
+  // NaN propagates (NumPy semantics); quickselect comparisons with NaN
+  // would otherwise partition arbitrarily and return a random finite value.
+  for (const v of arr) {
+    if (Number.isNaN(v)) return NaN;
+  }
+  const n = arr.length;
+  const mid = Math.floor(n / 2);
+  if (n % 2 === 1) {
+    return quickSelect(arr, mid);
+  }
+  // Even length: need the two middle values
+  // quickSelect mutates arr, so after finding k=mid, arr[0..mid-1] are all <= arr[mid]
+  const upper = quickSelect(arr, mid);
+  // Find max of arr[0..mid-1] which is the (mid-1)-th element
+  let lower = arr[0] ?? 0;
+  for (let i = 1; i < mid; i++) {
+    if ((arr[i] ?? 0) > lower) lower = arr[i] ?? 0;
+  }
+  return (lower + upper) / 2;
+}
+
 export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
   ensureNumericTensor(t, "median");
 
@@ -1415,31 +1523,28 @@ export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
     const logicalStrides = computeStrides(t.shape);
     const contiguous = isContiguous(t.shape, t.strides);
     // Copy data to avoid mutating original (must not use in-place sort)
-    const sorted: number[] = [];
+    const sorted = new Float64Array(t.size);
 
     if (t.data instanceof BigInt64Array) {
       for (let i = 0; i < t.size; i++) {
         const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-        sorted.push(Number(getBigIntElement(t.data, srcOffset)));
+        sorted[i] = bigintToNumberSafe(getBigIntElement(t.data, srcOffset));
       }
     } else {
       const numericData = expectNumericData(t.data, "median");
-      for (let i = 0; i < t.size; i++) {
-        const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
-        sorted.push(getNumericElement(numericData, srcOffset));
+      if (contiguous) {
+        for (let i = 0; i < t.size; i++) {
+          sorted[i] = numericData[t.offset + i] ?? 0;
+        }
+      } else {
+        for (let i = 0; i < t.size; i++) {
+          const srcOffset = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
+          sorted[i] = getNumericElement(numericData, srcOffset);
+        }
       }
     }
 
-    sorted.sort((a, b) => a - b);
-
-    let medianValue: number;
-    const mid = Math.floor(sorted.length / 2);
-
-    if (sorted.length % 2 === 0) {
-      medianValue = (getArrayElement(sorted, mid - 1) + getArrayElement(sorted, mid)) / 2;
-    } else {
-      medianValue = getArrayElement(sorted, mid);
-    }
+    const medianValue = quickMedian(sorted);
 
     const out = new Float64Array(1);
     out[0] = medianValue;
@@ -1523,7 +1628,7 @@ export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
     const sorted: number[] = [];
     if (t.data instanceof BigInt64Array) {
       for (let k = 0; k < axisDim; k++) {
-        sorted.push(Number(getBigIntElement(t.data, baseOffset + k * axisStride)));
+        sorted.push(bigintToNumberSafe(getBigIntElement(t.data, baseOffset + k * axisStride)));
       }
     } else {
       const numericData = expectNumericData(t.data, "median");
@@ -1532,15 +1637,8 @@ export function median(t: Tensor, axis?: Axis, keepdims = false): Tensor {
       }
     }
 
-    // Sort and compute median
-    sorted.sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-
-    if (sorted.length % 2 === 0) {
-      out[outFlat] = (getArrayElement(sorted, mid - 1) + getArrayElement(sorted, mid)) / 2;
-    } else {
-      out[outFlat] = getArrayElement(sorted, mid);
-    }
+    // O(n) quickselect median
+    out[outFlat] = quickMedian(sorted);
   }
 
   const finalShape: Shape = outShapeArr;
@@ -2020,6 +2118,47 @@ export function diff(t: Tensor, n = 1, axis = -1): Tensor {
       });
     }
 
+    const numericData = expectNumericData(input.data, "diff");
+
+    // Fast path: contiguous input differenced along the last axis. Each output
+    // row is a contiguous run out[k] = row[k+1] - row[k]; no per-element index
+    // decomposition or indirect element reads (numpy-competitive).
+    if (axisIdx === input.ndim - 1 && axisDim > 1 && isContiguous(input.shape, input.strides)) {
+      const outRowLen = axisDim - 1;
+      const numRows = outSize / outRowLen;
+      const base0 = input.offset;
+      let o = 0;
+      if (numericData instanceof Float64Array) {
+        const src = numericData;
+        for (let r = 0; r < numRows; r++) {
+          let b = base0 + r * axisDim;
+          let prev = src[b] as number;
+          for (let k = 0; k < outRowLen; k++) {
+            const cur = src[++b] as number;
+            outData[o++] = cur - prev;
+            prev = cur;
+          }
+        }
+      } else {
+        const src = numericData;
+        for (let r = 0; r < numRows; r++) {
+          let b = base0 + r * axisDim;
+          let prev = src[b] as number;
+          for (let k = 0; k < outRowLen; k++) {
+            const cur = src[++b] as number;
+            outData[o++] = cur - prev;
+            prev = cur;
+          }
+        }
+      }
+      return Tensor.fromTypedArray({
+        data: outData,
+        shape: outShape,
+        dtype: "float64",
+        device: input.device,
+      });
+    }
+
     const outStrides = new Array<number>(outShape.length);
     let stride = 1;
     for (let i = outShape.length - 1; i >= 0; i--) {
@@ -2027,7 +2166,6 @@ export function diff(t: Tensor, n = 1, axis = -1): Tensor {
       stride *= outShape[i] ?? 1;
     }
     const inStrides = input.strides;
-    const numericData = expectNumericData(input.data, "diff");
 
     for (let outFlat = 0; outFlat < outSize; outFlat++) {
       let rem = outFlat;

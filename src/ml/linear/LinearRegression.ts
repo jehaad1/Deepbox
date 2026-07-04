@@ -1,11 +1,8 @@
-import {
-  DataValidationError,
-  InvalidParameterError,
-  NotFittedError,
-  type ScalarDType,
-  type Shape,
-  ShapeError,
-} from "../../core";
+/**
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ */
+
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { lstsq } from "../../linalg";
 import { dot, mean, sub, type Tensor, tensor } from "../../ndarray";
 import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
@@ -303,7 +300,7 @@ export class LinearRegression implements Regressor {
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
-  predict(X: Tensor): Tensor<Shape, ScalarDType> {
+  predict(X: Tensor): Tensor {
     if (!this.fitted || !this.coef_) {
       throw new NotFittedError("LinearRegression must be fitted before prediction");
     }
@@ -325,7 +322,7 @@ export class LinearRegression implements Regressor {
       return tensor(result);
     }
 
-    return y_pred_raw as Tensor<Shape, ScalarDType>;
+    return y_pred_raw;
   }
 
   /**
@@ -478,5 +475,15 @@ export class LinearRegression implements Regressor {
       }
     }
     return this;
+  }
+
+  clone(): LinearRegression {
+    return new LinearRegression(
+      this.getParams() as {
+        fitIntercept?: boolean;
+        normalize?: boolean;
+        copyX?: boolean;
+      }
+    );
   }
 }

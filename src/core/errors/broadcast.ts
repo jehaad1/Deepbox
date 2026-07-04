@@ -22,6 +22,9 @@ function cloneShape(shape: Shape): Shape {
  *
  * References:
  * - Deepbox broadcasting: https://deepbox.dev/docs/ndarray-ops
+ *
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | NDArray math & reductions}
  */
 export class BroadcastError extends DeepboxError {
   override name = "BroadcastError";

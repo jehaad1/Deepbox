@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
+ */
+
 type ColormapName = "viridis" | "plasma" | "inferno" | "magma" | "grayscale";
 
 const colormaps: Record<ColormapName, readonly [number, number, number][]> = {

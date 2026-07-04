@@ -1,8 +1,8 @@
 /**
- * Deepbox - TypeScript Data Science & ML Library
+ * Deepbox — TypeScript toolkit for AI & numerical computing
  *
- * A comprehensive library for numerical computing, data manipulation,
- * and machine learning in TypeScript/JavaScript.
+ * A comprehensive framework for tensors, linear algebra, tabular data,
+ * machine learning, neural networks, statistics, and related workflows in TypeScript/JavaScript.
  *
  * @example
  * ```ts
@@ -15,6 +15,7 @@
  * import * as db from "deepbox";
  * db.ndarray.tensor([1, 2, 3]);
  * ```
+ * @see {@link https://deepbox.dev/docs/introduction | Deepbox documentation}
  */
 
 // Re-export modules as namespaces to avoid naming conflicts
@@ -34,16 +35,16 @@ import * as stats from "./stats";
 
 export {
   core,
-  ndarray,
-  linalg,
   dataframe,
-  stats,
+  datasets,
+  linalg,
   metrics,
-  preprocess,
   ml,
+  ndarray,
   nn,
   optim,
-  random,
   plot,
-  datasets,
+  preprocess,
+  random,
+  stats,
 };

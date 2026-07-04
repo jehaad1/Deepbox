@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 // Creation
 export type { NestedArray, TensorCreateOptions } from "./creation";
 export {

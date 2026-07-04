@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   DataValidationError,
   type DType,
@@ -8,6 +12,7 @@ import {
   type Shape,
   ShapeError,
 } from "../../core";
+import { dispatchDot } from "../ops/device_dispatch";
 import { transpose as tensorTranspose } from "../tensor/shape";
 import { type Tensor, Tensor as TensorClass } from "../tensor/Tensor";
 
@@ -46,18 +51,208 @@ function resolveDotDtype(a: DType, b: DType): NumericDType {
  * - Both 1-D (vector, vector): inner product, returns a scalar tensor
  * - Both 2-D (matrix, matrix): standard matrix multiplication (m,k) x (k,n) -> (m,n)
  * - 2-D x 1-D (matrix, vector): matrix-vector product (m,k) x (k,) -> (m,)
- * - Both 3-D: batch matrix multiplication (b,m,k) x (b,k,n) -> (b,m,n)
+ * - 1-D x 2-D (vector, matrix): vector-matrix product (k,) x (k,n) -> (n,)
+ * - 3-D and higher: batch matrix multiplication, e.g. (b,m,k) x (b,k,n) -> (b,m,n)
  *
- * Other combinations (e.g., 1-D x 2-D, mixed dimensionalities above 3-D)
+ * Other combinations (e.g., mixing a 1-D operand with a batched 3-D+ operand)
  * are not yet implemented and will throw a ShapeError.
  *
  * @param a - First tensor
  * @param b - Second tensor
  * @returns Dot product result
  */
+type NumericOut = Exclude<import("../tensor/Tensor").Tensor["data"], string[] | BigInt64Array>;
+
+/**
+ * Register-blocked GEMM for unit inner strides: 2 output rows x 4 B-rows per
+ * step. Each rowAcc load/store is amortized over 8 multiply-adds (vs 1 in the
+ * plain i-k-j kernel), which is ~3x on large matrices.
+ */
+function gemmBlocked(
+  A: Float64Array | Float32Array,
+  aOff: number,
+  aS0: number,
+  B: Float64Array | Float32Array,
+  bOff: number,
+  bS0: number,
+  out: NumericOut,
+  m: number,
+  k: number,
+  n: number
+): void {
+  const r0 = new Float64Array(n);
+  const r1 = new Float64Array(n);
+  let i = 0;
+  for (; i + 2 <= m; i += 2) {
+    r0.fill(0);
+    r1.fill(0);
+    const aB0 = aOff + i * aS0;
+    const aB1 = aB0 + aS0;
+    let p = 0;
+    for (; p + 4 <= k; p += 4) {
+      const a00 = A[aB0 + p] as number;
+      const a01 = A[aB0 + p + 1] as number;
+      const a02 = A[aB0 + p + 2] as number;
+      const a03 = A[aB0 + p + 3] as number;
+      const a10 = A[aB1 + p] as number;
+      const a11 = A[aB1 + p + 1] as number;
+      const a12 = A[aB1 + p + 2] as number;
+      const a13 = A[aB1 + p + 3] as number;
+      const b0 = bOff + p * bS0;
+      const b1 = b0 + bS0;
+      const b2 = b1 + bS0;
+      const b3 = b2 + bS0;
+      for (let j = 0; j < n; j++) {
+        const x0 = B[b0 + j] as number;
+        const x1 = B[b1 + j] as number;
+        const x2 = B[b2 + j] as number;
+        const x3 = B[b3 + j] as number;
+        r0[j] = (r0[j] as number) + a00 * x0 + a01 * x1 + a02 * x2 + a03 * x3;
+        r1[j] = (r1[j] as number) + a10 * x0 + a11 * x1 + a12 * x2 + a13 * x3;
+      }
+    }
+    for (; p < k; p++) {
+      const a0 = A[aB0 + p] as number;
+      const a1 = A[aB1 + p] as number;
+      const bB = bOff + p * bS0;
+      for (let j = 0; j < n; j++) {
+        const x = B[bB + j] as number;
+        r0[j] = (r0[j] as number) + a0 * x;
+        r1[j] = (r1[j] as number) + a1 * x;
+      }
+    }
+    const rBase = i * n;
+    for (let j = 0; j < n; j++) {
+      out[rBase + j] = r0[j] as number;
+      out[rBase + n + j] = r1[j] as number;
+    }
+  }
+  for (; i < m; i++) {
+    r0.fill(0);
+    const aBase = aOff + i * aS0;
+    for (let p = 0; p < k; p++) {
+      const aVal = A[aBase + p] as number;
+      const bB = bOff + p * bS0;
+      for (let j = 0; j < n; j++) {
+        r0[j] = (r0[j] as number) + aVal * (B[bB + j] as number);
+      }
+    }
+    const rBase = i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = r0[j] as number;
+  }
+}
+
+function gemmF64(
+  A: Float64Array,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: Float64Array,
+  bOff: number,
+  bS0: number,
+  bS1: number,
+  out: NumericOut,
+  m: number,
+  k: number,
+  n: number
+): void {
+  if (aS1 === 1 && bS1 === 1) {
+    gemmBlocked(A, aOff, aS0, B, bOff, bS0, out, m, k, n);
+    return;
+  }
+  const rowAcc = new Float64Array(n);
+  for (let i = 0; i < m; i++) {
+    rowAcc.fill(0);
+    const aBase = aOff + i * aS0;
+    for (let p = 0; p < k; p++) {
+      const aVal = A[aBase + p * aS1] ?? 0;
+      if (aVal === 0) continue;
+      const bBase = bOff + p * bS0;
+      if (bS1 === 1) {
+        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j]!;
+      } else {
+        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j * bS1]!;
+      }
+    }
+    const rBase = i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+  }
+}
+
+function gemmF32(
+  A: Float32Array,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: Float32Array,
+  bOff: number,
+  bS0: number,
+  bS1: number,
+  out: NumericOut,
+  m: number,
+  k: number,
+  n: number
+): void {
+  if (aS1 === 1 && bS1 === 1) {
+    gemmBlocked(A, aOff, aS0, B, bOff, bS0, out, m, k, n);
+    return;
+  }
+  const rowAcc = new Float64Array(n);
+  for (let i = 0; i < m; i++) {
+    rowAcc.fill(0);
+    const aBase = aOff + i * aS0;
+    for (let p = 0; p < k; p++) {
+      const aVal = A[aBase + p * aS1] ?? 0;
+      if (aVal === 0) continue;
+      const bBase = bOff + p * bS0;
+      if (bS1 === 1) {
+        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j]!;
+      } else {
+        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j * bS1]!;
+      }
+    }
+    const rBase = i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+  }
+}
+
+function gemmGeneric(
+  A: ArrayLike<number>,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: ArrayLike<number>,
+  bOff: number,
+  bS0: number,
+  bS1: number,
+  out: NumericOut,
+  m: number,
+  k: number,
+  n: number
+): void {
+  const rowAcc = new Float64Array(n);
+  for (let i = 0; i < m; i++) {
+    rowAcc.fill(0);
+    const aBase = aOff + i * aS0;
+    for (let p = 0; p < k; p++) {
+      const aVal = A[aBase + p * aS1] ?? 0;
+      if (aVal === 0) continue;
+      const bBase = bOff + p * bS0;
+      for (let j = 0; j < n; j++) rowAcc[j]! += aVal * (B[bBase + j * bS1] ?? 0);
+    }
+    const rBase = i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+  }
+}
+
 export function dot(a: Tensor, b: Tensor): Tensor {
   const outDtype = resolveDotDtype(a.dtype, b.dtype);
   const isBigInt = outDtype === "int64";
+
+  if (a.device !== "cpu" || b.device !== "cpu") {
+    const onDevice = dispatchDot(a, b);
+    if (onDevice) return onDevice;
+  }
 
   if (Array.isArray(a.data) || Array.isArray(b.data)) {
     throw new DTypeError("dot is not defined for string dtype");
@@ -172,36 +367,20 @@ export function dot(a: Tensor, b: Tensor): Tensor {
       if (result instanceof BigInt64Array) {
         throw new DTypeError("Internal error: unexpected int64 output buffer");
       }
-      // Fast path: contiguous row-major layout — tiled i-k-j loop for cache locality
+      // Monomorphic i-k-j kernels with a float64 row accumulator (see
+      // gemmF64/gemmF32): avoids read-modify-write on the output per FLOP,
+      // walks B rows contiguously, and keeps each kernel's typed-array
+      // accesses monomorphic for V8.
       const aS0 = a.strides[0] ?? 0;
       const aS1 = a.strides[1] ?? 0;
       const bS0 = b.strides[0] ?? 0;
       const bS1 = b.strides[1] ?? 0;
-      const aOff = a.offset;
-      const bOff = b.offset;
-      const numA = aData;
-      const numB = bData;
-      const TILE = 32;
-      for (let ii = 0; ii < m; ii += TILE) {
-        const iEnd = ii + TILE < m ? ii + TILE : m;
-        for (let kk = 0; kk < k1; kk += TILE) {
-          const kEnd = kk + TILE < k1 ? kk + TILE : k1;
-          for (let jj = 0; jj < n; jj += TILE) {
-            const jEnd = jj + TILE < n ? jj + TILE : n;
-            for (let i = ii; i < iEnd; i++) {
-              const aBase = aOff + i * aS0;
-              const rBase = i * n;
-              for (let k = kk; k < kEnd; k++) {
-                const aVal = numA[aBase + k * aS1] as number;
-                const bBase = bOff + k * bS0;
-                for (let j = jj; j < jEnd; j++) {
-                  result[rBase + j] =
-                    (result[rBase + j] as number) + aVal * (numB[bBase + j * bS1] as number);
-                }
-              }
-            }
-          }
-        }
+      if (aData instanceof Float64Array && bData instanceof Float64Array) {
+        gemmF64(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
+      } else if (aData instanceof Float32Array && bData instanceof Float32Array) {
+        gemmF32(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
+      } else {
+        gemmGeneric(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
       }
     }
 

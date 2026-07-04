@@ -208,7 +208,7 @@ describe("consumer API: linalg", () => {
   describe("norm", () => {
     it("vector norm", () => {
       const n = norm(tensor([3, 4]));
-      const val = typeof n === "number" ? n : Number(n.at());
+      const val = Number(n);
       expect(Math.abs(val - 5)).toBeLessThan(0.01);
     });
   });

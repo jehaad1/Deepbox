@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parameter, tensor } from "../src/ndarray";
-import { binaryCrossEntropyWithLogitsLoss, crossEntropyLoss } from "../src/nn/losses/crossEntropy";
+import { binaryCrossEntropyWithLogitsLoss, crossEntropyLoss } from "../src/nn/losses/cross_entropy";
 import { AdaDelta } from "../src/optim/optimizers/adadelta";
 import { Adagrad } from "../src/optim/optimizers/adagrad";
 import { AdamW } from "../src/optim/optimizers/adamw";
@@ -267,6 +267,17 @@ describe("PNG encoder", () => {
 
   it("isNodeEnvironment_export should return boolean", () => {
     expect(typeof isNodeEnvironment_export()).toBe("boolean");
+  });
+
+  it("uses deflateUncompressed when process is undefined (non-Node path)", async () => {
+    vi.stubGlobal("process", undefined);
+    try {
+      const rgba = new Uint8ClampedArray([9, 8, 7, 255]);
+      const png = await pngEncodeRGBA(1, 1, rgba);
+      expect(png[0]).toBe(137);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

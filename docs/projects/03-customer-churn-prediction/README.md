@@ -10,7 +10,7 @@ A production-grade customer churn prediction system demonstrating classical mach
 - **Feature Engineering**: Synthetic customer data generation
 - **Cross-Validation**: K-Fold validation for robust evaluation
 - **Model Comparison**: Comprehensive metrics comparison
-- **Feature Importance**: Analysis of predictive features
+- **Interpretability notes**: Domain-oriented discussion of drivers (model-native feature importance is not exposed in this walkthrough)
 
 ## Deepbox Modules Used
 
@@ -32,4 +32,13 @@ npm run project:03
 
 - Model comparison table
 - Confusion matrix summaries
-- Feature importance analysis
+- Interpretability discussion (domain notes, not model-derived importances)
+
+## Architecture
+
+```text
+03-customer-churn-prediction/
+├── index.ts              # Main entry: data generation, training, CV, plots
+├── README.md             # This file
+└── output/               # Generated SVGs (model comparison, CV scores)
+```

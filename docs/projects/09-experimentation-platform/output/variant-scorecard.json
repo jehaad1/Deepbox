@@ -1,0 +1,107 @@
+[
+  {
+    "variant": "control",
+    "sessions": 1200,
+    "conversionRate": 0.075,
+    "conversionCi": {
+      "lower": 0.06009750592679728,
+      "upper": 0.08990249407320272,
+      "mean": 0.075,
+      "marginOfError": 0.014902494073202717,
+      "confidenceLevel": 0.95
+    },
+    "revenueMean": 19.101658333333337,
+    "revenueCi": {
+      "lower": 14.949262695857694,
+      "upper": 23.25405397080898,
+      "mean": 19.101658333333337,
+      "marginOfError": 4.152395637475641,
+      "confidenceLevel": 0.95
+    },
+    "retentionRate": 0.049166666666666664,
+    "retentionCi": {
+      "lower": 0.03693332679363472,
+      "upper": 0.061400006539698605,
+      "mean": 0.049166666666666664,
+      "marginOfError": 0.012233339873031943,
+      "confidenceLevel": 0.95
+    },
+    "latencyCi": {
+      "lower": 1192.0102559572952,
+      "upper": 1198.2339773760382,
+      "mean": 1195.1221166666667,
+      "marginOfError": 3.1118607093716086,
+      "confidenceLevel": 0.95
+    }
+  },
+  {
+    "variant": "streamlined-checkout",
+    "sessions": 1200,
+    "conversionRate": 0.10083333333333333,
+    "conversionCi": {
+      "lower": 0.08379686300623579,
+      "upper": 0.11786980366043087,
+      "mean": 0.10083333333333333,
+      "marginOfError": 0.017036470327097545,
+      "confidenceLevel": 0.95
+    },
+    "revenueMean": 27.21748333333334,
+    "revenueCi": {
+      "lower": 22.190246480237217,
+      "upper": 32.24472018642947,
+      "mean": 27.21748333333334,
+      "marginOfError": 5.027236853096125,
+      "confidenceLevel": 0.95
+    },
+    "retentionRate": 0.06333333333333334,
+    "retentionCi": {
+      "lower": 0.04955279557386917,
+      "upper": 0.0771138710927975,
+      "mean": 0.06333333333333334,
+      "marginOfError": 0.013780537759464166,
+      "confidenceLevel": 0.95
+    },
+    "latencyCi": {
+      "lower": 1063.1874892906274,
+      "upper": 1069.4112107093704,
+      "mean": 1066.2993499999989,
+      "marginOfError": 3.1118607093716086,
+      "confidenceLevel": 0.95
+    }
+  },
+  {
+    "variant": "smart-bundle",
+    "sessions": 1200,
+    "conversionRate": 0.08416666666666667,
+    "conversionCi": {
+      "lower": 0.06845812939682812,
+      "upper": 0.09987520393650522,
+      "mean": 0.08416666666666667,
+      "marginOfError": 0.015708537269838545,
+      "confidenceLevel": 0.95
+    },
+    "revenueMean": 23.531375000000004,
+    "revenueCi": {
+      "lower": 18.75286002847931,
+      "upper": 28.309889971520697,
+      "mean": 23.531375000000004,
+      "marginOfError": 4.778514971520693,
+      "confidenceLevel": 0.95
+    },
+    "retentionRate": 0.06,
+    "retentionCi": {
+      "lower": 0.046563164148985106,
+      "upper": 0.07343683585101489,
+      "mean": 0.06,
+      "marginOfError": 0.013436835851014895,
+      "confidenceLevel": 0.95
+    },
+    "latencyCi": {
+      "lower": 1245.1401642906312,
+      "upper": 1251.3638857093742,
+      "mean": 1248.2520250000027,
+      "marginOfError": 3.1118607093716086,
+      "confidenceLevel": 0.95
+    }
+  }
+]

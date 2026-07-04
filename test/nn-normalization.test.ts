@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tensor, transpose } from "../src/ndarray";
+import { GradTensor, tensor, transpose } from "../src/ndarray";
 import { BatchNorm1d, LayerNorm } from "../src/nn/layers/normalization";
 import { expectNumberArray, expectNumberArray2D, expectNumberArray3D } from "./nn-test-utils";
 
@@ -173,5 +173,39 @@ describe("deepbox/nn - Normalization", () => {
     const x = transpose(base, [1, 0]);
     const y = ln.forward(x);
     expect(y.shape).toEqual([2, 2]);
+  });
+
+  it("LayerNorm propagates gradients through a non-contiguous input", () => {
+    const f64 = { dtype: "float64" as const };
+    const ln = new LayerNorm(3, { elementwiseAffine: false });
+    const x0 = [0.5, -1.2, 0.3, 2.1, 0.4, -0.7];
+    // Build a non-contiguous (2,3) input via a (3,2) base + transpose, so the
+    // autograd graph must survive the internal contiguous materialization.
+    const mk = (a: number[]) => {
+      const b = GradTensor.fromTensor(tensor(a, f64).reshape([3, 2]), { requiresGrad: true });
+      return { base: b, view: b.transpose([1, 0]) };
+    };
+    const w = GradTensor.fromTensor(tensor([1, 2, 3, 4, 5, 6], f64).reshape([2, 3]));
+    const weightedSum = (g: ReturnType<LayerNorm["forward"]>) => g.mul(w).sum();
+
+    const { base, view } = mk(x0);
+    weightedSum(ln.forward(view)).backward();
+    const grad = base.grad;
+    expect(grad).not.toBeNull();
+    const g = grad as NonNullable<typeof grad>;
+    const analytic = Array.from(g.data as Float64Array).slice(g.offset, g.offset + x0.length);
+
+    const eps = 1e-5;
+    let maxDiff = 0;
+    for (let i = 0; i < x0.length; i++) {
+      const xp = [...x0];
+      xp[i] = (xp[i] ?? 0) + eps;
+      const xm = [...x0];
+      xm[i] = (xm[i] ?? 0) - eps;
+      const fp = Number((weightedSum(ln.forward(mk(xp).view)).tensor.data as Float64Array)[0]);
+      const fm = Number((weightedSum(ln.forward(mk(xm).view)).tensor.data as Float64Array)[0]);
+      maxDiff = Math.max(maxDiff, Math.abs((analytic[i] ?? 0) - (fp - fm) / (2 * eps)));
+    }
+    expect(maxDiff).toBeLessThan(1e-4);
   });
 });

@@ -7,37 +7,54 @@ import { tensor } from "deepbox/ndarray";
 import {
   anderson,
   bartlett,
+  benjaminiHochberg,
+  bonferroni,
+  bootstrap,
+  chi2_contingency,
   chisquare,
   corrcoef,
   cov,
   f_oneway,
+  fisher_exact,
+  fligner,
   friedmanchisquare,
+  gaussian_kde,
   geometricMean,
   harmonicMean,
+  holm,
   kendalltau,
   kruskal,
+  ks_2samp,
   kstest,
   kurtosis,
   levene,
   mannwhitneyu,
   mean,
+  meanConfidenceInterval,
+  meanConfidenceIntervalZ,
   median,
+  median_test,
   mode,
   moment,
   normaltest,
   pearsonr,
   percentile,
   quantile,
+  runs_test,
+  sem,
   shapiro,
+  sidak,
   skewness,
   spearmanr,
   std,
   trimMean,
+  tTestPower,
   ttest_1samp,
   ttest_ind,
   ttest_rel,
   variance,
   wilcoxon,
+  zscore,
 } from "deepbox/stats";
 import { createSuite, footer, header, run } from "../utils";
 
@@ -73,6 +90,15 @@ const b5k = tensor(makeArray(5000, 99));
 const a10k = tensor(makeArray(10000, 42));
 const pos500 = tensor(makePositiveArray(500, 42));
 const pos1k = tensor(makePositiveArray(1000, 42));
+const pvalues = [0.01, 0.04, 0.03, 0.005, 0.02, 0.15, 0.2, 0.001];
+const observed = [
+  [10, 20, 30],
+  [6, 9, 17],
+] as const;
+const table2x2 = [
+  [1, 9],
+  [11, 3],
+] as const;
 
 // ── Descriptive Statistics ──────────────────────────────
 
@@ -146,5 +172,84 @@ run(suite, "bartlett", "500", () => bartlett(a500, b500));
 run(suite, "normaltest", "500", () => normaltest(a500));
 run(suite, "normaltest", "1K", () => normaltest(a1k));
 run(suite, "wilcoxon", "500", () => wilcoxon(a500));
+
+// ── Advanced v1.0.0 Statistics ──────────────────────────
+
+run(suite, "zscore", "1K", () => zscore(a1k));
+run(suite, "sem", "1K", () => sem(a1k));
+run(suite, "bootstrap(mean,500)", "500", () =>
+  bootstrap(
+    makeArray(500, 42),
+    (sample) => sample.reduce((sum, value) => sum + value, 0) / sample.length,
+    { nResamples: 500, seed: 42 }
+  )
+);
+run(suite, "gaussian_kde.evaluate", "1K grid", () =>
+  gaussian_kde(makePositiveArray(500, 42)).evaluate(makePositiveArray(1000, 7))
+);
+run(suite, "bonferroni", "8 pvals", () => bonferroni(pvalues));
+run(suite, "holm", "8 pvals", () => holm(pvalues));
+run(suite, "benjaminiHochberg", "8 pvals", () => benjaminiHochberg(pvalues));
+run(suite, "sidak", "8 pvals", () => sidak(pvalues));
+run(suite, "chi2_contingency", "2x3", () => chi2_contingency(observed));
+run(suite, "fisher_exact", "2x2", () => fisher_exact(table2x2));
+run(suite, "fligner", "3x200", () => fligner([g1, g2, g3]));
+run(suite, "ks_2samp", "1K", () => ks_2samp(a1k, b1k));
+run(suite, "median_test", "3x200", () => median_test(g1, g2, g3));
+run(suite, "meanConfidenceInterval", "500", () => meanConfidenceInterval(makeArray(500, 42)), {
+  comparable: false,
+  tags: ["deepbox-only"],
+});
+run(
+  suite,
+  "meanConfidenceIntervalZ",
+  "500",
+  () => meanConfidenceIntervalZ(makeArray(500, 42), 2.0),
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(
+  suite,
+  "tTestPower",
+  "solve power",
+  () => tTestPower({ effectSize: 0.5, nObs: 64, alpha: 0.05 }),
+  { comparable: false, tags: ["deepbox-only"] }
+);
+run(suite, "runs_test", "1K", () => runs_test(a1k), { comparable: false, tags: ["deepbox-only"] });
+
+// ── Extended coverage (v1.1 benchmark expansion) ────────
+const a100 = tensor(makeArray(100, 42));
+const pos100 = tensor(makePositiveArray(100, 42));
+const pos5k = tensor(makePositiveArray(5000, 42));
+const descSizes: [string, typeof a100][] = [
+  ["100", a100],
+  ["5K", a5k],
+];
+const posSizes: [string, typeof pos100][] = [
+  ["100", pos100],
+  ["5K", pos5k],
+];
+for (const [sz, d] of descSizes) {
+  run(suite, "mean", sz, () => mean(d));
+  run(suite, "median", sz, () => median(d));
+  run(suite, "std", sz, () => std(d));
+  run(suite, "variance", sz, () => variance(d));
+  run(suite, "skewness", sz, () => skewness(d));
+  run(suite, "kurtosis", sz, () => kurtosis(d));
+  run(suite, "mode", sz, () => mode(d));
+  run(suite, "zscore", sz, () => zscore(d));
+  run(suite, "sem", sz, () => sem(d));
+}
+for (const [sz, d] of posSizes) {
+  run(suite, "geometricMean", sz, () => geometricMean(d));
+  run(suite, "harmonicMean", sz, () => harmonicMean(d));
+}
+for (const [sz, d] of [
+  ["500", a500],
+  ["5K", a5k],
+] as [string, typeof a100][]) {
+  run(suite, "quantile (0.25)", sz, () => quantile(d, 0.25));
+  run(suite, "quantile (0.75)", sz, () => quantile(d, 0.75));
+  run(suite, "percentile (90)", sz, () => percentile(d, 90));
+}
 
 footer(suite, "deepbox-stats.json");

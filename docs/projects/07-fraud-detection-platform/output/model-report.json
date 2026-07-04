@@ -1,0 +1,33 @@
+{
+  "columns": [
+    "model",
+    "primaryMetric",
+    "metricName"
+  ],
+  "index": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "data": {
+    "model": [
+      "LogisticRegression",
+      "IsolationForest",
+      "LocalOutlierFactor",
+      "OneClassSVM"
+    ],
+    "primaryMetric": [
+      "0.3774",
+      "0.4032",
+      "0.4032",
+      "0.9677"
+    ],
+    "metricName": [
+      "F1",
+      "Fraud recall",
+      "Fraud recall",
+      "Fraud recall"
+    ]
+  }
+}

@@ -9,7 +9,7 @@ A production-grade financial risk analysis system built with Deepbox, demonstrat
 - **Portfolio Construction**: Build diversified portfolios from asset data
 - **Risk Metrics**: Calculate VaR (Value at Risk), CVaR, Sharpe Ratio, Sortino Ratio
 - **Correlation Analysis**: Asset correlation matrices and heatmaps
-- **Optimization**: Mean-Variance optimization using eigenvalue decomposition
+- **Optimization**: Mean–variance optimization using matrix inverse (`inv`)–based Markowitz machinery
 - **Statistical Tests**: Normality tests, stationarity analysis
 - **Monte Carlo Simulation**: Portfolio return simulations
 
@@ -18,7 +18,7 @@ A production-grade financial risk analysis system built with Deepbox, demonstrat
 | Module              | Features Used                              |
 | ------------------- | ------------------------------------------ |
 | `deepbox/ndarray`   | Tensor operations, matrix math             |
-| `deepbox/linalg`    | SVD, eigenvalues, matrix inverse, solve    |
+| `deepbox/linalg`    | Matrix inverse (`inv`), Cholesky (`cholesky`), determinant/trace helpers |
 | `deepbox/stats`     | Correlation, covariance, statistical tests |
 | `deepbox/dataframe` | Data manipulation, grouping                |
 | `deepbox/random`    | Monte Carlo simulations                    |

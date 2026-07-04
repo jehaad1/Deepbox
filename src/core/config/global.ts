@@ -1,3 +1,9 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-config | Config & backends}
+ */
+
+import { __clearSeed, __setSeed } from "../../random/random";
+import { ensureBackendAvailable } from "../backend/registry";
 import { DataValidationError } from "../errors/validation";
 import type { Device } from "../types/device";
 import type { DType } from "../types/dtype";
@@ -61,6 +67,11 @@ function normalizeSeed(value: unknown, name: string, allowNull: boolean): number
   // validateInteger enforces finite, integer, and safe-integer constraints.
   validateInteger(value, name);
   return value;
+}
+
+function normalizeConfiguredDevice(value: unknown, name: string): Device {
+  const normalized = validateDevice(value, name);
+  return ensureBackendAvailable(normalized, name);
 }
 
 /**
@@ -145,7 +156,7 @@ export function setConfig(next: Partial<DeepboxConfig>): void {
     : config.defaultDtype;
 
   const nextDefaultDevice = hasOwnConfigKey(next, "defaultDevice")
-    ? validateDevice(next.defaultDevice, "defaultDevice")
+    ? normalizeConfiguredDevice(next.defaultDevice, "defaultDevice")
     : config.defaultDevice;
 
   const nextSeed = hasOwnConfigKey(next, "seed")
@@ -158,6 +169,12 @@ export function setConfig(next: Partial<DeepboxConfig>): void {
     defaultDevice: nextDefaultDevice,
     seed: nextSeed,
   };
+
+  if (nextSeed !== null) {
+    __setSeed(nextSeed);
+  } else {
+    __clearSeed();
+  }
 }
 
 /**
@@ -172,6 +189,7 @@ export function setConfig(next: Partial<DeepboxConfig>): void {
  */
 export function resetConfig(): void {
   config = { ...DEFAULT_CONFIG };
+  __clearSeed();
 }
 
 /**
@@ -190,6 +208,7 @@ export function resetConfig(): void {
 export function setSeed(seed: number): void {
   const normalized = normalizeSeed(seed, "seed", false);
   config = { ...config, seed: normalized };
+  __setSeed(normalized);
 }
 
 /**
@@ -202,20 +221,29 @@ export function getSeed(): number | null {
 }
 
 /**
- * Set the default compute device.
+ * Set the default compute device for new tensors and other device-aware APIs.
  *
  * @param device - Device to use ('cpu', 'webgpu', or 'wasm')
- * @throws {DataValidationError} If device is not supported
+ * @throws {DataValidationError} If device is not a supported identifier
+ * @throws {DeviceError} If no backend is registered for the device or it reports unavailable
  *
  * @example
  * ```ts
- * import { setDevice } from 'deepbox/core';
+ * import { registerBackend, setDevice, WebGpuBackend } from 'deepbox/core';
  *
- * setDevice('cpu');  // Use CPU for all operations
+ * setDevice('cpu');  // Use CPU for all operations (default)
+ *
+ * // With a registered GPU backend, new tensors default to GPU memory:
+ * const gpu = new WebGpuBackend();
+ * await gpu.init();
+ * if (gpu.info().available) {
+ *   registerBackend('webgpu', gpu);
+ *   setDevice('webgpu');
+ * }
  * ```
  */
 export function setDevice(device: Device): void {
-  const normalized = validateDevice(device, "device");
+  const normalized = normalizeConfiguredDevice(device, "device");
   config = { ...config, defaultDevice: normalized };
 }
 

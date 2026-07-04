@@ -10,6 +10,7 @@ import {
   assertFiniteNumber,
   assertSameSizeVectors,
   createFlatOffsetter,
+  denseFloat64,
   type FlatOffsetter,
 } from "./_internal";
 
@@ -213,28 +214,28 @@ export function mae(yTrue: Tensor, yPred: Tensor): number {
  */
 export function r2Score(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+  getNumericRegressionData(yTrue, "yTrue");
+  getNumericRegressionData(yPred, "yPred");
   if (yTrue.size === 0) {
     throw new InvalidParameterError("r2Score requires at least one sample", "yTrue", yTrue.size);
   }
 
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
+  const t = denseFloat64(yTrue, "yTrue");
+  const p = denseFloat64(yPred, "yPred");
+  const n = t.length;
 
   let sumTrue = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    sumTrue += readNumeric(yTrueData, trueOffset, i, "yTrue");
-  }
-  const mean = sumTrue / yTrue.size;
+  for (let i = 0; i < n; i++) sumTrue += t[i] as number;
+  const mean = sumTrue / n;
 
   let ssRes = 0;
   let ssTot = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const trueVal = readNumeric(yTrueData, trueOffset, i, "yTrue");
-    const predVal = readNumeric(yPredData, predOffset, i, "yPred");
-    ssRes += (trueVal - predVal) ** 2;
-    ssTot += (trueVal - mean) ** 2;
+  for (let i = 0; i < n; i++) {
+    const trueVal = t[i] as number;
+    const dRes = trueVal - (p[i] as number);
+    const dTot = trueVal - mean;
+    ssRes += dRes * dRes;
+    ssTot += dTot * dTot;
   }
 
   // Handle constant targets (ssTot = 0)
@@ -404,28 +405,71 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
  */
 export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+  getNumericRegressionData(yTrue, "yTrue");
+  getNumericRegressionData(yPred, "yPred");
 
   if (yTrue.size === 0) return 0;
 
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
-
-  const errors: number[] = [];
-  for (let i = 0; i < yTrue.size; i++) {
-    const diff = Math.abs(
-      readNumeric(yTrueData, trueOffset, i, "yTrue") -
-        readNumeric(yPredData, predOffset, i, "yPred")
-    );
-    errors.push(diff);
+  const t = denseFloat64(yTrue, "yTrue");
+  const p = denseFloat64(yPred, "yPred");
+  const n = t.length;
+  const errors = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    errors[i] = Math.abs((t[i] as number) - (p[i] as number));
   }
 
-  errors.sort((a, b) => a - b);
-  const mid = Math.floor(errors.length / 2);
-  return errors.length % 2 !== 0
-    ? (errors[mid] ?? 0)
-    : ((errors[mid - 1] ?? 0) + (errors[mid] ?? 0)) / 2;
+  // The median needs only the middle order statistic(s), so quickselect
+  // (O(n) average) beats a full O(n log n) sort. quickselectF64 partially
+  // partitions `errors` in place around the requested rank.
+  const mid = n >> 1;
+  if (n % 2 !== 0) {
+    return quickselectF64(errors, mid);
+  }
+  const hi = quickselectF64(errors, mid);
+  // The lower median is the max of the left partition, now in [0, mid).
+  let lo = errors[0] as number;
+  for (let i = 1; i < mid; i++) {
+    const v = errors[i] as number;
+    if (v > lo) lo = v;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * In-place quickselect: returns the value that would sit at sorted index `k`,
+ * partitioning `a` so entries < result are left of `k` and entries > result
+ * are right. Median-of-three pivot; O(n) average.
+ */
+function quickselectF64(a: Float64Array, k: number): number {
+  let lo = 0;
+  let hi = a.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    // Median-of-three pivot for robustness against sorted/adversarial input.
+    const x = a[lo] as number;
+    const y = a[mid] as number;
+    const z = a[hi] as number;
+    let pivot: number;
+    if (x < y) pivot = y < z ? y : x < z ? z : x;
+    else pivot = x < z ? x : y < z ? z : y;
+    let i = lo;
+    let j = hi;
+    while (i <= j) {
+      while ((a[i] as number) < pivot) i++;
+      while ((a[j] as number) > pivot) j--;
+      if (i <= j) {
+        const tmp = a[i] as number;
+        a[i] = a[j] as number;
+        a[j] = tmp;
+        i++;
+        j--;
+      }
+    }
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else break;
+  }
+  return a[k] as number;
 }
 
 /**
@@ -460,19 +504,15 @@ export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
  */
 export function maxError(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+  getNumericRegressionData(yTrue, "yTrue");
+  getNumericRegressionData(yPred, "yPred");
 
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
-
+  const t = denseFloat64(yTrue, "yTrue");
+  const p = denseFloat64(yPred, "yPred");
   let maxErr = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const diff = Math.abs(
-      readNumeric(yTrueData, trueOffset, i, "yTrue") -
-        readNumeric(yPredData, predOffset, i, "yPred")
-    );
-    maxErr = Math.max(maxErr, diff);
+  for (let i = 0; i < t.length; i++) {
+    const diff = Math.abs((t[i] as number) - (p[i] as number));
+    if (diff > maxErr) maxErr = diff;
   }
 
   return maxErr;
@@ -512,8 +552,8 @@ export function maxError(yTrue: Tensor, yPred: Tensor): number {
  */
 export function explainedVarianceScore(yTrue: Tensor, yPred: Tensor): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+  getNumericRegressionData(yTrue, "yTrue");
+  getNumericRegressionData(yPred, "yPred");
   if (yTrue.size === 0) {
     throw new InvalidParameterError(
       "explainedVarianceScore requires at least one sample",
@@ -522,28 +562,29 @@ export function explainedVarianceScore(yTrue: Tensor, yPred: Tensor): number {
     );
   }
 
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
+  const t = denseFloat64(yTrue, "yTrue");
+  const p = denseFloat64(yPred, "yPred");
+  const n = t.length;
 
   let sumTrue = 0;
   let sumResidual = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const trueVal = readNumeric(yTrueData, trueOffset, i, "yTrue");
-    const predVal = readNumeric(yPredData, predOffset, i, "yPred");
+  for (let i = 0; i < n; i++) {
+    const trueVal = t[i] as number;
     sumTrue += trueVal;
-    sumResidual += trueVal - predVal;
+    sumResidual += trueVal - (p[i] as number);
   }
-  const meanTrue = sumTrue / yTrue.size;
-  const meanResidual = sumResidual / yTrue.size;
+  const meanTrue = sumTrue / n;
+  const meanResidual = sumResidual / n;
 
   let varResidual = 0;
   let varTrue = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const trueVal = readNumeric(yTrueData, trueOffset, i, "yTrue");
-    const predVal = readNumeric(yPredData, predOffset, i, "yPred");
-    const residual = trueVal - predVal;
-    varResidual += (residual - meanResidual) ** 2;
-    varTrue += (trueVal - meanTrue) ** 2;
+  for (let i = 0; i < n; i++) {
+    const trueVal = t[i] as number;
+    const residual = trueVal - (p[i] as number);
+    const dr = residual - meanResidual;
+    const dt = trueVal - meanTrue;
+    varResidual += dr * dr;
+    varTrue += dt * dt;
   }
 
   // Handle constant targets (varTrue = 0)

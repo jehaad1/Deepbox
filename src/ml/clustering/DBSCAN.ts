@@ -1,4 +1,4 @@
-import { InvalidParameterError, NotFittedError, NotImplementedError } from "../../core";
+import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { validateUnsupervisedFitInputs } from "../_validation";
 import type { Clusterer } from "../base";
@@ -40,6 +40,7 @@ export class DBSCAN implements Clusterer {
 
   private labels_?: Tensor;
   private coreIndices_?: number[];
+  private fitData_?: number[][];
   private fitted = false;
 
   constructor(
@@ -193,21 +194,74 @@ export class DBSCAN implements Clusterer {
 
     this.labels_ = tensor(labels, { dtype: "int32" });
     this.coreIndices_ = coreIndices;
+    this.fitData_ = data;
     this.fitted = true;
 
     return this;
   }
 
   /**
-   * Predict cluster labels for samples in X.
+   * Predict cluster labels for new samples using nearest-neighbor assignment.
    *
-   * @param _X - Samples (unused)
-   * @throws {NotImplementedError} Always — DBSCAN is transductive and does not support prediction on new data
+   * Each new point is assigned the label of its nearest core sample from the
+   * training data. Points with no core sample within `eps` distance are
+   * labeled as noise (-1).
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Cluster labels of shape (n_samples,)
+   * @throws {NotFittedError} If the model has not been fitted
    */
-  predict(_X: Tensor): Tensor {
-    throw new NotImplementedError(
-      "DBSCAN is a transductive clustering algorithm and does not support prediction on new data. Use fitPredict() instead."
-    );
+  predict(X: Tensor): Tensor {
+    if (!this.fitted || !this.labels_ || !this.fitData_ || !this.coreIndices_) {
+      throw new NotFittedError("DBSCAN must be fitted before prediction");
+    }
+
+    const nSamples = X.shape[0] ?? 0;
+    const nFeatures = X.shape[1] ?? 0;
+    const trainData = this.fitData_;
+    const trainLabels = this.labels_;
+    const coreSet = new Set(this.coreIndices_);
+    const result: number[] = [];
+
+    for (let i = 0; i < nSamples; i++) {
+      const row: number[] = [];
+      for (let j = 0; j < nFeatures; j++) {
+        row.push(Number(X.data[X.offset + i * nFeatures + j]));
+      }
+
+      // Find nearest core sample
+      let bestDist = Infinity;
+      let bestLabel = -1;
+      for (const cIdx of coreSet) {
+        const corePoint = trainData[cIdx];
+        if (!corePoint) continue;
+        let dist = 0;
+        if (this.metric === "manhattan") {
+          for (let f = 0; f < nFeatures; f++) {
+            dist += Math.abs((row[f] ?? 0) - (corePoint[f] ?? 0));
+          }
+        } else {
+          for (let f = 0; f < nFeatures; f++) {
+            const diff = (row[f] ?? 0) - (corePoint[f] ?? 0);
+            dist += diff * diff;
+          }
+          dist = Math.sqrt(dist);
+        }
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestLabel = Number(trainLabels.data[trainLabels.offset + cIdx]);
+        }
+      }
+
+      // Assign noise if nearest core sample is beyond eps
+      if (bestDist > this.eps) {
+        result.push(-1);
+      } else {
+        result.push(bestLabel);
+      }
+    }
+
+    return tensor(result, { dtype: "int32" });
   }
 
   /**

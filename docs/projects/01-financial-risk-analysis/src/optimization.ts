@@ -320,15 +320,17 @@ export function riskParityPortfolio(
 }
 
 /**
- * Black-Litterman model for combining market equilibrium with investor views
+ * Implied equilibrium returns used in Black–Litterman-style workflows: π = δ Σ w_mkt.
+ *
+ * This helper only computes the equilibrium (prior) return vector from cap-weights and
+ * covariance; it does **not** blend investor views (no P, Q, or Ω blending yet).
  *
  * @param marketWeights - Market capitalization weights
- * @param covMatrix - Covariance matrix
- * @param views - Investor views matrix (P)
- * @param viewReturns - Expected returns from views (Q)
- * @param tau - Scaling factor for prior uncertainty
- * @param omega - View uncertainty matrix (diagonal)
- * @returns Black-Litterman expected returns
+ * @param covMatrix - Covariance matrix of asset returns
+ * @param riskAversion - δ (risk aversion) scaling the implied returns
+ * @param _tau - Reserved for a full Black–Litterman implementation (unused)
+ * @returns Implied equilibrium expected returns π
+ * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox linear algebra}
  */
 export function blackLittermanReturns(
   marketWeights: number[],

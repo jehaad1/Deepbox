@@ -1,9 +1,14 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import { add, type GradTensor, mulScalar, sub, type Tensor } from "../../ndarray";
 import {
   assertFinite,
   assertFiniteNonNegative,
   assertHasGradFloat,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -18,6 +23,8 @@ type SGDOptions = {
 
 type SGDState = {
   momentumBuffer?: Float64Array;
+  /** Device momentum buffer (used when the parameter lives on a kernel device). */
+  momentumTensor?: Tensor;
 };
 
 /**
@@ -155,6 +162,29 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
       }
 
       for (const param of group.params) {
+        let state = this.state.get(param);
+        if (!state) {
+          state = {};
+          this.state.set(param, state);
+        }
+
+        // Device path: keep the whole update resident on the accelerator by
+        // composing it from device-dispatched tensor ops (no host readback).
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let d: Tensor = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          if (momentum !== 0) {
+            const prev = state.momentumTensor;
+            // First step: buf = d_p (no dampening). Later: momentum*buf + (1-dampening)*d_p.
+            const buf = prev ? add(mulScalar(prev, momentum), mulScalar(d, 1 - dampening)) : d;
+            state.momentumTensor = buf;
+            d = nesterov ? add(d, mulScalar(buf, momentum)) : buf;
+          }
+          replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(d, lr)));
+          continue;
+        }
+
         const {
           grad: gradData,
           gradOffset,
@@ -163,17 +193,15 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
         } = assertHasGradFloat(param, "SGD");
         const size = param.tensor.size;
 
-        let state = this.state.get(param);
-        if (!state) {
-          state = {};
-          this.state.set(param, state);
-        }
-
-        // Momentum buffer is stored densely (one value per element).
+        // Momentum buffer is stored densely (one value per element). On the
+        // first step PyTorch initializes the buffer to a clone of d_p WITHOUT
+        // applying dampening; dampening only affects subsequent updates.
         let momentumBuffer: Float64Array | undefined;
+        let bufferInitialized = true;
         if (momentum !== 0) {
           if (!state.momentumBuffer) {
             state.momentumBuffer = new Float64Array(size);
+            bufferInitialized = false;
           }
           momentumBuffer = state.momentumBuffer;
         }
@@ -191,8 +219,11 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
           }
 
           if (momentumBuffer) {
-            const bPrev = safeArrayAccess(momentumBuffer, i, "SGD momentum buffer");
-            const bNew = momentum * bPrev + (1 - dampening) * d;
+            // First step: buf = d_p (no dampening). Later: buf = momentum*buf + (1-dampening)*d_p.
+            const bNew = bufferInitialized
+              ? momentum * safeArrayAccess(momentumBuffer, i, "SGD momentum buffer") +
+                (1 - dampening) * d
+              : d;
             momentumBuffer[i] = bNew;
             d = nesterov ? d + momentum * bNew : bNew;
           }

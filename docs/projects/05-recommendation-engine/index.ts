@@ -213,7 +213,7 @@ function predictRating(
 
 console.log("═".repeat(70));
 console.log("  MOVIE RECOMMENDATION ENGINE");
-console.log("  Built with Deepbox - TypeScript Data Science & ML Library");
+console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory

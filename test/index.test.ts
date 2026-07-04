@@ -44,7 +44,19 @@ import {
 describe("deepbox/core", () => {
   describe("Types", () => {
     it("should export DTYPES constant", () => {
-      expect(DTYPES).toEqual(["float32", "float64", "int32", "int64", "uint8", "bool", "string"]);
+      expect(DTYPES).toEqual([
+        "float16",
+        "bfloat16",
+        "float32",
+        "float64",
+        "int32",
+        "int64",
+        "uint8",
+        "bool",
+        "complex64",
+        "complex128",
+        "string",
+      ]);
     });
 
     it("should export DEVICES constant", () => {
@@ -102,7 +114,7 @@ describe("deepbox/core", () => {
 
     it("DTYPES should be an array", () => {
       expect(Array.isArray(DTYPES)).toBe(true);
-      expect(DTYPES.length).toBe(7);
+      expect(DTYPES.length).toBe(11);
     });
 
     it("DEVICES should be an array", () => {
@@ -124,10 +136,10 @@ describe("deepbox/core", () => {
     });
 
     it("should set and get configuration", () => {
-      setConfig({ defaultDtype: "float64", defaultDevice: "webgpu", seed: 42 });
+      setConfig({ defaultDtype: "float64", defaultDevice: "cpu", seed: 42 });
       const config = getConfig();
       expect(config.defaultDtype).toBe("float64");
-      expect(config.defaultDevice).toBe("webgpu");
+      expect(config.defaultDevice).toBe("cpu");
       expect(config.seed).toBe(42);
     });
 
@@ -140,8 +152,13 @@ describe("deepbox/core", () => {
     });
 
     it("should set and get device", () => {
-      setDevice("webgpu");
-      expect(getDevice()).toBe("webgpu");
+      setDevice("cpu");
+      expect(getDevice()).toBe("cpu");
+    });
+
+    it("should reject device preferences when no usable backend is registered", () => {
+      expect(() => setDevice("webgpu")).toThrow(DeviceError);
+      expect(() => setConfig({ defaultDevice: "webgpu" })).toThrow(DeviceError);
     });
 
     it("should set and get dtype", () => {
@@ -212,11 +229,11 @@ describe("deepbox/core", () => {
     it("should handle multiple sequential config updates", () => {
       setConfig({ defaultDtype: "float64" });
       setConfig({ seed: 42 });
-      setConfig({ defaultDevice: "webgpu" });
+      setConfig({ defaultDevice: "cpu" });
       const config = getConfig();
       expect(config.defaultDtype).toBe("float64");
       expect(config.seed).toBe(42);
-      expect(config.defaultDevice).toBe("webgpu");
+      expect(config.defaultDevice).toBe("cpu");
     });
 
     it("should reject unknown config keys", () => {

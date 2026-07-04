@@ -95,7 +95,7 @@ function pearsonFromDense(x: Float64Array, y: Float64Array): number {
  * - NaN inputs propagate to NaN correlation
  * - Infinity inputs result in NaN correlation
  *
- * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
 export function pearsonr(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "pearsonr");
@@ -145,7 +145,7 @@ export function pearsonr(x: Tensor, y: Tensor): [number, number] {
  * NaN values are ranked according to JavaScript sort behavior.
  * Infinity values are sorted naturally (±Infinity at extremes).
  *
- * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
 export function spearmanr(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "spearmanr");
@@ -196,10 +196,100 @@ export function spearmanr(x: Tensor, y: Tensor): [number, number] {
  * Ties are excluded from concordant/discordant counts and reduce the denominator.
  * The p-value uses a normal approximation with tie-corrected variance.
  *
- * @complexity O(n²) - suitable for moderate sample sizes (n < 10,000)
+ * @complexity O(n log n) via Knight's merge-sort algorithm for the
+ * concordant-minus-discordant score.
  *
- * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
+/**
+ * Kendall's S = (concordant - discordant), counting only pairs untied in both
+ * x and y, computed in O(n log n) via Knight's algorithm (merge-sort inversion
+ * count). Result is identical to the naive O(n²) double loop.
+ *
+ * @internal
+ */
+function kendallScore(xd: Float64Array, yd: Float64Array, n: number): number {
+  // Order by (x asc, then y asc).
+  const order = new Int32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => {
+    const dx = (xd[a] as number) - (xd[b] as number);
+    if (dx !== 0) return dx;
+    return (yd[a] as number) - (yd[b] as number);
+  });
+
+  // Tied-pair counts: t(t-1)/2 summed over equal-value runs.
+  const tiePairs = (equal: (a: number, b: number) => boolean): number => {
+    let sum = 0;
+    for (let i = 0; i < n; ) {
+      let j = i + 1;
+      while (j < n && equal(order[j - 1] as number, order[j] as number)) j++;
+      const t = j - i;
+      if (t > 1) sum += (t * (t - 1)) / 2;
+      i = j;
+    }
+    return sum;
+  };
+
+  const xtie = tiePairs((a, b) => (xd[a] as number) === (xd[b] as number));
+  const ntie = tiePairs(
+    (a, b) => (xd[a] as number) === (xd[b] as number) && (yd[a] as number) === (yd[b] as number)
+  );
+
+  // ytie needs y sorted on its own.
+  const yorder = new Int32Array(n);
+  for (let i = 0; i < n; i++) yorder[i] = i;
+  yorder.sort((a, b) => (yd[a] as number) - (yd[b] as number));
+  let ytie = 0;
+  for (let i = 0; i < n; ) {
+    let j = i + 1;
+    while (j < n && (yd[yorder[j] as number] as number) === (yd[yorder[i] as number] as number))
+      j++;
+    const t = j - i;
+    if (t > 1) ytie += (t * (t - 1)) / 2;
+    i = j;
+  }
+
+  // Discordant pairs = strict inversions in the y-sequence taken in (x,y) order.
+  const yByX = new Float64Array(n);
+  for (let i = 0; i < n; i++) yByX[i] = yd[order[i] as number] as number;
+  const dis = countInversions(yByX, n);
+
+  const tot = (n * (n - 1)) / 2;
+  return tot - xtie - ytie + ntie - 2 * dis;
+}
+
+/** Count strict inversions (a[i] > a[j], i < j) via bottom-up merge sort. */
+function countInversions(a: Float64Array, n: number): number {
+  if (n < 2) return 0;
+  const buf = new Float64Array(a);
+  const tmp = new Float64Array(n);
+  let inv = 0;
+  for (let width = 1; width < n; width *= 2) {
+    for (let lo = 0; lo < n; lo += 2 * width) {
+      const mid = Math.min(lo + width, n);
+      const hi = Math.min(lo + 2 * width, n);
+      let i = lo;
+      let j = mid;
+      let k = lo;
+      while (i < mid && j < hi) {
+        if ((buf[i] as number) <= (buf[j] as number)) {
+          tmp[k++] = buf[i++] as number;
+        } else {
+          // buf[i] > buf[j]: buf[j] jumps ahead of the (mid - i) remaining
+          // left-run elements, each of which is > buf[j] → that many inversions.
+          inv += mid - i;
+          tmp[k++] = buf[j++] as number;
+        }
+      }
+      while (i < mid) tmp[k++] = buf[i++] as number;
+      while (j < hi) tmp[k++] = buf[j++] as number;
+    }
+    buf.set(tmp);
+  }
+  return inv;
+}
+
 export function kendalltau(x: Tensor, y: Tensor): [number, number] {
   assertSameSize(x, y, "kendalltau");
   const n = x.size;
@@ -210,22 +300,16 @@ export function kendalltau(x: Tensor, y: Tensor): [number, number] {
   const xd = toDenseFlatArray(x);
   const yd = toDenseFlatArray(y);
 
-  // Count concordant and discordant pairs (ties excluded)
-  let concordant = 0;
-  let discordant = 0;
-  for (let i = 0; i < n - 1; i++) {
-    const xi = xd[i] ?? 0;
-    const yi = yd[i] ?? 0;
-    for (let j = i + 1; j < n; j++) {
-      const signX = Math.sign((xd[j] ?? 0) - xi);
-      const signY = Math.sign((yd[j] ?? 0) - yi);
-      if (signX === 0 || signY === 0) continue;
-      if (signX === signY) concordant++;
-      else discordant++;
-    }
-  }
-
+  // Knight's O(n log n) algorithm for s = (concordant - discordant), counting
+  // only pairs untied in both x and y. Sort by (x, then y); the number of
+  // strict inversions in the resulting y-sequence (via merge sort) is exactly
+  // the discordant count for pairs with distinct x. By inclusion-exclusion,
+  //   s = tot - xtie - ytie + ntie - 2*dis
+  // where tot = n(n-1)/2, xtie/ytie/ntie are the tied-pair counts in x, y and
+  // the joint (x, y). This is identical to the O(n²) double-loop result but
+  // scales to large n (the previous loop was O(n²)).
   const n0 = (n * (n - 1)) / 2;
+  const s = kendallScore(xd, yd, n);
   // Tie summaries for tau-b denominator and variance corrections.
   const tieSums = (
     vals: Float64Array
@@ -256,7 +340,6 @@ export function kendalltau(x: Tensor, y: Tensor): [number, number] {
   const tieX = tieSums(xd);
   const tieY = tieSums(yd);
   const denom = Math.sqrt((n0 - tieX.nTies) * (n0 - tieY.nTies));
-  const s = concordant - discordant;
   const tau = denom === 0 ? NaN : s / denom;
 
   // Normal approximation for p-value with tie correction
@@ -294,7 +377,7 @@ export function kendalltau(x: Tensor, y: Tensor): [number, number] {
  * corrcoef(data);  // Returns 2x2 correlation matrix for 2 variables
  * ```
  *
- * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
 export function corrcoef(x: Tensor, y?: Tensor): Tensor {
   if (y) {
@@ -430,8 +513,206 @@ export function corrcoef(x: Tensor, y?: Tensor): Tensor {
  * cov(data);  // Returns 2x2 covariance matrix for 2 variables
  * ```
  *
- * @see {@link https://deepbox.dev/docs/stats-correlation | Deepbox Correlations}
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
+/**
+ * Computes the point-biserial correlation coefficient.
+ *
+ * Measures the correlation between a binary variable and a continuous variable.
+ * Equivalent to Pearson r where one variable is dichotomous (0/1).
+ *
+ * @param x - Binary tensor (values must be 0 or 1)
+ * @param y - Continuous tensor (must have same size as x)
+ * @returns Tuple of [correlation coefficient, two-tailed p-value]
+ * @throws {InvalidParameterError} If x contains non-binary values, sizes differ, or < 2 samples
+ *
+ * @example
+ * ```ts
+ * const gender = tensor([0, 1, 1, 0, 1, 0]);
+ * const score = tensor([72, 85, 91, 68, 88, 75]);
+ * const [r, p] = pointbiserialr(gender, score);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
+ */
+export function pointbiserialr(x: Tensor, y: Tensor): [number, number] {
+  assertSameSize(x, y, "pointbiserialr");
+  const n = x.size;
+  if (n < 2) {
+    throw new InvalidParameterError("pointbiserialr() requires at least 2 paired samples", "n", n);
+  }
+
+  const xd = toDenseFlatArray(x);
+  const yd = toDenseFlatArray(y);
+
+  // Validate binary
+  for (let i = 0; i < n; i++) {
+    const v = xd[i] ?? 0;
+    if (v !== 0 && v !== 1) {
+      throw new InvalidParameterError("pointbiserialr() requires binary (0/1) values in x", "x", v);
+    }
+  }
+
+  // Point-biserial is equivalent to Pearson r for binary x
+  const r = pearsonFromDense(xd, yd);
+  const df = n - 2;
+  if (df <= 0) {
+    return [r, NaN];
+  }
+  const tStat = r * Math.sqrt(df / (1 - r * r));
+  const pValue = 2 * (1 - studentTCdf(Math.abs(tStat), df));
+  return [r, pValue];
+}
+
+/**
+ * Computes partial correlation between two variables controlling for confounders.
+ *
+ * Partial correlation measures the linear relationship between x and y
+ * after removing the effect of one or more confounding variables (z).
+ *
+ * Uses the recursive formula for single confounder and matrix inversion
+ * approach for multiple confounders.
+ *
+ * @param x - First variable tensor (1D)
+ * @param y - Second variable tensor (1D, same size as x)
+ * @param z - Confounding variable(s): a single 1D tensor or array of 1D tensors
+ * @returns Tuple of [partial correlation coefficient, two-tailed p-value]
+ * @throws {InvalidParameterError} If sizes don't match or < 3 samples
+ *
+ * @example
+ * ```ts
+ * const age = tensor([25, 30, 35, 40, 45]);
+ * const income = tensor([30, 40, 55, 60, 75]);
+ * const education = tensor([12, 14, 16, 18, 20]);
+ * const [r, p] = partialcorr(income, age, education);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
+ */
+export function partialcorr(x: Tensor, y: Tensor, z: Tensor | Tensor[]): [number, number] {
+  assertSameSize(x, y, "partialcorr");
+  const n = x.size;
+
+  const confounders = Array.isArray(z) ? z : [z];
+  for (const zi of confounders) {
+    assertSameSize(x, zi, "partialcorr");
+  }
+
+  if (n < confounders.length + 3) {
+    throw new InvalidParameterError(
+      `partialcorr() requires at least ${confounders.length + 3} samples for ${confounders.length} confounder(s)`,
+      "n",
+      n
+    );
+  }
+
+  // Residualize: for each variable, regress out the confounders via OLS
+  const residualize = (v: Float64Array): Float64Array => {
+    // Build design matrix Z (n x k) and compute residuals: v - Z * (Z'Z)^{-1} Z'v
+    const k = confounders.length;
+    const zArrays: Float64Array[] = confounders.map(toDenseFlatArray);
+
+    // Compute Z'Z (k x k) and Z'v (k x 1)
+    const ZtZ = new Float64Array(k * k);
+    const Ztv = new Float64Array(k);
+    for (let a = 0; a < k; a++) {
+      const za = zArrays[a];
+      if (!za) continue;
+      for (let b = a; b < k; b++) {
+        const zb = zArrays[b];
+        if (!zb) continue;
+        let s = 0;
+        for (let i = 0; i < n; i++) {
+          s += (za[i] ?? 0) * (zb[i] ?? 0);
+        }
+        ZtZ[a * k + b] = s;
+        ZtZ[b * k + a] = s;
+      }
+      let sv = 0;
+      for (let i = 0; i < n; i++) {
+        sv += (za[i] ?? 0) * (v[i] ?? 0);
+      }
+      Ztv[a] = sv;
+    }
+
+    // Solve ZtZ * beta = Ztv via Gauss elimination
+    const aug = new Float64Array(k * (k + 1));
+    for (let i = 0; i < k; i++) {
+      for (let j = 0; j < k; j++) {
+        aug[i * (k + 1) + j] = ZtZ[i * k + j] ?? 0;
+      }
+      aug[i * (k + 1) + k] = Ztv[i] ?? 0;
+    }
+
+    for (let col = 0; col < k; col++) {
+      // Partial pivoting
+      let maxRow = col;
+      let maxVal = Math.abs(aug[col * (k + 1) + col] ?? 0);
+      for (let row = col + 1; row < k; row++) {
+        const absVal = Math.abs(aug[row * (k + 1) + col] ?? 0);
+        if (absVal > maxVal) {
+          maxVal = absVal;
+          maxRow = row;
+        }
+      }
+      if (maxRow !== col) {
+        for (let j = 0; j <= k; j++) {
+          const tmp = aug[col * (k + 1) + j] ?? 0;
+          aug[col * (k + 1) + j] = aug[maxRow * (k + 1) + j] ?? 0;
+          aug[maxRow * (k + 1) + j] = tmp;
+        }
+      }
+
+      const pivot = aug[col * (k + 1) + col] ?? 0;
+      if (Math.abs(pivot) < 1e-15) continue;
+
+      for (let row = col + 1; row < k; row++) {
+        const factor = (aug[row * (k + 1) + col] ?? 0) / pivot;
+        for (let j = col; j <= k; j++) {
+          aug[row * (k + 1) + j] =
+            (aug[row * (k + 1) + j] ?? 0) - factor * (aug[col * (k + 1) + j] ?? 0);
+        }
+      }
+    }
+
+    // Back-substitution
+    const beta = new Float64Array(k);
+    for (let i = k - 1; i >= 0; i--) {
+      let s = aug[i * (k + 1) + k] ?? 0;
+      for (let j = i + 1; j < k; j++) {
+        s -= (aug[i * (k + 1) + j] ?? 0) * (beta[j] ?? 0);
+      }
+      const diag = aug[i * (k + 1) + i] ?? 0;
+      beta[i] = Math.abs(diag) < 1e-15 ? 0 : s / diag;
+    }
+
+    // Compute residuals: v - Z * beta
+    const resid = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let pred = 0;
+      for (let j = 0; j < k; j++) {
+        const zj = zArrays[j];
+        pred += (zj ? (zj[i] ?? 0) : 0) * (beta[j] ?? 0);
+      }
+      resid[i] = (v[i] ?? 0) - pred;
+    }
+    return resid;
+  };
+
+  const xResid = residualize(toDenseFlatArray(x));
+  const yResid = residualize(toDenseFlatArray(y));
+
+  const r = pearsonFromDense(xResid, yResid);
+  const df = n - 2 - confounders.length;
+  if (df <= 0) {
+    return [r, NaN];
+  }
+  const rClamped = Math.min(Math.max(r, -1 + 1e-15), 1 - 1e-15);
+  const tStat = rClamped * Math.sqrt(df / (1 - rClamped * rClamped));
+  const pValue = 2 * (1 - studentTCdf(Math.abs(tStat), df));
+  return [r, pValue];
+}
+
 export function cov(x: Tensor, y?: Tensor, ddof = 1): Tensor {
   if (!Number.isFinite(ddof) || ddof < 0) {
     throw new InvalidParameterError("ddof must be a non-negative finite number", "ddof", ddof);

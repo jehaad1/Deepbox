@@ -6,6 +6,7 @@ import {
 } from "../core";
 import { DataValidationError, DTypeError, InvalidParameterError, ShapeError } from "../core/errors";
 import { type Tensor, tensor } from "../ndarray";
+import { __random } from "../random/random";
 import {
   assertFiniteNumber,
   assertSameSize,
@@ -382,28 +383,31 @@ function averageEntropy(hTrue: number, hPred: number, method: AverageMethod): nu
   return (hTrue + hPred) / 2;
 }
 
-function euclideanDistance(
+/**
+ * Copy features into a dense row-major Float64Array, validating finiteness
+ * once upfront. Distance loops then run allocation- and validation-free
+ * (per-pair validation made silhouette O(n^2 * d) assertion calls).
+ */
+function densifyFeatures(
   data: NumericTypedArray,
   offset: number,
   sampleStride: number,
   featureStride: number,
+  n: number,
   nFeatures: number,
-  i: number,
-  j: number
-): number {
-  let sum = 0;
-  const baseI = offset + i * sampleStride;
-  const baseJ = offset + j * sampleStride;
-
-  for (let k = 0; k < nFeatures; k++) {
-    const vi = getNumericElement(data, baseI + k * featureStride);
-    const vj = getNumericElement(data, baseJ + k * featureStride);
-    assertFiniteNumber(vi, "X", `sample ${i}, feature ${k}`);
-    assertFiniteNumber(vj, "X", `sample ${j}, feature ${k}`);
-    const d = vi - vj;
-    sum += d * d;
+  indices: Int32Array | null
+): Float64Array {
+  const dense = new Float64Array(n * nFeatures);
+  for (let i = 0; i < n; i++) {
+    const src = indices ? readIndex(indices, i, "indices") : i;
+    const base = offset + src * sampleStride;
+    for (let k = 0; k < nFeatures; k++) {
+      const v = getNumericElement(data, base + k * featureStride);
+      assertFiniteNumber(v, "X", `sample ${src}, feature ${k}`);
+      dense[i * nFeatures + k] = v;
+    }
   }
-  return Math.sqrt(sum);
+  return dense;
 }
 
 type SilhouetteMetric = "euclidean" | "precomputed";
@@ -468,7 +472,7 @@ function reservoirSampleIndices(n: number, k: number, seed: number | undefined):
   const hasSeed = seed !== undefined;
 
   const randU32 = () => {
-    if (!hasSeed) return (Math.random() * 0x1_0000_0000) >>> 0;
+    if (!hasSeed) return (__random() * 0x1_0000_0000) >>> 0;
     state = (1664525 * state + 1013904223) >>> 0;
     return state;
   };
@@ -544,6 +548,7 @@ function silhouetteMeanEuclidean(X: Tensor, labels: Tensor, indices: Int32Array 
   }
 
   const sumsToClusters = new Float64Array(k);
+  const dense = densifyFeatures(data, offset, sampleStride, featureStride, n, nFeatures, indices);
 
   let sum = 0;
   let comp = 0;
@@ -555,16 +560,18 @@ function silhouetteMeanEuclidean(X: Tensor, labels: Tensor, indices: Int32Array 
     if (sizeOwn <= 1) continue; // singleton => 0
 
     sumsToClusters.fill(0);
-
-    const srcI = indices ? readIndex(indices, i, "indices") : i;
+    const baseI = i * nFeatures;
 
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
-      const srcJ = indices ? readIndex(indices, j, "indices") : j;
-      const cj = readIndex(codes, j, "codes");
-
-      const d = euclideanDistance(data, offset, sampleStride, featureStride, nFeatures, srcI, srcJ);
-      sumsToClusters[cj] = (sumsToClusters[cj] ?? 0) + d;
+      const cj = codes[j]! | 0;
+      const baseJ = j * nFeatures;
+      let sq = 0;
+      for (let f = 0; f < nFeatures; f++) {
+        const diff = dense[baseI + f]! - dense[baseJ + f]!;
+        sq += diff * diff;
+      }
+      sumsToClusters[cj]! += Math.sqrt(sq);
     }
 
     const a = readIndex(sumsToClusters, ci, "sumsToClusters") / (sizeOwn - 1);
@@ -830,6 +837,15 @@ export function silhouetteSamples(
 
   if (metric === "euclidean") {
     const { data, nFeatures, sampleStride, featureStride, offset } = getFeatureAccessor(X);
+    const dense = densifyFeatures(
+      data,
+      offset,
+      sampleStride,
+      featureStride,
+      nSamples,
+      nFeatures,
+      null
+    );
 
     for (let i = 0; i < nSamples; i++) {
       const ci = readIndex(codes, i, "codes");
@@ -840,13 +856,18 @@ export function silhouetteSamples(
       }
 
       sumsToClusters.fill(0);
+      const baseI = i * nFeatures;
 
       for (let j = 0; j < nSamples; j++) {
         if (i === j) continue;
-        const cj = readIndex(codes, j, "codes");
-
-        const d = euclideanDistance(data, offset, sampleStride, featureStride, nFeatures, i, j);
-        sumsToClusters[cj] = (sumsToClusters[cj] ?? 0) + d;
+        const cj = codes[j]! | 0;
+        const baseJ = j * nFeatures;
+        let sq = 0;
+        for (let f = 0; f < nFeatures; f++) {
+          const diff = dense[baseI + f]! - dense[baseJ + f]!;
+          sq += diff * diff;
+        }
+        sumsToClusters[cj]! += Math.sqrt(sq);
       }
 
       const a = readIndex(sumsToClusters, ci, "sumsToClusters") / (sizeOwn - 1);

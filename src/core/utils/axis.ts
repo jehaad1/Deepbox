@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/core-utils | Utilities, serialization & parallelism}
+ */
+
 import { InvalidParameterError } from "../errors";
 import type { Axis } from "../types/common";
 

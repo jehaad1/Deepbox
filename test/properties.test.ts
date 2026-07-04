@@ -21,8 +21,8 @@ describe("deepbox/linalg - Matrix Properties", () => {
         [2, 4],
       ]);
       const [sign, logdet] = slogdet(singular);
-      expect(sign.toArray()).toEqual([0]);
-      expect(logdet.toArray()).toEqual([-Infinity]);
+      expect(sign.toArray()).toEqual(0);
+      expect(logdet.toArray()).toEqual(-Infinity);
     });
   });
 

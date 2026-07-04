@@ -10,10 +10,12 @@ import {
   adjustedRandScore,
   averagePrecisionScore,
   balancedAccuracyScore,
+  brierScoreLoss,
   calinskiHarabaszScore,
   cohenKappaScore,
   completenessScore,
   confusionMatrix,
+  coverageError,
   daviesBouldinScore,
   explainedVarianceScore,
   f1Score,
@@ -27,16 +29,23 @@ import {
   mape,
   matthewsCorrcoef,
   maxError,
+  meanPinballLoss,
   medianAbsoluteError,
   mse,
+  ndcgScore,
   normalizedMutualInfoScore,
+  pairwiseCosine,
+  pairwiseEuclidean,
+  pairwiseManhattan,
   precision,
   r2Score,
   recall,
   rmse,
   rocAucScore,
   silhouetteScore,
+  topKAccuracyScore,
   vMeasureScore,
+  zeroOneLoss,
 } from "deepbox/metrics";
 import { tensor } from "deepbox/ndarray";
 import { createSuite, footer, header, run } from "../utils";
@@ -123,6 +132,28 @@ const clust200 = clusterData(200, 5, 3, 42);
 const clust500 = clusterData(500, 5, 4, 123);
 const clab500 = clusterLabels(500, 4, 42);
 const clab1k = clusterLabels(1000, 5, 123);
+const rankTrue = tensor([
+  [1, 0, 1, 0],
+  [0, 1, 0, 1],
+  [1, 0, 0, 1],
+]);
+const rankScore = tensor([
+  [0.9, 0.2, 0.8, 0.1],
+  [0.3, 0.7, 0.2, 0.6],
+  [0.8, 0.1, 0.4, 0.7],
+]);
+const multiclassTrue = tensor(Array.from({ length: 1000 }, (_, i) => i % 4));
+const multiclassScore = tensor(
+  Array.from({ length: 1000 }, (_, i) => {
+    const label = i % 4;
+    return Array.from({ length: 4 }, (_, j) => (j === label ? 0.7 : 0.1));
+  })
+);
+const pairwiseX = tensor(
+  Array.from({ length: 300 }, (_, i) =>
+    Array.from({ length: 8 }, (_, j) => ((i * 3 + j * 5) % 17) / 17)
+  )
+);
 
 // ── Classification Metrics ──────────────────────────────
 
@@ -154,6 +185,13 @@ run(suite, "rocAucScore", "1K", () => rocAucScore(prob1k.yt, prob1k.yp));
 run(suite, "rocAucScore", "10K", () => rocAucScore(prob10k.yt, prob10k.yp));
 run(suite, "averagePrecision", "1K", () => averagePrecisionScore(prob1k.yt, prob1k.yp));
 run(suite, "averagePrecision", "10K", () => averagePrecisionScore(prob10k.yt, prob10k.yp));
+run(suite, "brierScoreLoss", "1K", () => brierScoreLoss(prob1k.yt, prob1k.yp));
+run(suite, "zeroOneLoss", "1K", () => zeroOneLoss(bin1k.yt, bin1k.yp));
+run(suite, "topKAccuracyScore", "1Kx4", () =>
+  topKAccuracyScore(multiclassTrue, multiclassScore, 2)
+);
+run(suite, "coverageError", "3x4", () => coverageError(rankTrue, rankScore));
+run(suite, "ndcgScore", "3x4", () => ndcgScore(rankTrue, rankScore));
 
 // ── Regression Metrics ──────────────────────────────────
 
@@ -175,6 +213,7 @@ run(suite, "medianAbsoluteError", "1K", () => medianAbsoluteError(reg1k.yt, reg1
 run(suite, "medianAbsoluteError", "10K", () => medianAbsoluteError(reg10k.yt, reg10k.yp));
 run(suite, "mape", "1K", () => mape(reg1k.yt, reg1k.yp));
 run(suite, "mape", "10K", () => mape(reg10k.yt, reg10k.yp));
+run(suite, "meanPinballLoss", "1K", () => meanPinballLoss(reg1k.yt, reg1k.yp, 0.9));
 
 // ── Clustering Metrics ──────────────────────────────────
 
@@ -199,5 +238,60 @@ run(suite, "completenessScore", "500", () => completenessScore(clab500.a, clab50
 run(suite, "vMeasureScore", "500", () => vMeasureScore(clab500.a, clab500.b));
 run(suite, "fowlkesMallows", "500", () => fowlkesMallowsScore(clab500.a, clab500.b));
 run(suite, "fowlkesMallows", "1K", () => fowlkesMallowsScore(clab1k.a, clab1k.b));
+run(suite, "pairwiseEuclidean", "300x8", () => pairwiseEuclidean(pairwiseX));
+run(suite, "pairwiseCosine", "300x8", () => pairwiseCosine(pairwiseX));
+run(suite, "pairwiseManhattan", "300x8", () => pairwiseManhattan(pairwiseX));
+
+// ── Extended coverage (v1.1 benchmark expansion) ────────
+// More sizes for classification & regression metrics.
+const bin100 = binaryLabels(100, 1);
+const bin500 = binaryLabels(500, 2);
+const bin5k = binaryLabels(5000, 3);
+const prob100 = binaryProbs(100, 1);
+const prob500 = binaryProbs(500, 2);
+const prob5k = binaryProbs(5000, 3);
+const reg100 = regressionPreds(100, 1);
+const reg500 = regressionPreds(500, 2);
+const reg5k = regressionPreds(5000, 3);
+const clsSizes: [string, ReturnType<typeof binaryLabels>][] = [
+  ["100", bin100],
+  ["500", bin500],
+  ["5K", bin5k],
+];
+const probSizes: [string, ReturnType<typeof binaryProbs>][] = [
+  ["100", prob100],
+  ["500", prob500],
+  ["5K", prob5k],
+];
+const regSizes: [string, ReturnType<typeof regressionPreds>][] = [
+  ["100", reg100],
+  ["500", reg500],
+  ["5K", reg5k],
+];
+for (const [sz, d] of clsSizes) {
+  run(suite, "accuracy", sz, () => accuracy(d.yt, d.yp));
+  run(suite, "precision", sz, () => precision(d.yt, d.yp));
+  run(suite, "recall", sz, () => recall(d.yt, d.yp));
+  run(suite, "f1Score", sz, () => f1Score(d.yt, d.yp));
+  run(suite, "hammingLoss", sz, () => hammingLoss(d.yt, d.yp));
+  run(suite, "jaccardScore", sz, () => jaccardScore(d.yt, d.yp));
+  run(suite, "cohenKappaScore", sz, () => cohenKappaScore(d.yt, d.yp));
+  run(suite, "matthewsCorrcoef", sz, () => matthewsCorrcoef(d.yt, d.yp));
+  run(suite, "balancedAccuracy", sz, () => balancedAccuracyScore(d.yt, d.yp));
+  run(suite, "zeroOneLoss", sz, () => zeroOneLoss(d.yt, d.yp));
+}
+for (const [sz, d] of probSizes) {
+  run(suite, "logLoss", sz, () => logLoss(d.yt, d.yp));
+  run(suite, "brierScoreLoss", sz, () => brierScoreLoss(d.yt, d.yp));
+}
+for (const [sz, d] of regSizes) {
+  run(suite, "mse", sz, () => mse(d.yt, d.yp));
+  run(suite, "rmse", sz, () => rmse(d.yt, d.yp));
+  run(suite, "mae", sz, () => mae(d.yt, d.yp));
+  run(suite, "r2Score", sz, () => r2Score(d.yt, d.yp));
+  run(suite, "explainedVariance", sz, () => explainedVarianceScore(d.yt, d.yp));
+  run(suite, "maxError", sz, () => maxError(d.yt, d.yp));
+  run(suite, "mape", sz, () => mape(d.yt, d.yp));
+}
 
 footer(suite, "deepbox-metrics.json");

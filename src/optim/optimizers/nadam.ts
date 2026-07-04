@@ -1,5 +1,19 @@
+/**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../../core";
-import type { GradTensor } from "../../ndarray";
+import {
+  add,
+  addScalar,
+  div,
+  type GradTensor,
+  mulScalar,
+  sqrt,
+  square,
+  sub,
+  type Tensor,
+} from "../../ndarray";
 import {
   assertBufferSize,
   assertFinite,
@@ -7,6 +21,7 @@ import {
   assertFinitePositive,
   assertHasGradFloat,
   assertInRange,
+  replaceParamStorage,
   safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
@@ -25,6 +40,11 @@ type NadamState = {
   expAvg: Float64Array;
   expAvgSq: Float64Array;
   muProduct: number;
+  /** Device state (used when the parameter lives on a kernel device). */
+  expAvgTensor?: Tensor;
+  expAvgSqTensor?: Tensor;
+  deviceStep?: number;
+  deviceMuProduct?: number;
 };
 
 /**
@@ -152,6 +172,51 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
       assertFiniteNonNegative("momentum_decay", momentumDecay);
 
       for (const param of group.params) {
+        // Device path: compose the Nadam update from device-dispatched ops.
+        if (param.tensor.isDeviceTensor) {
+          const g = param.grad;
+          if (!g) continue;
+          let dstate = this.state.get(param);
+          if (!dstate) {
+            dstate = {
+              step: 0,
+              expAvg: new Float64Array(0),
+              expAvgSq: new Float64Array(0),
+              muProduct: 1,
+            };
+            this.state.set(param, dstate);
+          }
+          const t = (dstate.deviceStep ?? 0) + 1;
+          dstate.deviceStep = t;
+          const biasCorrection2 = 1 - beta2 ** t;
+          const mu = beta1 * (1 - 0.5 * 0.96 ** (t * momentumDecay));
+          const muNext = beta1 * (1 - 0.5 * 0.96 ** ((t + 1) * momentumDecay));
+          const muProduct = (dstate.deviceMuProduct ?? 1) * mu;
+          const muProductNext = muProduct * muNext;
+          dstate.deviceMuProduct = muProduct;
+          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const mPrev = dstate.expAvgTensor;
+          const vPrev = dstate.expAvgSqTensor;
+          const mNew = mPrev
+            ? add(mulScalar(mPrev, beta1), mulScalar(grad, 1 - beta1))
+            : mulScalar(grad, 1 - beta1);
+          const vNew = vPrev
+            ? add(mulScalar(vPrev, beta2), mulScalar(square(grad), 1 - beta2))
+            : mulScalar(square(grad), 1 - beta2);
+          dstate.expAvgTensor = mNew;
+          dstate.expAvgSqTensor = vNew;
+          const denom = addScalar(sqrt(mulScalar(vNew, 1 / biasCorrection2)), eps);
+          const mHatNext = mulScalar(mNew, 1 / (1 - muProductNext));
+          const gHat = mulScalar(grad, 1 / (1 - muProduct));
+          const mNesterov = add(mulScalar(mHatNext, muNext), mulScalar(gHat, 1 - mu));
+          replaceParamStorage(
+            param,
+            "tensor",
+            sub(param.tensor, mulScalar(div(mNesterov, denom), lr))
+          );
+          continue;
+        }
+
         const {
           grad: gradData,
           gradOffset: gOff,
