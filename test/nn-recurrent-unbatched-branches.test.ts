@@ -49,12 +49,12 @@ describe("nn recurrent unbatched inputs", () => {
     expect(() => new GRU(2, 2, { numLayers: 0 })).toThrow(/positive integer/i);
   });
 
-  it("rejects non-float and string inputs", () => {
+  it("casts integer inputs to the parameter dtype and rejects string inputs", () => {
     const rnn = new RNN(2, 2);
     const intInput = tensor(new Int32Array([1, 2, 3, 4]), {
       dtype: "int32",
     }).reshape([2, 2]);
-    expect(() => rnn.forward(intInput)).toThrow(/float32 or float64/i);
+    expect(rnn.forward(intInput).dtype).toBe("float32");
 
     const strInput = tensor([["a", "b"]]);
     expect(() => rnn.forward(strInput)).toThrow(/string dtype/i);

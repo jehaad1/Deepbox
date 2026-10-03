@@ -1,18 +1,15 @@
+/**
+ * Fully connected (dense) layer.
+ *
+ * @module
+ * @see {@link https://deepbox.dev/docs/nn-layers | Deepbox documentation}
+ */
+
 import { DTypeError, InvalidParameterError, ShapeError } from "../../core";
-import type { Tensor } from "../../ndarray";
-import {
-  add,
-  dot,
-  GradTensor,
-  mulScalar,
-  parameter,
-  randn,
-  reshape,
-  tensor,
-  transpose,
-  zeros,
-} from "../../ndarray";
+import type { AnyTensor, Tensor } from "../../ndarray";
+import { add, dot, GradTensor, parameter, reshape, transpose } from "../../ndarray";
 import { Module } from "../module/Module";
+import { isGradEnabled, resolveLayerDtype, toGradInput, uniformTensor } from "./_shared";
 
 /**
  * Applies a linear transformation to the incoming data: y = xA^T + b
@@ -48,20 +45,33 @@ import { Module } from "../module/Module";
  * - `bias`: Learnable bias of shape (out_features,) if bias=true
  *
  * **Initialization:**
- * Uses Kaiming/He initialization: weights ~ N(0, sqrt(2/in_features))
- * Biases are initialized to zeros
+ * As in PyTorch, weights and biases are drawn from the uniform distribution
+ * `U(-1/sqrt(in_features), 1/sqrt(in_features))` (Kaiming uniform with `a = sqrt(5)`
+ * for the weights). Seed the global generator with `manualSeed` for reproducible weights.
+ *
+ * **Input dtype:**
+ * The layer computes in its parameter dtype (`float32` unless `dtype` is given, or the
+ * global default dtype), so integer, boolean and `float64` inputs all work. For a
+ * `GradTensor` input the conversion is differentiable.
+ *
+ * **Gradient tracking:**
+ * With a `GradTensor` input the result is a `GradTensor`. With a plain `Tensor` input the
+ * result is a `GradTensor` that tracks the weights while gradient tracking is on and a
+ * weight requires grad (the input itself is not tracked), so a training loop needs no
+ * wrapping of the data. Inside `noGrad()`, or when every weight is frozen, a plain `Tensor`
+ * is returned. `eval()` alone does not switch tracking off.
  *
  * @example
  * ```ts
  * import { Linear } from 'deepbox/nn';
  * import { tensor } from 'deepbox/ndarray';
  *
- * // Create a linear layer with 20 input features and 30 output features
- * const layer = new Linear(20, 30);
+ * // Create a linear layer with 3 input features and 2 output features
+ * const layer = new Linear(3, 2);
  *
  * // Forward pass
- * const input = tensor([[1, 2, ..., 20]]); // shape: (1, 20)
- * const output = layer.forward(input);     // shape: (1, 30)
+ * const input = tensor([[1, 2, 3]]);   // shape: (1, 3)
+ * const output = layer.forward(input); // shape: (1, 2)
  *
  * // Without bias
  * const layerNoBias = new Linear(10, 5, { bias: false });
@@ -69,17 +79,15 @@ import { Module } from "../module/Module";
  *
  * References:
  * - Deepbox Linear: https://deepbox.dev/docs/nn-layers
- * - Xavier/Glorot initialization: http://proceedings.mlr.press/v9/glorot10a.html
+ * - He et al., "Delving Deep into Rectifiers" (2015): https://arxiv.org/abs/1502.01852
  *
  * @category Neural Network Layers
  */
 export class Linear extends Module {
-  /** Weight matrix of shape (out_features, in_features) */
-  private weight: Tensor;
+  /** Weight parameter of shape (out_features, in_features) */
   private weightParam: GradTensor;
 
-  /** Bias vector of shape (out_features,) */
-  private bias?: Tensor;
+  /** Bias parameter of shape (out_features,) */
   private biasParam?: GradTensor;
 
   /** Number of input features */
@@ -98,7 +106,7 @@ export class Linear extends Module {
    * @param outFeatures - Size of each output sample
    * @param options - Configuration options
    * @param options.bias - If true, add learnable bias (default: true)
-   * @param options.dtype - Data type for weights (default: 'float32')
+   * @param options.dtype - Data type for weights (default: the global default dtype, 'float32')
    * @param options.device - Device to place tensors on (default: 'cpu')
    */
   constructor(
@@ -135,38 +143,23 @@ export class Linear extends Module {
     // Default to using bias unless explicitly disabled
     this.useBias = options.bias ?? true;
 
-    // Initialize weights using Kaiming initialization (He initialization)
-    // This initialization is optimal for ReLU activations
-    // Standard deviation: sqrt(2 / fan_in) where fan_in = inFeatures
-    const stdDev = Math.sqrt(2.0 / inFeatures);
+    // PyTorch default: weight and bias ~ U(-1/sqrt(fan_in), 1/sqrt(fan_in)).
+    // (kaiming_uniform with a = sqrt(5) gives the same bound for the weight.)
+    const dtype = resolveLayerDtype(options.dtype);
+    const device = options.device ?? "cpu";
+    const bound = 1 / Math.sqrt(inFeatures);
 
-    // Create weight matrix with shape (out_features, in_features)
-    // Transposed storage allows efficient matrix multiplication: y = x * W^T
-    const weightTensor = randn([outFeatures, inFeatures], {
-      dtype: options.dtype ?? "float32",
-      device: options.device ?? "cpu",
-    });
-
-    // Scale the randomly initialized weights by the computed standard deviation
-    // This ensures proper gradient flow during backpropagation
-    const scaledWeight = mulScalar(weightTensor, stdDev);
-    this.weightParam = parameter(scaledWeight);
-    this.weight = this.weightParam.tensor;
+    // Weight has shape (out_features, in_features); forward computes y = x * W^T.
+    this.weightParam = parameter(
+      uniformTensor([outFeatures, inFeatures], bound, { dtype, device })
+    );
 
     // Register weight as a trainable parameter for optimizer access
     this.registerParameter("weight", this.weightParam);
 
-    // Initialize bias to zeros if enabled (common practice)
-    // Bias allows the layer to shift the output independently of input
     if (this.useBias) {
       // Bias has shape (out_features,) - one value per output neuron
-      const biasTensor = zeros([outFeatures], {
-        dtype: options.dtype ?? "float32",
-        device: options.device ?? "cpu",
-      });
-      this.biasParam = parameter(biasTensor);
-      this.bias = this.biasParam.tensor;
-      // Register bias as a trainable parameter
+      this.biasParam = parameter(uniformTensor([outFeatures], bound, { dtype, device }));
       this.registerParameter("bias", this.biasParam);
     }
   }
@@ -174,40 +167,41 @@ export class Linear extends Module {
   /**
    * Forward pass: compute y = x * W^T + b
    *
+   * Inputs whose dtype differs from the layer's dtype are converted first
+   * (a differentiable cast for `GradTensor` inputs).
+   *
+   * A `GradTensor` input gives a `GradTensor`. A plain `Tensor` input gives a `GradTensor`
+   * that tracks the weights when gradient tracking is on and a weight requires grad, and a
+   * plain `Tensor` otherwise (inside `noGrad()` or with frozen weights).
+   *
    * @param input - Input tensor of shape (*, in_features)
    * @returns Output tensor of shape (*, out_features)
    * @throws {ShapeError} If input shape is invalid
    * @throws {DTypeError} If input dtype is unsupported
+   *
+   * @example
+   * ```ts
+   * const layer = new Linear(3, 2);
+   * const out = layer.forward(tensor([[1, 2, 3]])); // GradTensor that tracks the weights
+   * ```
    */
   forward(input: GradTensor): GradTensor;
-  forward(input: Tensor): Tensor;
-  forward(input: Tensor | GradTensor): Tensor | GradTensor {
-    let inputTensor = GradTensor.isGradTensor(input) ? input.tensor : input;
-
-    if (inputTensor.dtype === "string") {
+  forward(input: Tensor): AnyTensor;
+  forward(input: AnyTensor): AnyTensor;
+  forward(input: AnyTensor): AnyTensor {
+    if (input.dtype === "string") {
       throw new DTypeError("Linear layer does not support string dtype");
-    }
-
-    if (inputTensor.dtype !== this.weight.dtype && inputTensor.dtype !== "int64") {
-      const castData = new Float32Array(
-        inputTensor.data as Float64Array | Float32Array | Int32Array | Uint8Array
-      );
-      const castTensor = reshape(tensor(castData), inputTensor.shape);
-      inputTensor = castTensor;
-      if (GradTensor.isGradTensor(input)) {
-        input = parameter(castTensor);
-      }
     }
 
     // Validate input dimensionality - must be at least 1D
     // 0D (scalar) inputs are not valid for linear transformations
-    if (inputTensor.ndim < 1) {
-      throw new ShapeError(`Linear layer expects at least 1D input; got ndim=${inputTensor.ndim}`);
+    if (input.ndim < 1) {
+      throw new ShapeError(`Linear layer expects at least 1D input; got ndim=${input.ndim}`);
     }
 
     // Extract the last dimension size (number of features)
     // For input shape (batch, seq_len, features), this gets 'features'
-    const inputFeatures = inputTensor.shape[inputTensor.shape.length - 1] ?? 0;
+    const inputFeatures = input.shape[input.shape.length - 1] ?? 0;
 
     // Validate that input features match the layer's expected input size
     if (inputFeatures !== this.inFeatures) {
@@ -216,50 +210,65 @@ export class Linear extends Module {
       );
     }
 
+    // Convert to the layer dtype. `astype` honours strides and offsets, and the
+    // GradTensor variant keeps the autograd link to the caller's graph.
+    const layerDtype = this.weightParam.tensor.dtype;
+    if (input.dtype !== layerDtype) {
+      if (layerDtype === "string") {
+        throw new DTypeError("Linear layer weight must be numeric");
+      }
+      input = input.astype(layerDtype);
+    }
+
     // Compute the linear transformation: y = x * W^T + b
     // Weight is stored as (out_features, in_features), so we transpose it
     // This allows efficient computation: (batch, in_features) @ (in_features, out_features)
 
     // Check if input is a 1D vector (no batch dimension)
-    const isVectorInput = inputTensor.ndim === 1;
+    const isVectorInput = input.ndim === 1;
 
     // Calculate total batch size (handles multi-dimensional batches)
     // For shape (batch, seq, features): batchSize = batch * seq
-    const batchSize = inputTensor.size / this.inFeatures;
+    const batchSize = input.size / this.inFeatures;
 
-    // Reshape input to 2D: (batchSize, inFeatures) for matrix multiplication
+    // Output keeps all leading dimensions and replaces the last with outFeatures
     const outputShape = isVectorInput
       ? [this.outFeatures]
-      : [...inputTensor.shape.slice(0, -1), this.outFeatures];
+      : [...input.shape.slice(0, -1), this.outFeatures];
 
-    if (GradTensor.isGradTensor(input)) {
-      const input2d = input.reshape([batchSize, this.inFeatures]);
+    // A plain input is tracked (wrapped as a leaf that does not require grad) only when the
+    // weights can receive gradients; otherwise it takes the faster tensor path below.
+    const tracked =
+      GradTensor.isGradTensor(input) ||
+      (isGradEnabled() && (this.weightParam.requiresGrad || !!this.biasParam?.requiresGrad));
+
+    if (tracked) {
+      const input2d = toGradInput(input).reshape([batchSize, this.inFeatures]);
       const output2d = input2d.matmul(this.weightParam.transpose());
       let output = output2d.reshape(outputShape);
-      if (this.useBias && this.biasParam) {
+      if (this.biasParam) {
         output = output.add(this.biasParam);
       }
       return output;
     }
 
-    const input2d = reshape(inputTensor, [batchSize, this.inFeatures]);
+    // Reshape input to 2D: (batchSize, inFeatures) for matrix multiplication
+    const plain = GradTensor.isGradTensor(input) ? input.tensor : input;
+    const input2d = reshape(plain, [batchSize, this.inFeatures]);
 
     // Perform matrix multiplication: (batchSize, inFeatures) @ (inFeatures, outFeatures)
     // Result shape: (batchSize, outFeatures)
-    const output2d = dot(input2d, transpose(this.weight));
+    const output2d = dot(input2d, transpose(this.weightParam.tensor));
 
     // Restore original batch shape, replacing last dimension with outFeatures
-    // If input was 1D, output should be 1D; if (batch, features), output is (batch, outFeatures)
     const output = reshape(output2d, outputShape);
 
     // Add bias term if enabled
-    if (this.useBias && this.bias) {
-      // Broadcasting automatically handles all batch dimensions
+    if (this.biasParam) {
       // Bias shape (outFeatures,) broadcasts to (..., outFeatures)
-      return add(output, this.bias);
+      return add(output, this.biasParam.tensor);
     }
 
-    // Return output without bias
     return output;
   }
 
@@ -279,7 +288,7 @@ export class Linear extends Module {
    * @returns Weight tensor of shape (out_features, in_features)
    */
   getWeight(): Tensor {
-    return this.weight;
+    return this.weightParam.tensor;
   }
 
   /**
@@ -288,7 +297,7 @@ export class Linear extends Module {
    * @returns Bias tensor of shape (out_features,) or undefined if no bias
    */
   getBias(): Tensor | undefined {
-    return this.bias;
+    return this.biasParam?.tensor;
   }
 
   /**

@@ -146,9 +146,9 @@ describe("StringAccessor", () => {
   });
 
   describe("match()", () => {
-    it("checks regex match", () => {
-      const s = new Series(["abc123", "xyz"]);
-      expect(s.str.match(/\d+/).data).toEqual([true, false]);
+    it("checks regex match at the start of the string (re.match semantics)", () => {
+      const s = new Series(["123abc", "abc123", "xyz"]);
+      expect(s.str.match(/\d+/).data).toEqual([true, false, false]);
     });
   });
 

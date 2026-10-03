@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DataFrame } from "../src/dataframe";
 
 /**
- * Comprehensive test suite for DataFrame CSV operations.
+ * Test suite for DataFrame CSV operations.
  * Tests parsing, generation, quoting, and edge cases.
  */
 describe("DataFrame CSV Operations", () => {

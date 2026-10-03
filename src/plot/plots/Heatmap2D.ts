@@ -2,8 +2,9 @@
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
+import { InvalidParameterError, ShapeError } from "../../core";
 import type {
+  ColormapName,
   DataRange,
   Drawable,
   LegendEntry,
@@ -11,12 +12,20 @@ import type {
   RasterDrawContext,
   SvgDrawContext,
 } from "../types";
-import { applyColormap } from "../utils/colormaps";
+import { applyColormap, assertColormapName } from "../utils/colormaps";
 import { normalizeColor } from "../utils/colors";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
 import { isFiniteNumber } from "../utils/validation";
 
 /**
+ * Heatmap of a row-major `rows x cols` matrix.
+ *
+ * By default row 0 is drawn at the bottom of the y range (`origin="lower"` in
+ * matplotlib terms); `options.origin = "upper"` puts it at the top instead, as
+ * matplotlib's `imshow` does by default. Column 0 is always at the left. Values
+ * are mapped linearly from `[vmin, vmax]` onto the colormap and clamped outside
+ * it; non-finite cells are left blank. `extent` places the matrix on a custom
+ * data rectangle.
  * @internal
  */
 export class Heatmap2D implements Drawable {
@@ -26,7 +35,8 @@ export class Heatmap2D implements Drawable {
   readonly cols: number;
   readonly vmin: number;
   readonly vmax: number;
-  readonly colormap: "viridis" | "plasma" | "inferno" | "magma" | "grayscale";
+  readonly colormap: ColormapName;
+  readonly origin: "lower" | "upper";
   readonly xMin: number;
   readonly xMax: number;
   readonly yMin: number;
@@ -34,18 +44,33 @@ export class Heatmap2D implements Drawable {
   readonly label: string | null;
 
   constructor(data: Float64Array, rows: number, cols: number, options: PlotOptions) {
+    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 0 || cols < 0) {
+      throw new InvalidParameterError(
+        `rows and cols must be non-negative integers; received rows=${rows} cols=${cols}`,
+        "shape",
+        { rows, cols }
+      );
+    }
+    if (data.length !== rows * cols) {
+      throw new ShapeError(
+        `heatmap data length (${data.length}) must equal rows * cols (${rows} * ${cols})`
+      );
+    }
     this.data = data;
     this.rows = rows;
     this.cols = cols;
     const colormap = options.colormap ?? "viridis";
-    if (!["viridis", "plasma", "inferno", "magma", "grayscale"].includes(colormap)) {
+    assertColormapName(colormap);
+    this.colormap = colormap;
+    const origin = options.origin ?? "lower";
+    if (origin !== "lower" && origin !== "upper") {
       throw new InvalidParameterError(
-        `colormap must be one of viridis, plasma, inferno, magma, grayscale; received ${colormap}`,
-        "colormap",
-        colormap
+        `origin must be "lower" or "upper"; received ${String(origin)}`,
+        "origin",
+        origin
       );
     }
-    this.colormap = colormap;
+    this.origin = origin;
     this.label = normalizeLegendLabel(options.label);
 
     const extent = options.extent;
@@ -124,6 +149,8 @@ export class Heatmap2D implements Drawable {
 
   drawSVG(ctx: SvgDrawContext): void {
     if (this.rows <= 0 || this.cols <= 0) return;
+    // Cell edges fall on fractional pixels. crispEdges stops browsers from anti-aliasing each
+    // cell separately, which would show hairline seams between neighbouring cells.
     const range = this.vmax - this.vmin;
     const xSpan = this.xMax - this.xMin;
     const ySpan = this.yMax - this.yMin;
@@ -137,14 +164,15 @@ export class Heatmap2D implements Drawable {
         const color = `rgb(${r},${g},${b})`;
         const x0 = ctx.transform.xToPx(this.xMin + (j / this.cols) * xSpan);
         const x1 = ctx.transform.xToPx(this.xMin + ((j + 1) / this.cols) * xSpan);
-        const y0 = ctx.transform.yToPx(this.yMin + (i / this.rows) * ySpan);
-        const y1 = ctx.transform.yToPx(this.yMin + ((i + 1) / this.rows) * ySpan);
+        const slot = this.origin === "upper" ? this.rows - 1 - i : i;
+        const y0 = ctx.transform.yToPx(this.yMin + (slot / this.rows) * ySpan);
+        const y1 = ctx.transform.yToPx(this.yMin + ((slot + 1) / this.rows) * ySpan);
         const w = Math.abs(x1 - x0);
         const h = Math.abs(y1 - y0);
         const rx = Math.min(x0, x1);
         const ry = Math.min(y0, y1);
         ctx.push(
-          `<rect x="${rx.toFixed(2)}" y="${ry.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="${color}" />`
+          `<rect x="${rx.toFixed(2)}" y="${ry.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="${color}" shape-rendering="crispEdges" />`
         );
       }
     }
@@ -164,8 +192,9 @@ export class Heatmap2D implements Drawable {
         const [r, g, b] = applyColormap(intensity, this.colormap);
         const x0 = Math.round(ctx.transform.xToPx(this.xMin + (j / this.cols) * xSpan));
         const x1 = Math.round(ctx.transform.xToPx(this.xMin + ((j + 1) / this.cols) * xSpan));
-        const y0 = Math.round(ctx.transform.yToPx(this.yMin + (i / this.rows) * ySpan));
-        const y1 = Math.round(ctx.transform.yToPx(this.yMin + ((i + 1) / this.rows) * ySpan));
+        const slot = this.origin === "upper" ? this.rows - 1 - i : i;
+        const y0 = Math.round(ctx.transform.yToPx(this.yMin + (slot / this.rows) * ySpan));
+        const y1 = Math.round(ctx.transform.yToPx(this.yMin + ((slot + 1) / this.rows) * ySpan));
         const w = Math.abs(x1 - x0);
         const h = Math.abs(y1 - y0);
         const rx = Math.min(x0, x1);

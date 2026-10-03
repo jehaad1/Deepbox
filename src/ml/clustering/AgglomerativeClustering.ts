@@ -1,26 +1,278 @@
 /**
- * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ * @see {@link https://deepbox.dev/docs/ml-clustering | Deepbox documentation}
  */
 
-import { InvalidParameterError, NotFittedError } from "../../core";
+import { InvalidParameterError, MemoryError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { validateUnsupervisedFitInputs } from "../_validation";
+import {
+  toFloat64View,
+  validatePredictInputs,
+  validateUnsupervisedFitInputs,
+} from "../_validation";
 import type { Clusterer } from "../base";
 
 type Linkage = "single" | "complete" | "average" | "ward";
+
+/** Largest condensed distance matrix (in doubles) the implementation will allocate (4 GiB). */
+const MAX_CONDENSED_ENTRIES = 2 ** 29;
+
+/**
+ * Dendrogram of a hierarchical clustering. Row `i` of `children` holds the two
+ * nodes merged at step `i`; ids below `n` are samples, id `n + i` is the cluster
+ * created by step `i`. `distances[i]` is the merge height (non-decreasing).
+ */
+type Dendrogram = {
+  readonly children: Int32Array;
+  readonly distances: Float64Array;
+};
+
+/**
+ * Build the dendrogram with the nearest-neighbor-chain algorithm (O(n^2) time,
+ * O(n^2 / 2) memory). Valid for the four supported linkages because all of them
+ * are reducible. Merge order and node ids follow SciPy's `linkage` output.
+ */
+function buildDendrogram(data: Float64Array, n: number, d: number, linkage: Linkage): Dendrogram {
+  const nMerges = n - 1;
+  const children = new Int32Array(nMerges * 2);
+  const distances = new Float64Array(nMerges);
+  if (nMerges === 0) return { children, distances };
+
+  const condensedSize = (n * (n - 1)) / 2;
+  if (condensedSize > MAX_CONDENSED_ENTRIES) {
+    throw new MemoryError(
+      `AgglomerativeClustering needs a distance matrix of ${condensedSize} entries for n_samples=${n}, which is too large`,
+      { requestedBytes: condensedSize * 8 }
+    );
+  }
+
+  const ward = linkage === "ward";
+  // Index of the pair (i, j), i < j, in the condensed matrix.
+  const pos = (i: number, j: number): number =>
+    i < j ? n * i - (i * (i + 1)) / 2 + j - i - 1 : n * j - (j * (j + 1)) / 2 + i - j - 1;
+
+  // Ward works on squared Euclidean distances (Lance-Williams); the others on Euclidean distances.
+  let dist: Float64Array;
+  try {
+    dist = new Float64Array(condensedSize);
+  } catch (error) {
+    throw new MemoryError(
+      `AgglomerativeClustering could not allocate a distance matrix of ${condensedSize} entries for n_samples=${n}`,
+      { requestedBytes: condensedSize * 8, cause: error }
+    );
+  }
+  let p = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const iBase = i * d;
+    for (let j = i + 1; j < n; j++) {
+      const jBase = j * d;
+      let s = 0;
+      for (let f = 0; f < d; f++) {
+        const diff = (data[iBase + f] as number) - (data[jBase + f] as number);
+        s += diff * diff;
+      }
+      dist[p++] = ward ? s : Math.sqrt(s);
+    }
+  }
+
+  const size = new Float64Array(n).fill(1);
+  const active = new Uint8Array(n).fill(1);
+  const chain = new Int32Array(n);
+  let chainLength = 0;
+  const mx = new Int32Array(nMerges);
+  const my = new Int32Array(nMerges);
+  const md = new Float64Array(nMerges);
+
+  for (let step = 0; step < nMerges; step++) {
+    if (chainLength === 0) {
+      for (let i = 0; i < n; i++) {
+        if (active[i] === 1) {
+          chain[0] = i;
+          chainLength = 1;
+          break;
+        }
+      }
+    }
+
+    let x = 0;
+    let y = 0;
+    let current = Infinity;
+    for (;;) {
+      x = chain[chainLength - 1] as number;
+      y = -1;
+      current = Infinity;
+      // Prefer the previous chain element on ties so the chain terminates.
+      if (chainLength > 1) {
+        y = chain[chainLength - 2] as number;
+        current = dist[pos(x, y)] as number;
+      }
+      for (let i = 0; i < n; i++) {
+        if (active[i] === 0 || i === x) continue;
+        const v = dist[pos(x, i)] as number;
+        if (v < current) {
+          current = v;
+          y = i;
+        }
+      }
+      if (chainLength > 1 && y === chain[chainLength - 2]) break;
+      chain[chainLength++] = y;
+    }
+    chainLength -= 2;
+
+    if (x > y) {
+      const t = x;
+      x = y;
+      y = t;
+    }
+    const nx = size[x] as number;
+    const ny = size[y] as number;
+    mx[step] = x;
+    my[step] = y;
+    md[step] = ward ? Math.sqrt(Math.max(0, current)) : current;
+
+    // The merged cluster keeps slot y; slot x is retired.
+    active[x] = 0;
+    size[y] = nx + ny;
+    for (let i = 0; i < n; i++) {
+      if (active[i] === 0 || i === y) continue;
+      const dxi = dist[pos(x, i)] as number;
+      const dyi = dist[pos(y, i)] as number;
+      let updated: number;
+      if (linkage === "single") {
+        updated = dxi < dyi ? dxi : dyi;
+      } else if (linkage === "complete") {
+        updated = dxi > dyi ? dxi : dyi;
+      } else if (linkage === "average") {
+        updated = (nx * dxi + ny * dyi) / (nx + ny);
+      } else {
+        const ni = size[i] as number;
+        const t = nx + ny + ni;
+        updated = ((ni + nx) * dxi + (ni + ny) * dyi - ni * current) / t;
+        if (updated < 0) updated = 0;
+      }
+      dist[pos(y, i)] = updated;
+    }
+  }
+
+  // Order merges by height (stable) and give clusters their dendrogram ids.
+  const order = Array.from({ length: nMerges }, (_, i) => i);
+  order.sort((a, b) => (md[a] as number) - (md[b] as number) || a - b);
+
+  const parent = new Int32Array(2 * n - 1);
+  for (let i = 0; i < parent.length; i++) parent[i] = i;
+  const find = (v: number): number => {
+    let root = v;
+    while (parent[root] !== root) root = parent[root] as number;
+    while (parent[v] !== root) {
+      const nextNode = parent[v] as number;
+      parent[v] = root;
+      v = nextNode;
+    }
+    return root;
+  };
+
+  for (let k = 0; k < nMerges; k++) {
+    const m = order[k] as number;
+    const a = find(mx[m] as number);
+    const b = find(my[m] as number);
+    children[2 * k] = a < b ? a : b;
+    children[2 * k + 1] = a < b ? b : a;
+    distances[k] = md[m] as number;
+    parent[a] = n + k;
+    parent[b] = n + k;
+  }
+  return { children, distances };
+}
+
+/**
+ * Cut the dendrogram into `nClusters` clusters (same procedure and label order as
+ * scikit-learn's `_hc_cut`: repeatedly split the most recently created cluster).
+ */
+function cutDendrogram(nClusters: number, children: Int32Array, nLeaves: number): Int32Array {
+  const labels = new Int32Array(nLeaves);
+  if (nLeaves === 1 || nClusters === 1) return labels;
+
+  // Min-heap of negated node ids, laid out exactly like Python's heapq.
+  const heap: number[] = [-(2 * nLeaves - 2)];
+  const siftDown = (startPos: number, startItemPos: number): void => {
+    let position = startItemPos;
+    const item = heap[position] as number;
+    while (position > startPos) {
+      const parentPos = (position - 1) >> 1;
+      const parentVal = heap[parentPos] as number;
+      if (item < parentVal) {
+        heap[position] = parentVal;
+        position = parentPos;
+        continue;
+      }
+      break;
+    }
+    heap[position] = item;
+  };
+  const siftUp = (startItemPos: number): void => {
+    const end = heap.length;
+    let position = startItemPos;
+    const item = heap[position] as number;
+    let child = 2 * position + 1;
+    while (child < end) {
+      const right = child + 1;
+      if (right < end && !((heap[child] as number) < (heap[right] as number))) child = right;
+      heap[position] = heap[child] as number;
+      position = child;
+      child = 2 * position + 1;
+    }
+    heap[position] = item;
+    siftDown(startItemPos, position);
+  };
+  const push = (item: number): void => {
+    heap.push(item);
+    siftDown(0, heap.length - 1);
+  };
+  const pushPop = (item: number): void => {
+    if (heap.length > 0 && (heap[0] as number) < item) {
+      heap[0] = item;
+      siftUp(0);
+    }
+  };
+
+  for (let i = 0; i < nClusters - 1; i++) {
+    const row = -(heap[0] as number) - nLeaves;
+    push(-(children[2 * row] as number));
+    pushPop(-(children[2 * row + 1] as number));
+  }
+
+  const stack: number[] = [];
+  for (let c = 0; c < heap.length; c++) {
+    stack.push(-(heap[c] as number));
+    while (stack.length > 0) {
+      const node = stack.pop() as number;
+      if (node < nLeaves) {
+        labels[node] = c;
+      } else {
+        const row = node - nLeaves;
+        stack.push(children[2 * row] as number, children[2 * row + 1] as number);
+      }
+    }
+  }
+  return labels;
+}
 
 /**
  * Agglomerative (hierarchical) clustering.
  *
  * Bottom-up clustering that starts with each sample as its own cluster
  * and iteratively merges the closest pair of clusters until `nClusters`
- * clusters remain.
+ * clusters remain (or, with `distanceThreshold`, until the closest pair is
+ * at least that far apart).
  *
  * Supported linkage criteria:
  * - **single**: minimum distance between clusters
  * - **complete**: maximum distance between clusters
  * - **average**: average distance between clusters
  * - **ward**: minimizes the total within-cluster variance (Euclidean only)
+ *
+ * Distances are Euclidean. The dendrogram is built in O(n^2) time and
+ * O(n^2) memory, so very large inputs (tens of thousands of samples) are
+ * not practical.
  *
  * @example
  * ```ts
@@ -32,211 +284,169 @@ type Linkage = "single" | "complete" | "average" | "ward";
  * agg.fit(X);
  * console.log(agg.labels);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-clustering | Deepbox Clustering}
  */
 export class AgglomerativeClustering implements Clusterer {
-  private nClusters: number;
+  private nClustersParam: number | null;
   private linkage: Linkage;
+  private distanceThreshold: number | undefined;
 
   private labels_?: Tensor;
-  private fitData_?: number[][];
+  private children_?: Int32Array;
+  private distances_?: Float64Array;
+  private nClustersFitted_ = 0;
+  private nFeaturesIn_ = 0;
+  // Training samples and per-cluster centroids (flat, row-major), kept for predict().
+  private fitData_?: Float64Array;
+  private centers_?: Float64Array;
   private fitted = false;
 
+  /**
+   * Create an agglomerative clustering model.
+   *
+   * @param options - Configuration options
+   * @param options.nClusters - Number of clusters to find, integer >= 1 (default: 2). Pass `null` to use `distanceThreshold` instead.
+   * @param options.linkage - "single", "complete", "average" or "ward" (default: "ward")
+   * @param options.distanceThreshold - Merge distance at or above which clusters are not joined. When set, `nClusters` defaults to `null`; setting both is an error.
+   * @throws {InvalidParameterError} If an option is out of range, or if both or neither of `nClusters` and `distanceThreshold` are set
+   */
   constructor(
     options: {
-      readonly nClusters?: number;
+      readonly nClusters?: number | null;
       readonly linkage?: Linkage;
+      readonly distanceThreshold?: number;
     } = {}
   ) {
-    this.nClusters = options.nClusters ?? 2;
+    this.distanceThreshold = options.distanceThreshold;
+    this.nClustersParam =
+      options.nClusters === undefined
+        ? options.distanceThreshold === undefined
+          ? 2
+          : null
+        : options.nClusters;
     this.linkage = options.linkage ?? "ward";
 
-    if (!Number.isInteger(this.nClusters) || this.nClusters < 1) {
+    if (
+      this.nClustersParam !== null &&
+      (!Number.isInteger(this.nClustersParam) || this.nClustersParam < 1)
+    ) {
       throw new InvalidParameterError(
         "nClusters must be an integer >= 1",
         "nClusters",
-        this.nClusters
+        this.nClustersParam
+      );
+    }
+    AgglomerativeClustering.checkLinkage(this.linkage);
+    if (
+      this.distanceThreshold !== undefined &&
+      (!Number.isFinite(this.distanceThreshold) || this.distanceThreshold < 0)
+    ) {
+      throw new InvalidParameterError(
+        "distanceThreshold must be a finite number >= 0",
+        "distanceThreshold",
+        this.distanceThreshold
+      );
+    }
+    this.checkClusterTarget();
+  }
+
+  private static checkLinkage(value: unknown): void {
+    if (value !== "single" && value !== "complete" && value !== "average" && value !== "ward") {
+      throw new InvalidParameterError(
+        `linkage must be "single", "complete", "average", or "ward"`,
+        "linkage",
+        value
       );
     }
   }
 
+  /** Exactly one of `nClusters` and `distanceThreshold` must be set. */
+  private checkClusterTarget(): void {
+    if (this.nClustersParam === null && this.distanceThreshold === undefined) {
+      throw new InvalidParameterError(
+        "Set either nClusters or distanceThreshold",
+        "nClusters",
+        this.nClustersParam
+      );
+    }
+    if (this.nClustersParam !== null && this.distanceThreshold !== undefined) {
+      throw new InvalidParameterError(
+        "nClusters and distanceThreshold cannot both be set; pass nClusters: null to use distanceThreshold",
+        "distanceThreshold",
+        this.distanceThreshold
+      );
+    }
+  }
+
+  /**
+   * Build the cluster hierarchy of X and cut it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (exists for API compatibility)
+   * @returns this - The fitted estimator
+   * @throws {ShapeError} If X is not 2D
+   * @throws {DataValidationError} If X is empty or contains NaN/Inf values
+   * @throws {InvalidParameterError} If there are fewer samples than `nClusters`
+   * @throws {MemoryError} If the pairwise distance matrix would be too large
+   */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
+    this.checkClusterTarget();
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
 
-    if (nSamples < this.nClusters) {
+    if (this.nClustersParam !== null && nSamples < this.nClustersParam) {
       throw new InvalidParameterError(
-        `n_samples=${nSamples} should be >= n_clusters=${this.nClusters}`,
+        `n_samples=${nSamples} should be >= n_clusters=${this.nClustersParam}`,
         "nClusters",
-        this.nClusters
+        this.nClustersParam
       );
     }
 
-    // Extract data
-    const data: number[][] = [];
+    // Own the training rows so later edits of X cannot change predict().
+    const data = toFloat64View(X).slice();
+    const { children, distances } = buildDendrogram(data, nSamples, nFeatures, this.linkage);
+
+    let nClusters: number;
+    if (this.nClustersParam !== null) {
+      nClusters = this.nClustersParam;
+    } else {
+      const threshold = this.distanceThreshold as number;
+      nClusters = 1;
+      for (let i = 0; i < distances.length; i++) {
+        if ((distances[i] as number) >= threshold) nClusters++;
+      }
+    }
+
+    const labels = cutDendrogram(nClusters, children, nSamples);
+
+    const centers = new Float64Array(nClusters * nFeatures);
+    const counts = new Float64Array(nClusters);
     for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
+      const c = labels[i] as number;
+      counts[c] = (counts[c] as number) + 1;
+      for (let f = 0; f < nFeatures; f++) {
+        centers[c * nFeatures + f] =
+          (centers[c * nFeatures + f] as number) + (data[i * nFeatures + f] as number);
       }
-      data.push(row);
     }
-
-    // Each sample starts as its own cluster
-    // clusterMembers[c] = array of original sample indices in cluster c
-    let clusters: number[][] = data.map((_, i) => [i]);
-
-    // Precompute pairwise distances
-    const distMatrix = new Float64Array(nSamples * nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      for (let j = i + 1; j < nSamples; j++) {
-        let d = 0;
-        for (let k = 0; k < nFeatures; k++) {
-          const diff = (data[i]![k] ?? 0) - (data[j]![k] ?? 0);
-          d += diff * diff;
-        }
-        d = Math.sqrt(d);
-        distMatrix[i * nSamples + j] = d;
-        distMatrix[j * nSamples + i] = d;
+    for (let c = 0; c < nClusters; c++) {
+      const cnt = counts[c] as number;
+      for (let f = 0; f < nFeatures; f++) {
+        centers[c * nFeatures + f] = (centers[c * nFeatures + f] as number) / cnt;
       }
     }
 
-    // Merge until we reach the desired number of clusters
-    while (clusters.length > this.nClusters) {
-      let bestI = 0;
-      let bestJ = 1;
-      let bestDist = Infinity;
-
-      for (let i = 0; i < clusters.length; i++) {
-        for (let j = i + 1; j < clusters.length; j++) {
-          const d = this.clusterDistance(
-            clusters[i]!,
-            clusters[j]!,
-            distMatrix,
-            nSamples,
-            data,
-            nFeatures
-          );
-          if (d < bestDist) {
-            bestDist = d;
-            bestI = i;
-            bestJ = j;
-          }
-        }
-      }
-
-      // Merge bestJ into bestI
-      const merged = clusters[bestI]!.concat(clusters[bestJ]!);
-      const newClusters: number[][] = [];
-      for (let i = 0; i < clusters.length; i++) {
-        if (i === bestI) {
-          newClusters.push(merged);
-        } else if (i !== bestJ) {
-          newClusters.push(clusters[i]!);
-        }
-      }
-      clusters = newClusters;
-    }
-
-    // Assign labels
-    const labelArr = new Array<number>(nSamples);
-    for (let c = 0; c < clusters.length; c++) {
-      for (const idx of clusters[c]!) {
-        labelArr[idx] = c;
-      }
-    }
-
-    this.labels_ = tensor(labelArr, { dtype: "int32" });
+    this.labels_ = tensor(labels);
+    this.children_ = children;
+    this.distances_ = distances;
+    this.nClustersFitted_ = nClusters;
+    this.nFeaturesIn_ = nFeatures;
     this.fitData_ = data;
+    this.centers_ = centers;
     this.fitted = true;
     return this;
-  }
-
-  private clusterDistance(
-    a: number[],
-    b: number[],
-    distMatrix: Float64Array,
-    n: number,
-    data: number[][],
-    nFeatures: number
-  ): number {
-    if (this.linkage === "single") {
-      let minD = Infinity;
-      for (const i of a) {
-        for (const j of b) {
-          const d = distMatrix[i * n + j] ?? 0;
-          if (d < minD) minD = d;
-        }
-      }
-      return minD;
-    }
-
-    if (this.linkage === "complete") {
-      let maxD = -Infinity;
-      for (const i of a) {
-        for (const j of b) {
-          const d = distMatrix[i * n + j] ?? 0;
-          if (d > maxD) maxD = d;
-        }
-      }
-      return maxD;
-    }
-
-    if (this.linkage === "average") {
-      let total = 0;
-      let count = 0;
-      for (const i of a) {
-        for (const j of b) {
-          total += distMatrix[i * n + j] ?? 0;
-          count++;
-        }
-      }
-      return count > 0 ? total / count : 0;
-    }
-
-    // Ward's linkage: increase in total within-cluster variance
-    const centroidA = this.centroid(a, data, nFeatures);
-    const centroidB = this.centroid(b, data, nFeatures);
-    const merged = a.concat(b);
-    const centroidM = this.centroid(merged, data, nFeatures);
-
-    let varA = 0;
-    for (const i of a) {
-      for (let k = 0; k < nFeatures; k++) {
-        const d = (data[i]![k] ?? 0) - (centroidA[k] ?? 0);
-        varA += d * d;
-      }
-    }
-    let varB = 0;
-    for (const i of b) {
-      for (let k = 0; k < nFeatures; k++) {
-        const d = (data[i]![k] ?? 0) - (centroidB[k] ?? 0);
-        varB += d * d;
-      }
-    }
-    let varM = 0;
-    for (const i of merged) {
-      for (let k = 0; k < nFeatures; k++) {
-        const d = (data[i]![k] ?? 0) - (centroidM[k] ?? 0);
-        varM += d * d;
-      }
-    }
-
-    return varM - varA - varB;
-  }
-
-  private centroid(indices: number[], data: number[][], nFeatures: number): number[] {
-    const c = new Array<number>(nFeatures).fill(0);
-    for (const i of indices) {
-      for (let k = 0; k < nFeatures; k++) {
-        c[k] = (c[k] ?? 0) + (data[i]![k] ?? 0);
-      }
-    }
-    const n = indices.length;
-    for (let k = 0; k < nFeatures; k++) {
-      c[k] = (c[k] ?? 0) / n;
-    }
-    return c;
   }
 
   /**
@@ -247,51 +457,61 @@ export class AgglomerativeClustering implements Clusterer {
    * @param X - Samples of shape (n_samples, n_features)
    * @returns Cluster labels of shape (n_samples,)
    * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X is not 2D or has a different number of features than the training data
+   * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
     if (!this.fitted || !this.labels_ || !this.fitData_) {
       throw new NotFittedError("AgglomerativeClustering must be fitted before prediction");
     }
+    validatePredictInputs(X, this.nFeaturesIn_, "AgglomerativeClustering");
 
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const trainData = this.fitData_;
-    const trainLabels = this.labels_;
-    const nTrain = trainData.length;
-    const result: number[] = [];
+    const d = this.nFeaturesIn_;
+    const data = toFloat64View(X);
+    const train = this.fitData_;
+    const nTrain = train.length / d;
+    const trainLabels = this.labels_.data as Int32Array;
+    const trainOffset = this.labels_.offset;
+    const result = new Int32Array(nSamples);
 
     for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-
       let bestDist = Infinity;
       let bestLabel = 0;
       for (let t = 0; t < nTrain; t++) {
-        const trainRow = trainData[t];
-        if (!trainRow) continue;
         let dist = 0;
-        for (let f = 0; f < nFeatures; f++) {
-          const diff = (row[f] ?? 0) - (trainRow[f] ?? 0);
+        for (let f = 0; f < d; f++) {
+          const diff = (data[i * d + f] as number) - (train[t * d + f] as number);
           dist += diff * diff;
         }
         if (dist < bestDist) {
           bestDist = dist;
-          bestLabel = Number(trainLabels.data[trainLabels.offset + t]);
+          bestLabel = trainLabels[trainOffset + t] as number;
         }
       }
-      result.push(bestLabel);
+      result[i] = bestLabel;
     }
 
-    return tensor(result, { dtype: "int32" });
+    return tensor(result);
   }
 
+  /**
+   * Fit the model and return the cluster labels of the training samples.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (exists for API compatibility)
+   * @returns Cluster labels of shape (n_samples,)
+   */
   fitPredict(X: Tensor, _y?: Tensor): Tensor {
     this.fit(X);
-    return this.labels_!;
+    return this.labels_ as Tensor;
   }
 
+  /**
+   * Cluster labels of the training samples.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get labels(): Tensor {
     if (!this.fitted || !this.labels_) {
       throw new NotFittedError("AgglomerativeClustering must be fitted to access labels");
@@ -299,75 +519,125 @@ export class AgglomerativeClustering implements Clusterer {
     return this.labels_;
   }
 
+  /**
+   * Centroid (mean of the training samples) of every cluster, indexed by label.
+   *
+   * @returns Tensor of shape (n_clusters, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get clusterCenters(): Tensor {
-    if (!this.fitted || !this.fitData_ || !this.labels_) {
+    if (!this.fitted || !this.centers_) {
       throw new NotFittedError("AgglomerativeClustering must be fitted to access cluster centers");
     }
-    // Compute centroids from fitted data
-    const nFeatures = this.fitData_[0]?.length ?? 0;
-    const clusterMap = new Map<number, number[][]>();
-    for (let i = 0; i < this.fitData_.length; i++) {
-      const label = Number(this.labels_.data[this.labels_.offset + i]);
-      const existing = clusterMap.get(label);
-      const row = this.fitData_[i];
-      if (row) {
-        if (existing) {
-          existing.push(row);
-        } else {
-          clusterMap.set(label, [row]);
-        }
-      }
-    }
-    const sortedLabels = [...clusterMap.keys()].sort((a, b) => a - b);
-    const centers: number[][] = [];
-    for (const label of sortedLabels) {
-      const members = clusterMap.get(label);
-      if (!members || members.length === 0) continue;
-      const centroid = new Array<number>(nFeatures).fill(0);
-      for (const m of members) {
-        for (let f = 0; f < nFeatures; f++) {
-          centroid[f] = (centroid[f] ?? 0) + (m[f] ?? 0);
-        }
-      }
-      for (let f = 0; f < nFeatures; f++) {
-        centroid[f] = (centroid[f] ?? 0) / members.length;
-      }
-      centers.push(centroid);
-    }
-    return tensor(centers);
+    return tensor(this.centers_.slice()).reshape([this.nClustersFitted_, this.nFeaturesIn_]);
   }
 
+  /**
+   * Number of clusters found.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nClusters(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("AgglomerativeClustering must be fitted to access nClusters");
+    }
+    return this.nClustersFitted_;
+  }
+
+  /**
+   * Number of training samples (leaves of the dendrogram).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nLeaves(): number {
+    if (!this.fitted || !this.labels_) {
+      throw new NotFittedError("AgglomerativeClustering must be fitted to access nLeaves");
+    }
+    return this.labels_.size;
+  }
+
+  /**
+   * Children of every non-leaf node of the dendrogram. Row `i` lists the two
+   * nodes merged at step `i`; ids below `n_samples` are samples and id
+   * `n_samples + i` is the cluster formed at step `i`.
+   *
+   * @returns Int32 tensor of shape (n_samples - 1, 2)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get children(): Tensor {
+    if (!this.fitted || !this.children_) {
+      throw new NotFittedError("AgglomerativeClustering must be fitted to access children");
+    }
+    return tensor(this.children_.slice()).reshape([this.children_.length / 2, 2]);
+  }
+
+  /**
+   * Distance at which every merge of the dendrogram happened (for ward linkage,
+   * the Ward merge height sqrt(2 * n_a * n_b / (n_a + n_b)) * ||c_a - c_b||).
+   *
+   * @returns Float64 tensor of shape (n_samples - 1,), non-decreasing
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get distances(): Tensor {
+    if (!this.fitted || !this.distances_) {
+      throw new NotFittedError("AgglomerativeClustering must be fitted to access distances");
+    }
+    return tensor(this.distances_.slice());
+  }
+
+  /**
+   * Get hyperparameters for this estimator.
+   *
+   * @returns Object containing all hyperparameters
+   */
   getParams(): Record<string, unknown> {
-    return { nClusters: this.nClusters, linkage: this.linkage };
+    return {
+      nClusters: this.nClustersParam,
+      linkage: this.linkage,
+      distanceThreshold: this.distanceThreshold,
+    };
   }
 
+  /**
+   * Set the parameters of this estimator.
+   *
+   * @param params - Parameters to set (nClusters, linkage, distanceThreshold)
+   * @returns this
+   * @throws {InvalidParameterError} If any parameter value is invalid
+   */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nClusters":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+          if (
+            value !== null &&
+            (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+          ) {
             throw new InvalidParameterError(
-              "nClusters must be an integer >= 1",
+              "nClusters must be an integer >= 1 or null",
               "nClusters",
               value
             );
           }
-          this.nClusters = value;
+          this.nClustersParam = value;
           break;
         case "linkage":
+          AgglomerativeClustering.checkLinkage(value);
+          this.linkage = value as Linkage;
+          break;
+        case "distanceThreshold":
           if (
-            value !== "single" &&
-            value !== "complete" &&
-            value !== "average" &&
-            value !== "ward"
+            value !== undefined &&
+            value !== null &&
+            (typeof value !== "number" || !Number.isFinite(value) || value < 0)
           ) {
             throw new InvalidParameterError(
-              `linkage must be "single", "complete", "average", or "ward"`,
-              "linkage",
+              "distanceThreshold must be a finite number >= 0",
+              "distanceThreshold",
               value
             );
           }
-          this.linkage = value;
+          this.distanceThreshold = value ?? undefined;
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);

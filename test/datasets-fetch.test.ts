@@ -99,6 +99,9 @@ beforeAll(async () => {
       makeTar([
         { name: "cifar-10-batches-bin/data_batch_1.bin", data: cifarBatch([3, 5]) },
         { name: "cifar-10-batches-bin/data_batch_2.bin", data: cifarBatch([9]) },
+        { name: "cifar-10-batches-bin/data_batch_3.bin", data: cifarBatch([2]) },
+        { name: "cifar-10-batches-bin/data_batch_4.bin", data: cifarBatch([4]) },
+        { name: "cifar-10-batches-bin/data_batch_5.bin", data: cifarBatch([6]) },
         { name: "cifar-10-batches-bin/test_batch.bin", data: cifarBatch([1]) },
       ])
     )
@@ -201,8 +204,8 @@ describe("fetchMNIST", () => {
 describe("fetchCIFAR10", () => {
   it("downloads and extracts train batches from the tar", async () => {
     const ds = await fetchCIFAR10({ baseUrl: base });
-    expect(ds.data.shape).toEqual([3, 3072]);
-    expect(ds.target.toArray()).toEqual([3, 5, 9]);
+    expect(ds.data.shape).toEqual([6, 3072]);
+    expect(ds.target.toArray()).toEqual([3, 5, 9, 2, 4, 6]);
     expect(ds.classNames).toHaveLength(10);
     expect(ds.imageDims).toEqual([32, 32, 3]);
   });

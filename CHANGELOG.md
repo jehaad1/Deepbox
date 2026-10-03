@@ -5,6 +5,221 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-03
+
+A quality release. Every source file was reviewed line by line, and the results
+were checked against NumPy, SciPy, scikit-learn, PyTorch and pandas. About 1,500
+issues were fixed, many of them wrong results in 1.0.0. The release also makes
+the API more consistent: tensors share one method surface, training works on
+plain tensors, mixed dtypes promote instead of throwing, and every export has a
+camelCase name.
+
+No export, option or method was removed or renamed. Some results change because
+they were wrong before, some dtypes change because of the new dtype rules, and
+one type changed (`forward(Tensor)` on layers); all of this is listed under
+"Upgrading from 1.0".
+
+### Upgrading from 1.0
+
+- **Dtypes.** Float operations keep the input float dtype: a float32 tensor stays
+  float32 through `exp`, `sqrt`, `sum`, `mean`, activations and the rest (1.0.0
+  returned float64). Integer input to an operation with fractional results
+  (`mean`, `div`, `exp`, `softmax`, ...) gives float32. Integer reductions keep
+  the integer dtype. Index results (`argsort`, `argmax`, `digitize`,
+  `searchsorted`, `nonzero`) are int32.
+- **Promotion.** Binary operations on tensors of different dtypes promote like
+  PyTorch (int32 with float32 gives float32, float32 with float64 gives float64)
+  instead of throwing `DTypeError`. JavaScript numbers never upcast a tensor.
+- **Training.** `module.forward(tensor)` returns a `GradTensor` that tracks the
+  weights when grad mode is on and the module has trainable parameters, so data
+  no longer has to be wrapped in `parameter()`. Inside `noGrad()` it returns a
+  plain `Tensor`. Parameter-free layers (pooling, dropout, activations,
+  normalization without affine parameters) return a plain `Tensor` for plain
+  input: read the result directly instead of through `.tensor`. In TypeScript,
+  `layer.forward(tensor)` is now typed `AnyTensor` (`Tensor | GradTensor`)
+  instead of `Tensor`. Code that annotated the result as `Tensor` should use
+  `AnyTensor`; custom modules can declare a single
+  `forward(x: AnyTensor): AnyTensor`.
+- **Layers** compute in their parameter dtype and cast the input, as `Linear`
+  already did. Weight initialization now matches PyTorch, so seeded models start
+  from different weights.
+- **Optimizers** skip parameters that have no gradient (PyTorch behavior)
+  instead of throwing `NotFittedError`.
+- **Seeded randomness.** Several modules replaced weak private generators with
+  the library's seeded generator (trees and forests, bagging, k-means, splitters,
+  `QuantileTransformer`, `DataFrame.sample`). The same seed still gives the same
+  result, but not the same result as 1.0.0.
+- **Stricter input checks.** Many functions now throw a typed error where 1.0.0
+  returned silent garbage: NaN or infinite input to estimators, invalid buffers
+  in `readParquet` and `readXlsx`, a truncated CIFAR-10 download, string or
+  complex input to numeric code, and invalid parameters. A few error classes
+  changed to the more precise one (for example `solve_banded` throws
+  `InvalidParameterError` for an invalid band width).
+- **SpectralNorm** registers the wrapped module as the child `module`, so state
+  dicts saved from 1.0.0 models that contain `SpectralNorm` do not load.
+- **Statistical tests** follow current SciPy: `mannwhitneyu` and `wilcoxon` use
+  exact p-values for small samples, the `mannwhitneyu` statistic is U1, and
+  several p-values and statistics were corrected (see Fixed).
+
+### Added
+
+- **Tensor methods.** `Tensor` and `GradTensor` share one method surface, so code
+  reads the same with or without gradient tracking: `t.add(1).mul(2).sum()`,
+  `t.T`, `t.matmul(w)`, `t.softmax(-1)`, `t.argmax(1)`, comparisons, rounding,
+  `sort`, `flip`, `squeeze`, `unsqueeze`, `gather`, `item()` and more. Plain
+  tensors also have `requiresGrad` (false), `grad` (null) and a `backward()` that
+  explains why it cannot run.
+- **ndarray:** `argmax`, `argmin`, `nonzero`, `argwhere`, `countNonzero`,
+  `takeAlongAxis`, `putAlongAxis`, `nanvar`, `nanmedian`, `nanprod`,
+  `nanargmin`, `nanargmax`, `nancumsum`, `nanquantile`; `unique` options
+  (`returnIndex`, `returnInverse`, `returnCounts`, `axis`); batched `cross`;
+  `dot` and `matmul` broadcast batch dimensions like `numpy.matmul`;
+  activations `relu6`, `selu`, `celu`, `softsign`, `hardsigmoid`, `hardswish`,
+  `logSigmoid`, `hardshrink`, `softshrink`; exact GELU through
+  `gelu(t, { approximate: "none" })`. New differentiable `GradTensor` methods
+  (`sin`, `cos`, `tan`, `log1p`, `expm1`, `maximum`, `minimum`, `cumsum`,
+  `prod`, `std`, `var`, `softplus`, `mish`, `swish`, `selu`, `clone`) and
+  multi-axis reductions.
+- **core:** `promoteTypes`.
+- **nn:** `MultiheadAttention` options `needWeights` and `keyPaddingMask`;
+  Transformer layers `activation` (`"relu"` or `"gelu"`) and `normFirst`;
+  convolution `dilation`, `groups` and `padding: "same" | "valid"`; pooling
+  `ceilMode`; layers `ReLU6`, `LogSigmoid`, `CELU`, `Softshrink`, `Hardshrink`
+  and `Threshold`; `Trainer` options `accumulationSteps` and
+  `restoreBestWeights`; `tripletMarginLoss` supports autograd and a `swap`
+  option; loss functions accept the output of `Module.forward` directly.
+- **metrics:** multiclass `rocAucScore` (`multiClass: "ovr" | "ovo"`),
+  `logLoss`, `jaccardScore` and `matthewsCorrcoef`; an options object
+  `{ average, labels, zeroDivision, sampleWeight }` for `precision`, `recall`,
+  `f1Score`, `fbetaScore` and `jaccardScore`; `sampleWeight` for the common
+  classification and regression metrics; `meanAbsolutePercentageError`
+  (scikit-learn semantics, a fraction).
+- **dataframe:** `fillna` with per-column values and `method: "ffill" | "bfill"`,
+  plus `ffill()` and `bfill()`; `corr` with `method` (`"pearson"`,
+  `"spearman"`, `"kendall"`) and `minPeriods`; `sample` with `frac`, `replace`
+  and `weights`; `groupBy` with `getGroup`, `nunique`, `quantile`, `transform`
+  and named aggregation; `rolling` with `minPeriods` and `center`; `concat` with
+  `join` and `ignoreIndex`; `valueCounts` with `normalize` and `dropna`.
+- **ml:** trees and forests accept `sampleWeight`, `classWeight`,
+  `minImpurityDecrease`, `maxLeafNodes` and `ccpAlpha`; every estimator has
+  `clone()`; `Ridge` with `alpha: 0` on rank-deficient input returns the
+  minimum-norm solution, as scikit-learn does.
+- **stats:** an `alternative` option on `pearsonr`, `spearmanr`, `kendalltau`
+  and `pointbiserialr`; `kendalltau` `variant` and `method`; `wilcoxon`
+  `zeroMethod`; `benjaminiYekutieli` and `hochberg`.
+- **datasets:** `fetch20Newsgroups` and `fetchIMDB` load the official archives
+  by default (the 1.0.0 default URLs returned 404).
+- **Names.** Every snake_case export now has a camelCase name, for example
+  `matrixPower`, `blockDiag`, `solveBanded`, `toDatetime`, `dateRange`,
+  `crossValScore`, `crossValidate`, `exportText`, `multivariateNormal`,
+  `studentT`, `gaussianKde`, `ttest1samp`, `checkXY` and `checkArray`. The same
+  holds for methods (`DataFrame.dropDuplicates`, `resetIndex`, `setIndex`,
+  `pctChange`, `valueCounts`, `memoryUsage` and `pivotTable`; the `dt` accessor's
+  `isLeapYear`, `dayName`, `dayOfWeek` and friends; `str.getDummies`;
+  `style.highlightMax`, `highlightMin`, `highlightNull` and `backgroundGradient`)
+  and for options (`leftOn` and `rightOn` in `DataFrame.merge`, `bwMethod` in
+  `kdeplot`). When both spellings of an option are given, the camelCase one wins.
+- **Tooling:** `typecheck:docs` type-checks every example and project against
+  the source, and `prose:check` keeps em dashes out of the repository. Both run
+  in `validate:all`.
+
+### Deprecated
+
+- The snake_case names that now have camelCase equivalents, and the lowercase
+  `dt` names `dayofweek`, `dayofyear`, `weekofyear` and `daysinmonth`. They keep
+  working and are marked `@deprecated` in the type declarations.
+
+### Fixed
+
+The list below names the most significant fixes. Every module received many
+smaller ones (edge cases, validation, error messages, strided views, int64
+input, documentation).
+
+- **nn:** `Trainer` passed plain tensors to the model, so layers returned
+  untracked results, no gradients reached the optimizer, and real models never
+  trained. `MultiheadAttention` and the Transformer layers threw for float64 or
+  float16 input. `EarlyStopping` kept state between `fit` calls. Init functions
+  wrote to the wrong elements of non-contiguous tensors.
+- **ml:** `OneClassSVM` flagged most training rows as outliers (88 percent with
+  `nu = 0.1`; scikit-learn: 10 percent). `SVC` predictions, `PCA`
+  projections, `HuberRegressor`, `LocalOutlierFactor` scores, `IsolationForest`
+  thresholds, `CalibratedClassifierCV` (Platt and isotonic), and random forest
+  bootstrapping and `maxFeatures` (which was ignored) now match scikit-learn.
+  Estimators accept int64 input. Trees and forests return float64 results.
+- **ndarray:** `cumsum` and `cumprod` without an axis returned the wrong shape;
+  `median` rejected multiple axes; leaf gradients could share one buffer, so
+  gradient clipping scaled it several times; `max` and `min` backward failed for
+  float32; `floorDiv` and `mod` disagreed with NumPy for large or fractional
+  values; int32 multiplication lost low bits; `corrcoef`, `cov` and `tensordot`
+  returned silent garbage on bad input.
+- **linalg:** non-symmetric `eig` (now a real Francis double-shift QR),
+  Hessenberg and QR on matrices with tiny entries, the symmetry test used by
+  `eig`, and float64 results for `trace`,
+  `matrixPower`, `expm`, `logm` and `sqrtm`.
+- **stats:** special functions are accurate to about 1e-14 (the old `erf` was
+  accurate to about 1e-7); p-value tails no longer underflow; binomial, Poisson
+  and related pmfs use the saddle-point method; `kstest`, `ks_2samp`,
+  `anderson`, `mannwhitneyu` and `wilcoxon` match SciPy 1.17, including exact
+  small-sample p-values; Welch degrees of freedom are no longer rounded down.
+- **metrics:** metrics read strided and transposed tensors correctly, reject NaN
+  labels, and match scikit-learn for `hingeLoss`, `coverageError`,
+  `adjustedMutualInfoScore` and `fbetaScore` on multiclass input.
+- **preprocess:** `TargetEncoder` leaked the target across folds; `RFE` and
+  `RFECV` ranked eliminated features in reverse and did not work with the
+  library's own tree models; `KBinsDiscretizer` put values on bin edges in the
+  wrong bin; the seeded generator cycled after about 16,000 values.
+- **dataframe:** `tail(n)` with `n` larger than the frame, `fromTensor` on
+  views, sorting with infinities, `query` operator precedence, `eval` parsing,
+  cumulative operations with NaN, `round` (now half-to-even), `ewm` with missing
+  rows, `str.match` (now anchored like pandas) and nearest interpolation.
+- **optim:** state dicts were live references, loaded non-atomically and could
+  pair state with the wrong parameter; tied weights were updated twice per step;
+  strided parameters were updated in the wrong elements; `LBFGS` ignored
+  `lineSearchFn: "strong_wolfe"`; centered `RMSprop` and `RAdam` now match
+  PyTorch exactly.
+- **random:** shuffling a view changed elements outside it; `categorical`
+  without replacement could loop forever; `dirichlet` with small concentrations
+  returned uniform rows; `multivariateNormal` accepted invalid covariances.
+- **datasets:** one value in the bundled data tables was wrong (all five now
+  equal scikit-learn's); `makeFriedman2`, `makeFriedman3`,
+  `makeSparseUncorrelated` and `makeLowRankMatrix` follow scikit-learn's
+  definitions; `parseCSV` read empty cells as 0; `DataLoader.length` ignored the
+  sampler; dataset ids are validated before they reach a URL.
+- **plot:** PNG output now draws grids and text and blends translucent colors;
+  `fill_between`, `area`, `stackedBar` and `groupedBar` draw correctly; `twinx`
+  shares the x axis; log-scale ranges; animated SVG timelines; tick labels
+  (2.5 was drawn as "3").
+- **core:** `toJSON` turned NaN, Infinity and -0 into other values; `setConfig`
+  reseeded the global generator on every call; `WorkerPool.reduce` applied the
+  initial value once per chunk, and an invalid `maxWorkers` could hang the
+  process. On WebGPU, NaN handling, `tanh` and `gelu` for large inputs,
+  average-pool backward, and launches above 16.7 million elements (which
+  returned zeros) are fixed.
+
+### Performance
+
+Hot paths in reductions, sorting, trees, metrics, DataFrame operations and
+autograd were reworked where results stay identical, for example an
+O(n log n) Kendall tau and a three-way quickselect that no longer degrades to
+quadratic time on constant input. `binomial` uses BTPE (as NumPy does) for means
+of 30 and above: a draw with n = 1e12 went from about 2.5 ms to a few
+microseconds, with exact results.
+
+### Verification
+
+Beyond the unit tests (13,000+), every module was checked against its reference
+library with randomized differential tests: reductions against NumPy,
+estimators and metrics against scikit-learn, layers, gradients and optimizers
+against PyTorch, DataFrame operations against pandas, and statistics against
+SciPy. The unchanged 1.0.0 test suite was also run against this release, and
+every difference is one of the changes listed above.
+
+### Documentation
+
+README, SKILL.md, all examples and projects were updated to the 1.5.0 API and
+rewritten in plainer language. Defaults that differ from NumPy, pandas,
+scikit-learn and PyTorch are documented where they apply.
+
 ## [1.0.0] - 2026-07-02
 
 First stable release.
@@ -22,7 +237,7 @@ scikit-learn / PyTorch references.
 
 - Backend registry and typed backend interfaces
 - **Real device execution**: `WebGpuBackend` now implements the new
-  `KernelBackend` contract — tensors created on (or moved to) `webgpu` store
+  `KernelBackend` contract: tensors created on (or moved to) `webgpu` store
   their data in GPU memory and element-wise arithmetic, activations, matmul
   (`dot`), and full reductions execute as stride/broadcast-aware WGSL compute
   kernels. Includes `DeviceBuffer` handles, a pooled GPU allocator, and an
@@ -33,17 +248,17 @@ scikit-learn / PyTorch references.
   - **Axis reductions** (`sum`/`mean`/`max`/`min` along one or more axes), so
     `softmax`, `logSoftmax`, `layerNorm` and `variance` compose and run on
     device.
-  - **Batched matmul** (`ndim > 2`, with batch broadcasting) — attention
+  - **Batched matmul** (`ndim > 2`, with batch broadcasting), so attention
     (`Q·Kᵀ`, `·V`) and any batched linear algebra run on device.
   - **2-D convolution** (`im2col`/`col2im` gather/scatter kernels) and **2-D
-    pooling** (`max`/`avg`), so `Conv2d` forward and backward run on device —
-    GPU CNN training.
+    pooling** (`max`/`avg`), so `Conv2d` forward and backward run on device and
+    CNNs train on the GPU.
   - Extra element-wise kernels: `gelu`, `erf`, `rsqrt`, `reciprocal`, `sign`,
     `expm1`, `log1p`, `softplus`, and a broadcast-aware `where` select.
   - **On-device autograd**: the reverse pass (axis-reduction backward,
     broadcast-sum, matmul/conv backward, strided-view materialization) stays
     resident on the device, and **every practical optimizer runs its step on
-    device** — `SGD`, `Adam`, `AdamW`, `RMSprop`, `Adagrad`, `Adamax`, `Nadam`,
+    device**: `SGD`, `Adam`, `AdamW`, `RMSprop`, `Adagrad`, `Adamax`, `Nadam`,
     `RAdam`, `Adadelta`, `ASGD`, `Rprop`, `Lion`, `LAMB`, and `LARS`. A full
     forward → backward → update loop runs without host transfers. (`LBFGS` and
     `SparseAdam` require host-side line search / sparse scatter and throw a
@@ -52,7 +267,7 @@ scikit-learn / PyTorch references.
   - **`MaxPool1d`/`MaxPool2d` on device** (forward + backward via a first-argmax
     gather kernel), alongside the already-composable `AvgPool`.
   - **Half precision**: `float16` tensors compute in true on-device half
-    (WGSL `shader-f16`, 2 bytes/element — halved memory footprint for large
+    (WGSL `shader-f16`, 2 bytes/element, which halves the memory footprint for large
     models) and `bfloat16` tensors carry correct bf16 numerics; `.to('webgpu')`
     round-trips the half dtype. Mixed-precision ops throw rather than silently
     upcast.
@@ -187,8 +402,8 @@ scikit-learn / PyTorch references.
 
 - **Options-object forms for stats reductions.** `mean`, `std`, `variance`,
   `skewness`, and `kurtosis` now accept a named options object in the second
-  argument position — `std(t, { ddof: 1 })`, `skewness(t, { bias: false })`,
-  `kurtosis(t, { fisher: false })`, `mean(t, { axis: 1, keepdims: true })` — as
+  argument position, such as `std(t, { ddof: 1 })`, `skewness(t, { bias: false })`,
+  `kurtosis(t, { fisher: false })`, `mean(t, { axis: 1, keepdims: true })`, as
   the recommended alternative to the trailing positional flags, whose meaning
   differs by function at the same position (`std`'s 3rd arg is `keepdims`,
   `skewness`'s is `bias`). The historical positional signatures are fully
@@ -217,14 +432,14 @@ scikit-learn / PyTorch references.
 - **Axis-reduction backward is now allocation-free.** The `sum`/`mean`-along-
   axis gradient (the path softmax, cross-entropy, layernorm and attention hit on
   every training step) allocated two short-lived JS arrays *per input element*
-  to convert flat indices to coordinates — tens of millions of GC-bound
+  to convert flat indices to coordinates: tens of millions of GC-bound
   allocations per backward on a `[batch, seq, vocab]` logits tensor. It now
   walks the input in row-major order with a single reused coordinate odometer
   and tracks the physical upstream offset incrementally: zero per-element
   allocation. Gradients are unchanged (verified against finite differences for
   every axis and both `keepdims` settings).
 
-- **Whole-tensor statistics full-reduction fast paths** — `skewness`,
+- **Whole-tensor statistics full-reduction fast paths**: `skewness`,
   `kurtosis`, `geometricMean` and `harmonicMean` recomputed scalars and ran a
   `forEachIndexOffset` closure + dispatched accessor per element (several
   passes). They now gather one contiguous `Float64Array` and accumulate in a
@@ -236,18 +451,18 @@ scikit-learn / PyTorch references.
   faster**, `geometricMean` 5K 1.1x slower → **2.7x faster**, `harmonicMean` 5K
   1.0x → **7.4x faster** (all now beat SciPy at every benched size; values
   match to ~1e-7). `zscore` gets the same contiguous-narrowed path
-- **`nansum`/`nanmean` whole-tensor streaming** — the `axis=undefined` case
+- **`nansum`/`nanmean` whole-tensor streaming**: the `axis=undefined` case
   went through the generic reducer that pushes every element into a boxed
   `number[]`; it now scans the contiguous typed array with a narrowed load and
   a running sum/count. `nanmean` 1K 1.2x slower → **7.0x faster**, `nansum` 1K
   3.5x slower → **2.9x faster**; the 100K cases are ~10x faster (now within ~2x
   of NumPy instead of ~15-19x)
-- **DataFrame `rolling(window).mean()` sliding sum** — was `O(n·window)`,
+- **DataFrame `rolling(window).mean()` sliding sum**: was `O(n·window)`,
   rebuilding a values array per position; now an `O(n)` running sum that adds
   the entering value, drops the value leaving the window and tracks the valid
   count so pandas' `min_periods=window` NaN rule is preserved exactly.
   `rolling(5).mean` 1K 1.7x slower → **2.4x faster**
-- **NDArray movement/reduction pathologies de-pessimized** — several ops built
+- **NDArray movement/reduction pathologies de-pessimized**: several ops built
   a fresh coordinate array (and, for `nanmax`/`nanmin`, a full boxed `number[]`)
   per element via the generic strided path. Contiguous fast paths now index the
   typed buffers directly with an allocation-free odometer / slab copy:
@@ -292,8 +507,8 @@ scikit-learn / PyTorch references.
   stringify, materializes strided views, and throws converting non-finite
   values to `int64`; autograd's internal cast now delegates to it
 - 1-D `sort`/`argsort` on lanes >= 8192 use an LSD radix sort on
-  order-preserving 64-bit keys (O(n), NaNs last, stable) — sort 100K
-  17.8 -> 1.8 ms, argsort 100K 23.4 -> 1.6 ms, verified element-identical
+  order-preserving 64-bit keys (O(n), NaNs last, stable). Sorting 100K values went from
+  17.8 to 1.8 ms and argsort from 23.4 to 1.6 ms, verified element-identical
   against NumPy across the threshold with NaN/Inf/tie inputs in both dtypes
 - Broad category pass driven by the benchmark suite:
   `CosineAnnealingWarmRestarts` steps are amortized O(1) (~350x on long
@@ -334,7 +549,7 @@ scikit-learn / PyTorch references.
 
 - **`backward()` no longer overflows the stack on deep graphs.** The
   topological-sort that orders the backward pass was built with recursion, so
-  the recursion depth equaled the graph depth — an unrolled model such as a
+  the recursion depth equaled the graph depth. An unrolled model such as a
   long RNN over thousands of timesteps or a deep residual stack threw
   `RangeError: Maximum call stack size exceeded` during `backward()`. The
   traversal is now an explicit iterative worklist (identical ordering) and
@@ -404,7 +619,7 @@ scikit-learn / PyTorch references.
   negative-step slice `end:-1`; CSR `fromCOO` now sums duplicates; `round`
   half-to-even; `view()` custom-stride backward.
 - **linalg**: `eigh`/`eigvalsh` rewritten as cyclic Jacobi (was one rotation per
-  sweep — wrong beyond ~10×10); `solve_banded` general path rewritten with
+  sweep and wrong beyond ~10×10); `solve_banded` general path rewritten with
   LAPACK-style banded LU + pivoting (returned garbage on any row swap); `eig`
   and `schur` gained Wilkinson + exceptional shifts; `sylvester`/`lyapunov` now
   raise on singular systems instead of zero-filling; SVD pre-scales to avoid
@@ -412,7 +627,7 @@ scikit-learn / PyTorch references.
   `expm` rewritten with scaling-and-squaring + Padé (handles complex spectra);
   `slogdet`/`lstsq` residuals return float64; negative vector-norm orders.
 - **nn**: entire families of layers were silently untrainable (detached
-  forward) and now propagate gradients — Conv3d, ConvTranspose1d/2d, all 1D/3D
+  forward) and now propagate gradients: Conv3d, ConvTranspose1d/2d, all 1D/3D
   and adaptive pooling, Embedding/EmbeddingBag, RNN/LSTM/GRU (rewritten as
   differentiable graphs), Dropout2d/AlphaDropout, Upsample, and all Pad2d
   layers. ConvTranspose2d no longer crashes with default bias; MaxPool2d uses
@@ -464,7 +679,7 @@ scikit-learn / PyTorch references.
   cleared.
 
 - **nn/layers**: `TransformerEncoder` and `TransformerDecoder` now create distinct layer instances per stack layer instead of reusing the same object. Fixes a critical bug where all encoder/decoder layers shared identical weight parameters.
-- **nn/losses**: All loss functions now properly support `GradTensor` inputs with overload signatures. Previously only `mseLoss` preserved the computation graph for autograd — `maeLoss`, `rmseLoss`, `binaryCrossEntropyLoss`, and `marginRankingLoss` now also support gradient tracking.
+- **nn/losses**: All loss functions now properly support `GradTensor` inputs with overload signatures. Previously only `mseLoss` preserved the computation graph for autograd; `maeLoss`, `rmseLoss`, `binaryCrossEntropyLoss`, and `marginRankingLoss` now also support gradient tracking.
 - **optim/schedulers**: `WarmupLR` no longer desynchronizes the after-scheduler's epoch counter. The transition from warmup to the wrapped scheduler now properly delegates without stale intermediate LR values.
 - **ml/model_selection**: `cross_val_score` now prefers the `clone()` method on estimators when available, with an improved constructor-based fallback for estimators that accept an options object.
 - **nn/module**: `freezeParameters()` and `unfreezeParameters()` now scan array properties to update stale parameter references in modules that store parameters in arrays (e.g., RNN, LSTM, GRU weight arrays).
@@ -493,33 +708,33 @@ _Numbers in the `0.2.0` sections below (tests, examples, projects, coverage) des
 
 ### Added
 
-- **`GradTensor.isGradTensor()`** — static duck-typing method for cross-module `instanceof` compatibility
-- **`GradTensor` public constructor** — two overloads: `(data, options?)` for users and `({tensor, requiresGrad, prev, backward})` for internals
-- **`Tensor.slice()` instance method** — `t.slice(...)` in addition to the standalone `slice(t, ...)`
-- **`ScalarDType` and `ElementOf<D>` types** — enables `tensor([1,2,3]).at(0)` to return `number` instead of `unknown`
+- **`GradTensor.isGradTensor()`**: static duck-typing method for cross-module `instanceof` compatibility
+- **`GradTensor` public constructor**: two overloads: `(data, options?)` for users and `({tensor, requiresGrad, prev, backward})` for internals
+- **`Tensor.slice()` instance method**: `t.slice(...)` in addition to the standalone `slice(t, ...)`
+- **`ScalarDType` and `ElementOf<D>` types**: enables `tensor([1,2,3]).at(0)` to return `number` instead of `unknown`
 - **`DataValue` type export** from `deepbox/dataframe`
-- **`loadDigits().images`** — reshaped `[1797, 8, 8]` tensor matching sklearn's `.images` attribute
-- **`makeClassification({ flipY })` parameter** — label noise injection (default 1%)
-- **`DBSCAN.nClusters` getter** — returns number of discovered clusters (excludes noise)
+- **`loadDigits().images`**: reshaped `[1797, 8, 8]` tensor matching sklearn's `.images` attribute
+- **`makeClassification({ flipY })` parameter**: label noise injection (default 1%)
+- **`DBSCAN.nClusters` getter**: returns number of discovered clusters (excludes noise)
 - **`PolynomialFeatures`** transformer in `deepbox/preprocess`
-- **Vector-matrix `dot()` support** — `dot(1D, 2D)` now works correctly
-- **`norm()` overloads** — `norm(x)` returns `number`; `norm(x, ord, axis)` returns `Tensor | number`
+- **Vector-matrix `dot()` support**: `dot(1D, 2D)` now works correctly
+- **`norm()` overloads**: `norm(x)` returns `number`; `norm(x, ord, axis)` returns `Tensor | number`
 
 ### Fixed
 
-- **`mseLoss` / `crossEntropyLoss` / `binaryCrossEntropyWithLogitsLoss`** — replaced `instanceof GradTensor` with `GradTensor.isGradTensor()` to fix silent loss-of-gradient bug across module boundaries
-- **`GradientBoostingClassifier`** — added multiclass support via One-vs-Rest strategy (was binary-only)
-- **`LinearSVC`** — added multiclass support via One-vs-Rest strategy (was binary-only)
-- **`crossEntropyLoss`** — 1D GradTensor target now works; overload signatures accept `AnyTensor`
-- **`DataLoader` iterator type** — return type now conditional `[Tensor, Tensor] | [Tensor]` instead of `never`
-- **`DataFrame.filter()` row type** — changed from `unknown` to `Record<string, any>` for usability
-- **`precision()` / `recall()` / `f1Score()`** — auto-detect multiclass and default to `"weighted"` averaging instead of `"binary"`
-- **`f1Score()`** — accepts both `string` and `{ average: string }` argument forms
-- **`relu()` / `leakyRelu()` / `elu()` return types** — narrowed to `Tensor<Shape, ScalarDType>`
-- **`LinearRegression.predict()` return type** — narrowed to `Tensor<Shape, ScalarDType>`
-- **`ensureNumericDType()` context parameter** — made optional (default: `"operation"`)
-- **JSDoc `@see` links** — all 40+ `deepbox.dev` references verified against actual docs routes
-- **Documentation code snippets** — 7 broken snippets fixed across datasets, getting-started, ml, optim, plot, preprocess content files
+- **`mseLoss` / `crossEntropyLoss` / `binaryCrossEntropyWithLogitsLoss`**: replaced `instanceof GradTensor` with `GradTensor.isGradTensor()` to fix silent loss-of-gradient bug across module boundaries
+- **`GradientBoostingClassifier`**: added multiclass support via One-vs-Rest strategy (was binary-only)
+- **`LinearSVC`**: added multiclass support via One-vs-Rest strategy (was binary-only)
+- **`crossEntropyLoss`**: 1D GradTensor target now works; overload signatures accept `AnyTensor`
+- **`DataLoader` iterator type**: return type now conditional `[Tensor, Tensor] | [Tensor]` instead of `never`
+- **`DataFrame.filter()` row type**: changed from `unknown` to `Record<string, any>` for usability
+- **`precision()` / `recall()` / `f1Score()`**: auto-detect multiclass and default to `"weighted"` averaging instead of `"binary"`
+- **`f1Score()`**: accepts both `string` and `{ average: string }` argument forms
+- **`relu()` / `leakyRelu()` / `elu()` return types**: narrowed to `Tensor<Shape, ScalarDType>`
+- **`LinearRegression.predict()` return type**: narrowed to `Tensor<Shape, ScalarDType>`
+- **`ensureNumericDType()` context parameter**: made optional (default: `"operation"`)
+- **JSDoc `@see` links**: all 40+ `deepbox.dev` references verified against actual docs routes
+- **Documentation code snippets**: 7 broken snippets fixed across datasets, getting-started, ml, optim, plot, preprocess content files
 
 ### Changed
 

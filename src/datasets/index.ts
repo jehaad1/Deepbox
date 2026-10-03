@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
-export type { DataLoaderOptions, StreamingDataLoaderOptions } from "./DataLoader";
+export type { CollateFn, DataLoaderOptions, StreamingDataLoaderOptions } from "./DataLoader";
 export { DataLoader } from "./DataLoader";
 export {
   makeBiclusters,
@@ -22,7 +22,7 @@ export {
   makeSparseUncorrelated,
   makeSwissRoll,
 } from "./generators";
-export type { ImageDataset } from "./image";
+export type { ImageDataset, ImageFetchOptions } from "./image";
 export { fetchCIFAR10, fetchMNIST } from "./image";
 // Kaggle integration
 export type {
@@ -38,7 +38,7 @@ export {
   readKaggleCredentials,
   searchKaggleDatasets,
 } from "./kaggle";
-export type { Dataset } from "./loaders";
+export type { Dataset, DatasetLoadOptions } from "./loaders";
 export {
   loadBreastCancer,
   loadConcentricRings,
@@ -87,6 +87,6 @@ export {
   iterableDataset,
   StreamingDataset,
 } from "./streaming";
-export type { TextDataset } from "./text";
+export type { TextDataset, TextFetchOptions } from "./text";
 export { fetch20Newsgroups, fetchIMDB } from "./text";
 export { filterDataset, mapDataset, randomSplit, Subset } from "./transforms";

@@ -1,5 +1,5 @@
 /**
- * Benchmark 11 — Random Number Generation
+ * Benchmark 11: Random Number Generation
  * Deepbox vs NumPy
  */
 
@@ -31,7 +31,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("random");
-header("Benchmark 11 — Random Number Generation");
+header("Benchmark 11: Random Number Generation");
 
 setSeed(42);
 

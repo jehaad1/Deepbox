@@ -14,7 +14,7 @@ describe("RANSACRegressor", () => {
     expect(pred.size).toBe(10);
   });
 
-  it("is robust to outliers", () => {
+  it("is not sensitive to outliers", () => {
     const ransac = new RANSACRegressor({ minSamples: 3, maxTrials: 100, randomState: 42 });
     ransac.fit(X, y);
     const pred = ransac.predict(tensor([[5]]));

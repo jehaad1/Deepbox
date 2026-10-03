@@ -28,9 +28,10 @@ export class IndexError extends DeepboxError {
     details?: {
       readonly index?: number;
       readonly validRange?: readonly [number, number];
+      readonly cause?: unknown;
     }
   ) {
-    super(message);
+    super(message, details?.cause !== undefined ? { cause: details.cause } : undefined);
     if (details?.index !== undefined) {
       this.index = details.index;
     }

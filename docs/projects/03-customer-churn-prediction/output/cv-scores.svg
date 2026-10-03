@@ -4,11 +4,11 @@
 <rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
 <clipPath id="dbclip-50-50-700-300"><path d="M50 50 L750 50 L750 350 L50 350 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-700-300)">
-<rect x="81.82" y="92.34" width="106.06" height="244.02" fill="#2196f3" stroke="#000000" />
-<rect x="214.39" y="84.14" width="106.06" height="252.22" fill="#2196f3" stroke="#000000" />
-<rect x="346.97" y="88.24" width="106.06" height="248.12" fill="#2196f3" stroke="#000000" />
-<rect x="479.55" y="65.69" width="106.06" height="270.68" fill="#2196f3" stroke="#000000" />
-<rect x="612.12" y="63.64" width="106.06" height="272.73" fill="#2196f3" stroke="#000000" />
+<rect x="81.82" y="88.43" width="106.06" height="247.93" fill="#2196f3" stroke="#000000" />
+<rect x="214.39" y="80.17" width="106.06" height="256.20" fill="#2196f3" stroke="#000000" />
+<rect x="346.97" y="63.64" width="106.06" height="272.73" fill="#2196f3" stroke="#000000" />
+<rect x="479.55" y="100.83" width="106.06" height="235.54" fill="#2196f3" stroke="#000000" />
+<rect x="612.12" y="92.56" width="106.06" height="243.80" fill="#2196f3" stroke="#000000" />
 </g>
 <line class="x-tick" x1="134.85" y1="350.00" x2="134.85" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="134.85" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">1</text>
@@ -22,12 +22,12 @@
 <text class="tick-label tick-label-x" x="665.15" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
 <line class="y-tick" x1="50.00" y1="336.36" x2="45.00" y2="336.36" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="336.36" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
-<line class="y-tick" x1="50.00" y1="254.34" x2="45.00" y2="254.34" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="254.34" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
-<line class="y-tick" x1="50.00" y1="172.32" x2="45.00" y2="172.32" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="172.32" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
-<line class="y-tick" x1="50.00" y1="90.29" x2="45.00" y2="90.29" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="90.29" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
+<line class="y-tick" x1="50.00" y1="253.72" x2="45.00" y2="253.72" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="253.72" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
+<line class="y-tick" x1="50.00" y1="171.07" x2="45.00" y2="171.07" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="171.07" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
+<line class="y-tick" x1="50.00" y1="88.43" x2="45.00" y2="88.43" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="88.43" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
 <text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Cross-Validation Scores</text>
 <text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Fold</text>
 <text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Accuracy (%)</text>

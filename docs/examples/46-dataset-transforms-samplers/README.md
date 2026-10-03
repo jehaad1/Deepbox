@@ -2,13 +2,13 @@
 
 > **View online:** https://deepbox.dev/examples/46-dataset-transforms-samplers
 
-A data-pipeline example for the v1.0.0 dataset helpers around training loops: `Subset`, `randomSplit`, `mapDataset`, `filterDataset`, `WeightedRandomSampler`, and `SubsetRandomSampler`.
+Dataset helpers around a training loop, applied to the iris dataset: `randomSplit`, `Subset`, `filterDataset`, `mapDataset`, `WeightedRandomSampler` and `SubsetRandomSampler`. The sampler part builds a skewed two-class dataset, weights each row by the inverse of its class size, and draws batches with a `DataLoader`.
 
 ## Deepbox Modules Used
 
-| Module             | Features Used                                                                 |
-| ------------------ | ----------------------------------------------------------------------------- |
-| `deepbox/datasets` | loadIris, Subset, randomSplit, mapDataset, filterDataset, DataLoader, samplers |
+| Module             | Features Used                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `deepbox/datasets` | loadIris, Subset, randomSplit, mapDataset, filterDataset, DataLoader, WeightedRandomSampler, SubsetRandomSampler |
 
 ## Usage
 
@@ -18,9 +18,10 @@ npm run example:46
 
 ## Output
 
-- Console walkthrough of deterministic splitting, filtering, mapping, and sampler-driven batching
+- Console output only: split sizes, subset indices, a mapped sample, and the class counts in each batch drawn by the weighted sampler.
+- Every split and sampler takes a seed, so the output is the same on each run.
 
-## Architecture
+## Files
 
 ```text
 46-dataset-transforms-samplers/

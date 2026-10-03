@@ -19,7 +19,7 @@ import type { DType } from "./dtype";
  * @property shape - Dimensions of the tensor (e.g., [2, 3, 4])
  * @property dtype - Data type of tensor elements
  * @property device - Compute device where tensor resides
- * @property data - Underlying TypedArray storage
+ * @property data - Underlying storage (TypedArray, extended typed array, or string array)
  * @property strides - Step sizes for each dimension in memory
  * @property offset - Starting position in the data buffer
  * @property size - Total number of elements in the tensor

@@ -1,20 +1,16 @@
-import {
-  getNumericElement,
-  isNumericTypedArray,
-  isTypedArray,
-  type NumericTypedArray,
-} from "../core";
+import { isNumericTypedArray, isTypedArray } from "../core";
 import { DTypeError, InvalidParameterError } from "../core/errors";
 import type { Tensor } from "../ndarray";
 import {
-  assertFiniteNumber,
   assertSameSizeVectors,
-  createFlatOffsetter,
+  compensatedSum,
   denseFloat64,
-  type FlatOffsetter,
+  nonZeroWeightSum,
+  readSampleWeight,
+  type WeightedMetricOptions,
 } from "./_internal";
 
-function getNumericRegressionData(t: Tensor, name: string): NumericTypedArray {
+function assertNumericRegressionTensor(t: Tensor, name: string): void {
   if (t.dtype === "string") {
     throw new DTypeError(`${name} must be numeric tensors`);
   }
@@ -26,19 +22,92 @@ function getNumericRegressionData(t: Tensor, name: string): NumericTypedArray {
   if (!isTypedArray(data) || !isNumericTypedArray(data)) {
     throw new DTypeError(`${name} must be numeric tensors`);
   }
-
-  return data;
 }
 
-function readNumeric(
-  data: NumericTypedArray,
-  offsetter: FlatOffsetter,
-  index: number,
-  name: string
-) {
-  const value = getNumericElement(data, offsetter(index));
-  assertFiniteNumber(value, name, `index ${index}`);
-  return value;
+/** Dense Float64 copy of a vector-like tensor; every value must be finite. */
+function readVector(t: Tensor, name: string): Float64Array {
+  return denseFloat64(t, name, true);
+}
+
+/**
+ * Sum of squared deviations from the mean, exactly 0 when every value is equal (the
+ * rounded mean of equal values can be off by an ulp, which would leave a tiny non-zero
+ * sum). Overwrites `a` with the squared deviations.
+ */
+function sumSquaredDeviations(a: Float64Array): number {
+  const n = a.length;
+  const first = a[0] as number;
+  let constant = true;
+  for (let i = 1; i < n; i++) {
+    if (a[i] !== first) {
+      constant = false;
+      break;
+    }
+  }
+  if (constant) return 0;
+
+  const mean = compensatedSum(a) / n;
+  for (let i = 0; i < n; i++) {
+    const d = (a[i] as number) - mean;
+    a[i] = d * d;
+  }
+  return compensatedSum(a);
+}
+
+/**
+ * Weighted sum of squared deviations from the weighted mean (`total` is the sum of the
+ * weights), exactly 0 when every value with a non-zero weight is equal.
+ */
+function weightedSumSquaredDeviations(a: Float64Array, w: Float64Array, total: number): number {
+  const n = a.length;
+  let reference = 0;
+  let seen = false;
+  let constant = true;
+  for (let i = 0; i < n; i++) {
+    if (w[i] === 0) continue;
+    const v = a[i] as number;
+    if (!seen) {
+      reference = v;
+      seen = true;
+    } else if (v !== reference) {
+      constant = false;
+      break;
+    }
+  }
+  if (constant) return 0;
+
+  const terms = new Float64Array(n);
+  for (let i = 0; i < n; i++) terms[i] = (a[i] as number) * (w[i] as number);
+  const mean = compensatedSum(terms) / total;
+  for (let i = 0; i < n; i++) {
+    const d = (a[i] as number) - mean;
+    terms[i] = (w[i] as number) * d * d;
+  }
+  return compensatedSum(terms);
+}
+
+/** Mean of `terms` (overwritten when weighted): plain, or weighted by `w`. */
+function averageTerms(terms: Float64Array, w: Float64Array | undefined): number {
+  if (w === undefined) return compensatedSum(terms) / terms.length;
+  const total = nonZeroWeightSum(w);
+  for (let i = 0; i < terms.length; i++) terms[i] = (terms[i] as number) * (w[i] as number);
+  return compensatedSum(terms) / total;
+}
+
+/**
+ * Validate a (yTrue, yPred) pair and return private Float64 copies. The copies are
+ * owned by the caller, so metrics may overwrite them with intermediate terms.
+ */
+function readPair(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: WeightedMetricOptions = {}
+): { t: Float64Array; p: Float64Array; w: Float64Array | undefined } {
+  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
+  assertNumericRegressionTensor(yTrue, "yTrue");
+  assertNumericRegressionTensor(yPred, "yPred");
+  const w = readSampleWeight(options.sampleWeight, yTrue.size);
+  return { t: readVector(yTrue, "yTrue"), p: readVector(yPred, "yPred"), w };
 }
 
 /**
@@ -52,44 +121,42 @@ function readNumeric(
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
+ * With `options.sampleWeight` the mean is weighted: Σ w_i * (y_i - p_i)² / Σ w_i.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns MSE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
+ * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
  * @example
  * ```ts
- * import { mse, tensor } from 'deepbox/metrics';
+ * import { mse } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
  * const error = mse(yTrue, yPred);  // 0.375
+ * const weighted = mse(yTrue, yPred, { sampleWeight: [1, 2, 3, 4] });  // 0.475
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function mse(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+export function mse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
+  const { t, p, w } = readPair(yTrue, yPred, options);
+  const n = t.length;
+  if (n === 0) return 0;
 
-  if (yTrue.size === 0) return 0;
-
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
-
-  let sumSquaredError = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const diff =
-      readNumeric(yTrueData, trueOffset, i, "yTrue") -
-      readNumeric(yPredData, predOffset, i, "yPred");
-    sumSquaredError += diff * diff;
+  for (let i = 0; i < n; i++) {
+    const diff = (t[i] as number) - (p[i] as number);
+    p[i] = diff * diff;
   }
-
-  return sumSquaredError / yTrue.size;
+  return averageTerms(p, w);
 }
 
 /**
@@ -103,17 +170,23 @@ export function mse(yTrue: Tensor, yPred: Tensor): number {
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
+ * With `options.sampleWeight` the underlying MSE is weighted, see {@link mse}.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns RMSE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
+ * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
  * @example
  * ```ts
- * import { rmse, tensor } from 'deepbox/metrics';
+ * import { rmse } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
@@ -122,59 +195,56 @@ export function mse(yTrue: Tensor, yPred: Tensor): number {
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function rmse(yTrue: Tensor, yPred: Tensor): number {
-  return Math.sqrt(mse(yTrue, yPred));
+export function rmse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
+  return Math.sqrt(mse(yTrue, yPred, options));
 }
 
 /**
  * Calculate Mean Absolute Error (MAE).
  *
  * Measures the average absolute difference between predictions and actual values.
- * MAE is more robust to outliers than MSE.
+ * MAE is less sensitive to outliers than MSE.
  *
  * **Formula**: MAE = (1/n) * Σ|y_true - y_pred|
  *
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
+ * With `options.sampleWeight` the mean is weighted: Σ w_i * |y_i - p_i| / Σ w_i.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns MAE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
+ * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
  * @example
  * ```ts
- * import { mae, tensor } from 'deepbox/metrics';
+ * import { mae } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
  * const error = mae(yTrue, yPred);  // 0.5
+ * const weighted = mae(yTrue, yPred, { sampleWeight: [1, 2, 3, 4] });  // 0.55
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function mae(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
+export function mae(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
+  const { t, p, w } = readPair(yTrue, yPred, options);
+  const n = t.length;
+  if (n === 0) return 0;
 
-  if (yTrue.size === 0) return 0;
-
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
-
-  let sumAbsError = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const diff =
-      readNumeric(yTrueData, trueOffset, i, "yTrue") -
-      readNumeric(yPredData, predOffset, i, "yPred");
-    sumAbsError += Math.abs(diff);
+  for (let i = 0; i < n; i++) {
+    p[i] = Math.abs((t[i] as number) - (p[i] as number));
   }
-
-  return sumAbsError / yTrue.size;
+  return averageTerms(p, w);
 }
 
 /**
@@ -192,54 +262,51 @@ export function mae(yTrue: Tensor, yPred: Tensor): number {
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
+ * With `options.sampleWeight` both sums are weighted and SS_tot is taken around the
+ * weighted mean of y_true.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns R² score (1 is perfect, 0 is baseline, negative is worse than baseline)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
- * @throws {InvalidParameterError} If inputs are empty
+ * @throws {InvalidParameterError} If inputs are empty or `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
  * @example
  * ```ts
- * import { r2Score, tensor } from 'deepbox/metrics';
+ * import { r2Score } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
- * const score = r2Score(yTrue, yPred);  // Close to 1 for good fit
+ * const score = r2Score(yTrue, yPred);  // 0.9486081370449679
+ * const weighted = r2Score(yTrue, yPred, { sampleWeight: [1, 2, 3, 4] });  // 0.9459613196814562
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function r2Score(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  getNumericRegressionData(yTrue, "yTrue");
-  getNumericRegressionData(yPred, "yPred");
-  if (yTrue.size === 0) {
-    throw new InvalidParameterError("r2Score requires at least one sample", "yTrue", yTrue.size);
-  }
-
-  const t = denseFloat64(yTrue, "yTrue");
-  const p = denseFloat64(yPred, "yPred");
+export function r2Score(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
+  const { t, p, w } = readPair(yTrue, yPred, options);
   const n = t.length;
-
-  let sumTrue = 0;
-  for (let i = 0; i < n; i++) sumTrue += t[i] as number;
-  const mean = sumTrue / n;
-
-  let ssRes = 0;
-  let ssTot = 0;
-  for (let i = 0; i < n; i++) {
-    const trueVal = t[i] as number;
-    const dRes = trueVal - (p[i] as number);
-    const dTot = trueVal - mean;
-    ssRes += dRes * dRes;
-    ssTot += dTot * dTot;
+  if (n === 0) {
+    throw new InvalidParameterError("r2Score requires at least one sample", "yTrue", n);
   }
 
-  // Handle constant targets (ssTot = 0)
-  // When all true values are identical, return 0.0 (no variance to explain)
+  const total = w === undefined ? n : nonZeroWeightSum(w);
+  for (let i = 0; i < n; i++) {
+    const dRes = (t[i] as number) - (p[i] as number);
+    p[i] = w === undefined ? dRes * dRes : (w[i] as number) * dRes * dRes;
+  }
+  const ssRes = compensatedSum(p);
+  const ssTot =
+    w === undefined ? sumSquaredDeviations(t) : weightedSumSquaredDeviations(t, w, total);
+
+  // Constant targets (ssTot = 0): there is no variance to explain, so a perfect
+  // fit scores 1 and anything else 0 (scikit-learn's force_finite behavior).
   if (ssTot === 0) {
     return ssRes === 0 ? 1.0 : 0.0;
   }
@@ -275,11 +342,12 @@ export function r2Score(yTrue: Tensor, yPred: Tensor): number {
  *
  * @example
  * ```ts
- * import { adjustedR2Score, tensor } from 'deepbox/metrics';
+ * import { adjustedR2Score } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
- * const score = adjustedR2Score(yTrue, yPred, 2);  // Adjusted for 2 features
+ * const score = adjustedR2Score(yTrue, yPred, 2);  // 0.8458244111349038
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
@@ -324,8 +392,11 @@ export function adjustedR2Score(yTrue: Tensor, yPred: Tensor, nFeatures: number)
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
- * **Important**: Zero values in yTrue are skipped. If all targets are zero,
- * this function returns 0.
+ * **Difference from scikit-learn:** `mape` returns a percentage (32.7 means 32.7 %),
+ * while scikit-learn's `mean_absolute_percentage_error` returns a fraction (0.327).
+ * `mape` also skips zero values in yTrue instead of guarding with an epsilon, and
+ * returns 0 if all targets are zero. For the scikit-learn result, including
+ * `sampleWeight` support, use {@link meanAbsolutePercentageError}.
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
@@ -337,32 +408,26 @@ export function adjustedR2Score(yTrue: Tensor, yPred: Tensor, nFeatures: number)
  *
  * @example
  * ```ts
- * import { mape, tensor } from 'deepbox/metrics';
+ * import { mape } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
- * const error = mape(yTrue, yPred);  // Percentage error
+ * const error = mape(yTrue, yPred);  // 32.73809523809524 (percent)
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function mape(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const yTrueData = getNumericRegressionData(yTrue, "yTrue");
-  const yPredData = getNumericRegressionData(yPred, "yPred");
-  if (yTrue.size === 0) return 0;
+  const { t, p } = readPair(yTrue, yPred);
+  const n = t.length;
+  if (n === 0) return 0;
 
-  const trueOffset = createFlatOffsetter(yTrue);
-  const predOffset = createFlatOffsetter(yPred);
-
-  let sumPercentError = 0;
   let nonZeroCount = 0;
-  for (let i = 0; i < yTrue.size; i++) {
-    const trueVal = readNumeric(yTrueData, trueOffset, i, "yTrue");
-    const predVal = readNumeric(yPredData, predOffset, i, "yPred");
+  for (let i = 0; i < n; i++) {
+    const trueVal = t[i] as number;
     if (trueVal !== 0) {
-      sumPercentError += Math.abs((trueVal - predVal) / trueVal);
-      nonZeroCount++;
+      p[nonZeroCount++] = Math.abs((trueVal - (p[i] as number)) / trueVal);
     }
   }
 
@@ -370,14 +435,69 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
     return 0;
   }
 
-  return (sumPercentError / nonZeroCount) * 100;
+  return (compensatedSum(p.subarray(0, nonZeroCount)) / nonZeroCount) * 100;
+}
+
+/**
+ * Calculate the Mean Absolute Percentage Error with scikit-learn's definition.
+ *
+ * **Formula**: MAPE = (1/n) * Σ |y_true - y_pred| / max(|y_true|, ε)
+ * where ε = 2.220446049250313e-16 (the float64 machine epsilon). A zero target
+ * therefore produces a very large term instead of being skipped.
+ *
+ * The result is a fraction (0.25 means 25 %), exactly like scikit-learn's
+ * `mean_absolute_percentage_error`. {@link mape} returns a percentage and skips zero
+ * targets instead; use this function for scikit-learn compatible numbers.
+ *
+ * With `options.sampleWeight` the mean is weighted: Σ w_i * term_i / Σ w_i.
+ *
+ * **Time Complexity**: O(n) where n is the number of samples
+ * **Space Complexity**: O(n)
+ *
+ * @param yTrue - Ground truth (correct) target values
+ * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
+ * @returns MAPE as a fraction (0 is perfect). Returns 0 for empty input.
+ *
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
+ * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
+ * @throws {InvalidParameterError} If `sampleWeight` sums to zero
+ * @throws {DataValidationError} If inputs contain NaN or infinite values
+ *
+ * @example
+ * ```ts
+ * import { meanAbsolutePercentageError } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const yTrue = tensor([3, -0.5, 2, 7]);
+ * const yPred = tensor([2.5, 0.0, 2, 8]);
+ * meanAbsolutePercentageError(yTrue, yPred); // 0.3273809523809524
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
+ */
+export function meanAbsolutePercentageError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: WeightedMetricOptions = {}
+): number {
+  const { t, p, w } = readPair(yTrue, yPred, options);
+  const n = t.length;
+  if (n === 0) return 0;
+
+  for (let i = 0; i < n; i++) {
+    const trueVal = t[i] as number;
+    p[i] = Math.abs((p[i] as number) - trueVal) / Math.max(Math.abs(trueVal), Number.EPSILON);
+  }
+  return averageTerms(p, w);
 }
 
 /**
  * Calculate Median Absolute Error (MedAE).
  *
  * Measures the median of absolute differences between predictions and actual values.
- * More robust to outliers than MAE or MSE as it uses the median instead of mean.
+ * Less sensitive to outliers than MAE or MSE because it uses the median instead of the mean.
  *
  * **Formula**: MedAE = median(|y_true - y_pred|)
  *
@@ -394,28 +514,23 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
  *
  * @example
  * ```ts
- * import { medianAbsoluteError, tensor } from 'deepbox/metrics';
+ * import { medianAbsoluteError } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
- * const error = medianAbsoluteError(yTrue, yPred);
+ * const error = medianAbsoluteError(yTrue, yPred);  // 0.5
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  getNumericRegressionData(yTrue, "yTrue");
-  getNumericRegressionData(yPred, "yPred");
-
-  if (yTrue.size === 0) return 0;
-
-  const t = denseFloat64(yTrue, "yTrue");
-  const p = denseFloat64(yPred, "yPred");
+  const { t, p: errors } = readPair(yTrue, yPred);
   const n = t.length;
-  const errors = new Float64Array(n);
+  if (n === 0) return 0;
+
   for (let i = 0; i < n; i++) {
-    errors[i] = Math.abs((t[i] as number) - (p[i] as number));
+    errors[i] = Math.abs((t[i] as number) - (errors[i] as number));
   }
 
   // The median needs only the middle order statistic(s), so quickselect
@@ -432,7 +547,7 @@ export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
     const v = errors[i] as number;
     if (v > lo) lo = v;
   }
-  return (lo + hi) / 2;
+  return lo + (hi - lo) / 2;
 }
 
 /**
@@ -445,7 +560,7 @@ function quickselectF64(a: Float64Array, k: number): number {
   let hi = a.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    // Median-of-three pivot for robustness against sorted/adversarial input.
+    // Median-of-three pivot, so sorted or adversarial input does not degrade the sort.
     const x = a[lo] as number;
     const y = a[mid] as number;
     const z = a[hi] as number;
@@ -493,7 +608,8 @@ function quickselectF64(a: Float64Array, k: number): number {
  *
  * @example
  * ```ts
- * import { maxError, tensor } from 'deepbox/metrics';
+ * import { maxError } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
@@ -503,12 +619,7 @@ function quickselectF64(a: Float64Array, k: number): number {
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
 export function maxError(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  getNumericRegressionData(yTrue, "yTrue");
-  getNumericRegressionData(yPred, "yPred");
-
-  const t = denseFloat64(yTrue, "yTrue");
-  const p = denseFloat64(yPred, "yPred");
+  const { t, p } = readPair(yTrue, yPred);
   let maxErr = 0;
   for (let i = 0; i < t.length; i++) {
     const diff = Math.abs((t[i] as number) - (p[i] as number));
@@ -530,68 +641,86 @@ export function maxError(yTrue: Tensor, yPred: Tensor): number {
  * **Time Complexity**: O(n) where n is the number of samples
  * **Space Complexity**: O(1)
  *
+ * With `options.sampleWeight` both variances are weighted (weighted means and
+ * weighted sums of squares).
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns Explained variance score (1.0 is perfect, lower is worse)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
- * @throws {InvalidParameterError} If inputs are empty
+ * @throws {InvalidParameterError} If inputs are empty or `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
  * @example
  * ```ts
- * import { explainedVarianceScore, tensor } from 'deepbox/metrics';
+ * import { explainedVarianceScore } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const yTrue = tensor([3, -0.5, 2, 7]);
  * const yPred = tensor([2.5, 0.0, 2, 8]);
- * const score = explainedVarianceScore(yTrue, yPred);
+ * const score = explainedVarianceScore(yTrue, yPred);  // 0.9571734475374732
+ * const weighted = explainedVarianceScore(yTrue, yPred, { sampleWeight: [1, 2, 3, 4] }); // 0.9689988623435722
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function explainedVarianceScore(yTrue: Tensor, yPred: Tensor): number {
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  getNumericRegressionData(yTrue, "yTrue");
-  getNumericRegressionData(yPred, "yPred");
-  if (yTrue.size === 0) {
+export function explainedVarianceScore(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: WeightedMetricOptions = {}
+): number {
+  const { t, p, w } = readPair(yTrue, yPred, options);
+  const n = t.length;
+  if (n === 0) {
     throw new InvalidParameterError(
       "explainedVarianceScore requires at least one sample",
       "yTrue",
-      yTrue.size
+      n
     );
   }
 
-  const t = denseFloat64(yTrue, "yTrue");
-  const p = denseFloat64(yPred, "yPred");
-  const n = t.length;
-
-  let sumTrue = 0;
-  let sumResidual = 0;
-  for (let i = 0; i < n; i++) {
-    const trueVal = t[i] as number;
-    sumTrue += trueVal;
-    sumResidual += trueVal - (p[i] as number);
-  }
-  const meanTrue = sumTrue / n;
-  const meanResidual = sumResidual / n;
-
-  let varResidual = 0;
-  let varTrue = 0;
-  for (let i = 0; i < n; i++) {
-    const trueVal = t[i] as number;
-    const residual = trueVal - (p[i] as number);
-    const dr = residual - meanResidual;
-    const dt = trueVal - meanTrue;
-    varResidual += dr * dr;
-    varTrue += dt * dt;
+  // p now holds the residuals y_true - y_pred.
+  for (let i = 0; i < n; i++) p[i] = (t[i] as number) - (p[i] as number);
+  let varResidual: number;
+  let varTrue: number;
+  if (w === undefined) {
+    varResidual = sumSquaredDeviations(p);
+    varTrue = sumSquaredDeviations(t);
+  } else {
+    const total = nonZeroWeightSum(w);
+    varResidual = weightedSumSquaredDeviations(p, w, total);
+    varTrue = weightedSumSquaredDeviations(t, w, total);
   }
 
-  // Handle constant targets (varTrue = 0)
-  // When all true values are identical, return 0.0 (no variance to explain)
+  // Constant targets (varTrue = 0): a perfect fit scores 1, anything else 0.
   if (varTrue === 0) {
     return varResidual === 0 ? 1.0 : 0.0;
   }
 
   return 1 - varResidual / varTrue;
 }
+
+/**
+ * Alias of {@link mse}.
+ *
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
+ */
+export const meanSquaredError: typeof mse = mse;
+
+/**
+ * Alias of {@link rmse}.
+ *
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
+ */
+export const rootMeanSquaredError: typeof rmse = rmse;
+
+/**
+ * Alias of {@link mae}.
+ *
+ * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
+ */
+export const meanAbsoluteError: typeof mae = mae;

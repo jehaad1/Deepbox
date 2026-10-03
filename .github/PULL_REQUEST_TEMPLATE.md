@@ -51,7 +51,8 @@ Closes #
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] Any dependent changes have been merged and published
-- [ ] I have run `npm run validate:all` and all checks pass
+- [ ] I have run `npm run validate:all` and `npm run prose:check` and all checks pass
+- [ ] New text follows the writing rules in CONTRIBUTING.md (no em dashes, no emoji)
 
 ## Screenshots (if applicable)
 

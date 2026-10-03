@@ -2,7 +2,8 @@
   "columns": [
     "model",
     "primaryMetric",
-    "metricName"
+    "metricName",
+    "falseAlarmRate"
   ],
   "index": [
     0,
@@ -18,16 +19,22 @@
       "OneClassSVM"
     ],
     "primaryMetric": [
-      "0.3774",
-      "0.4032",
-      "0.4032",
-      "0.9677"
+      "0.4211",
+      "0.3393",
+      "0.3214",
+      "0.4286"
     ],
     "metricName": [
       "F1",
       "Fraud recall",
       "Fraud recall",
       "Fraud recall"
+    ],
+    "falseAlarmRate": [
+      "0.2006",
+      "0.1787",
+      "0.1411",
+      "0.2382"
     ]
   }
 }

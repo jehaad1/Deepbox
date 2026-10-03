@@ -1,3 +1,9 @@
+/**
+ * Shared estimator interfaces, capability tags and global output settings for `deepbox/ml`.
+ *
+ * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../core";
 import type { Tensor } from "../ndarray";
 
@@ -5,27 +11,33 @@ import type { Tensor } from "../ndarray";
  * Output format for estimator transform/predict results.
  *
  * - "default": Return Tensor (the standard behavior)
- * - "array": Return plain nested number arrays
+ * - "array": Return plain nested number arrays (advisory: built-in estimators always return Tensors)
  */
 export type OutputType = "default" | "array";
 
 let globalOutputType: OutputType = "default";
 
 /**
- * Set the global output type for all estimators.
+ * Set the global output type preference.
  *
- * Controls whether `transform()`, `predict()`, etc. return
- * Tensors ("default") or plain arrays ("array").
+ * The value is stored here and read back with {@link get_output}. The built-in
+ * estimators always return Tensors; use `tensor.toArray()` to get plain nested
+ * arrays. Custom estimators and wrappers can consult `get_output()` to decide
+ * what to return.
  *
- * @param outputType - "default" for Tensor, "array" for number[][]
+ * @param outputType - "default" for Tensor, "array" for plain nested number arrays
+ * @throws {InvalidParameterError} If `outputType` is not "default" or "array"
  *
  * @example
  * ```ts
- * import { set_output } from 'deepbox/ml';
+ * import { setOutput, getOutput } from 'deepbox/ml';
  *
- * set_output('array');   // All outputs as plain arrays
- * set_output('default'); // Back to Tensor outputs
+ * setOutput('array');
+ * getOutput(); // 'array' (custom estimators can read this to decide what to return)
+ * setOutput('default');
  * ```
+ *
+ * @deprecated Prefer {@link setOutput}.
  */
 export function set_output(outputType: OutputType): void {
   if (outputType !== "default" && outputType !== "array") {
@@ -39,9 +51,11 @@ export function set_output(outputType: OutputType): void {
 }
 
 /**
- * Get the current global output type setting.
+ * Get the current global output type setting (see {@link set_output}).
  *
  * @returns Current output type
+ *
+ * @deprecated Prefer {@link getOutput}.
  */
 export function get_output(): OutputType {
   return globalOutputType;
@@ -49,6 +63,8 @@ export function get_output(): OutputType {
 
 /**
  * Reset the output type to default (Tensor).
+ *
+ * @deprecated Prefer {@link resetOutput}.
  */
 export function reset_output(): void {
   globalOutputType = "default";
@@ -117,6 +133,9 @@ const DEFAULT_TAGS: EstimatorTags = {
  * @returns Estimator tags
  */
 export function getEstimatorTags(estimator: Estimator): EstimatorTags {
+  if (!estimator || (typeof estimator !== "object" && typeof estimator !== "function")) {
+    throw new InvalidParameterError("Estimator must be an object", "estimator", estimator);
+  }
   // Check if the estimator provides its own tags
   const tagged = estimator as Record<string, unknown>;
   if (typeof tagged["_getTags"] === "function") {
@@ -127,9 +146,13 @@ export function getEstimatorTags(estimator: Estimator): EstimatorTags {
   // Infer from interface
   const hasPredict = typeof tagged["predict"] === "function";
   const hasPredictProba = typeof tagged["predictProba"] === "function";
-  const hasTransform = typeof tagged["transform"] === "function";
+  const hasDecisionFunction = typeof tagged["decisionFunction"] === "function";
+  const hasTransform =
+    typeof tagged["transform"] === "function" || typeof tagged["fitTransform"] === "function";
   const hasFitPredict = typeof tagged["fitPredict"] === "function";
   const hasScoreSamples = typeof tagged["scoreSamples"] === "function";
+  // Classifiers expose the labels they were fitted on as `classes`.
+  const hasClasses = "classes" in tagged;
 
   let estimatorType: EstimatorTags["estimatorType"] = "classifier";
   let requiresY = true;
@@ -137,16 +160,20 @@ export function getEstimatorTags(estimator: Estimator): EstimatorTags {
   if (hasTransform && !hasPredict) {
     estimatorType = "transformer";
     requiresY = false;
+  } else if (hasFitPredict && hasPredictProba && !hasClasses) {
+    // Mixture models expose scoreSamples as a log-likelihood, but they assign clusters.
+    estimatorType = "clusterer";
+    requiresY = false;
   } else if (hasScoreSamples) {
     estimatorType = "outlier_detector";
     requiresY = false;
-  } else if (hasFitPredict && !hasPredictProba) {
+  } else if (hasFitPredict && !hasClasses) {
     estimatorType = "clusterer";
     requiresY = false;
-  } else if (hasPredictProba) {
+  } else if (hasPredictProba || hasDecisionFunction || hasClasses) {
     estimatorType = "classifier";
   } else if (hasPredict) {
-    // Could be regressor or classifier; default to regressor if no predictProba
+    // No class information: treat as a regressor
     estimatorType = "regressor";
   }
 
@@ -154,14 +181,13 @@ export function getEstimatorTags(estimator: Estimator): EstimatorTags {
     ...DEFAULT_TAGS,
     estimatorType,
     requiresY,
-    hasPredictProba: hasPredictProba,
+    hasPredictProba,
+    hasDecisionFunction,
   };
 }
 
 /**
  * Base type for all estimators (models) in Deepbox.
- *
- * Base estimator type for all ML models.
  *
  * @template FitParams - Type of parameters passed to fit method
  *
@@ -396,10 +422,24 @@ export type OutlierDetector = Estimator<void> & {
    * @returns Anomaly scores (lower = more abnormal)
    */
   scoreSamples(X: Tensor): Tensor;
+
+  /**
+   * Signed distance to the decision boundary: negative values are outliers,
+   * non-negative values are inliers. Implemented by detectors that have a
+   * threshold (`scoreSamples(X) - offset`).
+   *
+   * @param X - Samples to score
+   * @returns Decision values of shape (n_samples,)
+   */
+  decisionFunction?(X: Tensor): Tensor;
 };
 
 /**
  * Runtime helper to validate estimator-like objects.
+ *
+ * @param value - Candidate estimator
+ * @returns `value` unchanged, typed as an estimator
+ * @throws {InvalidParameterError} If `value` is not an object or lacks `fit`, `getParams` or `setParams`
  */
 export function assertEstimator<T extends Estimator>(value: T): T {
   if (!value || typeof value !== "object") {
@@ -413,3 +453,37 @@ export function assertEstimator<T extends Estimator>(value: T): T {
   }
   return value;
 }
+
+/**
+ * Get the current global output type setting (see {@link set_output}).
+ *
+ * @returns Current output type
+ */
+export const getOutput = get_output;
+
+/**
+ * Reset the output type to default (Tensor).
+ */
+export const resetOutput = reset_output;
+
+/**
+ * Set the global output type preference.
+ *
+ * The value is stored here and read back with {@link get_output}. The built-in
+ * estimators always return Tensors; use `tensor.toArray()` to get plain nested
+ * arrays. Custom estimators and wrappers can consult `get_output()` to decide
+ * what to return.
+ *
+ * @param outputType - "default" for Tensor, "array" for plain nested number arrays
+ * @throws {InvalidParameterError} If `outputType` is not "default" or "array"
+ *
+ * @example
+ * ```ts
+ * import { setOutput, getOutput } from 'deepbox/ml';
+ *
+ * setOutput('array');
+ * getOutput(); // 'array' (custom estimators can read this to decide what to return)
+ * setOutput('default');
+ * ```
+ */
+export const setOutput = set_output;

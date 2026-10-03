@@ -3,6 +3,7 @@
  */
 
 export {
+  type CholeskyOptions,
   cholesky,
   type EigOptions,
   eig,
@@ -20,6 +21,7 @@ export {
 export { inv, pinv } from "./inverse";
 export {
   block_diag,
+  blockDiag,
   circulant,
   companion,
   expm,
@@ -29,6 +31,7 @@ export {
   kron,
   logm,
   matrix_power,
+  matrixPower,
   sqrtm,
   toeplitz,
   vandermonde,
@@ -40,8 +43,11 @@ export {
   denseToCSR,
   lstsq,
   lyapunov,
+  type SolveTriangularOptions,
+  type SparseMatrixInput,
   solve,
   solve_banded,
+  solveBanded,
   solveTriangular,
   sparseCholeskySolve,
   sparseSolve,

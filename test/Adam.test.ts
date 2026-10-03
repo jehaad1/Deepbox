@@ -20,10 +20,11 @@ describe("deepbox/optim - Adam", () => {
   });
 
   describe("step", () => {
-    it("should throw when gradient is missing", () => {
+    it("should skip a parameter whose gradient is null", () => {
       const p = parameter(tensor([1, 2, 3], { dtype: "float64" }));
       const optimizer = new Adam([p]);
-      expect(() => optimizer.step()).toThrow("Cannot optimize a parameter without a gradient");
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2, 3]);
     });
 
     it("should update parameters", () => {

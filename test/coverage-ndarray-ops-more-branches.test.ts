@@ -44,7 +44,7 @@ describe("ndarray ops additional branch coverage", () => {
       device: "cpu",
     });
     const powFloat = pow(bigA, bigNegExp);
-    expect(powFloat.dtype).toBe("float64");
+    expect(powFloat.dtype).toBe("float32");
 
     const bigExp = Tensor.fromTypedArray({
       data: new BigInt64Array([2n, 1n]),
@@ -56,7 +56,7 @@ describe("ndarray ops additional branch coverage", () => {
     expect(powInt.dtype).toBe("int64");
 
     const divOut = div(bigA, bigExp);
-    expect(divOut.dtype).toBe("float64");
+    expect(divOut.dtype).toBe("float32");
 
     const negBig = Tensor.fromTypedArray({
       data: new BigInt64Array([-3n, 3n]),
@@ -117,7 +117,7 @@ describe("ndarray ops additional branch coverage", () => {
     expect(signed).toEqual([1n, -1n, 1n]);
 
     const rec = reciprocal(bigA);
-    expect(rec.dtype).toBe("float64");
+    expect(rec.dtype).toBe("float32");
   });
 
   it("covers comparison paths including mixed BigInt and tolerance helpers", () => {
@@ -144,7 +144,8 @@ describe("ndarray ops additional branch coverage", () => {
     expect(less(numA, tensor(3)).shape).toEqual([2]);
 
     expect(isclose(tensor([1.0, 1.001]), tensor([1.0, 1.0]), 1e-2, 1e-6).shape).toEqual([2]);
-    expect(() => isclose(bigA, bigB)).toThrow(/BigInt/);
+    // int64 operands are compared after conversion to double (was a BigInt error before 1.5).
+    expect(isclose(bigA, bigB).toArray()).toEqual([1, 0]);
 
     expect(allclose(tensor([1, 2]), tensor([1, 2]))).toBe(true);
     expect(allclose(tensor([1, 2]), tensor([1, 2, 3]))).toBe(false);

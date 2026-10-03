@@ -4,15 +4,15 @@
 <rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
 <clipPath id="dbclip-50-50-540-380"><path d="M50 50 L590 50 L590 430 L50 430 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-540-380)">
-<rect x="74.55" y="297.58" width="163.64" height="115.15" fill="rgb(253,231,37)" />
-<rect x="238.18" y="297.58" width="163.64" height="115.15" fill="rgb(235,229,39)" />
-<rect x="401.82" y="297.58" width="163.64" height="115.15" fill="rgb(225,228,39)" />
-<rect x="74.55" y="182.42" width="163.64" height="115.15" fill="rgb(235,229,39)" />
-<rect x="238.18" y="182.42" width="163.64" height="115.15" fill="rgb(253,231,37)" />
-<rect x="401.82" y="182.42" width="163.64" height="115.15" fill="rgb(249,231,37)" />
-<rect x="74.55" y="67.27" width="163.64" height="115.15" fill="rgb(225,228,39)" />
-<rect x="238.18" y="67.27" width="163.64" height="115.15" fill="rgb(249,231,37)" />
-<rect x="401.82" y="67.27" width="163.64" height="115.15" fill="rgb(253,231,37)" />
+<rect x="74.55" y="297.58" width="163.64" height="115.15" fill="rgb(253,231,37)" shape-rendering="crispEdges" />
+<rect x="238.18" y="297.58" width="163.64" height="115.15" fill="rgb(238,229,28)" shape-rendering="crispEdges" />
+<rect x="401.82" y="297.58" width="163.64" height="115.15" fill="rgb(229,228,26)" shape-rendering="crispEdges" />
+<rect x="74.55" y="182.42" width="163.64" height="115.15" fill="rgb(238,229,28)" shape-rendering="crispEdges" />
+<rect x="238.18" y="182.42" width="163.64" height="115.15" fill="rgb(253,231,37)" shape-rendering="crispEdges" />
+<rect x="401.82" y="182.42" width="163.64" height="115.15" fill="rgb(250,231,35)" shape-rendering="crispEdges" />
+<rect x="74.55" y="67.27" width="163.64" height="115.15" fill="rgb(229,228,26)" shape-rendering="crispEdges" />
+<rect x="238.18" y="67.27" width="163.64" height="115.15" fill="rgb(250,231,35)" shape-rendering="crispEdges" />
+<rect x="401.82" y="67.27" width="163.64" height="115.15" fill="rgb(253,231,37)" shape-rendering="crispEdges" />
 </g>
 <line class="x-tick" x1="74.55" y1="430.00" x2="74.55" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="74.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>

@@ -1,73 +1,333 @@
 /**
  * Text feature extraction utilities.
  *
- * Provides CountVectorizer and TfidfVectorizer for converting text
- * documents into numerical feature matrices, compatible with ML pipelines.
+ * Provides CountVectorizer, TfidfVectorizer and HashingVectorizer for converting
+ * text documents into numerical feature matrices, compatible with ML pipelines.
  *
  * @module preprocess/text
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox documentation}
  */
 
-import { getDevice, getDtype, InvalidParameterError, NotFittedError } from "../core";
+import {
+  DataValidationError,
+  getDevice,
+  getDtype,
+  InvalidParameterError,
+  MemoryError,
+  NotFittedError,
+} from "../core";
+import { resolveLosslessDType } from "../core/utils/dtype_utils";
 import { type Tensor, Tensor as TensorClass, tensor } from "../ndarray";
 
 type TokenPattern = RegExp;
 
-type CountVectorizerOptions = {
-  /** Regex pattern for tokenization. Default: /\b\w\w+\b/g (words of 2+ chars) */
+/** Options shared by every vectorizer. */
+type TextOptions = {
+  /**
+   * Regex that matches one token. Every match becomes a token (the whole match, not a capture
+   * group). A `g` flag is added when missing, and zero-length matches are ignored.
+   * Default: `/[\p{L}\p{N}_]{2,}/gu`, i.e. runs of two or more Unicode letters, digits or
+   * underscores (the Unicode equivalent of scikit-learn's `\b\w\w+\b`).
+   */
   readonly tokenPattern?: TokenPattern;
-  /** Maximum number of features (vocabulary size). If set, keeps top-N by frequency. */
-  readonly maxFeatures?: number;
-  /** Minimum document frequency. Terms appearing in fewer docs are ignored.
-   *  If float in [0,1), treated as proportion. If int >= 1, treated as count. */
-  readonly minDf?: number;
-  /** Maximum document frequency. Terms appearing in more docs are ignored.
-   *  If float in [0,1], treated as proportion. If int > 1, treated as count. */
-  readonly maxDf?: number;
   /** Whether to convert text to lowercase before tokenizing. Default: true */
   readonly lowercase?: boolean;
   /** If true, use binary occurrence instead of counts. Default: false */
   readonly binary?: boolean;
-  /** Custom stop words to remove */
-  readonly stopWords?: readonly string[];
-  /** N-gram range [min, max]. Default: [1, 1] (unigrams only) */
+  /**
+   * Tokens to drop before n-grams are built: a custom list, or `"english"` for scikit-learn's
+   * built-in English list. Matching is case-sensitive and happens after lowercasing.
+   */
+  readonly stopWords?: readonly string[] | "english";
+  /** N-gram range `[min, max]` (1 <= min <= max). Default: `[1, 1]` (unigrams only). */
   readonly ngramRange?: readonly [number, number];
 };
 
-type TfidfVectorizerOptions = CountVectorizerOptions & {
-  /** TF-IDF norm: "l1", "l2", or undefined (no normalization). Default: "l2" */
+/** Options accepted by {@link CountVectorizer}. */
+export type CountVectorizerOptions = TextOptions & {
+  /** Maximum number of features (vocabulary size). If set, keeps the most frequent terms. */
+  readonly maxFeatures?: number;
+  /**
+   * Minimum document frequency. A value below 1 is a proportion of the documents, a value of 1
+   * or more is an absolute number of documents. Terms in fewer documents are dropped.
+   * Default: 1.
+   */
+  readonly minDf?: number;
+  /**
+   * Maximum document frequency. A value in (0, 1] is a proportion of the documents, an integer
+   * above 1 is an absolute number of documents. Terms in more documents are dropped.
+   * Default: 1 (keep everything).
+   */
+  readonly maxDf?: number;
+};
+
+/** Options accepted by {@link TfidfVectorizer}. */
+export type TfidfVectorizerOptions = CountVectorizerOptions & {
+  /** Row normalization: "l1", "l2", or undefined for none. Default: "l2" */
   readonly norm?: "l1" | "l2" | undefined;
   /** Whether to apply sublinear TF scaling (1 + log(tf)). Default: false */
   readonly sublinearTf?: boolean;
   /** Smooth IDF by adding 1 to document frequencies. Default: true */
   readonly smoothIdf?: boolean;
+  /** Enable inverse-document-frequency weighting. With false, only TF is used. Default: true */
+  readonly useIdf?: boolean;
 };
 
+/** Options accepted by {@link HashingVectorizer}. */
+export type HashingVectorizerOptions = TextOptions & {
+  /** Number of features (hash buckets). Default: 2^20 = 1048576. */
+  readonly nFeatures?: number;
+  /** Row normalization: "l1", "l2", or undefined for none. Default: "l2" */
+  readonly norm?: "l1" | "l2" | undefined;
+  /** If true, use alternate sign to reduce hash collision bias. Default: true */
+  readonly alternateSign?: boolean;
+};
+
+/** scikit-learn's `ENGLISH_STOP_WORDS` (318 words). */
+const ENGLISH_STOP_WORDS: readonly string[] = (
+  "a about above across after afterwards again against all almost alone along already also " +
+  "although always am among amongst amoungst amount an and another any anyhow anyone anything " +
+  "anyway anywhere are around as at back be became because become becomes becoming been before " +
+  "beforehand behind being below beside besides between beyond bill both bottom but by call can " +
+  "cannot cant co con could couldnt cry de describe detail do done down due during each eg " +
+  "eight either eleven else elsewhere empty enough etc even ever every everyone everything " +
+  "everywhere except few fifteen fifty fill find fire first five for former formerly forty " +
+  "found four from front full further get give go had has hasnt have he hence her here " +
+  "hereafter hereby herein hereupon hers herself him himself his how however hundred i ie if in " +
+  "inc indeed interest into is it its itself keep last latter latterly least less ltd made " +
+  "many may me meanwhile might mill mine more moreover most mostly move much must my myself " +
+  "name namely neither never nevertheless next nine no nobody none noone nor not nothing now " +
+  "nowhere of off often on once one only onto or other others otherwise our ours ourselves out " +
+  "over own part per perhaps please put rather re same see seem seemed seeming seems serious " +
+  "several she should show side since sincere six sixty so some somehow someone something " +
+  "sometime sometimes somewhere still such system take ten than that the their them themselves " +
+  "then thence there thereafter thereby therefore therein thereupon these they thick thin third " +
+  "this those though three through throughout thru thus to together too top toward towards " +
+  "twelve twenty two un under until up upon us very via was we well were what whatever when " +
+  "whence whenever where whereafter whereas whereby wherein whereupon wherever whether which " +
+  "while whither who whoever whole whom whose why will with within without would yet you your " +
+  "yours yourself yourselves"
+).split(" ");
+
 function defaultTokenPattern(): RegExp {
-  return /\b\w\w+\b/g;
+  return /[\p{L}\p{N}_]{2,}/gu;
 }
 
-function tokenize(
-  doc: string,
-  pattern: TokenPattern,
-  lowercase: boolean,
-  stopWords: ReadonlySet<string>,
-  ngramRange: readonly [number, number]
-): string[] {
-  const text = lowercase ? doc.toLowerCase() : doc;
-  // Reset regex lastIndex for global patterns
-  pattern.lastIndex = 0;
-  const rawTokens: string[] = [];
-  let match: RegExpExecArray | null = pattern.exec(text);
-  while (match !== null) {
-    const token = match[0];
-    if (!stopWords.has(token)) {
-      rawTokens.push(token);
-    }
-    match = pattern.exec(text);
+/** Compare strings by UTF-16 code units (locale independent, like Python's `sorted`). */
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Option validation
+// ---------------------------------------------------------------------------
+
+type ResolvedTextOptions = {
+  readonly tokenPattern: RegExp;
+  readonly lowercase: boolean;
+  readonly binary: boolean;
+  readonly stopWords: ReadonlySet<string>;
+  readonly stopWordsSpec: readonly string[] | "english" | undefined;
+  readonly ngramRange: readonly [number, number];
+};
+
+type ResolvedCountOptions = ResolvedTextOptions & {
+  readonly maxFeatures: number | undefined;
+  readonly minDf: number;
+  readonly maxDf: number;
+};
+
+type OptionBag = Readonly<Record<string, unknown>>;
+
+const TEXT_PARAM_KEYS = ["tokenPattern", "lowercase", "binary", "stopWords", "ngramRange"] as const;
+const COUNT_PARAM_KEYS: readonly string[] = [...TEXT_PARAM_KEYS, "maxFeatures", "minDf", "maxDf"];
+const TFIDF_OWN_KEYS: readonly string[] = ["norm", "sublinearTf", "smoothIdf", "useIdf"];
+const HASHING_PARAM_KEYS: readonly string[] = [
+  ...TEXT_PARAM_KEYS,
+  "nFeatures",
+  "norm",
+  "alternateSign",
+];
+
+function resolveBoolean(value: unknown, name: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") {
+    throw new InvalidParameterError(
+      `${name} must be a boolean; received ${String(value)}`,
+      name,
+      value
+    );
+  }
+  return value;
+}
+
+function resolveNorm(value: unknown): "l1" | "l2" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value !== "l1" && value !== "l2") {
+    throw new InvalidParameterError(
+      `norm must be "l1", "l2" or undefined; received ${String(value)}`,
+      "norm",
+      value
+    );
+  }
+  return value;
+}
+
+function resolveTextOptions(raw: OptionBag): ResolvedTextOptions {
+  let tokenPattern: RegExp;
+  const rawPattern = raw["tokenPattern"];
+  if (rawPattern === undefined) {
+    tokenPattern = defaultTokenPattern();
+  } else if (rawPattern instanceof RegExp) {
+    // Work on a private global copy: the caller's regex is never mutated, and matchAll
+    // requires the g flag.
+    tokenPattern = new RegExp(
+      rawPattern.source,
+      rawPattern.flags.includes("g") ? rawPattern.flags : `${rawPattern.flags}g`
+    );
+  } else {
+    throw new InvalidParameterError("tokenPattern must be a RegExp", "tokenPattern", rawPattern);
   }
 
-  const [minN, maxN] = ngramRange;
+  const rawStop = raw["stopWords"];
+  let stopWords: ReadonlySet<string>;
+  let stopWordsSpec: readonly string[] | "english" | undefined;
+  if (rawStop === undefined) {
+    stopWords = new Set();
+    stopWordsSpec = undefined;
+  } else if (rawStop === "english") {
+    stopWords = new Set(ENGLISH_STOP_WORDS);
+    stopWordsSpec = "english";
+  } else if (Array.isArray(rawStop) && rawStop.every((w) => typeof w === "string")) {
+    stopWordsSpec = [...(rawStop as string[])];
+    stopWords = new Set(stopWordsSpec);
+  } else {
+    throw new InvalidParameterError(
+      'stopWords must be "english" or an array of strings',
+      "stopWords",
+      rawStop
+    );
+  }
+
+  const rawRange = raw["ngramRange"];
+  let ngramRange: readonly [number, number] = [1, 1];
+  if (rawRange !== undefined) {
+    const [minN, maxN] = Array.isArray(rawRange) ? rawRange : [];
+    if (
+      !Array.isArray(rawRange) ||
+      rawRange.length !== 2 ||
+      !Number.isInteger(minN) ||
+      !Number.isInteger(maxN) ||
+      (minN as number) < 1 ||
+      (maxN as number) < (minN as number)
+    ) {
+      throw new InvalidParameterError(
+        `ngramRange must be [min, max] with 1 <= min <= max; received ${JSON.stringify(rawRange)}`,
+        "ngramRange",
+        rawRange
+      );
+    }
+    ngramRange = [minN as number, maxN as number];
+  }
+
+  return {
+    tokenPattern,
+    lowercase: resolveBoolean(raw["lowercase"], "lowercase", true),
+    binary: resolveBoolean(raw["binary"], "binary", false),
+    stopWords,
+    stopWordsSpec,
+    ngramRange,
+  };
+}
+
+function resolveCountOptions(raw: OptionBag): ResolvedCountOptions {
+  const text = resolveTextOptions(raw);
+
+  const maxFeatures = raw["maxFeatures"];
+  if (
+    maxFeatures !== undefined &&
+    (typeof maxFeatures !== "number" || !Number.isInteger(maxFeatures) || maxFeatures < 1)
+  ) {
+    throw new InvalidParameterError(
+      `maxFeatures must be a positive integer; received ${String(maxFeatures)}`,
+      "maxFeatures",
+      maxFeatures
+    );
+  }
+
+  const minDf = raw["minDf"] ?? 1;
+  if (
+    typeof minDf !== "number" ||
+    !Number.isFinite(minDf) ||
+    minDf < 0 ||
+    (minDf >= 1 && !Number.isInteger(minDf))
+  ) {
+    throw new InvalidParameterError(
+      `minDf must be a proportion in [0, 1) or an integer count >= 1; received ${String(minDf)}`,
+      "minDf",
+      minDf
+    );
+  }
+  const maxDf = raw["maxDf"] ?? 1;
+  if (
+    typeof maxDf !== "number" ||
+    !Number.isFinite(maxDf) ||
+    maxDf <= 0 ||
+    (maxDf > 1 && !Number.isInteger(maxDf))
+  ) {
+    throw new InvalidParameterError(
+      `maxDf must be a proportion in (0, 1] or an integer count > 1; received ${String(maxDf)}`,
+      "maxDf",
+      maxDf
+    );
+  }
+
+  return { ...text, maxFeatures: maxFeatures as number | undefined, minDf, maxDf };
+}
+
+function assertKnownKeys(params: OptionBag, allowed: readonly string[], owner: string): void {
+  for (const key of Object.keys(params)) {
+    if (!allowed.includes(key)) {
+      throw new InvalidParameterError(`${owner} has no parameter named "${key}"`, key, params[key]);
+    }
+  }
+}
+
+function validateDocuments(documents: readonly string[]): void {
+  if (!Array.isArray(documents)) {
+    throw new InvalidParameterError(
+      "documents must be an array of strings",
+      "documents",
+      typeof documents
+    );
+  }
+  for (let i = 0; i < documents.length; i++) {
+    if (typeof documents[i] !== "string") {
+      throw new InvalidParameterError(
+        `documents must be an array of strings; element ${i} is ${typeof documents[i]}`,
+        "documents",
+        documents[i]
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tokenization and output helpers
+// ---------------------------------------------------------------------------
+
+function tokenize(doc: string, opts: ResolvedTextOptions): string[] {
+  const text = opts.lowercase ? doc.toLowerCase() : doc;
+  const rawTokens: string[] = [];
+  for (const match of text.matchAll(opts.tokenPattern)) {
+    const token = match[0];
+    if (token.length > 0 && !opts.stopWords.has(token)) {
+      rawTokens.push(token);
+    }
+  }
+
+  const [minN, maxN] = opts.ngramRange;
   if (minN === 1 && maxN === 1) {
     return rawTokens;
   }
@@ -75,24 +335,95 @@ function tokenize(
   const ngrams: string[] = [];
   for (let n = minN; n <= maxN; n++) {
     for (let i = 0; i <= rawTokens.length - n; i++) {
-      ngrams.push(rawTokens.slice(i, i + n).join(" "));
+      ngrams.push(n === 1 ? (rawTokens[i] as string) : rawTokens.slice(i, i + n).join(" "));
     }
   }
   return ngrams;
 }
 
-function resolveDf(value: number, nDocs: number): number {
-  if (value >= 0 && value < 1) {
-    return Math.floor(value * nDocs);
+function allocateDense(nRows: number, nCols: number, what: string): Float64Array {
+  const size = nRows * nCols;
+  try {
+    return new Float64Array(size);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new MemoryError(
+        `${what} cannot allocate a dense ${nRows} x ${nCols} matrix (${size} values); ` +
+          "use fewer documents per call or fewer features (maxFeatures / nFeatures)",
+        { requestedBytes: size * 8, cause: error }
+      );
+    }
+    throw error;
   }
-  return value;
 }
+
+/**
+ * Wrap a row-major matrix as a tensor of the configured default dtype. A non-float default is
+ * used only when every value fits it exactly (for example plain counts under `int32`); TF-IDF
+ * weights and hashed features fall back to `float32` instead of being truncated.
+ */
+function toFloatTensor(data: Float64Array, nRows: number, nCols: number): Tensor {
+  const dtype = resolveLosslessDType(getDtype(), data);
+  if (dtype === "float64") {
+    return TensorClass.fromTypedArray({
+      data,
+      shape: [nRows, nCols],
+      dtype,
+      device: getDevice(),
+    });
+  }
+  if (dtype === "float32") {
+    return TensorClass.fromTypedArray({
+      data: new Float32Array(data),
+      shape: [nRows, nCols],
+      dtype,
+      device: getDevice(),
+    });
+  }
+  return tensor(Array.from(data), { dtype, device: getDevice() }).reshape([nRows, nCols]);
+}
+
+/** Normalize each row of `data` in place to unit L1 or L2 norm; all-zero rows stay zero. */
+function normalizeRows(data: Float64Array, nRows: number, nCols: number, norm: "l1" | "l2"): void {
+  for (let i = 0; i < nRows; i++) {
+    const rowStart = i * nCols;
+    let normVal = 0;
+    if (norm === "l2") {
+      for (let j = 0; j < nCols; j++) {
+        const v = data[rowStart + j] as number;
+        normVal += v * v;
+      }
+      normVal = Math.sqrt(normVal);
+    } else {
+      for (let j = 0; j < nCols; j++) {
+        normVal += Math.abs(data[rowStart + j] as number);
+      }
+    }
+    if (normVal > 0) {
+      for (let j = 0; j < nCols; j++) {
+        data[rowStart + j] = (data[rowStart + j] as number) / normVal;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CountVectorizer
+// ---------------------------------------------------------------------------
 
 /**
  * Convert a collection of text documents to a matrix of token counts.
  *
  * Implements the bag-of-words model: each document becomes a vector of
- * word counts. The vocabulary is learned from the training data.
+ * word counts. The vocabulary is learned from the training data and sorted
+ * alphabetically by UTF-16 code unit, which is scikit-learn's order except for
+ * rare characters outside the Basic Multilingual Plane. Features whose
+ * document frequency is outside `[minDf, maxDf]` are dropped, then at most
+ * `maxFeatures` of the most frequent terms are kept. Fitting throws a
+ * `DataValidationError` when no term survives.
+ *
+ * The result is a dense matrix of the default float dtype; for very large
+ * vocabularies use `maxFeatures` or {@link HashingVectorizer}.
  *
  * @example
  * ```ts
@@ -102,115 +433,149 @@ function resolveDf(value: number, nDocs: number): number {
  * const X = cv.fitTransformText(['hello world', 'hello deepbox world']);
  * // X is a 2D tensor of shape [2, vocabulary_size]
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox documentation}
  */
 export class CountVectorizer {
-  private readonly tokenPattern: TokenPattern;
-  private readonly maxFeatures: number | undefined;
-  private readonly minDf: number;
-  private readonly maxDf: number;
-  private readonly lowercase: boolean;
-  private readonly binary: boolean;
-  private readonly stopWords: ReadonlySet<string>;
-  private readonly ngramRange: readonly [number, number];
+  private opts: ResolvedCountOptions;
 
   private vocabulary_: Map<string, number> = new Map();
   private featureNames_: string[] = [];
+  private docFreq_: Float64Array = new Float64Array(0);
   private fitted = false;
 
   constructor(options: CountVectorizerOptions = {}) {
-    this.tokenPattern = options.tokenPattern ?? defaultTokenPattern();
-    this.maxFeatures = options.maxFeatures;
-    this.minDf = options.minDf ?? 1;
-    this.maxDf = options.maxDf ?? 1.0;
-    this.lowercase = options.lowercase ?? true;
-    this.binary = options.binary ?? false;
-    this.stopWords = new Set(options.stopWords ?? []);
-    this.ngramRange = options.ngramRange ?? [1, 1];
-
-    if (
-      this.maxFeatures !== undefined &&
-      (!Number.isInteger(this.maxFeatures) || this.maxFeatures < 1)
-    ) {
-      throw new InvalidParameterError(
-        `maxFeatures must be a positive integer; received ${this.maxFeatures}`,
-        "maxFeatures",
-        this.maxFeatures
-      );
-    }
-    const [minN, maxN] = this.ngramRange;
-    if (!Number.isInteger(minN) || !Number.isInteger(maxN) || minN < 1 || maxN < minN) {
-      throw new InvalidParameterError(
-        `ngramRange must be [min, max] with 1 <= min <= max; received [${minN}, ${maxN}]`,
-        "ngramRange",
-        this.ngramRange
-      );
-    }
+    this.opts = resolveCountOptions(options);
   }
 
   /**
-   * Learn vocabulary from documents.
+   * Learn vocabulary from documents. Calling it again discards the previous vocabulary.
    *
    * @param documents - Array of text documents
    * @returns this
+   * @throws {InvalidParameterError} If `documents` is not an array of strings, or `maxDf`
+   *   allows fewer documents than `minDf`
+   * @throws {DataValidationError} If the resulting vocabulary is empty
    */
   fitText(documents: readonly string[]): this {
+    validateDocuments(documents);
     const nDocs = documents.length;
-    const termDocFreq = new Map<string, number>();
-    const termTotalFreq = new Map<string, number>();
+    if (nDocs === 0) {
+      throw new DataValidationError("Empty vocabulary: documents is an empty array");
+    }
+    const { minDf, maxDf, maxFeatures } = this.opts;
+    const stats = new Map<string, { df: number; tf: number; last: number }>();
 
-    for (const doc of documents) {
-      const tokens = tokenize(
-        doc,
-        this.tokenPattern,
-        this.lowercase,
-        this.stopWords,
-        this.ngramRange
-      );
-      const seen = new Set<string>();
-      for (const token of tokens) {
-        termTotalFreq.set(token, (termTotalFreq.get(token) ?? 0) + 1);
-        if (!seen.has(token)) {
-          termDocFreq.set(token, (termDocFreq.get(token) ?? 0) + 1);
-          seen.add(token);
+    for (let i = 0; i < nDocs; i++) {
+      for (const token of tokenize(documents[i] as string, this.opts)) {
+        let entry = stats.get(token);
+        if (entry === undefined) {
+          entry = { df: 0, tf: 0, last: -1 };
+          stats.set(token, entry);
+        }
+        entry.tf += 1;
+        if (entry.last !== i) {
+          entry.last = i;
+          entry.df += 1;
         }
       }
     }
 
-    // Apply min_df / max_df filtering
-    const minDfAbs = resolveDf(this.minDf, nDocs);
-    const maxDfAbs =
-      this.maxDf <= 1.0 && this.maxDf > 0 ? Math.ceil(this.maxDf * nDocs) : this.maxDf;
+    // Document-frequency limits. Proportions are compared without rounding, as scikit-learn
+    // does: minDf = 0.5 over 5 documents keeps terms found in at least 3 documents.
+    const minCount = minDf < 1 ? minDf * nDocs : minDf;
+    const maxCount = maxDf <= 1 ? maxDf * nDocs : maxDf;
+    if (maxCount < minCount) {
+      throw new InvalidParameterError(
+        "maxDf corresponds to fewer documents than minDf",
+        "maxDf",
+        maxDf
+      );
+    }
 
-    const candidates: Array<[string, number]> = [];
-    for (const [term, docFreq] of termDocFreq) {
-      if (docFreq >= minDfAbs && docFreq <= maxDfAbs) {
-        candidates.push([term, termTotalFreq.get(term) ?? 0]);
+    // Each candidate is [term, ranking weight, document frequency]. The weight is the total
+    // count, or the document frequency when `binary` is set (the counts are then 0/1, as in
+    // scikit-learn).
+    let candidates: Array<[string, number, number]> = [];
+    for (const [term, entry] of stats) {
+      if (entry.df >= minCount && entry.df <= maxCount) {
+        candidates.push([term, this.opts.binary ? entry.df : entry.tf, entry.df]);
       }
     }
 
-    // Sort by frequency descending, then alphabetically for ties
-    candidates.sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      return a[0].localeCompare(b[0]);
-    });
-
-    // Apply maxFeatures
-    const selected =
-      this.maxFeatures !== undefined ? candidates.slice(0, this.maxFeatures) : candidates;
-
-    // Sort alphabetically for final vocabulary order (sklearn convention)
-    selected.sort((a, b) => a[0].localeCompare(b[0]));
-
-    this.vocabulary_ = new Map();
-    this.featureNames_ = [];
-    for (let i = 0; i < selected.length; i++) {
-      const term = selected[i]![0];
-      this.vocabulary_.set(term, i);
-      this.featureNames_.push(term);
+    if (maxFeatures !== undefined && candidates.length > maxFeatures) {
+      // Most frequent terms first; alphabetical order breaks ties.
+      candidates.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : compareStrings(a[0], b[0])));
+      candidates = candidates.slice(0, maxFeatures);
     }
 
+    if (candidates.length === 0) {
+      throw new DataValidationError(
+        "Empty vocabulary: no term survived tokenization, stop word removal and the minDf / maxDf " +
+          "limits. Check the documents and these options."
+      );
+    }
+
+    // Final vocabulary order is alphabetical (scikit-learn convention).
+    candidates.sort((a, b) => compareStrings(a[0], b[0]));
+
+    const vocabulary = new Map<string, number>();
+    const featureNames: string[] = [];
+    const docFreq = new Float64Array(candidates.length);
+    for (let i = 0; i < candidates.length; i++) {
+      const [term, , df] = candidates[i] as [string, number, number];
+      vocabulary.set(term, i);
+      featureNames.push(term);
+      docFreq[i] = df;
+    }
+
+    this.vocabulary_ = vocabulary;
+    this.featureNames_ = featureNames;
+    this.docFreq_ = docFreq;
     this.fitted = true;
     return this;
+  }
+
+  /**
+   * Count the learned terms in each document. Terms outside the vocabulary are ignored.
+   *
+   * @param documents - Array of text documents
+   * @returns Row-major `[nDocs, nFeatures]` counts (0/1 when `binary` is set)
+   * @internal
+   */
+  transformCounts(documents: readonly string[]): Float64Array {
+    if (!this.fitted) {
+      throw new NotFittedError("CountVectorizer must be fitted before transform");
+    }
+    validateDocuments(documents);
+
+    const nDocs = documents.length;
+    const nFeatures = this.vocabulary_.size;
+    const data = allocateDense(nDocs, nFeatures, "CountVectorizer.transformText");
+    const binary = this.opts.binary;
+
+    for (let i = 0; i < nDocs; i++) {
+      for (const token of tokenize(documents[i] as string, this.opts)) {
+        const idx = this.vocabulary_.get(token);
+        if (idx !== undefined) {
+          const pos = i * nFeatures + idx;
+          data[pos] = binary ? 1 : (data[pos] as number) + 1;
+        }
+      }
+    }
+    return data;
+  }
+
+  /**
+   * Number of fitted documents that contain each term, in vocabulary order.
+   *
+   * @internal
+   */
+  documentFrequencies(): Float64Array {
+    if (!this.fitted) {
+      throw new NotFittedError("CountVectorizer must be fitted first");
+    }
+    return this.docFreq_;
   }
 
   /**
@@ -218,38 +583,11 @@ export class CountVectorizer {
    *
    * @param documents - Array of text documents
    * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
    */
   transformText(documents: readonly string[]): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("CountVectorizer must be fitted before transform");
-    }
-
-    const nDocs = documents.length;
-    const nFeatures = this.vocabulary_.size;
-    const data = new Float64Array(nDocs * nFeatures);
-
-    for (let i = 0; i < nDocs; i++) {
-      const tokens = tokenize(
-        documents[i]!,
-        this.tokenPattern,
-        this.lowercase,
-        this.stopWords,
-        this.ngramRange
-      );
-      for (const token of tokens) {
-        const idx = this.vocabulary_.get(token);
-        if (idx !== undefined) {
-          if (this.binary) {
-            data[i * nFeatures + idx] = 1;
-          } else {
-            const pos = i * nFeatures + idx;
-            data[pos] = (data[pos] ?? 0) + 1;
-          }
-        }
-      }
-    }
-
-    return tensor(Array.from(data)).reshape([nDocs, nFeatures]);
+    const data = this.transformCounts(documents);
+    return toFloatTensor(data, documents.length, this.vocabulary_.size);
   }
 
   /**
@@ -263,7 +601,7 @@ export class CountVectorizer {
     return this.transformText(documents);
   }
 
-  /** The learned vocabulary mapping term → index */
+  /** The learned vocabulary mapping each term to its index */
   get vocabulary(): ReadonlyMap<string, number> {
     if (!this.fitted) throw new NotFittedError("CountVectorizer must be fitted first");
     return this.vocabulary_;
@@ -275,21 +613,45 @@ export class CountVectorizer {
     return [...this.featureNames_];
   }
 
+  /** Current parameters. Pass them to `setParams` or the constructor to rebuild a vectorizer. */
   getParams(): Record<string, unknown> {
     return {
-      maxFeatures: this.maxFeatures,
-      minDf: this.minDf,
-      maxDf: this.maxDf,
-      lowercase: this.lowercase,
-      binary: this.binary,
-      ngramRange: this.ngramRange,
+      tokenPattern: new RegExp(this.opts.tokenPattern.source, this.opts.tokenPattern.flags),
+      maxFeatures: this.opts.maxFeatures,
+      minDf: this.opts.minDf,
+      maxDf: this.opts.maxDf,
+      lowercase: this.opts.lowercase,
+      binary: this.opts.binary,
+      stopWords:
+        this.opts.stopWordsSpec === undefined || this.opts.stopWordsSpec === "english"
+          ? this.opts.stopWordsSpec
+          : [...this.opts.stopWordsSpec],
+      ngramRange: [...this.opts.ngramRange],
     };
   }
 
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * Change parameters. Setting any parameter discards the learned vocabulary, so call
+   * `fitText` again before transforming.
+   *
+   * @param params - Subset of the constructor options
+   * @throws {InvalidParameterError} If a name is unknown or a value is invalid; nothing changes
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownKeys(params, COUNT_PARAM_KEYS, "CountVectorizer");
+    if (Object.keys(params).length === 0) return this;
+    this.opts = resolveCountOptions({ ...this.getParams(), ...params });
+    this.vocabulary_ = new Map();
+    this.featureNames_ = [];
+    this.docFreq_ = new Float64Array(0);
+    this.fitted = false;
     return this;
   }
 }
+
+// ---------------------------------------------------------------------------
+// TfidfVectorizer
+// ---------------------------------------------------------------------------
 
 /**
  * Convert a collection of text documents to a TF-IDF feature matrix.
@@ -298,7 +660,10 @@ export class CountVectorizer {
  * Inverse Document Frequency) down-weights terms that appear in many documents
  * and up-weights rare, discriminative terms.
  *
- * IDF formula: `log((1 + n) / (1 + df)) + 1` (with smoothIdf=true)
+ * IDF formula: `log((1 + n) / (1 + df)) + 1` with `smoothIdf` (default), or
+ * `log(n / df) + 1` without it, where `n` is the number of fitted documents and `df`
+ * the number of documents containing the term. Rows are normalized to unit L2 norm by
+ * default. The results match scikit-learn's `TfidfVectorizer` for the same options.
  *
  * @example
  * ```ts
@@ -308,31 +673,64 @@ export class CountVectorizer {
  * const X = tfidf.fitTransformText(['hello world', 'hello deepbox']);
  * // X is a 2D tensor of shape [2, vocabulary_size] with TF-IDF weights
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox documentation}
  */
 export class TfidfVectorizer {
   private readonly countVectorizer: CountVectorizer;
-  private readonly norm: "l1" | "l2" | undefined;
-  private readonly sublinearTf: boolean;
-  private readonly smoothIdf: boolean;
+  private norm: "l1" | "l2" | undefined;
+  private sublinearTf: boolean;
+  private smoothIdf: boolean;
+  private useIdf: boolean;
 
   private idf_: Float64Array = new Float64Array(0);
   private fitted = false;
 
   constructor(options: TfidfVectorizerOptions = {}) {
-    // Build count vectorizer options, omitting undefined keys to satisfy exactOptionalPropertyTypes
-    const raw: Record<string, unknown> = {};
-    if (options.tokenPattern !== undefined) raw["tokenPattern"] = options.tokenPattern;
-    if (options.maxFeatures !== undefined) raw["maxFeatures"] = options.maxFeatures;
-    if (options.minDf !== undefined) raw["minDf"] = options.minDf;
-    if (options.maxDf !== undefined) raw["maxDf"] = options.maxDf;
-    if (options.lowercase !== undefined) raw["lowercase"] = options.lowercase;
-    if (options.binary !== undefined) raw["binary"] = options.binary;
-    if (options.stopWords !== undefined) raw["stopWords"] = options.stopWords;
-    if (options.ngramRange !== undefined) raw["ngramRange"] = options.ngramRange;
-    this.countVectorizer = new CountVectorizer(raw as CountVectorizerOptions);
-    this.norm = "norm" in options ? options.norm : "l2";
-    this.sublinearTf = options.sublinearTf ?? false;
-    this.smoothIdf = options.smoothIdf ?? true;
+    this.countVectorizer = new CountVectorizer(options);
+    this.norm = "norm" in options ? resolveNorm(options.norm) : "l2";
+    this.sublinearTf = resolveBoolean(options.sublinearTf, "sublinearTf", false);
+    this.smoothIdf = resolveBoolean(options.smoothIdf, "smoothIdf", true);
+    this.useIdf = resolveBoolean(options.useIdf, "useIdf", true);
+  }
+
+  /** Learn the vocabulary and the IDF weights. */
+  private fitIdf(documents: readonly string[]): void {
+    this.fitted = false;
+    this.countVectorizer.fitText(documents);
+    const df = this.countVectorizer.documentFrequencies();
+    const nDocs = documents.length;
+    const nFeatures = df.length;
+
+    const idf = new Float64Array(nFeatures);
+    if (this.useIdf) {
+      const smooth = this.smoothIdf ? 1 : 0;
+      for (let j = 0; j < nFeatures; j++) {
+        idf[j] = Math.log((smooth + nDocs) / (smooth + (df[j] as number))) + 1;
+      }
+    } else {
+      idf.fill(1);
+    }
+
+    this.idf_ = idf;
+    this.fitted = true;
+  }
+
+  /** Apply TF scaling, IDF weights and normalization to a count matrix in place. */
+  private weigh(data: Float64Array, nDocs: number, nFeatures: number): void {
+    const idf = this.idf_;
+    const sublinear = this.sublinearTf;
+    for (let i = 0; i < nDocs; i++) {
+      const rowStart = i * nFeatures;
+      for (let j = 0; j < nFeatures; j++) {
+        const count = data[rowStart + j] as number;
+        if (count === 0) continue;
+        data[rowStart + j] = (sublinear ? 1 + Math.log(count) : count) * (idf[j] as number);
+      }
+    }
+    if (this.norm !== undefined) {
+      normalizeRows(data, nDocs, nFeatures, this.norm);
+    }
   }
 
   /**
@@ -340,33 +738,10 @@ export class TfidfVectorizer {
    *
    * @param documents - Array of text documents
    * @returns this
+   * @throws {DataValidationError} If the resulting vocabulary is empty
    */
   fitText(documents: readonly string[]): this {
-    // Fit the count vectorizer
-    this.countVectorizer.fitText(documents);
-
-    // Compute document frequencies for IDF
-    const countMatrix = this.countVectorizer.transformText(documents);
-    const nDocs = documents.length;
-    const nFeatures = this.countVectorizer.vocabulary.size;
-
-    const df = new Float64Array(nFeatures);
-    for (let i = 0; i < nDocs; i++) {
-      for (let j = 0; j < nFeatures; j++) {
-        if (Number(countMatrix.data[countMatrix.offset + i * nFeatures + j]) > 0) {
-          df[j] = (df[j] ?? 0) + 1;
-        }
-      }
-    }
-
-    // Compute IDF
-    this.idf_ = new Float64Array(nFeatures);
-    const smooth = this.smoothIdf ? 1 : 0;
-    for (let j = 0; j < nFeatures; j++) {
-      this.idf_[j] = Math.log((smooth + nDocs) / (smooth + (df[j] ?? 0))) + 1;
-    }
-
-    this.fitted = true;
+    this.fitIdf(documents);
     return this;
   }
 
@@ -375,51 +750,16 @@ export class TfidfVectorizer {
    *
    * @param documents - Array of text documents
    * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
    */
   transformText(documents: readonly string[]): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("TfidfVectorizer must be fitted before transform");
     }
-
-    const countMatrix = this.countVectorizer.transformText(documents);
-    const nDocs = documents.length;
-    const nFeatures = this.countVectorizer.vocabulary.size;
-    const data = new Float64Array(nDocs * nFeatures);
-
-    for (let i = 0; i < nDocs; i++) {
-      for (let j = 0; j < nFeatures; j++) {
-        let tf = Number(countMatrix.data[countMatrix.offset + i * nFeatures + j]);
-        if (this.sublinearTf && tf > 0) {
-          tf = 1 + Math.log(tf);
-        }
-        data[i * nFeatures + j] = tf * (this.idf_[j] ?? 0);
-      }
-    }
-
-    // Apply normalization
-    if (this.norm) {
-      for (let i = 0; i < nDocs; i++) {
-        const rowStart = i * nFeatures;
-        let normVal = 0;
-        if (this.norm === "l2") {
-          for (let j = 0; j < nFeatures; j++) {
-            normVal += (data[rowStart + j] ?? 0) ** 2;
-          }
-          normVal = Math.sqrt(normVal);
-        } else {
-          for (let j = 0; j < nFeatures; j++) {
-            normVal += Math.abs(data[rowStart + j] ?? 0);
-          }
-        }
-        if (normVal > 0) {
-          for (let j = 0; j < nFeatures; j++) {
-            data[rowStart + j] = (data[rowStart + j] ?? 0) / normVal;
-          }
-        }
-      }
-    }
-
-    return tensor(Array.from(data)).reshape([nDocs, nFeatures]);
+    const data = this.countVectorizer.transformCounts(documents);
+    const nFeatures = this.idf_.length;
+    this.weigh(data, documents.length, nFeatures);
+    return toFloatTensor(data, documents.length, nFeatures);
   }
 
   /**
@@ -429,16 +769,20 @@ export class TfidfVectorizer {
    * @returns 2D Tensor of shape [n_documents, n_features]
    */
   fitTransformText(documents: readonly string[]): Tensor {
-    this.fitText(documents);
-    return this.transformText(documents);
+    this.fitIdf(documents);
+    const data = this.countVectorizer.transformCounts(documents);
+    const nFeatures = this.idf_.length;
+    this.weigh(data, documents.length, nFeatures);
+    return toFloatTensor(data, documents.length, nFeatures);
   }
 
-  /** The learned vocabulary mapping term → index */
+  /** The learned vocabulary mapping each term to its index */
   get vocabulary(): ReadonlyMap<string, number> {
+    if (!this.fitted) throw new NotFittedError("TfidfVectorizer must be fitted first");
     return this.countVectorizer.vocabulary;
   }
 
-  /** The learned IDF vector */
+  /** The learned IDF vector (all ones when `useIdf` is false) */
   get idf(): Float64Array {
     if (!this.fitted) throw new NotFittedError("TfidfVectorizer must be fitted first");
     return this.idf_;
@@ -446,46 +790,70 @@ export class TfidfVectorizer {
 
   /** Feature names (terms) in vocabulary order */
   getFeatureNames(): string[] {
+    if (!this.fitted) throw new NotFittedError("TfidfVectorizer must be fitted first");
     return this.countVectorizer.getFeatureNames();
   }
 
+  /** Current parameters. Pass them to `setParams` or the constructor to rebuild a vectorizer. */
   getParams(): Record<string, unknown> {
     return {
       ...this.countVectorizer.getParams(),
       norm: this.norm,
       sublinearTf: this.sublinearTf,
       smoothIdf: this.smoothIdf,
+      useIdf: this.useIdf,
     };
   }
 
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * Change parameters. Changing anything except `norm` and `sublinearTf` discards the learned
+   * vocabulary and IDF, so call `fitText` again before transforming.
+   *
+   * @param params - Subset of the constructor options
+   * @throws {InvalidParameterError} If a name is unknown or a value is invalid; nothing changes
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownKeys(params, [...COUNT_PARAM_KEYS, ...TFIDF_OWN_KEYS], "TfidfVectorizer");
+    // Validate every value before applying any of them.
+    const norm = "norm" in params ? resolveNorm(params["norm"]) : this.norm;
+    const sublinearTf = resolveBoolean(params["sublinearTf"], "sublinearTf", this.sublinearTf);
+    const smoothIdf = resolveBoolean(params["smoothIdf"], "smoothIdf", this.smoothIdf);
+    const useIdf = resolveBoolean(params["useIdf"], "useIdf", this.useIdf);
+
+    const countParams: Record<string, unknown> = {};
+    let needsRefit = smoothIdf !== this.smoothIdf || useIdf !== this.useIdf;
+    for (const key of Object.keys(params)) {
+      if (!TFIDF_OWN_KEYS.includes(key)) {
+        countParams[key] = params[key];
+        needsRefit = true;
+      }
+    }
+    if (Object.keys(countParams).length > 0) {
+      this.countVectorizer.setParams(countParams);
+    }
+
+    this.norm = norm;
+    this.sublinearTf = sublinearTf;
+    this.smoothIdf = smoothIdf;
+    this.useIdf = useIdf;
+    if (needsRefit) {
+      this.fitted = false;
+      this.idf_ = new Float64Array(0);
+    }
     return this;
   }
 }
 
-type HashingVectorizerOptions = {
-  /** Number of features (hash buckets). Default: 2^20 = 1048576. */
-  readonly nFeatures?: number;
-  /** Regex pattern for tokenization. Default: /\b\w\w+\b/g */
-  readonly tokenPattern?: TokenPattern;
-  /** Whether to convert text to lowercase before tokenizing. Default: true */
-  readonly lowercase?: boolean;
-  /** Use binary occurrence instead of counts. Default: false */
-  readonly binary?: boolean;
-  /** Custom stop words to remove */
-  readonly stopWords?: readonly string[];
-  /** N-gram range [min, max]. Default: [1, 1] */
-  readonly ngramRange?: readonly [number, number];
-  /** Normalization: "l1", "l2", or undefined (none). Default: "l2" */
-  readonly norm?: "l1" | "l2" | undefined;
-  /** If true, use alternate sign to reduce hash collision bias. Default: true */
-  readonly alternateSign?: boolean;
-};
+// ---------------------------------------------------------------------------
+// HashingVectorizer
+// ---------------------------------------------------------------------------
 
 /**
  * FNV-1a 32-bit hash function.
  *
  * Deterministic, fast, and provides reasonable distribution for feature hashing.
+ * It hashes the UTF-16 code units of the token, so bucket assignments differ from
+ * scikit-learn's MurmurHash3 over UTF-8.
  */
 function fnv1a(str: string): number {
   let hash = 0x811c9dc5; // FNV offset basis
@@ -494,6 +862,29 @@ function fnv1a(str: string): number {
     hash = Math.imul(hash, 0x01000193); // FNV prime
   }
   return hash >>> 0; // ensure unsigned
+}
+
+type ResolvedHashingOptions = ResolvedTextOptions & {
+  readonly nFeatures: number;
+  readonly norm: "l1" | "l2" | undefined;
+  readonly alternateSign: boolean;
+};
+
+function resolveHashingOptions(raw: OptionBag): ResolvedHashingOptions {
+  const nFeatures = raw["nFeatures"] ?? 1 << 20;
+  if (typeof nFeatures !== "number" || !Number.isInteger(nFeatures) || nFeatures < 1) {
+    throw new InvalidParameterError(
+      `nFeatures must be a positive integer; received ${String(nFeatures)}`,
+      "nFeatures",
+      nFeatures
+    );
+  }
+  return {
+    ...resolveTextOptions(raw),
+    nFeatures,
+    norm: "norm" in raw ? resolveNorm(raw["norm"]) : "l2",
+    alternateSign: resolveBoolean(raw["alternateSign"], "alternateSign", true),
+  };
 }
 
 /**
@@ -509,6 +900,9 @@ function fnv1a(str: string): number {
  * - Cannot retrieve feature names (hash collisions are possible)
  * - Signed hashing (alternateSign) reduces collision bias
  *
+ * The output is a dense `[nDocs, nFeatures]` matrix, so the default of 2^20
+ * features costs 8 MB per document; choose a smaller `nFeatures` for many documents.
+ *
  * @example
  * ```ts
  * import { HashingVectorizer } from 'deepbox/preprocess';
@@ -517,78 +911,53 @@ function fnv1a(str: string): number {
  * const X = hv.transformText(['hello world', 'hello deepbox world']);
  * // X is a 2D tensor of shape [2, 1024]
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox documentation}
  */
 export class HashingVectorizer {
-  private readonly nFeatures: number;
-  private readonly tokenPattern: TokenPattern;
-  private readonly lowercase: boolean;
-  private readonly binary: boolean;
-  private readonly stopWords: ReadonlySet<string>;
-  private readonly ngramRange: readonly [number, number];
-  private readonly norm: "l1" | "l2" | undefined;
-  private readonly alternateSign: boolean;
+  private opts: ResolvedHashingOptions;
 
   constructor(options: HashingVectorizerOptions = {}) {
-    this.nFeatures = options.nFeatures ?? 1 << 20;
-    this.tokenPattern = options.tokenPattern ?? defaultTokenPattern();
-    this.lowercase = options.lowercase ?? true;
-    this.binary = options.binary ?? false;
-    this.stopWords = new Set(options.stopWords ?? []);
-    this.ngramRange = options.ngramRange ?? [1, 1];
-    this.norm = "norm" in options ? options.norm : "l2";
-    this.alternateSign = options.alternateSign ?? true;
+    this.opts = resolveHashingOptions(options);
+  }
 
-    if (!Number.isInteger(this.nFeatures) || this.nFeatures < 1) {
-      throw new InvalidParameterError(
-        `nFeatures must be a positive integer; received ${this.nFeatures}`,
-        "nFeatures",
-        this.nFeatures
-      );
-    }
-    const [minN, maxN] = this.ngramRange;
-    if (!Number.isInteger(minN) || !Number.isInteger(maxN) || minN < 1 || maxN < minN) {
-      throw new InvalidParameterError(
-        `ngramRange must be [min, max] with 1 <= min <= max; received [${minN}, ${maxN}]`,
-        "ngramRange",
-        this.ngramRange
-      );
-    }
+  /**
+   * No-op, provided so the vectorizer can be used where `fitText` is expected.
+   * Only validates the documents.
+   *
+   * @param documents - Array of text documents
+   * @returns this
+   */
+  fitText(documents: readonly string[]): this {
+    validateDocuments(documents);
+    return this;
   }
 
   /**
    * Transform documents to a fixed-size hash feature matrix.
    *
-   * No fitting is required — this is a stateless transform.
+   * No fitting is required: this is a stateless transform.
    *
    * @param documents - Array of text documents
    * @returns 2D Tensor of shape [n_documents, nFeatures]
    */
   transformText(documents: readonly string[]): Tensor {
+    validateDocuments(documents);
     const nDocs = documents.length;
-    const nF = this.nFeatures;
-    const data = new Float64Array(nDocs * nF);
-    const binary = this.binary;
-    const alternateSign = this.alternateSign;
-    const norm = this.norm;
+    const nF = this.opts.nFeatures;
+    const data = allocateDense(nDocs, nF, "HashingVectorizer.transformText");
+    const { binary, alternateSign, norm } = this.opts;
     const hiMod = 2147483648 % nF;
 
     // Generation-stamped touch tracking: `touchStamp[idx] === i` marks column
     // `idx` as written by doc `i`, so normalization sweeps only the (few)
-    // non-zero columns per document instead of all nF — the old code paid two
-    // O(nDocs·nF) passes over a matrix that is ~99% zeros.
+    // non-zero columns per document instead of all nF (the old code paid two
+    // O(nDocs·nF) passes over a matrix that is ~99% zeros).
     const touchStamp = norm ? new Int32Array(nF).fill(-1) : null;
     const touched: number[] = [];
 
     for (let i = 0; i < nDocs; i++) {
-      const doc = documents[i];
-      if (doc === undefined) continue;
-      const tokens = tokenize(
-        doc,
-        this.tokenPattern,
-        this.lowercase,
-        this.stopWords,
-        this.ngramRange
-      );
+      const tokens = tokenize(documents[i] as string, this.opts);
 
       const rowStart = i * nF;
       if (touchStamp) touched.length = 0;
@@ -639,24 +1008,7 @@ export class HashingVectorizer {
 
     // Wrap the buffer directly (round-tripping 1M values through
     // Array.from + tensor() revalidation dominated the runtime).
-    const dtype = getDtype();
-    if (dtype === "float64") {
-      return TensorClass.fromTypedArray({
-        data,
-        shape: [nDocs, nF],
-        dtype,
-        device: getDevice(),
-      });
-    }
-    if (dtype === "float32") {
-      return TensorClass.fromTypedArray({
-        data: new Float32Array(data),
-        shape: [nDocs, nF],
-        dtype,
-        device: getDevice(),
-      });
-    }
-    return tensor(Array.from(data)).reshape([nDocs, nF]);
+    return toFloatTensor(data, nDocs, nF);
   }
 
   /**
@@ -669,18 +1021,33 @@ export class HashingVectorizer {
     return this.transformText(documents);
   }
 
+  /** Current parameters. Pass them to `setParams` or the constructor to rebuild a vectorizer. */
   getParams(): Record<string, unknown> {
     return {
-      nFeatures: this.nFeatures,
-      lowercase: this.lowercase,
-      binary: this.binary,
-      ngramRange: this.ngramRange,
-      norm: this.norm,
-      alternateSign: this.alternateSign,
+      nFeatures: this.opts.nFeatures,
+      tokenPattern: new RegExp(this.opts.tokenPattern.source, this.opts.tokenPattern.flags),
+      lowercase: this.opts.lowercase,
+      binary: this.opts.binary,
+      stopWords:
+        this.opts.stopWordsSpec === undefined || this.opts.stopWordsSpec === "english"
+          ? this.opts.stopWordsSpec
+          : [...this.opts.stopWordsSpec],
+      ngramRange: [...this.opts.ngramRange],
+      norm: this.opts.norm,
+      alternateSign: this.opts.alternateSign,
     };
   }
 
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * Change parameters. The vectorizer is stateless, so the change applies to the next
+   * `transformText` call.
+   *
+   * @param params - Subset of the constructor options
+   * @throws {InvalidParameterError} If a name is unknown or a value is invalid; nothing changes
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownKeys(params, HASHING_PARAM_KEYS, "HashingVectorizer");
+    this.opts = resolveHashingOptions({ ...this.getParams(), ...params });
     return this;
   }
 }

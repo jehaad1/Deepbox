@@ -2,21 +2,12 @@
  * Risk Metrics Module
  *
  * Calculates Value at Risk (VaR), Conditional VaR (CVaR), and other risk metrics.
- * Demonstrates deepbox/stats and deepbox/ndarray usage.
+ * Uses mean and std from deepbox/stats and tensors from deepbox/ndarray.
  */
 
-import { InvalidParameterError, isNumericTypedArray, isTypedArray } from "deepbox/core";
+import { InvalidParameterError } from "deepbox/core";
 import { type Tensor, tensor } from "deepbox/ndarray";
 import { mean, std } from "deepbox/stats";
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 /**
  * VaR calculation methods
@@ -52,9 +43,7 @@ export function calculateVaR(
   confidenceLevel = 0.95,
   method: VaRMethod = "historical"
 ): number {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   if (method === "historical") {
     // Historical VaR: Use empirical percentile
@@ -66,8 +55,8 @@ export function calculateVaR(
   if (method === "parametric") {
     // Parametric VaR: Assume normal distribution
     const returnsTensor = tensor(returnsArray);
-    const meanVal = Number(mean(returnsTensor).data[0]);
-    const stdVal = Number(std(returnsTensor).data[0]);
+    const meanVal = Number(mean(returnsTensor).item());
+    const stdVal = Number(std(returnsTensor).item());
 
     // Z-scores for common confidence levels
     const zScores: { [key: number]: number } = {
@@ -83,8 +72,8 @@ export function calculateVaR(
   if (method === "cornish-fisher") {
     // Cornish-Fisher VaR: Adjusts for skewness and kurtosis
     const returnsTensor = tensor(returnsArray);
-    const meanVal = Number(mean(returnsTensor).data[0]);
-    const stdVal = Number(std(returnsTensor).data[0]);
+    const meanVal = Number(mean(returnsTensor).item());
+    const stdVal = Number(std(returnsTensor).item());
 
     // Calculate skewness
     const n = returnsArray.length;
@@ -125,9 +114,7 @@ export function calculateVaR(
  * @returns CVaR value (positive number representing expected tail loss)
  */
 export function calculateCVaR(returns: number[] | Tensor, confidenceLevel = 0.95): number {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   // Sort returns ascending
   const sortedReturns = [...returnsArray].sort((a, b) => a - b);
@@ -154,9 +141,7 @@ export function calculateCVaR(returns: number[] | Tensor, confidenceLevel = 0.95
  * @returns Downside deviation
  */
 export function calculateDownsideDeviation(returns: number[] | Tensor, target = 0): number {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   const downsideReturns = returnsArray.filter((r) => r < target);
   if (downsideReturns.length === 0) return 0;
@@ -175,9 +160,7 @@ export function calculateDownsideDeviation(returns: number[] | Tensor, target = 
  * @returns Maximum drawdown as a positive percentage
  */
 export function calculateMaxDrawdown(returns: number[] | Tensor): number {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   // Calculate cumulative returns
   let cumulativeValue = 1.0;
@@ -210,12 +193,10 @@ export function calculateMaxDrawdown(returns: number[] | Tensor): number {
  * @returns Calmar ratio
  */
 export function calculateCalmarRatio(returns: number[] | Tensor, periodsPerYear = 12): number {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   const returnsTensor = tensor(returnsArray);
-  const meanReturn = Number(mean(returnsTensor).data[0]);
+  const meanReturn = Number(mean(returnsTensor).item());
   const annualizedReturn = meanReturn * periodsPerYear;
 
   const maxDrawdown = calculateMaxDrawdown(returns);
@@ -225,19 +206,17 @@ export function calculateCalmarRatio(returns: number[] | Tensor, periodsPerYear 
 }
 
 /**
- * Calculate comprehensive risk metrics
+ * Calculate the full set of risk metrics
  *
  * @param returns - Array or Tensor of historical returns
  * @param periodsPerYear - Number of periods per year
- * @returns Complete risk metrics object
+ * @returns Object with VaR, CVaR, volatility, drawdown and ratio metrics
  */
 export function calculateRiskMetrics(
   returns: number[] | Tensor,
   periodsPerYear = 12
 ): RiskMetricsResult {
-  const returnsArray = Array.isArray(returns)
-    ? returns
-    : Array.from(expectNumericTypedArray(returns.data));
+  const returnsArray = Array.isArray(returns) ? returns : (returns.toArray() as number[]);
 
   const returnsTensor = tensor(returnsArray);
 
@@ -246,7 +225,7 @@ export function calculateRiskMetrics(
     var99: calculateVaR(returnsArray, 0.99),
     cvar95: calculateCVaR(returnsArray, 0.95),
     cvar99: calculateCVaR(returnsArray, 0.99),
-    volatility: Number(std(returnsTensor).data[0]) * Math.sqrt(periodsPerYear),
+    volatility: Number(std(returnsTensor).item()) * Math.sqrt(periodsPerYear),
     downsideDeviation: calculateDownsideDeviation(returnsArray) * Math.sqrt(periodsPerYear),
     maxDrawdown: calculateMaxDrawdown(returnsArray),
     calmarRatio: calculateCalmarRatio(returnsArray, periodsPerYear),

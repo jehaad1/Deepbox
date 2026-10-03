@@ -1,11 +1,14 @@
 /**
  * Example 41: Advanced Optimizers & Schedulers
  *
- * New in v1.0.0: RAdam, LAMB, LARS optimizers and CyclicLR,
- * CosineAnnealingWarmRestarts, PolynomialLR, LambdaLR, SequentialLR schedulers.
+ * The RAdam, LAMB and LARS optimizers, and the CyclicLR, CosineAnnealingWarmRestarts,
+ * PolynomialLR, LambdaLR and SequentialLR learning rate schedulers.
+ *
+ * Training uses plain tensors: model.forward(x) returns a tensor that tracks the
+ * weights, so loss.backward() and loss.item() work without wrapping the data.
  */
 
-import { GradTensor, type Tensor, tensor } from "deepbox/ndarray";
+import { tensor } from "deepbox/ndarray";
 import { Linear, mseLoss, ReLU, Sequential } from "deepbox/nn";
 import {
   Adam,
@@ -19,46 +22,43 @@ import {
   SequentialLR,
   StepLR,
 } from "deepbox/optim";
+import { setSeed } from "deepbox/random";
 
 console.log("=".repeat(60));
 console.log("Example 41: Advanced Optimizers & Schedulers");
 console.log("=".repeat(60));
 
 // ============================================================================
-// Helper: simple training demo
+// Helper: a short training run
 // ============================================================================
 
 function trainDemo(
   model: Sequential,
   optimizerName: string,
   optimizer: { step: () => void; zeroGrad: () => void; lr: number },
-  epochs = 10
+  epochs = 30
 ): void {
+  // The task is y = x1 + x2. The data is scaled down so that the three optimizers
+  // train steadily at these learning rates.
   const xTrain = tensor([
     [1, 2],
     [3, 4],
     [5, 6],
     [7, 8],
-  ]);
-  const yTrain = tensor([[3], [7], [11], [15]]);
+  ]).div(4);
+  const yTrain = tensor([[3], [7], [11], [15]]).div(4);
 
   console.log(`\n  ${optimizerName} (initial lr=${optimizer.lr.toFixed(6)}):`);
 
   for (let epoch = 1; epoch <= epochs; epoch++) {
     optimizer.zeroGrad();
-    const pred = model.forward(xTrain);
-    const loss = mseLoss(pred, yTrain);
-    const scalarLoss: Tensor = GradTensor.isGradTensor(loss) ? loss.tensor : loss;
-    const lossVal = Number(scalarLoss.data[scalarLoss.offset]);
-
-    if (GradTensor.isGradTensor(loss)) {
-      loss.backward();
-    }
+    const loss = mseLoss(model.forward(xTrain), yTrain);
+    loss.backward();
     optimizer.step();
 
-    if (epoch === 1 || epoch === epochs || epoch % 5 === 0) {
+    if (epoch === 1 || epoch % 10 === 0) {
       console.log(
-        `    Epoch ${String(epoch).padStart(3)}: loss=${lossVal.toFixed(6)}, lr=${optimizer.lr.toFixed(6)}`
+        `    Epoch ${String(epoch).padStart(3)}: loss=${Number(loss.item()).toFixed(6)}, lr=${optimizer.lr.toFixed(6)}`
       );
     }
   }
@@ -67,51 +67,53 @@ function trainDemo(
 // ============================================================================
 // Part 1: RAdam (Rectified Adam)
 // ============================================================================
-console.log("\n🚀 Part 1: RAdam (Rectified Adam)");
+console.log("\nPart 1: RAdam (Rectified Adam)");
 console.log("-".repeat(60));
 
-// RAdam auto-adjusts the adaptive learning rate based on variance of gradients
-// No need for learning rate warmup
+// RAdam corrects the variance of Adam's adaptive step in the first iterations,
+// which is the problem a learning rate warmup is normally used for
+setSeed(42); // the same starting weights for each optimizer
 const model1 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const radam = new RAdam(model1.parameters(), { lr: 0.01 });
 
-console.log("RAdam: Rectified Adam — no warmup needed");
-console.log("  Auto-adjusts adaptive LR based on gradient variance");
+console.log("RAdam: Rectified Adam, a variant of Adam that needs no warmup");
 trainDemo(model1, "RAdam", radam);
 
 // ============================================================================
 // Part 2: LAMB (Layer-wise Adaptive Moments)
 // ============================================================================
-console.log("\n🐑 Part 2: LAMB");
+console.log("\nPart 2: LAMB");
 console.log("-".repeat(60));
 
-// LAMB scales gradients layer-wise — great for large batch training
+// LAMB scales each layer's update by the ratio of its weight norm to its update norm
+setSeed(42);
 const model2 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const lamb = new LAMB(model2.parameters(), { lr: 0.01 });
 
-console.log("LAMB: Layer-wise Adaptive Moments — ideal for large batch training");
+console.log("LAMB: layer-wise adaptive moments, designed for large batches");
 trainDemo(model2, "LAMB", lamb);
 
 // ============================================================================
 // Part 3: LARS (Layer-wise Adaptive Rate Scaling)
 // ============================================================================
-console.log("\n🏔️  Part 3: LARS");
+console.log("\nPart 3: LARS");
 console.log("-".repeat(60));
 
-// LARS adjusts learning rate per layer based on weight/gradient norms
+// LARS scales each layer's learning rate by the ratio of its weight norm to its gradient norm
+setSeed(42);
 const model3 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
-const lars = new LARS(model3.parameters(), { lr: 0.01 });
+const lars = new LARS(model3.parameters(), { lr: 3 }); // LARS shrinks each step by a trust ratio, so it needs a large lr
 
-console.log("LARS: Layer-wise Adaptive Rate Scaling — for very large batches");
+console.log("LARS: layer-wise adaptive rate scaling, designed for very large batches");
 trainDemo(model3, "LARS", lars);
 
 // ============================================================================
 // Part 4: CyclicLR Scheduler
 // ============================================================================
-console.log("\n🔄 Part 4: CyclicLR Scheduler");
+console.log("\nPart 4: CyclicLR Scheduler");
 console.log("-".repeat(60));
 
-// CyclicLR cycles the learning rate between a base and max value
+// CyclicLR moves the learning rate up from baseLr to maxLr and back down, in a repeating cycle
 const model4 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const adam4 = new Adam(model4.parameters(), { lr: 0.001 });
 const cyclicLr = new CyclicLR(adam4, {
@@ -134,20 +136,20 @@ for (let i = 0; i < 20; i++) {
 // ============================================================================
 // Part 5: CosineAnnealingWarmRestarts
 // ============================================================================
-console.log("\n🌊 Part 5: CosineAnnealingWarmRestarts");
+console.log("\nPart 5: CosineAnnealingWarmRestarts");
 console.log("-".repeat(60));
 
-// Cosine annealing with periodic warm restarts
+// Cosine annealing from the initial rate down to etaMin, then a restart at the initial rate
 const model5 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const adam5 = new Adam(model5.parameters(), { lr: 0.01 });
 const cosineWR = new CosineAnnealingWarmRestarts(adam5, {
-  T_0: 5, // restart every 5 epochs
-  T_mult: 2, // double the period after each restart
+  t0: 5, // first cycle lasts 5 epochs (T_0 is accepted as well)
+  tMult: 2, // each cycle is twice as long as the one before (T_mult is accepted as well)
   etaMin: 0.001,
 });
 
-console.log("CosineAnnealingWarmRestarts: T_0=5, T_mult=2, etaMin=0.001");
-console.log("  LR schedule (restarts at epoch 5, then 15, ...):");
+console.log("CosineAnnealingWarmRestarts: t0=5, tMult=2, etaMin=0.001");
+console.log("  LR schedule (the rate returns to 0.01 after 5 steps, then after 15, ...):");
 for (let i = 0; i < 20; i++) {
   const lrs = cosineWR.getLr();
   if (i % 3 === 0 || i === 19) {
@@ -159,10 +161,10 @@ for (let i = 0; i < 20; i++) {
 // ============================================================================
 // Part 6: PolynomialLR
 // ============================================================================
-console.log("\n📉 Part 6: PolynomialLR");
+console.log("\nPart 6: PolynomialLR");
 console.log("-".repeat(60));
 
-// Polynomial decay from initial LR to end LR
+// Polynomial decay from the initial rate to the end rate
 const model6 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const adam6 = new Adam(model6.parameters(), { lr: 0.01 });
 const polyLr = new PolynomialLR(adam6, {
@@ -183,17 +185,17 @@ for (let i = 0; i < 20; i++) {
 // ============================================================================
 // Part 7: LambdaLR
 // ============================================================================
-console.log("\n🔧 Part 7: LambdaLR");
+console.log("\nPart 7: LambdaLR");
 console.log("-".repeat(60));
 
-// LambdaLR uses a custom function to compute the LR multiplier
+// LambdaLR multiplies the initial rate by the value of your own function of the epoch
 const model7 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const adam7 = new Adam(model7.parameters(), { lr: 0.01 });
 const lambdaLr = new LambdaLR(adam7, {
-  lrLambda: (epoch: number) => 0.95 ** epoch, // exponential decay
+  lrLambda: (epoch: number) => 0.95 ** epoch,
 });
 
-console.log("LambdaLR: lr_lambda = 0.95^epoch (exponential decay)");
+console.log("LambdaLR: lrLambda = 0.95^epoch (exponential decay)");
 console.log("  LR schedule:");
 for (let i = 0; i < 20; i++) {
   const lrs = lambdaLr.getLr();
@@ -206,19 +208,19 @@ for (let i = 0; i < 20; i++) {
 // ============================================================================
 // Part 8: SequentialLR
 // ============================================================================
-console.log("\n📋 Part 8: SequentialLR");
+console.log("\nPart 8: SequentialLR");
 console.log("-".repeat(60));
 
-// SequentialLR chains multiple schedulers at specified milestones
+// SequentialLR switches from one scheduler to the next at the given milestones
 const model8 = new Sequential(new Linear(2, 8), new ReLU(), new Linear(8, 1));
 const adam8 = new Adam(model8.parameters(), { lr: 0.01 });
 
-// Phase 1: Warmup with LambdaLR (epochs 0-4)
+// Phase 1: warmup with LambdaLR (epochs 0 to 4)
 const warmup = new LambdaLR(adam8, {
   lrLambda: (epoch: number) => Math.min(1.0, (epoch + 1) / 5),
 });
 
-// Phase 2: StepLR decay (epochs 5+)
+// Phase 2: StepLR decay (epoch 5 onward)
 const decay = new StepLR(adam8, { stepSize: 3, gamma: 0.5 });
 
 const seqLr = new SequentialLR(adam8, {
@@ -226,7 +228,7 @@ const seqLr = new SequentialLR(adam8, {
   milestones: [5],
 });
 
-console.log("SequentialLR: LambdaLR warmup (0-4) → StepLR decay (5+)");
+console.log("SequentialLR: LambdaLR warmup for epochs 0 to 4, then StepLR decay");
 console.log("  LR schedule:");
 for (let i = 0; i < 20; i++) {
   const lrs = seqLr.getLr();
@@ -239,41 +241,35 @@ for (let i = 0; i < 20; i++) {
 // ============================================================================
 // Part 9: Optimizer Comparison
 // ============================================================================
-console.log("\n📊 Part 9: Optimizer Comparison");
+console.log("\nPart 9: Which One to Use");
 console.log("-".repeat(60));
 
-console.log("┌─────────────────────────────┬──────────────────────────────────────┐");
-console.log("│ Optimizer                   │ Best For                             │");
-console.log("├─────────────────────────────┼──────────────────────────────────────┤");
-console.log("│ Adam                        │ General purpose, default choice      │");
-console.log("│ RAdam                       │ No warmup needed, stable convergence │");
-console.log("│ LAMB                        │ Large batch distributed training     │");
-console.log("│ LARS                        │ Very large batch SGD-style training  │");
-console.log("└─────────────────────────────┴──────────────────────────────────────┘");
+console.log("Optimizers:");
+console.log("• Adam: the usual default");
+console.log("• RAdam: Adam with a built-in correction, so no warmup schedule");
+console.log("• LAMB: Adam-style updates scaled per layer, for large-batch training");
+console.log("• LARS: SGD-style updates scaled per layer, for very large batches");
 
-console.log("\n┌─────────────────────────────┬──────────────────────────────────────┐");
-console.log("│ Scheduler                   │ Strategy                             │");
-console.log("├─────────────────────────────┼──────────────────────────────────────┤");
-console.log("│ CyclicLR                    │ Triangular LR cycling                │");
-console.log("│ CosineAnnealingWarmRestarts │ Cosine decay with periodic restarts  │");
-console.log("│ PolynomialLR                │ Polynomial decay to end LR           │");
-console.log("│ LambdaLR                    │ Custom function-based scheduling     │");
-console.log("│ SequentialLR                │ Chain multiple schedulers at epochs   │");
-console.log("└─────────────────────────────┴──────────────────────────────────────┘");
+console.log("\nSchedulers:");
+console.log("• CyclicLR: the rate moves between baseLr and maxLr in a repeating cycle");
+console.log("• CosineAnnealingWarmRestarts: cosine decay, restarted at the initial rate");
+console.log("• PolynomialLR: polynomial decay to an end rate");
+console.log("• LambdaLR: any function of the epoch");
+console.log("• SequentialLR: a different scheduler for each stretch of epochs");
 
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• RAdam: no warmup needed, automatically adjusts adaptive learning rate");
-console.log("• LAMB: layer-wise scaling for large batch training (keeps per-layer LR)");
-console.log("• LARS: layer-wise rate scaling for SGD-style very large batch training");
-console.log("• CyclicLR: avoids local minima by cycling LR between base and max");
-console.log("• CosineWarmRestarts: periodic warm restarts explore new loss basins");
-console.log("• PolynomialLR: smooth polynomial decay over fixed iterations");
-console.log("• LambdaLR: fully custom scheduling via user-defined functions");
-console.log("• SequentialLR: combine warmup + decay phases at milestone epochs");
+console.log("• RAdam: Adam with a variance correction instead of a warmup schedule");
+console.log("• LAMB, LARS: per-layer scaling for large batches");
+console.log("• CyclicLR: the learning rate cycles between a lower and an upper bound");
+console.log("• CosineAnnealingWarmRestarts: cosine decay with periodic restarts");
+console.log("• PolynomialLR: smooth decay over a fixed number of iterations");
+console.log("• LambdaLR: a schedule defined by your own function");
+console.log("• SequentialLR: chain a warmup and a decay phase at a milestone epoch");
+console.log("• Optimizers skip parameters that have no gradient, so frozen layers are safe");
 
-console.log("\n✅ Advanced Optimizers & Schedulers Example Complete!");
+console.log("\nAdvanced Optimizers & Schedulers Example Complete!");
 console.log("=".repeat(60));

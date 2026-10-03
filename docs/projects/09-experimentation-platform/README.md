@@ -2,26 +2,27 @@
 
 > **View online:** https://deepbox.dev/projects/09-experimentation-platform
 
-A production-style experimentation and rollout analysis workflow built around the v1.0.0 inference surface: confidence intervals, bootstrap uplift analysis, multiple-comparison correction, KDE diagnostics, and power planning.
+Analyzes a synthetic checkout experiment with three variants (control, streamlined checkout, smart bundle) and 3,600 sessions. It builds scorecards, tests each variant against control, estimates uplift with a bootstrap and plans the sample size for a follow-up test.
 
 ## Features
 
-- **Synthetic experiment traffic** across variants, devices, segments, and regions
-- **Operational scorecards** with `DataFrame` grouping for conversion, retention, revenue, and latency
-- **Inference** via confidence intervals, pairwise tests, and Benjamini-Hochberg correction
-- **Bootstrap uplift estimation** for winner-vs-control decision support
-- **Power analysis** to plan the next confirmatory experiment
-- **Artifacts** with grouped rate charts, KDE comparisons, and JSON decision reports
+- Synthetic sessions across variants, devices, customer segments and regions
+- Scorecards built with `DataFrame.groupBy` for conversion, retention, revenue and latency
+- Confidence intervals for proportions and means
+- Pairwise t-tests of revenue and latency against control, with Benjamini-Hochberg correction
+- Bootstrap of the revenue uplift of the winning variant over control. The resampled values are the uplifts in each segment and device cell, so the interval reflects how much the uplift varies across cells
+- Power analysis: current power and the sample size per arm needed for 90% power
+- Charts: grouped rates, order-value densities (`kdeplot`) and raw vs corrected p-values
 
 ## Deepbox Modules Used
 
-| Module               | Features Used |
-| -------------------- | ------------- |
-| `deepbox/dataframe`  | `DataFrame`, `groupBy` |
-| `deepbox/stats`      | `meanConfidenceInterval`, `meanConfidenceIntervalZ`, `meanDiffConfidenceInterval`, `proportionConfidenceInterval`, `bootstrap`, `cohenD`, `tTestPower`, `ttest_ind`, `benjaminiHochberg` |
-| `deepbox/plot`       | `figure`, `groupedBar`, `kdeplot`, `axhline`, `legend`, `saveFig` |
-| `deepbox/random`     | `Generator` |
-| `deepbox/ndarray`    | `tensor` |
+| Module              | Features Used                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/dataframe` | `DataFrame`, `groupBy`                                                                                                                                                                  |
+| `deepbox/stats`     | `meanConfidenceInterval`, `meanConfidenceIntervalZ`, `meanDiffConfidenceInterval`, `proportionConfidenceInterval`, `bootstrap`, `cohenD`, `tTestPower`, `ttestInd`, `benjaminiHochberg` |
+| `deepbox/plot`      | `figure`, `groupedBar`, `kdeplot`, `axhline`, `legend`, `saveFig`                                                                                                                       |
+| `deepbox/random`    | `Generator`                                                                                                                                                                             |
+| `deepbox/ndarray`   | `tensor`                                                                                                                                                                                |
 
 ## Usage
 

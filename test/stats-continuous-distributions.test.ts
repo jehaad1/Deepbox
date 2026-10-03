@@ -272,7 +272,7 @@ describe("fisher_exact", () => {
 
 describe("runs_test", () => {
   it("detects non-random alternating pattern", () => {
-    // Perfectly alternating — too many runs
+    // Perfectly alternating, too many runs
     const data = tensor([1, 10, 1, 10, 1, 10, 1, 10, 1, 10]);
     const result = runs_test(data);
     expect(result.pvalue).toBeLessThan(0.05);

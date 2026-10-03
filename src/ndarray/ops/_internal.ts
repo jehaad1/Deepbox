@@ -14,11 +14,13 @@ import {
   DTypeError,
   getBigIntElement,
   getNumericElement,
+  type Shape,
   type TypedArray,
 } from "../../core";
 import type { NumericTypedArray } from "../../core/utils/typed_array_access";
+import { roundToBFloat16, roundToFloat16 } from "../tensor/float16";
 import { isContiguous, offsetFromFlatIndex } from "../tensor/strides";
-import { isBigIntArray, type Tensor } from "../tensor/Tensor";
+import { computeStrides, isBigIntArray, Tensor } from "../tensor/Tensor";
 
 /**
  * Resolve the physical buffer offset for a logical flat index.
@@ -45,7 +47,7 @@ export function flatOffset(
  * directly instead of paying a per-element `flatOffset`/`getNumericElement`
  * call, which V8 cannot keep on its fast path across module boundaries.
  *
- * The returned array may alias the tensor's buffer — callers must not
+ * The returned array may alias the tensor's buffer, so callers must not
  * write to it.
  */
 export function readNumericContiguous(t: Tensor): NumericTypedArray | null {
@@ -84,17 +86,62 @@ export function readNumericContiguous(t: Tensor): NumericTypedArray | null {
   return out;
 }
 
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = -MAX_SAFE_BIGINT;
+
 /**
- * Convert a BigInt to a Number, throwing if the value exceeds
+ * Convert a BigInt to a Number, throwing if the magnitude exceeds
  * `Number.MAX_SAFE_INTEGER`.
+ *
+ * @throws {DataValidationError} If the value cannot be represented exactly
  */
 export function bigintToNumberSafe(v: bigint): number {
-  const max = BigInt(Number.MAX_SAFE_INTEGER);
-  const min = -max;
-  if (v > max || v < min) {
-    throw new DataValidationError("int64 value is too large to safely convert to number");
+  if (v > MAX_SAFE_BIGINT || v < MIN_SAFE_BIGINT) {
+    throw new DataValidationError(
+      `int64 value ${v.toString()} is too large to safely convert to number ` +
+        "(magnitude exceeds 2^53 - 1)"
+    );
   }
   return Number(v);
+}
+
+/**
+ * Read a tensor's logical elements as numbers in row-major order.
+ *
+ * Numeric tensors go through {@link readNumericContiguous} (zero-copy when the
+ * tensor is contiguous). int64 tensors are converted into a new `Float64Array`;
+ * with `exact` (the default) a value outside the safe integer range throws via
+ * {@link bigintToNumberSafe}, otherwise it is rounded like `Number(value)`. The
+ * result may alias the tensor's buffer, so callers must not write to it.
+ *
+ * @param t - Source tensor
+ * @param opName - Operation name for the error message
+ * @param exact - Reject int64 values that a double cannot hold exactly (default: true)
+ * @throws {DTypeError} If the tensor has string dtype
+ * @throws {DataValidationError} If `exact` is set and an int64 value is outside the safe integer range
+ */
+export function readNumbers(t: Tensor, opName: string, exact = true): NumericTypedArray {
+  const data = t.data;
+  if (Array.isArray(data)) {
+    throw new DTypeError(`${opName} is not defined for string dtype`);
+  }
+  if (data instanceof BigInt64Array) {
+    const size = t.size;
+    const out = new Float64Array(size);
+    const logicalStrides = computeStrides(t.shape);
+    const contiguous = isContiguous(t.shape, t.strides);
+    for (let i = 0; i < size; i++) {
+      const off = flatOffset(i, t.offset, contiguous, logicalStrides, t.strides);
+      const v = getBigIntElement(data, off);
+      out[i] = exact ? bigintToNumberSafe(v) : Number(v);
+    }
+    return out;
+  }
+  const src = readNumericContiguous(t);
+  if (src === null) {
+    throw new DTypeError(`${opName} is not defined for string dtype`);
+  }
+  return src;
 }
 
 /**
@@ -141,4 +188,52 @@ export function requireNumericData(data: TypedArray | string[], opName: string):
     throw new DTypeError(`${opName} is not implemented for string dtype`);
   }
   return data;
+}
+
+/**
+ * Snap the values of a freshly computed half-precision result onto the float16 / bfloat16
+ * grid. Half-precision tensors keep float32 host storage, so an op that computes in float32
+ * would otherwise leave values that the dtype cannot represent. Other dtypes, device tensors
+ * and strided views are returned unchanged.
+ *
+ * Call this only on tensors the op just allocated: the buffer is rounded in place.
+ */
+export function roundHalfResult(t: Tensor): Tensor {
+  const dtype = t.dtype;
+  if (dtype !== "float16" && dtype !== "bfloat16") return t;
+  if (t.isDeviceTensor) return t;
+  const data = t.data;
+  if (!(data instanceof Float32Array) || !isContiguous(t.shape, t.strides)) return t;
+  const round = dtype === "float16" ? roundToFloat16 : roundToBFloat16;
+  const end = t.offset + t.size;
+  for (let i = t.offset; i < end; i++) data[i] = round(data[i] as number);
+  return t;
+}
+
+/** The float dtypes a result tensor can have. */
+export type FloatDType = "float16" | "bfloat16" | "float32" | "float64";
+
+/** Host storage of a float tensor (half-precision dtypes use `Float32Array`). */
+export type FloatArray = Float32Array | Float64Array;
+
+/**
+ * Allocate zero-filled host storage for a float dtype: `Float64Array` for `float64`,
+ * `Float32Array` for the three narrower float dtypes.
+ */
+export function allocFloat(dtype: FloatDType, size: number): FloatArray {
+  return dtype === "float64" ? new Float64Array(size) : new Float32Array(size);
+}
+
+/**
+ * Wrap freshly computed float storage in a tensor. Values are computed in float64 and
+ * narrowed by the typed-array store; half-precision results are then snapped onto their
+ * float16 / bfloat16 grid.
+ */
+export function floatResult(
+  out: FloatArray,
+  shape: Shape,
+  dtype: FloatDType,
+  device: Tensor["device"]
+): Tensor {
+  return roundHalfResult(Tensor.fromTypedArray({ data: out, shape, dtype, device }));
 }

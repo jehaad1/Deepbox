@@ -15,7 +15,7 @@ import {
   toNumberMatrix,
 } from "./preprocess-test-helpers";
 
-describe("LabelEncoder - Comprehensive Tests", () => {
+describe("LabelEncoder tests", () => {
   describe("Basic Functionality", () => {
     it("should encode numeric labels correctly", () => {
       const encoder = new LabelEncoder();
@@ -188,7 +188,7 @@ describe("LabelEncoder - Comprehensive Tests", () => {
   });
 });
 
-describe("OneHotEncoder - Comprehensive Tests", () => {
+describe("OneHotEncoder tests", () => {
   describe("Basic Functionality - Dense", () => {
     it("should encode 2D categorical data correctly", () => {
       const X = tensor([
@@ -455,7 +455,7 @@ describe("OneHotEncoder - Comprehensive Tests", () => {
   });
 });
 
-describe("OrdinalEncoder - Comprehensive Tests", () => {
+describe("OrdinalEncoder tests", () => {
   describe("Basic Functionality", () => {
     it("should encode ordinal data correctly", () => {
       const X = tensor([
@@ -581,7 +581,7 @@ describe("OrdinalEncoder - Comprehensive Tests", () => {
   });
 });
 
-describe("LabelBinarizer - Comprehensive Tests", () => {
+describe("LabelBinarizer tests", () => {
   describe("Basic Functionality", () => {
     it("should binarize labels correctly", () => {
       const y = tensor([0, 1, 2, 0, 1]);
@@ -698,7 +698,7 @@ describe("LabelBinarizer - Comprehensive Tests", () => {
   });
 });
 
-describe("MultiLabelBinarizer - Comprehensive Tests", () => {
+describe("MultiLabelBinarizer tests", () => {
   describe("Basic Functionality", () => {
     it("should binarize multi-label data correctly", () => {
       const y = [["sci-fi", "action"], ["comedy"], ["action", "drama"]];

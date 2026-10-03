@@ -2,8 +2,8 @@
  * Device dispatch machinery tests using an in-process fake kernel backend.
  *
  * The fake implements the full KernelBackend contract over Float32Arrays,
- * so every layer above the kernels — buffer-backed tensor storage, view
- * machinery, op dispatch, transfers, autograd, Module.to — is exercised
+ * so every layer above the kernels, buffer-backed tensor storage, view
+ * machinery, op dispatch, transfers, autograd, Module.to, is exercised
  * deterministically without GPU hardware. WGSL kernel correctness itself is
  * covered by test/webgpu-backend.test.ts (skipped when no GPU is present).
  */
@@ -31,7 +31,10 @@ import {
   div,
   dot,
   exp,
+  expm1,
   GradTensor,
+  gelu,
+  log1p,
   max,
   mean,
   min,
@@ -44,6 +47,7 @@ import {
   sum,
   tensor,
   transpose,
+  where,
   zeros,
 } from "../src/ndarray";
 import { softmax as gradSoftmax } from "../src/ndarray/autograd/index";
@@ -73,19 +77,42 @@ const BINARY_FNS: Record<BinaryKernelOp, (x: number, y: number) => number> = {
   sub: (x, y) => x - y,
   mul: (x, y) => x * y,
   div: (x, y) => x / y,
+  // Math.pow follows the IEEE special cases that the device pow kernel reproduces
+  // (y == 0 gives 1, a NaN exponent gives NaN, signed zero and negative bases).
   pow: (x, y) => x ** y,
   maximum: Math.max,
   minimum: Math.min,
 };
 
+/**
+ * Accurate erf in double precision: the Maclaurin series for |x| < 3 and the
+ * continued fraction of the complementary error function elsewhere. The real
+ * WGSL kernel is accurate to float32 rounding, so the fake must not use a
+ * low-accuracy fit (the Abramowitz and Stegun 7.1.26 form is only good to 1e-7
+ * absolute and has a large relative error for small x).
+ */
 const erfRef = (x: number): number => {
-  const t = 1 / (1 + 0.3275911 * Math.abs(x));
-  const y =
-    1 -
-    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
-      t *
-      Math.exp(-x * x);
-  return x < 0 ? -y : y;
+  if (Number.isNaN(x)) return NaN;
+  const ax = Math.abs(x);
+  if (ax >= 6) return x < 0 ? -1 : 1;
+  let result: number;
+  if (ax < 3) {
+    let term = ax;
+    let sum = ax;
+    for (let n = 1; n < 200; n++) {
+      term *= (-ax * ax) / n;
+      const add = term / (2 * n + 1);
+      sum += add;
+      if (Math.abs(add) < 1e-18 * Math.abs(sum)) break;
+    }
+    result = (2 / Math.sqrt(Math.PI)) * sum;
+  } else {
+    // erfc(x) = exp(-x^2) / sqrt(pi) / (x + (1/2) / (x + 1 / (x + (3/2) / (x + ...))))
+    let tail = 0;
+    for (let k = 60; k >= 1; k--) tail = k / 2 / (ax + tail);
+    result = 1 - Math.exp(-ax * ax) / Math.sqrt(Math.PI) / (ax + tail);
+  }
+  return x < 0 ? -result : result;
 };
 
 const UNARY_FNS: Record<UnaryKernelOp, (x: number) => number> = {
@@ -105,9 +132,11 @@ const UNARY_FNS: Record<UnaryKernelOp, (x: number) => number> = {
   rsqrt: (x) => 1 / Math.sqrt(x),
   reciprocal: (x) => 1 / x,
   sign: (x) => Math.sign(x),
-  expm1: (x) => Math.exp(x) - 1,
-  log1p: (x) => Math.log(1 + x),
-  softplus: (x) => (x > 20 ? x : Math.log(1 + Math.exp(x))),
+  // The device kernels use accurate small-argument forms (no exp(x) - 1 or
+  // log(1 + x) cancellation) and the stable softplus max(x, 0) + log1p(exp(-|x|)).
+  expm1: Math.expm1,
+  log1p: Math.log1p,
+  softplus: (x) => Math.max(x, 0) + Math.log1p(Math.exp(-Math.abs(x))),
 };
 
 /** Reference KernelBackend over host Float32Arrays. */
@@ -356,7 +385,10 @@ class FakeKernelBackend implements KernelBackend {
     const bv = this.read(b, { ...bLayout, shape: outShape });
     const out = new Float32Array(cv.length);
     for (let i = 0; i < out.length; i++) out[i] = (cv[i] ?? 0) !== 0 ? (av[i] ?? 0) : (bv[i] ?? 0);
-    return this.wrap(out);
+    // Like the device kernel, the selected values keep their dtype.
+    const aDtype = (a.dtype ?? "float32") as DeviceDType;
+    const bDtype = (b.dtype ?? "float32") as DeviceDType;
+    return this.wrap(out, aDtype === bDtype ? aDtype : "float32");
   }
 
   im2col(x: DeviceBuffer, layout: KernelLayout, p: Im2ColParams): DeviceBuffer {
@@ -612,7 +644,7 @@ describe("device tensor storage", () => {
   it("rejects mixed-dtype device ops instead of silently upcasting", () => {
     const f16 = tensor([1, 2, 3], { ...dev, dtype: "float16" });
     const f32 = tensor([1, 2, 3], dev);
-    // Mixed float16/float32 is rejected (no silent upcast) — the arithmetic
+    // Mixed float16/float32 is rejected (no silent upcast), the arithmetic
     // dtype guard catches it before dispatch; the backend has its own guard too.
     expect(() => add(f16, f32)).toThrow(/dtype/i);
   });
@@ -696,6 +728,39 @@ describe("device op dispatch", () => {
     expect(await cpu(mul(a, a))).toEqual([1, 4, 9, 16, 25, 36]);
     expect(await cpu(div(a, a))).toEqual([1, 1, 1, 1, 1, 1]);
     expect(await cpu(pow(a, tensor([2], dev)))).toEqual([1, 4, 9, 16, 25, 36]);
+  });
+
+  it("matches the accurate device kernel numerics for small arguments and the softplus tail", async () => {
+    const small = tensor([1e-6, -1e-6, 1e-3], dev);
+    const e = await cpu(expm1(small));
+    const l = await cpu(log1p(small));
+    expect(e[0]).toBeCloseTo(1e-6, 12);
+    expect(l[1]).toBeCloseTo(-1e-6, 12);
+    expect(e[2]).toBeCloseTo(Math.expm1(1e-3), 7);
+    // exp(x) - 1 in float32 would give 0 or 1.19e-7 for 1e-8; the kernel keeps full precision.
+    const tiny = await cpu(expm1(tensor([1e-8], dev)));
+    expect(tiny[0] ?? 0).toBeCloseTo(1e-8, 12);
+  });
+
+  it("evaluates the exact gelu through an accurate erf (scipy reference values)", async () => {
+    const x = tensor([1e-3, -0.01, 0.5, 2], dev);
+    const out = await cpu(gelu(x, "none"));
+    const expected = [0.000500398942213911, -0.004960106436853684, 0.3457312306370065, 1.9544997];
+    for (let i = 0; i < expected.length; i++) {
+      expect(out[i] ?? Number.NaN).toBeCloseTo(expected[i] ?? 0, 7);
+    }
+    // A low-accuracy erf fit (error ~1e-7 near zero) is off by ~1e-4 relative here.
+    expect(Math.abs((out[0] ?? 0) / 0.000500398942213911 - 1)).toBeLessThan(1e-5);
+  });
+
+  it("keeps the selected dtype from the device where kernel", async () => {
+    const cond = tensor([1, 0, 1], dev);
+    const a = tensor([1.5, 2.5, 3.5], { ...dev, dtype: "float16" });
+    const b = tensor([10, 20, 30], { ...dev, dtype: "float16" });
+    const out = where(cond, a, b);
+    expect(out.dtype).toBe("float16");
+    expect(out.deviceBuffer?.dtype).toBe("float16");
+    expect(await cpu(out)).toEqual([1.5, 20, 3.5]);
   });
 
   it("promotes CPU scalar operands like PyTorch", async () => {
@@ -1015,7 +1080,7 @@ describe("device autograd", () => {
         tensor(Array.from({ length: wN }, (_, i) => Math.cos(i * 0.11))).reshape(wShape)
       ) as never;
       c.registerParameter("weight", c.weight_);
-      // Bias is randomized per-instance — pin it so CPU and device runs match.
+      // Bias is randomized per-instance, pin it so CPU and device runs match.
       if (c.bias_) {
         const bShape = c.bias_.tensor.shape;
         const bN = bShape.reduce((a, b) => a * b, 1);

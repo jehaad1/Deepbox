@@ -12,9 +12,9 @@ describe("linalg norms extra branches", () => {
           [1, 2],
           [3, 4],
         ]),
-        1
+        3
       )
-    ).toThrow(/Only 2-norm/i);
+    ).toThrow(/Unsupported norm order/i);
   });
 
   it("handles empty matrices for cond", () => {

@@ -166,7 +166,8 @@ describe("deepbox/optim - Numeric Verification Tests", () => {
       const sqAvg = (1 - alpha) * 1.0;
       const gAvg = (1 - alpha) * 1.0;
       const variance = sqAvg - gAvg * gAvg;
-      const expected = 1.0 - lr / Math.sqrt(variance + eps);
+      // PyTorch convention: eps is added to sqrt(variance), not under the square root.
+      const expected = 1.0 - lr / (Math.sqrt(variance) + eps);
       expect(getParamValue(p, 0, "RMSprop param")).toBeCloseTo(expected, 8);
     });
   });

@@ -1,6 +1,10 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { validateUnsupervisedFitInputs } from "../_validation";
+import {
+  toFloat64View,
+  validatePredictInputs,
+  validateUnsupervisedFitInputs,
+} from "../_validation";
 import type { Clusterer } from "../base";
 
 /**
@@ -10,15 +14,19 @@ import type { Clusterer } from "../base";
  * grouped together, while points in low-density regions are marked as noise.
  *
  * **Algorithm**:
- * 1. For each point, find all neighbors within eps distance
+ * 1. For each point, find all neighbors within eps distance (the point itself counts)
  * 2. If a point has at least minSamples neighbors, it's a core point
  * 3. Core points and their neighbors form clusters
  * 4. Points not reachable from any core point are noise (label = -1)
  *
+ * A border point that lies within `eps` of core points from several clusters
+ * joins the cluster that reaches it first, so labels of border points depend on
+ * the order of the rows in `X`.
+ *
  * **Advantages**:
  * - No need to specify number of clusters
  * - Can find arbitrarily shaped clusters
- * - Robust to outliers
+ * - Points in sparse regions are labeled as noise instead of distorting a cluster
  *
  * @example
  * ```ts
@@ -39,10 +47,25 @@ export class DBSCAN implements Clusterer {
   private metric: "euclidean" | "manhattan";
 
   private labels_?: Tensor;
-  private coreIndices_?: number[];
-  private fitData_?: number[][];
+  private coreIndices_?: Int32Array;
+  // Core samples (rows) and their cluster labels, kept for predict().
+  private coreData_?: Float64Array;
+  private coreLabels_?: Int32Array;
+  private nFeaturesIn_ = 0;
+  // Radius and metric of the last fit, so setParams() after fit does not change predict().
+  private fitEps_ = 0;
+  private fitMetric_: "euclidean" | "manhattan" = "euclidean";
   private fitted = false;
 
+  /**
+   * Create a DBSCAN model.
+   *
+   * @param options - Configuration options
+   * @param options.eps - Neighborhood radius, finite and > 0 (default: 0.5)
+   * @param options.minSamples - Neighbors (including the point itself) needed for a core point, integer >= 1 (default: 5)
+   * @param options.metric - Distance metric: "euclidean" or "manhattan" (default: "euclidean")
+   * @throws {InvalidParameterError} If any option is out of range
+   */
   constructor(
     options: {
       readonly eps?: number;
@@ -74,44 +97,72 @@ export class DBSCAN implements Clusterer {
   }
 
   /**
-   * Check if two points are neighbors (distance <= eps).
+   * Whether the rows at `aBase` of `a` and `bBase` of `b` are at most `eps` apart.
+   * Euclidean distances are compared squared, so no square root is taken.
    */
-  private isNeighbor(a: number[], b: number[]): boolean {
-    if (this.metric === "manhattan") {
+  private static within(
+    a: Float64Array,
+    aBase: number,
+    b: Float64Array,
+    bBase: number,
+    d: number,
+    eps: number,
+    metric: "euclidean" | "manhattan"
+  ): boolean {
+    if (metric === "manhattan") {
       let sum = 0;
-      for (let i = 0; i < a.length; i++) {
-        sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
-        if (sum > this.eps) return false;
+      for (let f = 0; f < d; f++) {
+        sum += Math.abs((a[aBase + f] as number) - (b[bBase + f] as number));
+        if (sum > eps) return false;
       }
-      return sum <= this.eps;
+      return true;
     }
-
-    // Euclidean distance
+    const epsSq = eps * eps;
     let sumSq = 0;
-    const epsSq = this.eps * this.eps;
-    for (let i = 0; i < a.length; i++) {
-      const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    for (let f = 0; f < d; f++) {
+      const diff = (a[aBase + f] as number) - (b[bBase + f] as number);
       sumSq += diff * diff;
       if (sumSq > epsSq) return false;
     }
-    return sumSq <= epsSq;
+    return true;
   }
 
-  /**
-   * Find all neighbors within eps distance.
-   */
-  private getNeighbors(data: number[][], pointIdx: number): number[] {
-    const neighbors: number[] = [];
-    const point = data[pointIdx];
-    if (!point) return neighbors;
-
-    for (let i = 0; i < data.length; i++) {
-      const other = data[i];
-      if (other && this.isNeighbor(point, other)) {
-        neighbors.push(i);
+  /** Distance used to rank candidates: squared Euclidean or Manhattan (monotone in the true distance). */
+  private static rankDistance(
+    a: Float64Array,
+    aBase: number,
+    b: Float64Array,
+    bBase: number,
+    d: number,
+    metric: "euclidean" | "manhattan"
+  ): number {
+    let s = 0;
+    if (metric === "manhattan") {
+      for (let f = 0; f < d; f++)
+        s += Math.abs((a[aBase + f] as number) - (b[bBase + f] as number));
+    } else {
+      for (let f = 0; f < d; f++) {
+        const diff = (a[aBase + f] as number) - (b[bBase + f] as number);
+        s += diff * diff;
       }
     }
+    return s;
+  }
 
+  /** Indices of all samples within `eps` of sample `idx` (including `idx`). */
+  private static getNeighbors(
+    data: Float64Array,
+    n: number,
+    d: number,
+    idx: number,
+    eps: number,
+    metric: "euclidean" | "manhattan"
+  ): number[] {
+    const neighbors: number[] = [];
+    const base = idx * d;
+    for (let i = 0; i < n; i++) {
+      if (DBSCAN.within(data, base, data, i * d, d, eps, metric)) neighbors.push(i);
+    }
     return neighbors;
   }
 
@@ -122,79 +173,87 @@ export class DBSCAN implements Clusterer {
    * @param _y - Ignored (exists for API compatibility)
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D
-   * @throws {DataValidationError} If X contains NaN/Inf values
+   * @throws {DataValidationError} If X is empty or contains NaN/Inf values
    */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const data = toFloat64View(X);
+    const eps = this.eps;
+    const metric = this.metric;
 
-    // Extract data
-    const data: number[][] = [];
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      data.push(row);
-    }
-
-    // Initialize labels to undefined (-2 means unvisited)
-    const labels: number[] = new Array(nSamples).fill(-2);
-    const coreIndices: number[] = [];
+    const UNVISITED = -2;
+    const NOISE = -1;
+    const labels = new Int32Array(n).fill(UNVISITED);
+    const isCore = new Uint8Array(n);
+    const queued = new Uint8Array(n);
 
     let clusterId = 0;
+    for (let i = 0; i < n; i++) {
+      if (labels[i] !== UNVISITED) continue;
 
-    for (let i = 0; i < nSamples; i++) {
-      // Skip if already processed
-      if (labels[i] !== -2) continue;
-
-      const neighbors = this.getNeighbors(data, i);
-
+      const neighbors = DBSCAN.getNeighbors(data, n, d, i, eps, metric);
       if (neighbors.length < this.minSamples) {
-        // Mark as noise (for now, might be claimed by another cluster later)
-        labels[i] = -1;
+        // Noise for now; a later cluster may still claim it as a border point.
+        labels[i] = NOISE;
         continue;
       }
 
-      // Start a new cluster
-      coreIndices.push(i);
+      isCore[i] = 1;
       labels[i] = clusterId;
 
-      // Process neighbors
-      const seedSet = new Set(neighbors);
-
-      for (const q of seedSet) {
-        // If noise, claim it for this cluster
-        if (labels[q] === -1) {
+      // Breadth-first expansion; `queued` keeps each point in the queue at most once.
+      const queue: number[] = neighbors;
+      for (const q of queue) queued[q] = 1;
+      for (let head = 0; head < queue.length; head++) {
+        const q = queue[head] as number;
+        if (labels[q] === NOISE) {
+          // Border point previously seen as noise; it is not a core point.
           labels[q] = clusterId;
+          continue;
         }
+        if (labels[q] !== UNVISITED) continue;
 
-        // If unvisited
-        if (labels[q] === -2) {
-          labels[q] = clusterId;
-
-          const qNeighbors = this.getNeighbors(data, q);
-
-          if (qNeighbors.length >= this.minSamples) {
-            coreIndices.push(q);
-            // Add new neighbors to seed set
-            for (const n of qNeighbors) {
-              if (labels[n] === -2 || labels[n] === -1) {
-                seedSet.add(n);
-              }
+        labels[q] = clusterId;
+        const qNeighbors = DBSCAN.getNeighbors(data, n, d, q, eps, metric);
+        if (qNeighbors.length >= this.minSamples) {
+          isCore[q] = 1;
+          for (const nb of qNeighbors) {
+            if (queued[nb] === 0 && (labels[nb] === UNVISITED || labels[nb] === NOISE)) {
+              queued[nb] = 1;
+              queue.push(nb);
             }
           }
         }
       }
+      for (const q of queue) queued[q] = 0;
 
       clusterId++;
     }
 
-    this.labels_ = tensor(labels, { dtype: "int32" });
+    let nCore = 0;
+    for (let i = 0; i < n; i++) nCore += isCore[i] as number;
+    const coreIndices = new Int32Array(nCore);
+    const coreData = new Float64Array(nCore * d);
+    const coreLabels = new Int32Array(nCore);
+    let c = 0;
+    for (let i = 0; i < n; i++) {
+      if (isCore[i] === 0) continue;
+      coreIndices[c] = i;
+      coreLabels[c] = labels[i] as number;
+      for (let f = 0; f < d; f++) coreData[c * d + f] = data[i * d + f] as number;
+      c++;
+    }
+
+    this.labels_ = tensor(labels);
     this.coreIndices_ = coreIndices;
-    this.fitData_ = data;
+    this.coreData_ = coreData;
+    this.coreLabels_ = coreLabels;
+    this.nFeaturesIn_ = d;
+    this.fitEps_ = eps;
+    this.fitMetric_ = metric;
     this.fitted = true;
 
     return this;
@@ -205,63 +264,45 @@ export class DBSCAN implements Clusterer {
    *
    * Each new point is assigned the label of its nearest core sample from the
    * training data. Points with no core sample within `eps` distance are
-   * labeled as noise (-1).
+   * labeled as noise (-1). The `eps` and `metric` of the last `fit` are used, even
+   * if `setParams` changed them afterwards.
    *
    * @param X - Samples of shape (n_samples, n_features)
    * @returns Cluster labels of shape (n_samples,)
    * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X is not 2D or has a different number of features than the training data
+   * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted || !this.labels_ || !this.fitData_ || !this.coreIndices_) {
+    if (!this.fitted || !this.coreData_ || !this.coreLabels_) {
       throw new NotFittedError("DBSCAN must be fitted before prediction");
     }
+    validatePredictInputs(X, this.nFeaturesIn_, "DBSCAN");
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const trainData = this.fitData_;
-    const trainLabels = this.labels_;
-    const coreSet = new Set(this.coreIndices_);
-    const result: number[] = [];
+    const n = X.shape[0] ?? 0;
+    const d = this.nFeaturesIn_;
+    const data = toFloat64View(X);
+    const core = this.coreData_;
+    const coreLabels = this.coreLabels_;
+    const nCore = coreLabels.length;
+    const result = new Int32Array(n).fill(-1);
 
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-
-      // Find nearest core sample
+    for (let i = 0; i < n; i++) {
       let bestDist = Infinity;
       let bestLabel = -1;
-      for (const cIdx of coreSet) {
-        const corePoint = trainData[cIdx];
-        if (!corePoint) continue;
-        let dist = 0;
-        if (this.metric === "manhattan") {
-          for (let f = 0; f < nFeatures; f++) {
-            dist += Math.abs((row[f] ?? 0) - (corePoint[f] ?? 0));
-          }
-        } else {
-          for (let f = 0; f < nFeatures; f++) {
-            const diff = (row[f] ?? 0) - (corePoint[f] ?? 0);
-            dist += diff * diff;
-          }
-          dist = Math.sqrt(dist);
-        }
+      for (let c = 0; c < nCore; c++) {
+        // Only core samples within eps can claim the point.
+        if (!DBSCAN.within(data, i * d, core, c * d, d, this.fitEps_, this.fitMetric_)) continue;
+        const dist = DBSCAN.rankDistance(data, i * d, core, c * d, d, this.fitMetric_);
         if (dist < bestDist) {
           bestDist = dist;
-          bestLabel = Number(trainLabels.data[trainLabels.offset + cIdx]);
+          bestLabel = coreLabels[c] as number;
         }
       }
-
-      // Assign noise if nearest core sample is beyond eps
-      if (bestDist > this.eps) {
-        result.push(-1);
-      } else {
-        result.push(bestLabel);
-      }
+      result[i] = bestLabel;
     }
 
-    return tensor(result, { dtype: "int32" });
+    return tensor(result);
   }
 
   /**
@@ -271,7 +312,7 @@ export class DBSCAN implements Clusterer {
    * @param _y - Ignored (exists for API compatibility)
    * @returns Cluster labels of shape (n_samples,). Noise points are labeled -1.
    * @throws {ShapeError} If X is not 2D
-   * @throws {DataValidationError} If X contains NaN/Inf values
+   * @throws {DataValidationError} If X is empty or contains NaN/Inf values
    * @throws {NotFittedError} If fit did not produce labels (internal error)
    */
   fitPredict(X: Tensor, _y?: Tensor): Tensor {
@@ -305,27 +346,29 @@ export class DBSCAN implements Clusterer {
     if (!this.fitted || !this.labels_) {
       throw new NotFittedError("DBSCAN must be fitted to access nClusters");
     }
-    const unique = new Set<number>();
+    // Labels are assigned consecutively from 0, so the cluster count is max + 1.
+    let max = -1;
     for (let i = 0; i < this.labels_.size; i++) {
       const label = Number(this.labels_.data[this.labels_.offset + i]);
-      if (label >= 0) unique.add(label);
+      if (label > max) max = label;
     }
-    return unique.size;
+    return max + 1;
   }
 
   /**
    * Get indices of core samples discovered during fitting.
    *
-   * Core samples are points with at least `minSamples` neighbors within `eps`.
+   * Core samples are points with at least `minSamples` neighbors within `eps`
+   * (the point itself counts as a neighbor).
    *
-   * @returns Array of core sample indices
+   * @returns Array of core sample indices in increasing order
    * @throws {NotFittedError} If the model has not been fitted
    */
   get coreIndices(): number[] {
     if (!this.fitted || !this.coreIndices_) {
       throw new NotFittedError("DBSCAN must be fitted to access core indices");
     }
-    return [...this.coreIndices_];
+    return Array.from(this.coreIndices_);
   }
 
   /**
@@ -352,8 +395,8 @@ export class DBSCAN implements Clusterer {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "eps":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("eps must be > 0", "eps", value);
+          if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+            throw new InvalidParameterError("eps must be a finite number > 0", "eps", value);
           }
           this.eps = value;
           break;

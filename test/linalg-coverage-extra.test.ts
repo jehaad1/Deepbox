@@ -36,7 +36,7 @@ describe("solve_banded coverage", () => {
       ],
       f64
     );
-    // b is (3, 2) — two right-hand sides
+    // b is (3, 2) with two right-hand sides
     const b = tensor(
       [
         [1, 2],

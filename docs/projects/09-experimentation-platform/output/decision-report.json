@@ -3,38 +3,38 @@
   "pairwiseInference": [
     {
       "variant": "streamlined-checkout",
-      "revenuePvalue": 0.014677915057374147,
-      "revenueCorrected": 0.029355830114748294,
+      "revenuePvalue": 0.01467791505737024,
+      "revenueCorrected": 0.02935583011474048,
       "revenueDiffCi": {
-        "lower": 1.5986085914910309,
-        "upper": 14.633041408508978,
+        "lower": 1.5986091640975708,
+        "upper": 14.633040835902438,
         "mean": 8.115825000000005,
-        "marginOfError": 6.517216408508974,
+        "marginOfError": 6.517215835902434,
         "confidenceLevel": 0.95
       },
-      "latencyPvalue": 0,
-      "latencyCorrected": 0
+      "latencyPvalue": 2.37719732671037e-64,
+      "latencyCorrected": 4.75439465342074e-64
     },
     {
       "variant": "smart-bundle",
-      "revenuePvalue": 0.16993307020397985,
-      "revenueCorrected": 0.16993307020397985,
+      "revenuePvalue": 0.16993307020406823,
+      "revenueCorrected": 0.16993307020406823,
       "revenueDiffCi": {
-        "lower": -1.8977567698304894,
-        "upper": 10.757190103163826,
+        "lower": -1.8977564832109177,
+        "upper": 10.757189816544253,
         "mean": 4.429716666666668,
-        "marginOfError": 6.327473436497157,
+        "marginOfError": 6.327473149877585,
         "confidenceLevel": 0.95
       },
-      "latencyPvalue": 8.590905764549461e-13,
-      "latencyCorrected": 8.590905764549461e-13
+      "latencyPvalue": 8.591715521118666e-13,
+      "latencyCorrected": 8.591715521118666e-13
     }
   ],
   "upliftBootstrap": {
     "estimate": 9.410177800518182,
     "ci": [
       4.120493628581574,
-      14.830807313267043
+      14.732071982927241
     ],
     "nResamples": 5000
   },
@@ -42,12 +42,12 @@
     "effectSize": 0.0996942520451902,
     "nObs": 1200,
     "alpha": 0.05,
-    "power": 0.6851100224050066
+    "power": 0.6847678937529892
   },
   "requiredSample": {
     "effectSize": 0.0996942520451902,
-    "nObs": 2115,
+    "nObs": 2116,
     "alpha": 0.05,
-    "power": 0.9000814552332256
+    "power": 0.9000868192514984
   }
 }

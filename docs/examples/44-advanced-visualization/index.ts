@@ -1,12 +1,14 @@
 /**
  * Example 44: Advanced Visualization
  *
- * New in v1.0.0: Comprehensive plotting module with line plots, scatter,
- * histograms, heatmaps, confusion matrices, ROC curves, learning curves,
- * decision boundaries, feature importances, and more.
+ * The function-style plotting API: plot, scatter, bar, hist and heatmap, plus
+ * ready-made model diagnostics (confusion matrix, ROC curve, feature importance,
+ * elbow curve, residuals). show({ format: "svg" }) renders the current figure
+ * and returns the SVG text, which this example reports by length. See example 25
+ * for writing SVG files with the Figure class.
  */
 
-import { linspace, tensor } from "deepbox/ndarray";
+import { cos, linspace, sin, tensor } from "deepbox/ndarray";
 import {
   bar,
   heatmap,
@@ -28,23 +30,13 @@ console.log("=".repeat(60));
 // ============================================================================
 // Part 1: Line Plot
 // ============================================================================
-console.log("\n📈 Part 1: Line Plot");
+console.log("\nPart 1: Line Plot");
 console.log("-".repeat(60));
 
-// Create x values from 0 to 2π
+// 100 x values from 0 to 2 pi
 const x = linspace(0, 2 * Math.PI, 100);
-const sinData: number[] = [];
-const cosData: number[] = [];
-const xData = x.data as Float64Array;
-
-for (let i = 0; i < x.size; i++) {
-  const val = Number(xData[x.offset + i]);
-  sinData.push(Math.sin(val));
-  cosData.push(Math.cos(val));
-}
-
-const ySin = tensor(sinData);
-const yCos = tensor(cosData);
+const ySin = sin(x);
+const yCos = cos(x);
 
 // Plot sine and cosine curves
 plot(x, ySin, { color: "blue", label: "sin(x)" });
@@ -56,7 +48,7 @@ console.log(`  SVG output: ${lineSvg.svg.length} characters`);
 // ============================================================================
 // Part 2: Scatter Plot
 // ============================================================================
-console.log("\n🟠 Part 2: Scatter Plot");
+console.log("\nPart 2: Scatter Plot");
 console.log("-".repeat(60));
 
 const scatterX = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -70,7 +62,7 @@ console.log(`  SVG output: ${scatterSvg.svg.length} characters`);
 // ============================================================================
 // Part 3: Bar Chart
 // ============================================================================
-console.log("\n📊 Part 3: Bar Chart");
+console.log("\nPart 3: Bar Chart");
 console.log("-".repeat(60));
 
 const categories = tensor([1, 2, 3, 4, 5]);
@@ -84,13 +76,13 @@ console.log(`  SVG output: ${barSvg.svg.length} characters`);
 // ============================================================================
 // Part 4: Histogram
 // ============================================================================
-console.log("\n📉 Part 4: Histogram");
+console.log("\nPart 4: Histogram");
 console.log("-".repeat(60));
 
-// Generate random-like data
+// Deterministic pseudo-random values
 const histData: number[] = [];
 for (let i = 0; i < 200; i++) {
-  // Box-Muller approximation for normal distribution
+  // Box-Muller transform: two uniform values give one normal value
   const u1 = (i + 1) / 201;
   const u2 = (((i * 7 + 3) % 200) + 1) / 201;
   histData.push(Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2));
@@ -104,7 +96,7 @@ console.log(`  SVG output: ${histSvg.svg.length} characters`);
 // ============================================================================
 // Part 5: Heatmap
 // ============================================================================
-console.log("\n🟥 Part 5: Heatmap");
+console.log("\nPart 5: Heatmap");
 console.log("-".repeat(60));
 
 const heatmapData = tensor([
@@ -114,7 +106,7 @@ const heatmapData = tensor([
   [13, 14, 15, 16],
 ]);
 
-heatmap(heatmapData, { label: "4×4 heatmap" });
+heatmap(heatmapData, { label: "4x4 heatmap" });
 const heatSvg = show({ format: "svg" });
 console.log("Heatmap rendered:");
 console.log(`  SVG output: ${heatSvg.svg.length} characters`);
@@ -122,7 +114,7 @@ console.log(`  SVG output: ${heatSvg.svg.length} characters`);
 // ============================================================================
 // Part 6: Confusion Matrix
 // ============================================================================
-console.log("\n🎯 Part 6: Confusion Matrix");
+console.log("\nPart 6: Confusion Matrix");
 console.log("-".repeat(60));
 
 const confMatrix = tensor([
@@ -140,22 +132,22 @@ console.log("  Classes: Cat, Dog, Bird");
 // ============================================================================
 // Part 7: ROC Curve
 // ============================================================================
-console.log("\n📐 Part 7: ROC Curve");
+console.log("\nPart 7: ROC Curve");
 console.log("-".repeat(60));
 
-// Simulated ROC curve data
+// Example ROC curve points
 const fpr = tensor([0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]);
 const tpr = tensor([0, 0.4, 0.65, 0.8, 0.88, 0.94, 0.98, 1.0]);
 
 plotRocCurve(fpr, tpr, 0.87);
 const rocSvg = show({ format: "svg" });
-console.log("ROC Curve rendered (AUC = 0.87):");
+console.log("ROC Curve rendered (AUC passed in: 0.87):");
 console.log(`  SVG output: ${rocSvg.svg.length} characters`);
 
 // ============================================================================
 // Part 8: Feature Importance
 // ============================================================================
-console.log("\n⭐ Part 8: Feature Importance");
+console.log("\nPart 8: Feature Importance");
 console.log("-".repeat(60));
 
 const importances = tensor([0.35, 0.25, 0.15, 0.12, 0.08, 0.05]);
@@ -169,7 +161,7 @@ console.log(`  SVG output: ${fiSvg.svg.length} characters`);
 // ============================================================================
 // Part 9: Elbow Curve
 // ============================================================================
-console.log("\n📏 Part 9: Elbow Curve (KMeans)");
+console.log("\nPart 9: Elbow Curve (KMeans)");
 console.log("-".repeat(60));
 
 const kValues = tensor([2, 3, 4, 5, 6, 7, 8]);
@@ -179,12 +171,12 @@ plotElbowCurve(kValues, inertias);
 const elbowSvg = show({ format: "svg" });
 console.log("Elbow Curve rendered:");
 console.log(`  SVG output: ${elbowSvg.svg.length} characters`);
-console.log("  Optimal k appears around 4-5 (elbow point)");
+console.log("  The inertia stops dropping quickly at k = 4 or 5, the elbow");
 
 // ============================================================================
 // Part 10: Residual Plot
 // ============================================================================
-console.log("\n📊 Part 10: Residual Plot");
+console.log("\nPart 10: Residual Plot");
 console.log("-".repeat(60));
 
 const yTrue = tensor([3, 5, 7, 9, 11, 13, 15]);
@@ -198,18 +190,20 @@ console.log(`  SVG output: ${resSvg.svg.length} characters`);
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• plot/scatter: line and point plots for continuous data");
-console.log("• bar/barh: vertical and horizontal bar charts for categorical data");
-console.log("• hist: histograms for distribution visualization");
-console.log("• heatmap: 2D color-coded matrix visualization");
-console.log("• plotConfusionMatrix: classification performance at a glance");
-console.log("• plotRocCurve: binary classifier threshold tradeoffs");
+console.log("• plot, scatter: line and point plots");
+console.log("• bar: bar chart for categories");
+console.log("• hist: histogram of one variable");
+console.log("• heatmap: color-coded matrix");
+console.log("• plotConfusionMatrix: classification results per class");
+console.log("• plotRocCurve: true positive rate against false positive rate");
 console.log("• plotFeatureImportance: which features matter most");
-console.log("• plotElbowCurve: optimal number of clusters (KMeans)");
-console.log("• plotResiduals: regression model diagnostics");
-console.log("• All plots render to SVG (vector) or PNG (raster)");
+console.log("• plotElbowCurve: inertia against k, to choose the number of clusters");
+console.log("• plotResiduals: residuals of a regression model");
+console.log(
+  '• show({ format: "svg" }) returns SVG text. Figure.renderPNG() renders PNG in Node.js.'
+);
 
-console.log("\n✅ Advanced Visualization Example Complete!");
+console.log("\nAdvanced Visualization Example Complete!");
 console.log("=".repeat(60));

@@ -1,5 +1,5 @@
 """
-Benchmark 10 — Preprocessing
+Benchmark 10: Preprocessing
 scikit-learn
 """
 
@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", message="n_quantiles .* is greater than the to
 warnings.filterwarnings("ignore", message="The current default behavior, quantile_method='linear'.*")
 
 suite = create_suite("preprocess", "scikit-learn")
-header("Benchmark 10 — Preprocessing", "scikit-learn")
+header("Benchmark 10: Preprocessing", "scikit-learn")
 
 # ── Data generators ──────────────────────────────────────
 

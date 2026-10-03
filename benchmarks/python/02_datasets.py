@@ -1,5 +1,5 @@
 """
-Benchmark 02 — Dataset Loading & Generation
+Benchmark 02: Dataset Loading & Generation
 scikit-learn
 """
 
@@ -16,7 +16,7 @@ from sklearn.datasets import (
 from utils import run, create_suite, header, footer
 
 suite = create_suite("datasets", "scikit-learn")
-header("Benchmark 02 — Dataset Loading & Generation", "scikit-learn")
+header("Benchmark 02: Dataset Loading & Generation", "scikit-learn")
 
 # ── Built-in Loaders ────────────────────────────────────
 

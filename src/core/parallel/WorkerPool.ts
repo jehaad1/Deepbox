@@ -1,34 +1,56 @@
 /**
- * Web Workers / worker_threads parallelism for Deepbox.
+ * Task pool for batched map / reduce / filter style workloads.
  *
- * Provides a thread pool abstraction that works in both Node.js
- * (via `worker_threads`) and browsers (via `Web Workers`).
- * Tasks are distributed across available CPU cores for parallel
- * execution of compute-intensive operations.
+ * The pool splits work into at most `maxWorkers` chunks and runs them on the
+ * calling thread, in order. No `worker_threads` or Web Workers are spawned:
+ * callbacks are ordinary closures, receive their arguments by reference, and
+ * may touch any outer state. It gives batching, ordering guarantees, status
+ * counters and a termination switch, but not multi-core speedups.
  *
  * @module core/parallel
  * @see {@link https://deepbox.dev/docs/core-utils | Utilities, serialization & parallelism}
  */
 
-import { NotImplementedError } from "../errors/not_implemented";
+import { DeepboxError } from "../errors/base";
+import { InvalidParameterError } from "../errors/invalid_parameter";
 
-/** Detect Node.js environment without accessing globalThis.process directly. */
-function isNodeRuntime(): boolean {
+type OsLike = {
+  readonly availableParallelism?: () => number;
+  readonly cpus?: () => readonly unknown[];
+};
+
+/** Look up `node:os` without a static import so browser bundles stay clean. */
+function loadNodeOs(): OsLike | undefined {
   try {
-    return typeof require === "function" && typeof require("node:os").cpus === "function";
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } })
+      .process;
+    const viaProcess = proc?.getBuiltinModule?.("node:os");
+    if (viaProcess !== undefined && viaProcess !== null) return viaProcess as OsLike;
   } catch {
-    return false;
+    // fall through to require
   }
+  try {
+    if (typeof require === "function") return require("node:os") as OsLike;
+  } catch {
+    // not a CommonJS-capable Node runtime
+  }
+  return undefined;
 }
 
-function getNodeCpuCount(): number {
-  try {
-    const os = require("node:os");
-    const cpus: unknown[] | undefined = os.cpus?.();
-    return cpus?.length ?? 4;
-  } catch {
-    return 4;
+function detectCpuCount(): number {
+  const os = loadNodeOs();
+  if (os !== undefined) {
+    try {
+      const n = os.availableParallelism?.() ?? os.cpus?.().length ?? 0;
+      if (Number.isInteger(n) && n > 0) return n;
+    } catch {
+      // fall through
+    }
   }
+  const nav = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator;
+  const hc = nav?.hardwareConcurrency;
+  if (typeof hc === "number" && Number.isInteger(hc) && hc > 0) return hc;
+  return 4;
 }
 
 /**
@@ -44,9 +66,13 @@ export type TaskResult<T> = {
  * Options for creating a WorkerPool.
  */
 export type WorkerPoolOptions = {
-  /** Number of worker threads. Defaults to navigator.hardwareConcurrency or 4. */
+  /** Maximum number of chunks work is split into. Positive integer. Defaults to the CPU count. */
   readonly maxWorkers?: number;
-  /** Task timeout in milliseconds. Default: 30000 (30s). */
+  /**
+   * Task timeout in milliseconds (positive). Default: 30000 (30s).
+   * Tasks run on the calling thread and cannot be pre-empted, so the value is
+   * stored in {@link WorkerPool.taskTimeoutMs} but not enforced.
+   */
   readonly taskTimeout?: number;
 };
 
@@ -56,23 +82,32 @@ export type WorkerPoolOptions = {
 export type PoolStatus = {
   readonly maxWorkers: number;
   readonly activeWorkers: number;
+  /** Always 0: chunks run as soon as they are scheduled. */
   readonly pendingTasks: number;
   readonly completedTasks: number;
   readonly isTerminated: boolean;
 };
 
-type QueuedTask = {
-  readonly fn: string;
-  readonly args: readonly unknown[];
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
+/** Split `items` into at most `parts` contiguous chunks of near-equal size. */
+function splitIntoChunks<T>(
+  items: readonly T[],
+  parts: number
+): { readonly items: T[]; readonly start: number }[] {
+  const chunks: { items: T[]; start: number }[] = [];
+  if (items.length === 0) return chunks;
+  const chunkSize = Math.ceil(items.length / Math.max(1, parts));
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push({ items: items.slice(i, i + chunkSize), start: i });
+  }
+  return chunks;
+}
 
 /**
- * A pool of worker threads for parallel task execution.
+ * A pool that batches work into chunks and runs them in order on the
+ * calling thread.
  *
- * Automatically detects the runtime environment and uses
- * `worker_threads` (Node.js) or `Web Workers` (browser).
+ * Results always keep input order. A callback that throws rejects the
+ * returned promise and later chunks are not started.
  *
  * @example
  * ```ts
@@ -80,41 +115,47 @@ type QueuedTask = {
  *
  * const pool = new WorkerPool({ maxWorkers: 4 });
  *
- * // Execute a function in parallel across workers
- * const results = await pool.map(
- *   [1, 2, 3, 4],
- *   (x) => x * x
- * );
+ * const results = await pool.map([1, 2, 3, 4], (x) => x * x);
  * console.log(results); // [1, 4, 9, 16]
  *
- * // Run parallel reduce
- * const sum = await pool.reduce(
- *   [1, 2, 3, 4, 5, 6, 7, 8],
- *   (a, b) => a + b,
- *   0
- * );
+ * const sum = await pool.reduce([1, 2, 3, 4, 5, 6, 7, 8], (a, b) => a + b, 0);
+ * console.log(sum); // 36
  *
  * pool.terminate();
  * ```
  */
 export class WorkerPool {
   private readonly maxWorkers: number;
-  private readonly queue: QueuedTask[] = [];
   private activeCount = 0;
   private completedCount = 0;
   private terminated = false;
-  /** Task timeout in milliseconds. Used by `exec()` for per-task deadlines. */
+  /** Task timeout in milliseconds. Stored for callers; not enforced (see {@link WorkerPoolOptions}). */
   readonly taskTimeoutMs: number;
 
+  /**
+   * @param options - Pool options
+   * @throws {InvalidParameterError} If `maxWorkers` is not a positive integer or
+   *   `taskTimeout` is not a positive finite number
+   */
   constructor(options: WorkerPoolOptions = {}) {
-    const defaultCores = isNodeRuntime()
-      ? getNodeCpuCount()
-      : typeof navigator !== "undefined"
-        ? (navigator.hardwareConcurrency ?? 4)
-        : 4;
-
-    this.maxWorkers = options.maxWorkers ?? Math.max(1, defaultCores);
-    this.taskTimeoutMs = options.taskTimeout ?? 30_000;
+    const maxWorkers = options.maxWorkers ?? Math.max(1, detectCpuCount());
+    if (!Number.isInteger(maxWorkers) || maxWorkers < 1) {
+      throw new InvalidParameterError(
+        `maxWorkers must be a positive integer; received ${String(maxWorkers)}`,
+        "maxWorkers",
+        maxWorkers
+      );
+    }
+    const taskTimeout = options.taskTimeout ?? 30_000;
+    if (typeof taskTimeout !== "number" || !Number.isFinite(taskTimeout) || taskTimeout <= 0) {
+      throw new InvalidParameterError(
+        `taskTimeout must be a positive finite number; received ${String(taskTimeout)}`,
+        "taskTimeout",
+        taskTimeout
+      );
+    }
+    this.maxWorkers = maxWorkers;
+    this.taskTimeoutMs = taskTimeout;
   }
 
   /**
@@ -124,26 +165,32 @@ export class WorkerPool {
     return {
       maxWorkers: this.maxWorkers,
       activeWorkers: this.activeCount,
-      pendingTasks: this.queue.length,
+      pendingTasks: 0,
       completedTasks: this.completedCount,
       isTerminated: this.terminated,
     };
   }
 
   /**
-   * Execute a function on a single item in a worker thread.
+   * Execute a function on a single item.
    *
-   * For simple tasks, this runs inline (the overhead of spawning
-   * a worker is not worth it for trivial computations).
+   * Runs inline: spawning a worker is never worth it for one item.
    *
-   * @param fn - Pure function to execute
+   * @param fn - Function to execute
    * @param arg - Argument to pass to the function
-   * @returns Promise resolving to the function result
+   * @returns Promise resolving to the function result with timing info
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async exec<T, R>(fn: (arg: T) => R, arg: T): Promise<TaskResult<R>> {
     this.ensureNotTerminated();
     const start = Date.now();
-    const value = fn(arg);
+    this.activeCount++;
+    let value: R;
+    try {
+      value = fn(arg);
+    } finally {
+      this.activeCount--;
+    }
     this.completedCount++;
     return {
       value,
@@ -153,94 +200,63 @@ export class WorkerPool {
   }
 
   /**
-   * Map a function over an array of inputs in parallel.
+   * Map a function over an array of inputs.
    *
-   * Distributes work across available workers. Each item is
-   * processed independently.
+   * Items are split into at most `maxWorkers` chunks. `fn` is called with the
+   * item only (not the index or array), so functions such as `parseInt` behave
+   * as expected.
    *
    * @param items - Array of input items
-   * @param fn - Pure function to apply to each item
+   * @param fn - Function to apply to each item
    * @returns Promise resolving to array of results (same order as input)
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async map<T, R>(items: readonly T[], fn: (item: T) => R): Promise<R[]> {
     this.ensureNotTerminated();
-
-    if (items.length === 0) return [];
-
-    // For small arrays or single-core, run sequentially
-    if (items.length <= this.maxWorkers || this.maxWorkers === 1) {
-      return items.map(fn);
+    const out: R[] = [];
+    for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
+      this.runChunk(() => {
+        for (const item of chunk.items) out.push(fn(item));
+      });
     }
-
-    // Split into chunks for parallel execution
-    const chunkSize = Math.ceil(items.length / this.maxWorkers);
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += chunkSize) {
-      chunks.push(items.slice(i, i + chunkSize) as T[]);
-    }
-
-    // Process chunks in parallel using Promise.all
-    const chunkResults = await Promise.all(
-      chunks.map(async (chunk) => {
-        this.activeCount++;
-        try {
-          return chunk.map(fn);
-        } finally {
-          this.activeCount--;
-          this.completedCount++;
-        }
-      })
-    );
-
-    // Flatten results maintaining order
-    return chunkResults.flat();
+    return out;
   }
 
   /**
-   * Parallel reduce operation.
+   * Reduce an array to a single value.
    *
-   * Splits the array into chunks, reduces each chunk in parallel,
-   * then reduces the intermediate results.
+   * Each chunk is reduced separately and the partial results are then
+   * combined, so `fn` must be associative. `initial` is applied exactly once,
+   * like `Array.prototype.reduce`, and is the left operand of the final
+   * combination.
    *
    * @param items - Array of values to reduce
-   * @param fn - Reducer function
+   * @param fn - Associative reducer function
    * @param initial - Initial accumulator value
    * @returns Promise resolving to the reduced value
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async reduce<T>(items: readonly T[], fn: (a: T, b: T) => T, initial: T): Promise<T> {
     this.ensureNotTerminated();
 
-    if (items.length === 0) return initial;
-
-    // Split into chunks
-    const chunkSize = Math.ceil(items.length / this.maxWorkers);
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += chunkSize) {
-      chunks.push(items.slice(i, i + chunkSize) as T[]);
+    let acc = initial;
+    for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
+      this.runChunk(() => {
+        // Non-empty by construction, so the seedless reduce is safe.
+        const partial = chunk.items.reduce((a, b) => fn(a, b));
+        acc = fn(acc, partial);
+      });
     }
-
-    // Reduce each chunk in parallel
-    const partials = await Promise.all(
-      chunks.map(async (chunk) => {
-        this.activeCount++;
-        try {
-          return chunk.reduce(fn, initial);
-        } finally {
-          this.activeCount--;
-          this.completedCount++;
-        }
-      })
-    );
-
-    // Final reduction
-    return partials.reduce(fn, initial);
+    return acc;
   }
 
   /**
-   * Execute multiple independent tasks in parallel.
+   * Execute multiple independent tasks.
    *
    * @param tasks - Array of zero-argument functions to execute
-   * @returns Promise resolving to array of results
+   * @returns Promise resolving to array of results (same order as input);
+   *   promises returned by tasks are awaited
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async all<T>(tasks: readonly (() => T)[]): Promise<T[]> {
     this.ensureNotTerminated();
@@ -248,7 +264,7 @@ export class WorkerPool {
       tasks.map(async (task) => {
         this.activeCount++;
         try {
-          return task();
+          return await task();
         } finally {
           this.activeCount--;
           this.completedCount++;
@@ -258,84 +274,52 @@ export class WorkerPool {
   }
 
   /**
-   * Parallel forEach — execute a function for each item.
+   * Execute a function for each item, in order.
    *
    * @param items - Array of input items
    * @param fn - Function to execute for each item (side-effect only)
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async forEach<T>(items: readonly T[], fn: (item: T, index: number) => void): Promise<void> {
     this.ensureNotTerminated();
-
-    const chunkSize = Math.ceil(items.length / this.maxWorkers);
-    const chunks: { items: T[]; startIndex: number }[] = [];
-    for (let i = 0; i < items.length; i += chunkSize) {
-      chunks.push({
-        items: items.slice(i, i + chunkSize) as T[],
-        startIndex: i,
+    for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
+      this.runChunk(() => {
+        for (let j = 0; j < chunk.items.length; j++) {
+          fn(chunk.items[j] as T, chunk.start + j);
+        }
       });
     }
-
-    await Promise.all(
-      chunks.map(async (chunk) => {
-        this.activeCount++;
-        try {
-          for (let j = 0; j < chunk.items.length; j++) {
-            fn(chunk.items[j]!, chunk.startIndex + j);
-          }
-        } finally {
-          this.activeCount--;
-          this.completedCount++;
-        }
-      })
-    );
   }
 
   /**
-   * Parallel filter operation.
+   * Filter an array.
    *
    * @param items - Array of items to filter
-   * @param predicate - Filter predicate
+   * @param predicate - Filter predicate, called with the item only
    * @returns Promise resolving to filtered array (preserving order)
+   * @throws {DeepboxError} If the pool has been terminated
    */
   async filter<T>(items: readonly T[], predicate: (item: T) => boolean): Promise<T[]> {
     this.ensureNotTerminated();
-
-    const chunkSize = Math.ceil(items.length / this.maxWorkers);
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += chunkSize) {
-      chunks.push(items.slice(i, i + chunkSize) as T[]);
-    }
-
-    const chunkResults = await Promise.all(
-      chunks.map(async (chunk) => {
-        this.activeCount++;
-        try {
-          return chunk.filter(predicate);
-        } finally {
-          this.activeCount--;
-          this.completedCount++;
+    const out: T[] = [];
+    for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
+      this.runChunk(() => {
+        for (const item of chunk.items) {
+          if (predicate(item)) out.push(item);
         }
-      })
-    );
-
-    return chunkResults.flat();
+      });
+    }
+    return out;
   }
 
   /**
-   * Terminate all workers and release resources.
+   * Mark the pool as terminated.
    *
    * After termination, no new tasks can be submitted.
    * Safe to call multiple times.
    */
   terminate(): void {
-    if (this.terminated) return;
     this.terminated = true;
-
-    // Reject pending tasks
-    for (const task of this.queue) {
-      task.reject(new Error("WorkerPool terminated"));
-    }
-    this.queue.length = 0;
   }
 
   /**
@@ -345,9 +329,19 @@ export class WorkerPool {
     return this.terminated;
   }
 
+  private runChunk(body: () => void): void {
+    this.activeCount++;
+    try {
+      body();
+    } finally {
+      this.activeCount--;
+      this.completedCount++;
+    }
+  }
+
   private ensureNotTerminated(): void {
     if (this.terminated) {
-      throw new NotImplementedError("WorkerPool has been terminated and cannot accept new tasks");
+      throw new DeepboxError("WorkerPool has been terminated and cannot accept new tasks");
     }
   }
 }
@@ -355,8 +349,9 @@ export class WorkerPool {
 /**
  * Create a WorkerPool with sensible defaults.
  *
- * @param maxWorkers - Maximum number of workers (defaults to CPU count)
+ * @param maxWorkers - Maximum number of chunks (defaults to CPU count)
  * @returns A new WorkerPool instance
+ * @throws {InvalidParameterError} If `maxWorkers` is not a positive integer
  */
 export function createWorkerPool(maxWorkers?: number): WorkerPool {
   return maxWorkers !== undefined ? new WorkerPool({ maxWorkers }) : new WorkerPool();
@@ -365,16 +360,11 @@ export function createWorkerPool(maxWorkers?: number): WorkerPool {
 /**
  * Get the number of available CPU cores.
  *
- * Works in both Node.js and browser environments.
+ * Uses `os.availableParallelism()` in Node.js and `navigator.hardwareConcurrency`
+ * in browsers, falling back to 4 when neither is available.
  *
- * @returns Number of available CPU cores
+ * @returns Number of available CPU cores (at least 1)
  */
 export function availableCores(): number {
-  if (isNodeRuntime()) {
-    return getNodeCpuCount();
-  }
-  if (typeof navigator !== "undefined") {
-    return navigator.hardwareConcurrency ?? 4;
-  }
-  return 4;
+  return detectCpuCount();
 }

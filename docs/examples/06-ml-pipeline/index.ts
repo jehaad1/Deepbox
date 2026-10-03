@@ -1,3 +1,12 @@
+/**
+ * Example 06: Machine Learning Pipeline
+ *
+ * Two small end-to-end workflows:
+ * 1. Binary classification on Iris: split, scale, fit, evaluate.
+ * 2. Regression on Housing-Mini: compare four linear models, cross-validate
+ *    one of them and plot its predictions.
+ */
+
 import { mkdirSync, writeFileSync } from "node:fs";
 import { loadHousingMini, loadIris } from "deepbox/datasets";
 import {
@@ -11,7 +20,7 @@ import {
   recall,
   rmse,
 } from "deepbox/metrics";
-import { cross_validate, Lasso, LinearRegression, LogisticRegression, Ridge } from "deepbox/ml";
+import { crossValidate, Lasso, LinearRegression, LogisticRegression, Ridge } from "deepbox/ml";
 import { tensor } from "deepbox/ndarray";
 import { Figure } from "deepbox/plot";
 import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
@@ -22,7 +31,7 @@ console.log("=".repeat(60));
 
 mkdirSync("docs/examples/06-ml-pipeline/output", { recursive: true });
 
-console.log("\n📦 Part 1: Classification with Iris Dataset");
+console.log("\nPart 1: Classification with the Iris dataset");
 console.log("-".repeat(60));
 
 const iris = loadIris();
@@ -30,14 +39,11 @@ console.log(`Dataset loaded: ${iris.data.shape[0]} samples, ${iris.data.shape[1]
 console.log(`Classes: ${iris.targetNames?.join(", ") || "N/A"}`);
 console.log(`Features: ${iris.featureNames?.join(", ") || "N/A"}`);
 
-const binaryIrisTarget = [];
-for (let i = 0; i < iris.target.size; i++) {
-  const val = Number(iris.target.data[iris.target.offset + i]);
-  binaryIrisTarget.push(val === 0 ? 0 : 1);
-}
-const binaryTarget = tensor(binaryIrisTarget);
+// Turn the three classes into two: setosa (0) vs the rest (1).
+// Clipping labels 0, 1, 2 to the range [0, 1] gives exactly that.
+const binaryTarget = iris.target.clip(0, 1);
 
-console.log("\n🔄 Data Preprocessing");
+console.log("\nData preprocessing");
 console.log("-".repeat(60));
 
 const [XTrainIris, XTestIris, yTrainIris, yTestIris] = trainTestSplit(iris.data, binaryTarget, {
@@ -53,9 +59,9 @@ scalerIris.fit(XTrainIris);
 const XTrainScaled = scalerIris.transform(XTrainIris);
 const XTestScaled = scalerIris.transform(XTestIris);
 
-console.log("✓ Features scaled using StandardScaler");
+console.log("Features scaled with StandardScaler (fitted on the training set only)");
 
-console.log("\n🤖 Training Logistic Regression");
+console.log("\nTraining logistic regression");
 console.log("-".repeat(60));
 
 const logReg = new LogisticRegression({ maxIter: 1000, learningRate: 0.1 });
@@ -63,23 +69,23 @@ logReg.fit(XTrainScaled, yTrainIris);
 
 const yPredIris = logReg.predict(XTestScaled);
 
-console.log("\n📊 Classification Metrics");
+console.log("\nClassification metrics");
 console.log("-".repeat(60));
 const acc = accuracy(yTestIris, yPredIris);
 const prec = precision(yTestIris, yPredIris);
 const rec = recall(yTestIris, yPredIris);
 const f1 = f1Score(yTestIris, yPredIris);
 
-console.log(`Accuracy: ${(Number(acc) * 100).toFixed(2)}%`);
-console.log(`Precision: ${(Number(prec) * 100).toFixed(2)}%`);
-console.log(`Recall: ${(Number(rec) * 100).toFixed(2)}%`);
-console.log(`F1-Score: ${(Number(f1) * 100).toFixed(2)}%`);
+console.log(`Accuracy: ${(acc * 100).toFixed(2)}%`);
+console.log(`Precision: ${(prec * 100).toFixed(2)}%`);
+console.log(`Recall: ${(rec * 100).toFixed(2)}%`);
+console.log(`F1-Score: ${(f1 * 100).toFixed(2)}%`);
 
 const confMatrix = confusionMatrix(yTestIris, yPredIris);
 console.log("\nConfusion Matrix:");
 console.log(confMatrix.toString());
 
-console.log("\n📦 Part 2: Regression with Housing-Mini Dataset");
+console.log("\nPart 2: Regression with the Housing-Mini dataset");
 console.log("-".repeat(60));
 
 const housing = loadHousingMini();
@@ -102,7 +108,7 @@ scalerHousing.fit(XTrainHousing);
 const XTrainHousingScaled = scalerHousing.transform(XTrainHousing);
 const XTestHousingScaled = scalerHousing.transform(XTestHousing);
 
-console.log("\n🔬 Comparing Regression Models");
+console.log("\nComparing regression models");
 console.log("-".repeat(60));
 
 const models = [
@@ -138,9 +144,9 @@ for (const { name, model } of models) {
   console.log(`  RMSE: ${rmseVal.toFixed(4)}`);
 }
 
-console.log("\n🔄 Cross-Validation");
+console.log("\nCross-validation");
 console.log("-".repeat(60));
-const cvResult = cross_validate(new Ridge({ alpha: 1.0 }), XTrainHousingScaled, yTrainHousing, {
+const cvResult = crossValidate(new Ridge({ alpha: 1.0 }), XTrainHousingScaled, yTrainHousing, {
   cv: 5,
   scoring: {
     r2: (estimator, XFold, yFold) => r2Score(yFold, (estimator as Ridge).predict(XFold)),
@@ -166,28 +172,25 @@ for (let i = 0; i < cvR2Scores.length; i++) {
 console.log(`\nMean CV R²: ${meanCvR2.toFixed(4)}`);
 console.log(`Mean CV RMSE: ${meanCvRmse.toFixed(4)}`);
 
-console.log("\n📈 Visualizing Predictions");
+console.log("\nPlotting predictions");
 console.log("-".repeat(60));
 
 const bestModel = new Ridge({ alpha: 1.0 });
 bestModel.fit(XTrainHousingScaled, yTrainHousing);
 const finalPredictions = bestModel.predict(XTestHousingScaled);
 
-const yTestArray: number[] = [];
-const yPredArray: number[] = [];
-
-for (let i = 0; i < yTestHousing.size; i++) {
-  yTestArray.push(Number(yTestHousing.data[yTestHousing.offset + i]));
-  yPredArray.push(Number(finalPredictions.data[finalPredictions.offset + i]));
-}
+// Plain tensors go straight into the plot. The red line is the ideal case
+// where every prediction equals the true value.
+const lo = Math.min(Number(yTestHousing.min().item()), Number(finalPredictions.min().item()));
+const hi = Math.max(Number(yTestHousing.max().item()), Number(finalPredictions.max().item()));
 
 const fig = new Figure();
 const ax = fig.addAxes();
-ax.scatter(tensor(yTestArray), tensor(yPredArray), {
+ax.scatter(yTestHousing, finalPredictions, {
   color: "#1f77b4",
   size: 6,
 });
-ax.plot(tensor([0, 1, 2]), tensor([0, 1, 2]), {
+ax.plot(tensor([lo, hi]), tensor([lo, hi]), {
   color: "#ff0000",
   linewidth: 2,
 });
@@ -196,15 +199,14 @@ ax.setXLabel("Actual Values");
 ax.setYLabel("Predicted Values");
 const svg = fig.renderSVG();
 writeFileSync("docs/examples/06-ml-pipeline/output/predictions-vs-actual.svg", svg.svg);
-console.log("✓ Saved: output/predictions-vs-actual.svg");
+console.log("Saved: output/predictions-vs-actual.svg");
 
-console.log("\n💡 Key Takeaways");
+console.log("\nSummary");
 console.log("-".repeat(60));
-console.log("• Logistic Regression achieved high accuracy on binary classification");
-console.log("• Ridge Regression with α=1.0 performed best on housing dataset");
-console.log("• Cross-validation now reports real fold-by-fold R² and RMSE scores");
-console.log("• Feature scaling is crucial for model performance");
-console.log("• Regularization helps prevent overfitting");
+const best = results.reduce((a, b) => (b.r2 > a.r2 ? b : a));
+console.log(`Iris accuracy: ${(acc * 100).toFixed(2)}%`);
+console.log(`Best housing model by test R²: ${best.name} (${best.r2.toFixed(4)})`);
+console.log(`Mean 5-fold CV R² for Ridge (α=1.0): ${meanCvR2.toFixed(4)}`);
 
-console.log("\n✅ ML Pipeline Complete!");
+console.log("\nPipeline complete.");
 console.log("=".repeat(60));

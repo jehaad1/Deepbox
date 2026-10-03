@@ -20,9 +20,12 @@ export {
   f_regression,
   fClassif,
   fRegression,
+  type ImportanceEstimator,
   RFE,
   RFECV,
+  type RFECVScoring,
   type ScoreFunc,
+  type ScoringEstimator,
   SelectFromModel,
   SelectKBest,
   VarianceThreshold,
@@ -31,6 +34,7 @@ export {
 export { KNNImputer, MissingIndicator, SimpleImputer } from "./impute";
 // Mutual information scoring
 export {
+  type MutualInfoOptions,
   mutual_info_classif,
   mutual_info_regression,
   mutualInfoClassif,
@@ -54,22 +58,33 @@ export {
 } from "./scalers";
 
 // Spline features
-export { SplineTransformer } from "./spline";
+export { type SplineExtrapolation, type SplineKnots, SplineTransformer } from "./spline";
 // Splitting
 export {
   GroupKFold,
   GroupShuffleSplit,
   KFold,
+  LeaveOneGroupOut,
   LeaveOneOut,
+  LeavePGroupsOut,
   LeavePOut,
+  PredefinedSplit,
   RepeatedKFold,
   RepeatedStratifiedKFold,
   ShuffleSplit,
   type SplitResult,
+  StratifiedGroupKFold,
   StratifiedKFold,
   StratifiedShuffleSplit,
   TimeSeriesSplit,
   trainTestSplit,
 } from "./split";
 // Text feature extraction
-export { CountVectorizer, HashingVectorizer, TfidfVectorizer } from "./text";
+export {
+  CountVectorizer,
+  type CountVectorizerOptions,
+  HashingVectorizer,
+  type HashingVectorizerOptions,
+  TfidfVectorizer,
+  type TfidfVectorizerOptions,
+} from "./text";

@@ -1,14 +1,19 @@
 /**
- * Example 31: DataLoader — Batching & Shuffling
+ * Example 31: DataLoader: Batching & Shuffling
  *
- * Demonstrates the DataLoader class for efficient batch iteration over datasets.
- * Essential for training loops where data must be batched and optionally shuffled.
+ * DataLoader splits a dataset into batches, with optional shuffling, and is the
+ * usual way to feed a training loop. This example covers batching, a seeded
+ * shuffle, reshuffling every epoch, dropLast and loading without labels.
  */
 
 import { DataLoader } from "deepbox/datasets";
-import { tensor } from "deepbox/ndarray";
+import { type Tensor, tensor } from "deepbox/ndarray";
 
 console.log("=== DataLoader: Batching & Shuffling ===\n");
+
+// The first column of X is 1, 3, 5, ..., so it identifies each sample
+const sampleIds = (xBatch: Tensor): number[] =>
+  (xBatch.toArray() as number[][]).map((row) => row[0] ?? Number.NaN);
 
 // ---------------------------------------------------------------------------
 // Part 1: Basic batching
@@ -31,8 +36,8 @@ const y = tensor([0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
 
 const loader = new DataLoader(X, y, { batchSize: 3 });
 console.log(`Dataset size: ${X.shape[0]} samples`);
-console.log(`Batch size: 3`);
-console.log(`Expected batches: 4 (last batch has 1 sample)\n`);
+console.log("Batch size: 3");
+console.log("Expected batches: 4 (the last batch has 1 sample)\n");
 
 let batchIdx = 0;
 for (const [xBatch, yBatch] of loader) {
@@ -54,18 +59,33 @@ const shuffledLoader = new DataLoader(X, y, {
 });
 console.log("DataLoader(batchSize=5, shuffle=true, seed=42)");
 
-console.log("\nFirst iteration:");
-for (const [xBatch, yBatch] of shuffledLoader) {
-  console.log(`  X first row: ${xBatch.toString().split("\n")[0]}, y: ${yBatch.toString()}`);
+console.log("\nFirst iteration (sample ids per batch):");
+for (const [xBatch] of shuffledLoader) {
+  console.log(`  [${sampleIds(xBatch).join(", ")}]`);
 }
 
-console.log("\nSecond iteration (same seed = same order):");
-for (const [xBatch, yBatch] of shuffledLoader) {
-  console.log(`  X first row: ${xBatch.toString().split("\n")[0]}, y: ${yBatch.toString()}`);
+console.log("\nSecond iteration (a seed alone repeats the same order):");
+for (const [xBatch] of shuffledLoader) {
+  console.log(`  [${sampleIds(xBatch).join(", ")}]`);
+}
+
+// reshuffleEachIteration continues one seeded random stream, so every epoch has a new
+// order and the whole sequence of epochs is still reproducible.
+const epochLoader = new DataLoader(X, y, {
+  batchSize: 5,
+  shuffle: true,
+  seed: 42,
+  reshuffleEachIteration: true,
+});
+console.log("\nWith reshuffleEachIteration: true");
+for (let epoch = 0; epoch < 2; epoch++) {
+  const order: number[] = [];
+  for (const [xBatch] of epochLoader) order.push(...sampleIds(xBatch));
+  console.log(`  Epoch ${epoch}: [${order.join(", ")}]`);
 }
 
 // ---------------------------------------------------------------------------
-// Part 3: dropLast — discard incomplete final batch
+// Part 3: dropLast (discard incomplete final batch)
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 3: Drop Last Batch ---");
 

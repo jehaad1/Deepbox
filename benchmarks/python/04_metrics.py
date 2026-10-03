@@ -1,5 +1,5 @@
 """
-Benchmark 04 — Metrics
+Benchmark 04: Metrics
 scikit-learn
 """
 
@@ -25,7 +25,7 @@ from sklearn.metrics.pairwise import cosine_similarity, manhattan_distances, pai
 from utils import run, create_suite, header, footer
 
 suite = create_suite("metrics", "scikit-learn")
-header("Benchmark 04 — Metrics", "scikit-learn")
+header("Benchmark 04: Metrics", "scikit-learn")
 
 # ── Data generators ──────────────────────────────────────
 

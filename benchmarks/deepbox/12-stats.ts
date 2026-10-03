@@ -1,5 +1,5 @@
 /**
- * Benchmark 12 — Statistics
+ * Benchmark 12: Statistics
  * Deepbox vs SciPy / NumPy
  */
 
@@ -59,7 +59,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("stats");
-header("Benchmark 12 — Statistics");
+header("Benchmark 12: Statistics");
 
 // ── Data ────────────────────────────────────────────────
 

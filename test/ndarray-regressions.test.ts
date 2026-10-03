@@ -36,17 +36,17 @@ describe("ndarray regression fixes", () => {
     expect(Array.from(r.data as BigInt64Array)).toEqual([-2n, -2n]);
   });
 
-  it("div and reciprocal promote int64 to float64", () => {
+  it("div and reciprocal promote int64 to float32", () => {
     const a = tensor([3, -3], { dtype: "int64" });
     const b = tensor([2, 2], { dtype: "int64" });
     const d = div(a, b);
-    expect(d.dtype).toBe("float64");
+    expect(d.dtype).toBe("float32");
     const dVals = numData(d);
     expect(dVals[0]).toBeCloseTo(1.5);
     expect(dVals[1]).toBeCloseTo(-1.5);
 
     const r = reciprocal(a);
-    expect(r.dtype).toBe("float64");
+    expect(r.dtype).toBe("float32");
     const rVals = numData(r);
     expect(rVals[0]).toBeCloseTo(1 / 3);
     expect(rVals[1]).toBeCloseTo(-1 / 3);

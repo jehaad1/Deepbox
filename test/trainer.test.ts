@@ -64,7 +64,7 @@ describe("Trainer", () => {
     const model = new TinyModel();
     const optimizer = { step() {}, zeroGrad() {} };
 
-    // Loss function that returns constant loss — never improves
+    // Loss function that returns constant loss and never improves
     const lossFn = (_output: AnyTensor, _target: Tensor) => tensor([5.0]);
 
     const trainData: Array<readonly [Tensor, Tensor]> = [[tensor([[1, 2]]), tensor([3])]];

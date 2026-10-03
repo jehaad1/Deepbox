@@ -1,10 +1,10 @@
 /**
- * WASM SIMD Backend — host-accelerator execution backend for Deepbox.
+ * WASM SIMD backend: a host-accelerator execution backend for Deepbox.
  *
  * Runs precompiled WebAssembly SIMD kernels (4-lane f32) over a shared
  * WebAssembly memory. Binaries are generated at build time from the WAT
  * sources by `scripts/build-wasm.mjs` and embedded in the package, so
- * `init()` compiles them directly — no WAT compiler needed at runtime.
+ * `init()` compiles them directly. No WAT compiler is needed at runtime.
  *
  * Unlike the WebGPU backend, `wasm` is a **host accelerator**: tensors on
  * the `wasm` device keep ordinary TypedArray storage (zero-copy with the
@@ -37,6 +37,14 @@ const BINARY_MODULE: Record<HostBinaryOp, WasmModuleName> = {
   mul: "simdMul",
   div: "simdDiv",
 };
+
+/** WebAssembly page size in bytes. */
+const PAGE_BYTES = 65536;
+/** Initial shared memory, in pages (1 MiB). */
+const INITIAL_PAGES = 16;
+/** Memory cap, in pages (1 GiB). Keeps every kernel pointer inside the positive i32 range. */
+const MAX_PAGES = 16384;
+const MAX_MEMORY_BYTES = MAX_PAGES * PAGE_BYTES;
 
 type BinaryRun = (a: number, b: number, out: number, count: number) => void;
 type DotRun = (a: number, b: number, count: number) => number;
@@ -83,6 +91,7 @@ export class WasmBackend implements Backend {
   private disposed = false;
   private initialized = false;
   private initPromise: Promise<void> | null = null;
+  private simdSupported: boolean | null = null;
 
   private static readonly CAPABILITIES: readonly BackendCapability[] = [
     "elementwise",
@@ -111,6 +120,8 @@ export class WasmBackend implements Backend {
    *
    * When the runtime does not support WASM SIMD this completes without
    * error and {@link WasmBackend.info} keeps reporting `available: false`.
+   * Calling `init()` again returns the same result; a backend that has been
+   * disposed cannot be initialized again, so create a new instance instead.
    */
   async init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -119,17 +130,21 @@ export class WasmBackend implements Backend {
   }
 
   private async doInit(): Promise<void> {
-    if (!this.isWasmSimdAvailable()) return;
+    if (this.disposed || !this.isWasmSimdAvailable()) return;
 
     try {
-      const memory = new WebAssembly.Memory({ initial: 16, maximum: 16384 });
+      const memory = new WebAssembly.Memory({ initial: INITIAL_PAGES, maximum: MAX_PAGES });
       const imports = { env: { memory } };
+      const compiled = new Map<WasmModuleName, CompiledWasmModule>();
       for (const name of Object.keys(WASM_BINARIES) as WasmModuleName[]) {
         const bytes = base64ToBytes(WASM_BINARIES[name]);
         const module = await WebAssembly.compile(bytes);
         const instance = await WebAssembly.instantiate(module, imports);
-        this.modules.set(name, { name, instance, memory });
+        compiled.set(name, { name, instance, memory });
       }
+      // dispose() may have run while the modules were compiling.
+      if (this.disposed) return;
+      for (const [name, mod] of compiled) this.modules.set(name, mod);
       this.memory = memory;
       this.initialized = true;
     } catch {
@@ -144,14 +159,15 @@ export class WasmBackend implements Backend {
   /**
    * Element-wise `a OP b` over contiguous float32 data using SIMD.
    *
-   * Per-element IEEE-754 arithmetic — results are bit-identical to the
+   * Per-element IEEE-754 arithmetic. Results are bit-identical to the
    * scalar CPU implementation. Returns `null` when the backend is not
    * initialized, letting callers fall back to the CPU path.
    *
    * @param op - One of `add`, `sub`, `mul`, `div`
    * @param a - Left operand (length defines the element count)
    * @param b - Right operand (same length)
-   * @returns The result array, or `null` if the kernels are unavailable
+   * @returns The result array, or `null` if the kernels are unavailable, the
+   *   operand lengths differ, or the inputs do not fit in the 1 GiB WASM memory
    */
   binaryContiguous(op: HostBinaryOp, a: Float32Array, b: Float32Array): Float32Array | null {
     const moduleName = BINARY_MODULE[op];
@@ -161,7 +177,7 @@ export class WasmBackend implements Backend {
 
     const n = a.length;
     const bytes = n * 4;
-    this.ensureCapacity(3 * bytes + 48);
+    if (!this.ensureCapacity(3 * bytes + 48)) return null;
 
     const aPtr = 0;
     const bPtr = this.align16(bytes);
@@ -173,8 +189,6 @@ export class WasmBackend implements Backend {
 
     (mod.instance.exports["run"] as BinaryRun)(aPtr, bPtr, outPtr, n);
 
-    // memory.buffer may have been detached by growth inside ensureCapacity,
-    // so re-view before reading out.
     return new Float32Array(memory.buffer, outPtr, n).slice();
   }
 
@@ -182,10 +196,11 @@ export class WasmBackend implements Backend {
    * SIMD dot product over contiguous float32 data.
    *
    * Accumulates in four f32 lanes, so the result can differ from a
-   * sequential sum in the last bits — callers that need exact
+   * sequential sum in the last bits. Callers that need exact
    * CPU-sequential semantics should not use this.
    *
-   * @returns The dot product, or `null` if the kernels are unavailable
+   * @returns The dot product, or `null` if the kernels are unavailable, the
+   *   lengths differ, or the inputs do not fit in the WASM memory
    */
   dotContiguous(a: Float32Array, b: Float32Array): number | null {
     const mod = this.modules.get("simdDot");
@@ -193,7 +208,7 @@ export class WasmBackend implements Backend {
     if (!mod || !memory || this.disposed || a.length !== b.length) return null;
 
     const bytes = a.length * 4;
-    this.ensureCapacity(2 * bytes + 32);
+    if (!this.ensureCapacity(2 * bytes + 32)) return null;
     const aPtr = 0;
     const bPtr = this.align16(bytes);
     const heap = new Float32Array(memory.buffer);
@@ -206,14 +221,15 @@ export class WasmBackend implements Backend {
    * SIMD sum over contiguous float32 data (same accumulation caveats as
    * {@link WasmBackend.dotContiguous}).
    *
-   * @returns The sum, or `null` if the kernels are unavailable
+   * @returns The sum, or `null` if the kernels are unavailable or the input
+   *   does not fit in the WASM memory
    */
   sumContiguous(a: Float32Array): number | null {
     const mod = this.modules.get("simdSum");
     const memory = this.memory;
     if (!mod || !memory || this.disposed) return null;
 
-    this.ensureCapacity(a.length * 4 + 16);
+    if (!this.ensureCapacity(a.length * 4 + 16)) return null;
     new Float32Array(memory.buffer).set(a, 0);
     return (mod.instance.exports["run"] as SumRun)(0, a.length);
   }
@@ -222,13 +238,26 @@ export class WasmBackend implements Backend {
     return (offset + 15) & ~15;
   }
 
-  private ensureCapacity(bytes: number): void {
+  /**
+   * Make sure the shared memory holds at least `bytes` bytes.
+   *
+   * Memory only ever grows (WebAssembly cannot shrink it), so the largest
+   * input seen so far stays allocated until {@link WasmBackend.dispose}.
+   *
+   * @returns `false` when the request exceeds the 1 GiB memory cap or the
+   *   engine refuses to grow; callers then fall back to the CPU path
+   */
+  private ensureCapacity(bytes: number): boolean {
     const memory = this.memory;
-    if (!memory) return;
+    if (!memory || bytes > MAX_MEMORY_BYTES) return false;
     const current = memory.buffer.byteLength;
-    if (current >= bytes) return;
-    const pagesNeeded = Math.ceil((bytes - current) / 65536);
-    memory.grow(pagesNeeded);
+    if (current >= bytes) return true;
+    try {
+      memory.grow(Math.ceil((bytes - current) / PAGE_BYTES));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ─── Introspection ─────────────────────────────────────────────────────────
@@ -274,6 +303,11 @@ export class WasmBackend implements Backend {
     return this.initialized;
   }
 
+  /**
+   * Release the compiled modules and the shared memory. The backend reports
+   * `available: false` afterwards and cannot be re-initialized. Safe to call
+   * more than once.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -282,18 +316,24 @@ export class WasmBackend implements Backend {
     this.initialized = false;
   }
 
+  /** Whether {@link WasmBackend.dispose} has been called. */
   get isDisposed(): boolean {
     return this.disposed;
   }
 
   private isWasmSimdAvailable(): boolean {
-    if (typeof WebAssembly === "undefined") return false;
-    try {
-      // The most reliable feature probe: validate one of the real SIMD
-      // kernels we are about to instantiate.
-      return WebAssembly.validate(base64ToBytes(WASM_BINARIES.simdAdd));
-    } catch {
-      return false;
+    if (this.simdSupported !== null) return this.simdSupported;
+    let supported = false;
+    if (typeof WebAssembly !== "undefined") {
+      try {
+        // The most reliable feature probe: validate one of the real SIMD
+        // kernels we are about to instantiate.
+        supported = WebAssembly.validate(base64ToBytes(WASM_BINARIES.simdAdd));
+      } catch {
+        supported = false;
+      }
     }
+    this.simdSupported = supported;
+    return supported;
   }
 }

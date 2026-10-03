@@ -5,15 +5,21 @@
 export type Color = string;
 
 /**
+ * Colormaps available for heatmaps, images, contour lines and filled contours. Values are mapped
+ * from the normalized range [0, 1]; all but "grayscale" are the matplotlib maps of the same name.
+ */
+export type ColormapName = "viridis" | "plasma" | "inferno" | "magma" | "cividis" | "grayscale";
+
+/**
  * Options for customizing plot appearance and behavior.
  * Different plot types use different subsets of these options.
  *
  * **Supported Color Formats:**
- * - Hex: "#RRGGBB" or "#RRGGBBAA" (e.g., "#ff0000", "#ff0000ff")
- * - RGB: "rgb(255, 0, 0)" or "rgba(255, 0, 0, 0.5)"
+ * - Hex: "#RGB", "#RGBA", "#RRGGBB" or "#RRGGBBAA" (e.g., "#f00", "#ff0000", "#ff000080")
+ * - RGB: "rgb(255, 0, 0)", "rgba(255, 0, 0, 0.5)" or "rgb(100% 0% 0% / 50%)"
  * - HSL: "hsl(0, 100%, 50%)" or "hsla(0, 100%, 50%, 0.5)"
- * - Named: "red", "blue", "forestgreen", etc. (140 CSS color names)
- * - Invalid colors default to black
+ * - Named: "red", "blue", "forestgreen", etc. (the 148 CSS color names) and "transparent"
+ * - Anything else (including misspelled names) is drawn as black
  */
 export type PlotOptions = {
   /** Optional label used by legends */
@@ -45,8 +51,31 @@ export type PlotOptions = {
   readonly levels?: number | readonly number[];
   /** Background color for axes */
   readonly facecolor?: Color;
-  /** Colormap for heatmaps and images (viridis, plasma, inferno, magma, grayscale) */
-  readonly colormap?: "viridis" | "plasma" | "inferno" | "magma" | "grayscale";
+  /** Colormap for heatmaps, images and contours (viridis, plasma, inferno, magma, cividis, grayscale) */
+  readonly colormap?: ColormapName;
+  /**
+   * Which edge of the y range shows row 0 of a heatmap or image: "lower" (default, row 0 at the
+   * bottom) or "upper" (row 0 at the top, like matplotlib's `imshow` default).
+   */
+  readonly origin?: "lower" | "upper";
+  /** Bar width in data units for `bar` (default 0.8). Must be positive and finite. */
+  readonly barWidth?: number;
+  /** Bar thickness in data units for `barh` (default 0.8). Must be positive and finite. */
+  readonly barHeight?: number;
+};
+
+/**
+ * Options of `Axes.annotate` and `Axes.text`.
+ */
+export type TextOptions = {
+  /** Text color (default: the axes text color, black in the default theme) */
+  readonly color?: Color;
+  /** Font size in pixels (default 10) */
+  readonly fontSize?: number;
+  /** Horizontal alignment relative to x: "left" (default, the text starts at x), "center" or "right" */
+  readonly ha?: "left" | "center" | "right";
+  /** Vertical alignment relative to y: "bottom" (default, the text sits on y), "center" or "top" */
+  readonly va?: "bottom" | "center" | "top";
 };
 
 /**
@@ -92,7 +121,7 @@ export type RenderedSVG = {
 };
 
 /**
- * Result of PNG rendering containing the image dimensions and raw byte data.
+ * Result of PNG rendering containing the image dimensions and the encoded PNG file bytes.
  * PNG encoding is only available in Node.js environments.
  */
 export type RenderedPNG = {
@@ -122,6 +151,7 @@ export type RenderedPDF = {
 };
 
 /**
+ * Axis-aligned bounds of a drawable in data coordinates.
  * @internal
  */
 export type DataRange = {
@@ -132,6 +162,7 @@ export type DataRange = {
 };
 
 /**
+ * Pixel rectangle of the plotting area; `x`/`y` is the top-left corner.
  * @internal
  */
 export type Viewport = {
@@ -142,6 +173,7 @@ export type Viewport = {
 };
 
 /**
+ * Maps data coordinates to pixels. `yToPx` is flipped: larger data values give smaller pixel rows.
  * @internal
  */
 export type DataTransform = {
@@ -150,6 +182,7 @@ export type DataTransform = {
 };
 
 /**
+ * What a drawable receives when rendering to SVG: the transform and a sink for SVG elements.
  * @internal
  */
 export type SvgDrawContext = {
@@ -158,6 +191,7 @@ export type SvgDrawContext = {
 };
 
 /**
+ * What a drawable receives when rendering to pixels: the transform and the canvas to draw on.
  * @internal
  */
 export type RasterDrawContext = {
@@ -166,11 +200,16 @@ export type RasterDrawContext = {
 };
 
 /**
+ * Anything an axes can draw. `getDataRange` returns null when the drawable has no finite data.
+ * `getPositiveMin` is optional: it gives the smallest strictly positive x and y coordinate the
+ * drawable occupies (`Infinity` for an axis without one), which lets a log axis start at the
+ * smallest positive value instead of at a non-positive minimum.
  * @internal
  */
 export type Drawable = {
   readonly kind: string;
   getDataRange(): DataRange | null;
+  getPositiveMin?(): { readonly x: number; readonly y: number };
   drawSVG(ctx: SvgDrawContext): void;
   drawRaster(ctx: RasterDrawContext): void;
   getLegendEntries?(): readonly LegendEntry[] | null;

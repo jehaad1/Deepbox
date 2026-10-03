@@ -1,12 +1,13 @@
 /**
  * Neural Network Trainer Module
  *
- * Implements training loops and utilities for neural network training.
- * Demonstrates deepbox/optim and deepbox/nn usage with proper type safety.
+ * Helpers for training a classifier on plain tensors: batch extraction, one-hot
+ * targets, a single loss step, evaluation under noGrad(), early stopping and
+ * learning-rate schedules. index.ts has its own training loop and does not import
+ * this file.
  */
 
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
-import { GradTensor, parameter, tensor } from "deepbox/ndarray";
+import { type AnyTensor, GradTensor, noGrad, tensor } from "deepbox/ndarray";
 import type { Sequential } from "deepbox/nn";
 import { crossEntropyLoss } from "deepbox/nn";
 
@@ -33,15 +34,6 @@ export interface TrainingHistory {
   valAccuracy: number[];
   epochs: number[];
 }
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 /**
  * Calculate accuracy from predictions and labels
@@ -114,114 +106,72 @@ export function createOneHot(labels: number[], numClasses: number): number[][] {
 }
 
 /**
- * Simple training step for demonstration
+ * Predicted class for each row of a logits tensor.
+ */
+function predictClasses(logits: AnyTensor): number[] {
+  return logits.argmax(1).toArray() as number[];
+}
+
+/**
+ * Compute the loss and predictions for one mini-batch.
+ *
+ * The input is a plain tensor. Because the model has trainable parameters and grad
+ * mode is on, the output tracks the weights, so a caller can run `loss.backward()`
+ * on the loss. This helper only reads the loss value.
  */
 export function trainStep(
   model: Sequential,
   XBatch: number[][],
   yBatch: number[],
-  numClasses: number
+  _numClasses: number
 ): { loss: number; predictions: number[] } {
-  // Create input tensor with gradient tracking
-  const input = parameter(tensor(XBatch, { dtype: "float32" }));
-
-  // Forward pass
-  const output = model.forward(input.tensor);
-  const outputTensor = output instanceof GradTensor ? output.tensor : output;
-
-  // Create targets - crossEntropyLoss expects 1D class labels, not one-hot
-  const targetTensor = tensor(yBatch, { dtype: "float32" });
-
-  // Compute loss - returns number for evaluation
-  const lossValue = crossEntropyLoss(outputTensor, targetTensor);
-
-  // Get predictions
-  const outputData = expectNumericTypedArray(outputTensor.data);
-  const predictions: number[] = [];
-  for (let i = 0; i < yBatch.length; i++) {
-    let maxVal = -Infinity;
-    let predClass = 0;
-    for (let j = 0; j < numClasses; j++) {
-      const val = outputData[i * numClasses + j];
-      if (val > maxVal) {
-        maxVal = val;
-        predClass = j;
-      }
-    }
-    predictions.push(predClass);
+  const output = model.forward(tensor(XBatch, { dtype: "float32" }));
+  if (!(output instanceof GradTensor)) {
+    throw new Error("Expected a GradTensor: is grad mode off?");
   }
 
+  // crossEntropyLoss expects 1D class labels, not one-hot rows
+  const loss = crossEntropyLoss(output, tensor(yBatch, { dtype: "int32" }));
+
   return {
-    loss: lossValue,
-    predictions,
+    loss: Number(loss.item()),
+    predictions: predictClasses(output),
   };
 }
 
 /**
- * Evaluate model on test data
+ * Evaluate the model on test data without tracking gradients.
  */
 export function evaluateModel(
   model: Sequential,
   X: Float32Array,
   y: Float32Array,
-  numClasses: number,
+  _numClasses: number,
   numFeatures: number,
   numSamples: number
 ): { loss: number; accuracy: number; predictions: number[] } {
   model.train(false);
 
-  // Convert to array format
   const XArray: number[][] = [];
   const yArray: number[] = [];
 
   for (let i = 0; i < numSamples; i++) {
-    const row: number[] = [];
-    for (let f = 0; f < numFeatures; f++) {
-      row.push(X[i * numFeatures + f]);
-    }
-    XArray.push(row);
+    XArray.push(Array.from(X.subarray(i * numFeatures, (i + 1) * numFeatures)));
     yArray.push(y[i]);
   }
 
-  // Forward pass
-  const input = GradTensor.fromTensor(tensor(XArray, { dtype: "float32" }), {
-    requiresGrad: false,
-  });
-  const output = model.forward(input.tensor);
-  const outputTensor = output instanceof GradTensor ? output.tensor : output;
-
-  // Create targets - crossEntropyLoss expects 1D class labels, not one-hot
-  const targetTensor = tensor(yArray, { dtype: "float32" });
-
-  // Compute loss
-  const lossValue = crossEntropyLoss(outputTensor, targetTensor);
-
-  // Calculate predictions and accuracy
-  const outputData = expectNumericTypedArray(outputTensor.data);
-  const predictions: number[] = [];
-  let correct = 0;
-
-  for (let i = 0; i < numSamples; i++) {
-    let maxVal = -Infinity;
-    let predClass = 0;
-    for (let j = 0; j < numClasses; j++) {
-      const val = outputData[i * numClasses + j];
-      if (val > maxVal) {
-        maxVal = val;
-        predClass = j;
-      }
-    }
-    predictions.push(predClass);
-    if (predClass === Math.round(yArray[i])) {
-      correct++;
-    }
+  const output = noGrad(() => model.forward(tensor(XArray, { dtype: "float32" })));
+  if (output instanceof GradTensor) {
+    throw new Error("Expected a plain Tensor inside noGrad()");
   }
 
-  return {
-    loss: lossValue,
-    accuracy: correct / numSamples,
-    predictions,
-  };
+  // With a plain Tensor input, crossEntropyLoss returns the mean loss as a number
+  const loss = crossEntropyLoss(output, tensor(yArray, { dtype: "int32" }));
+
+  const predictions = predictClasses(output);
+  const correct = predictions.filter((p, i) => p === Math.round(yArray[i])).length;
+
+  return { loss, accuracy: correct / numSamples, predictions };
 }
 
 /**

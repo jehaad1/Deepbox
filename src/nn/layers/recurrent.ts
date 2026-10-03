@@ -1,7 +1,7 @@
 /**
  * Recurrent neural-network layers: RNN, LSTM, GRU.
  *
- * These layers are fully differentiable — the forward pass is built from
+ * These layers are fully differentiable: the forward pass is built from
  * composable GradTensor operations (matmul/add/tanh/sigmoid/slice/stack/
  * concat), so backpropagation-through-time flows to every registered weight.
  *
@@ -13,14 +13,13 @@ import {
   type AnyTensor,
   concatGrad,
   GradTensor,
-  mulScalar,
   parameter,
-  randn,
   stackGrad,
-  Tensor,
+  type Tensor,
   zeros,
 } from "../../ndarray";
 import { Module } from "../module/Module";
+import { allPlain, resolveLayerDtype, settle, uniformTensor } from "./_shared";
 
 function validatePositiveInt(name: string, value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
@@ -28,13 +27,21 @@ function validatePositiveInt(name: string, value: number): void {
   }
 }
 
+function validateDtype(dtype: "float32" | "float64" | undefined): void {
+  const value: string | undefined = dtype;
+  if (value !== undefined && value !== "float32" && value !== "float64") {
+    throw new InvalidParameterError("dtype must be 'float32' or 'float64'", "dtype", dtype);
+  }
+}
+
 function asGrad(x: AnyTensor): GradTensor {
   return GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
 }
 
-function ensureFloatDtype(x: GradTensor, context: string): void {
-  if (x.dtype !== "float32" && x.dtype !== "float64") {
-    throw new DTypeError(`${context} expects float32 or float64 input`);
+/** The input is cast to the parameter dtype, so every numeric dtype is accepted. */
+function ensureNumericInput(x: GradTensor, context: string): void {
+  if (x.dtype === "string") {
+    throw new DTypeError(`${context} does not support string dtype`);
   }
 }
 
@@ -115,6 +122,22 @@ export type RNNNonlinearity = "tanh" | "relu";
 /**
  * Elman RNN layer with `tanh` or `relu` nonlinearity.
  *
+ * Computes `h_t = act(W_ih x_t + b_ih + W_hh h_(t-1) + b_hh)` for every layer and
+ * direction. Input is `(batch, seq, feature)` (or `(seq, batch, feature)` with
+ * `batchFirst: false`), or unbatched `(seq, feature)`. As in PyTorch, all weights and
+ * biases are drawn from the uniform distribution `U(-1/sqrt(hiddenSize),
+ * 1/sqrt(hiddenSize))`. Parameters are named like PyTorch's
+ * (`weight_ih_l0`, `weight_hh_l0`, `bias_ih_l0`, `bias_hh_l0`, and a `_reverse`
+ * suffix for the backward direction). The layer computes in the parameter dtype and
+ * casts the input (and the initial state) to it.
+ *
+ * `forward` returns the output sequence `(batch, seq, hidden * directions)`;
+ * `forwardWithState` also returns the final hidden state
+ * `(layers * directions, batch, hidden)`. A `GradTensor` input gives `GradTensor`
+ * results. A plain `Tensor` input gives `GradTensor` results that track the weights while
+ * they require grad and gradient tracking is on, and plain tensors otherwise (inside
+ * `noGrad()` or with frozen weights).
+ *
  * @example
  * ```ts
  * import { RNN } from 'deepbox/nn';
@@ -126,14 +149,35 @@ export type RNNNonlinearity = "tanh" | "relu";
  * ```
  */
 export class RNN extends Module {
-  private readonly inputSize: number;
-  private readonly hiddenSize: number;
-  private readonly numLayers: number;
-  private readonly nonlinearity: RNNNonlinearity;
-  private readonly bias: boolean;
-  private readonly batchFirst: boolean;
-  private readonly bidirectional: boolean;
+  /** Hand-written host kernels: the weights stay in host memory under `to(device)`. */
+  protected override keepsParametersOnHost(): boolean {
+    return true;
+  }
 
+  /** Number of features of each input step. */
+  readonly inputSize: number;
+  /** Number of features of the hidden state. */
+  readonly hiddenSize: number;
+  /** Number of stacked layers. */
+  readonly numLayers: number;
+  /** Activation applied at every step. */
+  readonly nonlinearity: RNNNonlinearity;
+  private readonly bias: boolean;
+  /** Whether input and output are `(batch, seq, feature)` rather than `(seq, batch, feature)`. */
+  readonly batchFirst: boolean;
+  /** Whether each layer also runs over the sequence backwards. */
+  readonly bidirectional: boolean;
+
+  /**
+   * @param inputSize - Number of input features
+   * @param hiddenSize - Number of hidden features
+   * @param options.numLayers - Number of stacked layers (default: 1)
+   * @param options.nonlinearity - `'tanh'` or `'relu'` (default: `'tanh'`)
+   * @param options.bias - Learn input and hidden biases (default: true)
+   * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
+   * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     inputSize: number,
     hiddenSize: number,
@@ -143,6 +187,7 @@ export class RNN extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dtype?: "float32" | "float64";
     } = {}
   ) {
     super();
@@ -150,11 +195,20 @@ export class RNN extends Module {
     validatePositiveInt("hiddenSize", hiddenSize);
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
+    validateDtype(options.dtype);
+    const nonlinearity: string = options.nonlinearity ?? "tanh";
+    if (nonlinearity !== "tanh" && nonlinearity !== "relu") {
+      throw new InvalidParameterError(
+        "nonlinearity must be 'tanh' or 'relu'",
+        "nonlinearity",
+        options.nonlinearity
+      );
+    }
 
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
     this.numLayers = numLayers;
-    this.nonlinearity = options.nonlinearity ?? "tanh";
+    this.nonlinearity = nonlinearity;
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
     this.bidirectional = options.bidirectional ?? false;
@@ -166,6 +220,7 @@ export class RNN extends Module {
       numLayers,
       bias: this.bias,
       bidirectional: this.bidirectional,
+      dtype: options.dtype,
     });
   }
 
@@ -179,7 +234,7 @@ export class RNN extends Module {
   }
 
   private runAll(input: GradTensor, hx?: GradTensor): { output: GradTensor; h: GradTensor } {
-    ensureFloatDtype(input, "RNN");
+    ensureNumericInput(input, "RNN");
     const norm = normalizeSeqInput(input, this.batchFirst);
     if (norm.feat !== this.inputSize) {
       throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
@@ -228,7 +283,14 @@ export class RNN extends Module {
     return { output, h };
   }
 
-  forward(...inputs: AnyTensor[]): GradTensor {
+  forward(input: GradTensor, hx?: AnyTensor): GradTensor;
+  forward(input: Tensor, hx?: AnyTensor): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor {
+    return settle(this.runForward(inputs), allPlain(...inputs));
+  }
+
+  private runForward(inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 2) {
       throw new InvalidParameterError("RNN.forward expects 1 or 2 inputs", "inputs", inputs.length);
     }
@@ -240,9 +302,21 @@ export class RNN extends Module {
     return this.runAll(input, hx).output;
   }
 
-  forwardWithState(input: AnyTensor, hx?: AnyTensor): [GradTensor, GradTensor] {
+  /**
+   * Run the layer and also return the final hidden state.
+   *
+   * @param input - Input sequence
+   * @param hx - Optional initial hidden state `(layers * directions, batch, hidden)`
+   *   (or `(layers * directions, hidden)` for unbatched input); zeros when omitted
+   * @returns `[output, hN]`
+   */
+  forwardWithState(input: GradTensor, hx?: AnyTensor): [GradTensor, GradTensor];
+  forwardWithState(input: Tensor, hx?: AnyTensor): [AnyTensor, AnyTensor];
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [AnyTensor, AnyTensor];
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [AnyTensor, AnyTensor] {
     const { output, h } = this.runAll(asGrad(input), hx === undefined ? undefined : asGrad(hx));
-    return [output, h];
+    const plain = allPlain(...(hx === undefined ? [input] : [input, hx]));
+    return [settle(output, plain), settle(h, plain)];
   }
 
   override toString(): string {
@@ -253,6 +327,11 @@ export class RNN extends Module {
 /**
  * LSTM (Long Short-Term Memory) layer.
  *
+ * Gate weights are stacked in PyTorch's order (input, forget, cell, output).
+ * Input and output layouts, parameter names, initialization and dtype handling
+ * follow {@link RNN}. `forwardWithState` returns the output and the final
+ * hidden and cell states `[output, [hN, cN]]`.
+ *
  * @example
  * ```ts
  * import { LSTM } from 'deepbox/nn';
@@ -262,13 +341,32 @@ export class RNN extends Module {
  * ```
  */
 export class LSTM extends Module {
-  private readonly inputSize: number;
-  private readonly hiddenSize: number;
-  private readonly numLayers: number;
-  private readonly bias: boolean;
-  private readonly batchFirst: boolean;
-  private readonly bidirectional: boolean;
+  /** Hand-written host kernels: the weights stay in host memory under `to(device)`. */
+  protected override keepsParametersOnHost(): boolean {
+    return true;
+  }
 
+  /** Number of features of each input step. */
+  readonly inputSize: number;
+  /** Number of features of the hidden state. */
+  readonly hiddenSize: number;
+  /** Number of stacked layers. */
+  readonly numLayers: number;
+  private readonly bias: boolean;
+  /** Whether input and output are `(batch, seq, feature)` rather than `(seq, batch, feature)`. */
+  readonly batchFirst: boolean;
+  /** Whether each layer also runs over the sequence backwards. */
+  readonly bidirectional: boolean;
+
+  /**
+   * @param inputSize - Number of input features
+   * @param hiddenSize - Number of hidden features
+   * @param options.numLayers - Number of stacked layers (default: 1)
+   * @param options.bias - Learn input and hidden biases (default: true)
+   * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
+   * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     inputSize: number,
     hiddenSize: number,
@@ -277,6 +375,7 @@ export class LSTM extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dtype?: "float32" | "float64";
     } = {}
   ) {
     super();
@@ -284,6 +383,7 @@ export class LSTM extends Module {
     validatePositiveInt("hiddenSize", hiddenSize);
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
+    validateDtype(options.dtype);
 
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
@@ -299,6 +399,7 @@ export class LSTM extends Module {
       numLayers,
       bias: this.bias,
       bidirectional: this.bidirectional,
+      dtype: options.dtype,
     });
   }
 
@@ -328,7 +429,7 @@ export class LSTM extends Module {
     hx?: GradTensor,
     cx?: GradTensor
   ): { output: GradTensor; h: GradTensor; c: GradTensor } {
-    ensureFloatDtype(input, "LSTM");
+    ensureNumericInput(input, "LSTM");
     const norm = normalizeSeqInput(input, this.batchFirst);
     if (norm.feat !== this.inputSize) {
       throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
@@ -379,7 +480,14 @@ export class LSTM extends Module {
     };
   }
 
-  forward(...inputs: AnyTensor[]): GradTensor {
+  forward(input: GradTensor, hx?: AnyTensor, cx?: AnyTensor): GradTensor;
+  forward(input: Tensor, hx?: AnyTensor, cx?: AnyTensor): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor {
+    return settle(this.runForward(inputs), allPlain(...inputs));
+  }
+
+  private runForward(inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 3) {
       throw new InvalidParameterError(
         "LSTM.forward expects 1 to 3 inputs",
@@ -396,17 +504,44 @@ export class LSTM extends Module {
     return this.runAll(input, hx, cx).output;
   }
 
+  /**
+   * Run the layer and also return the final hidden and cell states.
+   *
+   * @param input - Input sequence
+   * @param hx - Optional initial hidden state `(layers * directions, batch, hidden)`
+   * @param cx - Optional initial cell state, same shape as `hx`
+   * @returns `[output, [hN, cN]]`
+   */
+  forwardWithState(
+    input: GradTensor,
+    hx?: AnyTensor,
+    cx?: AnyTensor
+  ): [GradTensor, [GradTensor, GradTensor]];
+  forwardWithState(
+    input: Tensor,
+    hx?: AnyTensor,
+    cx?: AnyTensor
+  ): [AnyTensor, [AnyTensor, AnyTensor]];
   forwardWithState(
     input: AnyTensor,
     hx?: AnyTensor,
     cx?: AnyTensor
-  ): [GradTensor, [GradTensor, GradTensor]] {
+  ): [AnyTensor, [AnyTensor, AnyTensor]];
+  forwardWithState(
+    input: AnyTensor,
+    hx?: AnyTensor,
+    cx?: AnyTensor
+  ): [AnyTensor, [AnyTensor, AnyTensor]] {
     const { output, h, c } = this.runAll(
       asGrad(input),
       hx === undefined ? undefined : asGrad(hx),
       cx === undefined ? undefined : asGrad(cx)
     );
-    return [output, [h, c]];
+    const given: AnyTensor[] = [input];
+    if (hx !== undefined) given.push(hx);
+    if (cx !== undefined) given.push(cx);
+    const plain = allPlain(...given);
+    return [settle(output, plain), [settle(h, plain), settle(c, plain)]];
   }
 
   override toString(): string {
@@ -417,6 +552,10 @@ export class LSTM extends Module {
 /**
  * GRU (Gated Recurrent Unit) layer.
  *
+ * Gate weights are stacked in PyTorch's order (reset, update, new) and the reset
+ * gate is applied to the hidden projection only, as in PyTorch. Input and output
+ * layouts, parameter names, initialization and dtype handling follow {@link RNN}.
+ *
  * @example
  * ```ts
  * import { GRU } from 'deepbox/nn';
@@ -426,13 +565,32 @@ export class LSTM extends Module {
  * ```
  */
 export class GRU extends Module {
-  private readonly inputSize: number;
-  private readonly hiddenSize: number;
-  private readonly numLayers: number;
-  private readonly bias: boolean;
-  private readonly batchFirst: boolean;
-  private readonly bidirectional: boolean;
+  /** Hand-written host kernels: the weights stay in host memory under `to(device)`. */
+  protected override keepsParametersOnHost(): boolean {
+    return true;
+  }
 
+  /** Number of features of each input step. */
+  readonly inputSize: number;
+  /** Number of features of the hidden state. */
+  readonly hiddenSize: number;
+  /** Number of stacked layers. */
+  readonly numLayers: number;
+  private readonly bias: boolean;
+  /** Whether input and output are `(batch, seq, feature)` rather than `(seq, batch, feature)`. */
+  readonly batchFirst: boolean;
+  /** Whether each layer also runs over the sequence backwards. */
+  readonly bidirectional: boolean;
+
+  /**
+   * @param inputSize - Number of input features
+   * @param hiddenSize - Number of hidden features
+   * @param options.numLayers - Number of stacked layers (default: 1)
+   * @param options.bias - Learn input and hidden biases (default: true)
+   * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
+   * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     inputSize: number,
     hiddenSize: number,
@@ -441,6 +599,7 @@ export class GRU extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dtype?: "float32" | "float64";
     } = {}
   ) {
     super();
@@ -448,6 +607,7 @@ export class GRU extends Module {
     validatePositiveInt("hiddenSize", hiddenSize);
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
+    validateDtype(options.dtype);
 
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
@@ -463,6 +623,7 @@ export class GRU extends Module {
       numLayers,
       bias: this.bias,
       bidirectional: this.bidirectional,
+      dtype: options.dtype,
     });
   }
 
@@ -489,12 +650,12 @@ export class GRU extends Module {
       .add(rGate.mul(ghh.slice({}, { start: 2 * H, end: 3 * H })))
       .tanh();
     // h = (1 - z) * n + z * hPrev
-    const oneMinusZ = onesLike(zGate).sub(zGate);
-    return oneMinusZ.mul(nGate).add(zGate.mul(hPrev));
+    const one = GradTensor.scalar(1, { dtype: zGate.dtype === "float64" ? "float64" : "float32" });
+    return one.sub(zGate).mul(nGate).add(zGate.mul(hPrev));
   }
 
   private runAll(input: GradTensor, hx?: GradTensor): { output: GradTensor; h: GradTensor } {
-    ensureFloatDtype(input, "GRU");
+    ensureNumericInput(input, "GRU");
     const norm = normalizeSeqInput(input, this.batchFirst);
     if (norm.feat !== this.inputSize) {
       throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
@@ -543,7 +704,14 @@ export class GRU extends Module {
     };
   }
 
-  forward(...inputs: AnyTensor[]): GradTensor {
+  forward(input: GradTensor, hx?: AnyTensor): GradTensor;
+  forward(input: Tensor, hx?: AnyTensor): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor;
+  forward(...inputs: AnyTensor[]): AnyTensor {
+    return settle(this.runForward(inputs), allPlain(...inputs));
+  }
+
+  private runForward(inputs: AnyTensor[]): GradTensor {
     if (inputs.length < 1 || inputs.length > 2) {
       throw new InvalidParameterError("GRU.forward expects 1 or 2 inputs", "inputs", inputs.length);
     }
@@ -555,9 +723,21 @@ export class GRU extends Module {
     return this.runAll(input, hx).output;
   }
 
-  forwardWithState(input: AnyTensor, hx?: AnyTensor): [GradTensor, GradTensor] {
+  /**
+   * Run the layer and also return the final hidden state.
+   *
+   * @param input - Input sequence
+   * @param hx - Optional initial hidden state `(layers * directions, batch, hidden)`
+   *   (or `(layers * directions, hidden)` for unbatched input); zeros when omitted
+   * @returns `[output, hN]`
+   */
+  forwardWithState(input: GradTensor, hx?: AnyTensor): [GradTensor, GradTensor];
+  forwardWithState(input: Tensor, hx?: AnyTensor): [AnyTensor, AnyTensor];
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [AnyTensor, AnyTensor];
+  forwardWithState(input: AnyTensor, hx?: AnyTensor): [AnyTensor, AnyTensor] {
     const { output, h } = this.runAll(asGrad(input), hx === undefined ? undefined : asGrad(hx));
-    return [output, h];
+    const plain = allPlain(...(hx === undefined ? [input] : [input, hx]));
+    return [settle(output, plain), settle(h, plain)];
   }
 
   override toString(): string {
@@ -574,6 +754,7 @@ interface RecurrentInit {
   readonly numLayers: number;
   readonly bias: boolean;
   readonly bidirectional: boolean;
+  readonly dtype: "float32" | "float64" | undefined;
 }
 
 /**
@@ -589,22 +770,25 @@ function initRecurrentParams(
   const numDir = bidirectional ? 2 : 1;
   const gateSize = gateMul * hiddenSize;
 
-  const reg = (name: string, t: Tensor) => register(name, parameter(t));
+  // PyTorch default: every weight and bias ~ U(-1/sqrt(hidden), 1/sqrt(hidden)).
+  const opts = { dtype: resolveLayerDtype(cfg.dtype) };
+  const reg = (name: string, shape: number[]) =>
+    register(name, parameter(uniformTensor(shape, stdv, opts)));
 
   for (let layer = 0; layer < numLayers; layer++) {
     const inputDim = layer === 0 ? inputSize : hiddenSize * numDir;
-    reg(`weight_ih_l${layer}`, mulScalar(randn([gateSize, inputDim]), stdv));
-    reg(`weight_hh_l${layer}`, mulScalar(randn([gateSize, hiddenSize]), stdv));
+    reg(`weight_ih_l${layer}`, [gateSize, inputDim]);
+    reg(`weight_hh_l${layer}`, [gateSize, hiddenSize]);
     if (bias) {
-      reg(`bias_ih_l${layer}`, zeros([gateSize]));
-      reg(`bias_hh_l${layer}`, zeros([gateSize]));
+      reg(`bias_ih_l${layer}`, [gateSize]);
+      reg(`bias_hh_l${layer}`, [gateSize]);
     }
     if (bidirectional) {
-      reg(`weight_ih_l${layer}_reverse`, mulScalar(randn([gateSize, inputDim]), stdv));
-      reg(`weight_hh_l${layer}_reverse`, mulScalar(randn([gateSize, hiddenSize]), stdv));
+      reg(`weight_ih_l${layer}_reverse`, [gateSize, inputDim]);
+      reg(`weight_hh_l${layer}_reverse`, [gateSize, hiddenSize]);
       if (bias) {
-        reg(`bias_ih_l${layer}_reverse`, zeros([gateSize]));
-        reg(`bias_hh_l${layer}_reverse`, zeros([gateSize]));
+        reg(`bias_ih_l${layer}_reverse`, [gateSize]);
+        reg(`bias_hh_l${layer}_reverse`, [gateSize]);
       }
     }
   }
@@ -651,6 +835,12 @@ function parseInitialState(
         `Expected initial state shape [${total}, ${hidden}], got [${state.shape.join(", ")}]`
       );
     }
+    if (batch !== 1) {
+      throw new ShapeError(
+        `A 2D initial state is only valid for unbatched input; expected shape ` +
+          `[${total}, ${batch}, ${hidden}], got [${state.shape.join(", ")}]`
+      );
+    }
     for (let i = 0; i < total; i++) {
       result.push(state.slice(i).reshape([1, hidden]).astype(dtype));
     }
@@ -686,14 +876,4 @@ function packStates(states: GradTensor[], isUnbatched: boolean): GradTensor {
     return stacked.reshape([total, hidden]);
   }
   return stacked;
-}
-
-/** GradTensor of ones matching a reference GradTensor's shape/dtype. */
-function onesLike(ref: GradTensor): GradTensor {
-  const dtype = ref.dtype === "float64" ? "float64" : "float32";
-  const data =
-    dtype === "float64" ? new Float64Array(ref.size).fill(1) : new Float32Array(ref.size).fill(1);
-  return GradTensor.fromTensor(
-    Tensor.fromTypedArray({ data, shape: ref.shape, dtype, device: ref.tensor.device })
-  );
 }

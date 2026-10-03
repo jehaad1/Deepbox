@@ -12,7 +12,7 @@ import type {
   RasterDrawContext,
   SvgDrawContext,
 } from "../types";
-import { applyColormap } from "../utils/colormaps";
+import { applyColormap, assertColormapName } from "../utils/colormaps";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import type { ContourGrid } from "../utils/contours";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
@@ -165,12 +165,12 @@ function resolveFillLevels(
 
   const step = (max - min) / numLevels;
   const boundaries = new Array<number>(numLevels + 1);
-  for (let i = 0; i <= numLevels; i++) {
+  for (let i = 0; i < numLevels; i++) {
     boundaries[i] = min + i * step;
   }
-  if (boundaries.length < 2) {
-    return [min, max];
-  }
+  // Pin the last boundary to max: min + n * step can fall a rounding error short of
+  // it, which would leave the cells at the maximum unfilled.
+  boundaries[numLevels] = max;
   return boundaries;
 }
 
@@ -182,6 +182,7 @@ function resolveBandColors(
   readonly rgba: readonly { r: number; g: number; b: number; a: number }[];
 } {
   const colors: Color[] = [];
+  if (options.colormap !== undefined) assertColormapName(options.colormap);
 
   if (options.colors && options.colors.length > 0) {
     for (let i = 0; i < bandCount; i++) {
@@ -192,13 +193,6 @@ function resolveBandColors(
     const normalized = normalizeColor(options.color, "#1f77b4");
     for (let i = 0; i < bandCount; i++) colors.push(normalized);
   } else if (options.colormap) {
-    if (!["viridis", "plasma", "inferno", "magma", "grayscale"].includes(options.colormap)) {
-      throw new InvalidParameterError(
-        `colormap must be one of viridis, plasma, inferno, magma, grayscale; received ${options.colormap}`,
-        "colormap",
-        options.colormap
-      );
-    }
     const denom = Math.max(1, bandCount - 1);
     for (let i = 0; i < bandCount; i++) {
       const t = i / denom;
@@ -220,6 +214,14 @@ function resolveBandColors(
 }
 
 /**
+ * Filled contours of a rectilinear grid. Every cell is split into two triangles
+ * and each triangle is clipped against the band edges, so a band covers exactly
+ * the area where the (linearly interpolated) value lies between its two levels.
+ *
+ * `levels` is either a number of bands (evenly spaced between the data minimum
+ * and maximum) or explicit band boundaries (at least two). Values outside the
+ * first and last boundary are not filled. Cells with a non-finite corner are
+ * skipped.
  * @internal
  */
 export class ContourF2D implements Drawable {
@@ -356,6 +358,8 @@ export class ContourF2D implements Drawable {
 
   drawSVG(ctx: SvgDrawContext): void {
     if (this.triangles.length === 0) return;
+    // Each triangle is also stroked in its own color: browsers anti-alias the shared edges of
+    // adjacent triangles separately, which would otherwise leave hairline seams in a band.
     for (const tri of this.triangles) {
       const color = this.bandColors[tri.band] ?? "#1f77b4";
       const x1 = ctx.transform.xToPx(tri.x1);
@@ -367,7 +371,7 @@ export class ContourF2D implements Drawable {
       ctx.push(
         `<path d="M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(
           2
-        )} L ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${escapeXml(color)}" />`
+        )} L ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${escapeXml(color)}" stroke="${escapeXml(color)}" stroke-width="0.5" stroke-linejoin="round" />`
       );
     }
   }

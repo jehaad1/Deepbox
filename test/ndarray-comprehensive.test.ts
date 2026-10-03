@@ -39,7 +39,7 @@ import {
 } from "../src/ndarray";
 import { numData } from "./_helpers";
 
-describe("deepbox/ndarray - Comprehensive Operations Tests", () => {
+describe("deepbox/ndarray operations tests", () => {
   describe("Arithmetic Operations - Edge Cases", () => {
     it("should handle add with broadcasting [1] + [3]", () => {
       const a = tensor([5]);
@@ -417,16 +417,16 @@ describe("deepbox/ndarray - Comprehensive Operations Tests", () => {
       expect(c.dtype).toBe("float32");
     });
 
-    it("should convert to float64 in exp", () => {
+    it("should convert to float32 in exp", () => {
       const a = tensor([1, 2, 3], { dtype: "int32" });
       const b = exp(a);
-      expect(b.dtype).toBe("float64");
+      expect(b.dtype).toBe("float32");
     });
 
-    it("should convert to float64 in sqrt", () => {
+    it("should convert to float32 in sqrt", () => {
       const a = tensor([1, 4, 9], { dtype: "int32" });
       const b = sqrt(a);
-      expect(b.dtype).toBe("float64");
+      expect(b.dtype).toBe("float32");
     });
   });
 

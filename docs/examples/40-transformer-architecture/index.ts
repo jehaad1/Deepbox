@@ -1,13 +1,19 @@
 /**
  * Example 40: Transformer Architecture
  *
- * New in v1.0.0: Full Transformer implementation including MultiheadAttention,
- * TransformerEncoder/Decoder layers, PositionalEncoding, and complete
- * encoder-decoder models for sequence-to-sequence tasks.
+ * The building blocks of a Transformer: MultiheadAttention, encoder and decoder
+ * layers and stacks, PositionalEncoding, and a small encoder-decoder pipeline
+ * from token ids to vocabulary logits.
+ *
+ * Every forward pass below is inference only, so it runs inside noGrad() and
+ * returns a plain tensor. Without noGrad(), layers with trainable weights return
+ * a GradTensor that tracks the weights, ready for backward().
  */
 
-import { randn, tensor } from "deepbox/ndarray";
+import { noGrad, randn, tensor } from "deepbox/ndarray";
 import {
+  causalMask,
+  Embedding,
   Linear,
   MultiheadAttention,
   PositionalEncoding,
@@ -21,38 +27,13 @@ console.log("=".repeat(60));
 console.log("Example 40: Transformer Architecture");
 console.log("=".repeat(60));
 
-function toFloat32PositionalEncoding(
-  dModel: number,
-  maxLen: number,
-  dropout: number
-): PositionalEncoding {
-  const pe = new PositionalEncoding(dModel, { dropout, maxLen });
-  const table: number[][] = [];
-
-  for (let pos = 0; pos < maxLen; pos++) {
-    const row: number[] = [];
-    for (let i = 0; i < dModel; i++) {
-      const angle = pos / 10000 ** ((2 * Math.floor(i / 2)) / dModel);
-      row.push(i % 2 === 0 ? Math.sin(angle) : Math.cos(angle));
-    }
-    table.push(row);
-  }
-
-  // Align the internal buffer dtype with the rest of the example's float32 tensors.
-  (pe as unknown as { peBuffer: ReturnType<typeof tensor> }).peBuffer = tensor(table, {
-    dtype: "float32",
-  });
-
-  return pe;
-}
-
 // ============================================================================
 // Part 1: MultiheadAttention
 // ============================================================================
-console.log("\n🔍 Part 1: MultiheadAttention");
+console.log("\nPart 1: MultiheadAttention");
 console.log("-".repeat(60));
 
-// MultiheadAttention splits the embedding into multiple heads for parallel attention
+// MultiheadAttention splits the embedding into heads. Each head attends in its own subspace.
 const embedDim = 16;
 const numHeads = 4;
 
@@ -64,26 +45,26 @@ const key = randn([2, 5, embedDim]);
 const value = randn([2, 5, embedDim]);
 
 console.log(`MultiheadAttention(embedDim=${embedDim}, numHeads=${numHeads}):`);
-console.log(`  Query shape:  ${query.shape}`);
-console.log(`  Key shape:    ${key.shape}`);
-console.log(`  Value shape:  ${value.shape}`);
+console.log(`  Query shape:  [${query.shape.join(", ")}]`);
+console.log(`  Key shape:    [${key.shape.join(", ")}]`);
+console.log(`  Value shape:  [${value.shape.join(", ")}]`);
 
-const attnOutput = mha.forward(query, key, value);
-console.log(`  Output shape: ${attnOutput.shape}`);
-console.log(`  Each head attends to ${embedDim / numHeads}D subspace`);
+const attnOutput = noGrad(() => mha.forward(query, key, value));
+console.log(`  Output shape: [${attnOutput.shape.join(", ")}]`);
+console.log(`  Each head works on ${embedDim / numHeads} of the ${embedDim} dimensions`);
 
 // Self-attention: query = key = value
 console.log("\n  Self-attention (Q=K=V):");
-const selfAttnOut = mha.forward(query, query, query);
-console.log(`  Output shape: ${selfAttnOut.shape}`);
+const selfAttnOut = noGrad(() => mha.forward(query, query, query));
+console.log(`  Output shape: [${selfAttnOut.shape.join(", ")}]`);
 
 // ============================================================================
 // Part 2: TransformerEncoderLayer
 // ============================================================================
-console.log("\n📦 Part 2: TransformerEncoderLayer");
+console.log("\nPart 2: TransformerEncoderLayer");
 console.log("-".repeat(60));
 
-// A single encoder layer: self-attention + feedforward with residual connections
+// One encoder layer: self-attention, then a feed-forward network, each with a residual connection and LayerNorm
 const dModel = 16;
 const nHead = 4;
 const dFF = 64;
@@ -99,19 +80,19 @@ console.log(`TransformerEncoderLayer(dModel=${dModel}, nHead=${nHead}, dFF=${dFF
 
 // Input: (batch=2, seqLen=8, dModel=16)
 const encoderInput = randn([2, 8, dModel]);
-console.log(`  Input shape:  ${encoderInput.shape}`);
+console.log(`  Input shape:  [${encoderInput.shape.join(", ")}]`);
 
-const encoderLayerOutput = encoderLayer.forward(encoderInput);
-console.log(`  Output shape: ${encoderLayerOutput.shape}`);
-console.log("  Components: SelfAttention → Add&Norm → FeedForward → Add&Norm");
+const encoderLayerOutput = noGrad(() => encoderLayer.forward(encoderInput));
+console.log(`  Output shape: [${encoderLayerOutput.shape.join(", ")}]`);
+console.log("  Components: self-attention, add and norm, feed-forward, add and norm");
 
 // ============================================================================
 // Part 3: TransformerEncoder (Stacked Layers)
 // ============================================================================
-console.log("\n🏗️  Part 3: TransformerEncoder");
+console.log("\nPart 3: TransformerEncoder");
 console.log("-".repeat(60));
 
-// Stack multiple encoder layers for deeper representations
+// TransformerEncoder stacks copies of one encoder layer
 const numEncoderLayers = 3;
 const encoderLayerTemplate = new TransformerEncoderLayer({
   dModel,
@@ -124,10 +105,10 @@ const encoder = new TransformerEncoder(encoderLayerTemplate, numEncoderLayers);
 
 console.log(`TransformerEncoder(numLayers=${numEncoderLayers}):`);
 const encSrc = randn([2, 10, dModel]);
-console.log(`  Input shape:  ${encSrc.shape}`);
+console.log(`  Input shape:  [${encSrc.shape.join(", ")}]`);
 
-const encoderOutput = encoder.forward(encSrc);
-console.log(`  Output shape: ${encoderOutput.shape}`);
+const encoderOutput = noGrad(() => encoder.forward(encSrc));
+console.log(`  Output shape: [${encoderOutput.shape.join(", ")}]`);
 
 // Count parameters
 let encParams = 0;
@@ -139,10 +120,10 @@ console.log(`  Total parameters: ${encParams}`);
 // ============================================================================
 // Part 4: TransformerDecoderLayer
 // ============================================================================
-console.log("\n📦 Part 4: TransformerDecoderLayer");
+console.log("\nPart 4: TransformerDecoderLayer");
 console.log("-".repeat(60));
 
-// Decoder layer: self-attention + cross-attention + feedforward
+// A decoder layer adds cross-attention over the encoder output (the memory)
 const decoderLayer = new TransformerDecoderLayer(dModel, nHead, dFF, {
   dropout: 0.1,
 });
@@ -154,17 +135,19 @@ const tgt = randn([2, 6, dModel]);
 // Memory from encoder: (batch=2, srcLen=10, dModel=16)
 const memory = encoderOutput;
 
-console.log(`  Target shape: ${tgt.shape}`);
-console.log(`  Memory shape: ${memory.shape}`);
+console.log(`  Target shape: [${tgt.shape.join(", ")}]`);
+console.log(`  Memory shape: [${memory.shape.join(", ")}]`);
 
-const decoderLayerOutput = decoderLayer.forward(tgt, memory);
-console.log(`  Output shape: ${decoderLayerOutput.shape}`);
-console.log("  Components: SelfAttention → Add&Norm → CrossAttention → Add&Norm → FF → Add&Norm");
+const decoderLayerOutput = noGrad(() => decoderLayer.forward(tgt, memory));
+console.log(`  Output shape: [${decoderLayerOutput.shape.join(", ")}]`);
+console.log(
+  "  Components: self-attention, cross-attention and feed-forward, each followed by add and norm"
+);
 
 // ============================================================================
 // Part 5: TransformerDecoder (Stacked Layers)
 // ============================================================================
-console.log("\n🏗️  Part 5: TransformerDecoder");
+console.log("\nPart 5: TransformerDecoder");
 console.log("-".repeat(60));
 
 const numDecoderLayers = 3;
@@ -176,11 +159,12 @@ const decoder = new TransformerDecoder(decoderLayerTemplate, numDecoderLayers);
 
 console.log(`TransformerDecoder(numLayers=${numDecoderLayers}):`);
 const decTgt = randn([2, 6, dModel]);
-console.log(`  Target shape: ${decTgt.shape}`);
-console.log(`  Memory shape: ${memory.shape}`);
+console.log(`  Target shape: [${decTgt.shape.join(", ")}]`);
+console.log(`  Memory shape: [${memory.shape.join(", ")}]`);
 
-const decoderOutput = decoder.forward(decTgt, memory);
-console.log(`  Output shape: ${decoderOutput.shape}`);
+// causalMask(n) stops position i from attending to later target positions
+const decoderOutput = noGrad(() => decoder.forward(decTgt, memory, causalMask(6)));
+console.log(`  Output shape: [${decoderOutput.shape.join(", ")}]`);
 
 let decParams = 0;
 for (const [, p] of decoder.namedParameters()) {
@@ -191,39 +175,39 @@ console.log(`  Total parameters: ${decParams}`);
 // ============================================================================
 // Part 6: PositionalEncoding
 // ============================================================================
-console.log("\n🌊 Part 6: PositionalEncoding");
+console.log("\nPart 6: PositionalEncoding");
 console.log("-".repeat(60));
 
-// PositionalEncoding adds sinusoidal position information to embeddings
-const pe = toFloat32PositionalEncoding(dModel, 100, 0.0);
+// PositionalEncoding adds a fixed sinusoidal pattern that tells the model where each token sits
+const pe = new PositionalEncoding(dModel, { dropout: 0, maxLen: 100 });
 
 console.log(`PositionalEncoding(dModel=${dModel}, maxLen=100):`);
 
 const seqInput = randn([2, 8, dModel]);
-console.log(`  Input shape:  ${seqInput.shape}`);
+console.log(`  Input shape:  [${seqInput.shape.join(", ")}]`);
 
 const peOutput = pe.forward(seqInput);
-console.log(`  Output shape: ${peOutput.shape}`);
-console.log("  Adds sin/cos positional information to token embeddings");
-console.log("  Even dimensions: sin(pos / 10000^(2i/d_model))");
-console.log("  Odd dimensions:  cos(pos / 10000^(2i/d_model))");
+console.log(`  Output shape: [${peOutput.shape.join(", ")}]`);
+console.log("  Even dimensions: sin(pos / 10000^(2i/dModel))");
+console.log("  Odd dimensions:  cos(pos / 10000^(2i/dModel))");
 
 // ============================================================================
 // Part 7: Complete Transformer Pipeline
 // ============================================================================
-console.log("\n🔄 Part 7: Complete Transformer Pipeline");
+console.log("\nPart 7: Complete Transformer Pipeline");
 console.log("-".repeat(60));
 
-// Build a complete sequence-to-sequence transformer
+// A small sequence-to-sequence transformer, from token ids to vocabulary logits
 const vocabSize = 100;
 const seqLen = 12;
-const batchSize = 2;
 
-// Source positional encoding for embedded token representations
-const srcPE = toFloat32PositionalEncoding(dModel, seqLen, 0.1);
+// Token embeddings: one learned vector per vocabulary entry
+const srcEmbedding = new Embedding(vocabSize, dModel);
+const tgtEmbedding = new Embedding(vocabSize, dModel);
 
-// Target positional encoding for decoder token representations
-const tgtPE = toFloat32PositionalEncoding(dModel, seqLen, 0.1);
+// Positional encodings, one per side
+const srcPE = new PositionalEncoding(dModel, { dropout: 0.1, maxLen: seqLen });
+const tgtPE = new PositionalEncoding(dModel, { dropout: 0.1, maxLen: seqLen });
 
 // Encoder
 const fullEncoderLayer = new TransformerEncoderLayer({
@@ -246,7 +230,7 @@ const outputProj = new Linear(dModel, vocabSize);
 console.log("Complete Transformer Architecture:");
 console.log(`  Vocabulary: ${vocabSize} tokens`);
 console.log(`  Model dim: ${dModel}, Heads: ${nHead}, FF dim: ${dFF}`);
-console.log(`  Encoder layers: 2, Decoder layers: 2`);
+console.log("  Encoder layers: 2, Decoder layers: 2");
 
 // Forward pass
 // Source tokens: (batch=2, srcLen=12)
@@ -267,43 +251,48 @@ const tgtTokens = tensor(
   { dtype: "int32" }
 );
 
-console.log(`\n  Source tokens shape: ${srcTokens.shape}`);
-console.log(`  Target tokens shape: ${tgtTokens.shape}`);
+console.log(`\n  Source tokens shape: [${srcTokens.shape.join(", ")}]`);
+console.log(`  Target tokens shape: [${tgtTokens.shape.join(", ")}]`);
 
-// Step 1: Start from embedded source token representations + positional encoding
-const srcTokenEmbeddings = randn([batchSize, seqLen, dModel]);
-const srcEmbedded = srcPE.forward(srcTokenEmbeddings);
-console.log(`  Source embedded shape: ${srcEmbedded.shape}`);
+// Step 1: Embed the source tokens (scaled by sqrt(dModel)) and add positions
+const srcEmbedded = srcPE.forward(
+  noGrad(() => srcEmbedding.forward(srcTokens)).mul(Math.sqrt(dModel))
+);
+console.log(`  Source embedded shape: [${srcEmbedded.shape.join(", ")}]`);
 
 // Step 2: Encode
-const fullEncoderOutput = fullEncoder.forward(srcEmbedded);
-console.log(`  Encoder output shape: ${fullEncoderOutput.shape}`);
+const fullEncoderOutput = noGrad(() => fullEncoder.forward(srcEmbedded));
+console.log(`  Encoder output shape: [${fullEncoderOutput.shape.join(", ")}]`);
 
-// Step 3: Start from embedded target token representations + positional encoding
-const tgtTokenEmbeddings = randn([batchSize, 8, dModel]);
-const tgtEmbedded = tgtPE.forward(tgtTokenEmbeddings);
-console.log(`  Target embedded shape: ${tgtEmbedded.shape}`);
+// Step 3: Embed the target tokens and add positions
+const tgtEmbedded = tgtPE.forward(
+  noGrad(() => tgtEmbedding.forward(tgtTokens)).mul(Math.sqrt(dModel))
+);
+console.log(`  Target embedded shape: [${tgtEmbedded.shape.join(", ")}]`);
 
-// Step 4: Decode with cross-attention to encoder output
-const fullDecoderOutput = fullDecoder.forward(tgtEmbedded, fullEncoderOutput);
-console.log(`  Decoder output shape: ${fullDecoderOutput.shape}`);
+// Step 4: Decode with a causal mask and cross-attention to the encoder output
+const fullDecoderOutput = noGrad(() =>
+  fullDecoder.forward(tgtEmbedded, fullEncoderOutput, causalMask(8))
+);
+console.log(`  Decoder output shape: [${fullDecoderOutput.shape.join(", ")}]`);
 
 // Step 5: Project to vocabulary logits
-const logits = outputProj.forward(fullDecoderOutput);
-console.log(`  Logits shape: ${logits.shape} (batch, tgtLen, vocab)`);
+const logits = noGrad(() => outputProj.forward(fullDecoderOutput));
+console.log(`  Logits shape: [${logits.shape.join(", ")}] (batch, tgtLen, vocab)`);
 
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• MultiheadAttention: parallel attention across multiple subspaces");
-console.log("• TransformerEncoderLayer: self-attention + feedforward with residuals");
-console.log("• TransformerDecoderLayer: self-attn + cross-attn + feedforward");
-console.log("• TransformerEncoder/Decoder: stack of N identical layers");
-console.log("• PositionalEncoding: sinusoidal position information for sequences");
-console.log("• Full pipeline: Embed → PosEncode → Encode → Decode → Project");
-console.log("• All components support batched inputs and gradient computation");
+console.log("• MultiheadAttention: attention in several subspaces at once");
+console.log("• TransformerEncoderLayer: self-attention and feed-forward, with residuals");
+console.log("• TransformerDecoderLayer: self-attention, cross-attention and feed-forward");
+console.log("• TransformerEncoder, TransformerDecoder: a stack of N copies of one layer");
+console.log("• PositionalEncoding: fixed sinusoidal position information");
+console.log("• causalMask(n): keeps the decoder from looking at later positions");
+console.log("• Pipeline: embed, add positions, encode, decode, project to logits");
+console.log("• Outside noGrad(), the same calls return GradTensors that support backward()");
 
-console.log("\n✅ Transformer Architecture Example Complete!");
+console.log("\nTransformer Architecture Example Complete!");
 console.log("=".repeat(60));

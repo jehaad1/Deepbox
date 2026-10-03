@@ -1,6 +1,7 @@
 import { InvalidParameterError } from "../core";
-import { Tensor, tensor } from "../ndarray";
+import { Tensor } from "../ndarray";
 import { isContiguous } from "../ndarray/tensor/strides";
+import { __random } from "../random/random";
 import {
   type AxisLike,
   computeStrides,
@@ -26,6 +27,43 @@ import {
  */
 function isReductionOptions(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+/**
+ * One-element `float64` tensor of shape `[1]`.
+ *
+ * `tensor([x])` would use the configured default dtype (float32 unless changed),
+ * which silently rounds the value; reductions here always return float64.
+ */
+function scalarF64(value: number, device: Tensor["device"]): Tensor {
+  return Tensor.fromTypedArray({
+    data: new Float64Array([value]),
+    shape: [1],
+    dtype: "float64",
+    device,
+  });
+}
+
+/** NumPy-style linear interpolation between two order statistics (`0 < w < 1`). */
+function lerp(lo: number, hi: number, w: number): number {
+  if (lo === hi) return lo;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return lo * (1 - w) + hi * w;
+  const diff = hi - lo;
+  return w >= 0.5 ? hi - diff * (1 - w) : lo + diff * w;
+}
+
+/**
+ * The `q`-quantile (0 <= q <= 1) of an ascending-sorted, NaN-free array using
+ * linear interpolation between the two nearest order statistics (NumPy's
+ * default `linear` method).
+ */
+function quantileOfSorted(sorted: ArrayLike<number>, q: number): number {
+  const pos = q * (sorted.length - 1);
+  const lower = Math.floor(pos);
+  const weight = pos - lower;
+  const lo = sorted[lower] as number;
+  if (weight === 0) return lo;
+  return lerp(lo, sorted[lower + 1] as number, weight);
 }
 
 /**
@@ -97,7 +135,7 @@ export interface KurtosisOptions {
  * @example
  * ```ts
  * const t = tensor([[1, 2, 3], [4, 5, 6]]);
- * mean(t);                         // Returns tensor([3.5]) - mean of all elements
+ * mean(t);                         // Returns scalar tensor 3.5 - mean of all elements
  * mean(t, 0);                      // Returns tensor([2.5, 3.5, 4.5]) - column means
  * mean(t, 1);                      // Returns tensor([2, 5]) - row means
  * mean(t, 1, true);                // Returns tensor([[2], [5]]) - keepdims (positional)
@@ -126,22 +164,28 @@ export function mean(t: Tensor, axisOrOptions?: AxisLike | MeanOptions, keepdims
  * Computes the median (50th percentile) along specified axes.
  *
  * The median is the middle value when data is sorted. For even-sized arrays,
- * it's the average of the two middle values. More robust to outliers than mean.
+ * it's the average of the two middle values. Less sensitive to outliers than the mean.
+ *
+ * Accepts either an options object or the positional `(axis, keepdims)` form,
+ * like {@link mean}.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes along which to compute the median (undefined = all axes)
  * @param keepdims - If true, reduced axes are retained with size 1 (default: false)
- * @returns Tensor containing median values
+ * @returns `float64` tensor containing median values
  * @throws {InvalidParameterError} If tensor is empty or reduction over empty axis
  * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
  * const t = tensor([1, 2, 3, 4, 5]);
- * median(t);  // Returns tensor([3])
+ * median(t);  // Returns scalar tensor 3
  *
  * const t2 = tensor([1, 2, 3, 4]);
- * median(t2); // Returns tensor([2.5]) - average of 2 and 3
+ * median(t2); // Returns scalar tensor 2.5 - average of 2 and 3
+ *
+ * median(tensor([[1, 2], [3, 8]]), { axis: 0 }); // [2, 5]
  * ```
  *
  * @remarks
@@ -151,7 +195,22 @@ export function mean(t: Tensor, axisOrOptions?: AxisLike | MeanOptions, keepdims
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
-export function median(t: Tensor, axis?: AxisLike, keepdims = false): Tensor {
+export function median(t: Tensor, options: MeanOptions): Tensor;
+export function median(t: Tensor, axis?: AxisLike, keepdims?: boolean): Tensor;
+export function median(
+  t: Tensor,
+  axisOrOptions?: AxisLike | MeanOptions,
+  keepdimsArg = false
+): Tensor {
+  let axis: AxisLike | undefined;
+  let keepdims = keepdimsArg;
+  if (isReductionOptions(axisOrOptions)) {
+    const o = axisOrOptions as MeanOptions;
+    axis = o.axis;
+    keepdims = o.keepdims ?? false;
+  } else {
+    axis = axisOrOptions as AxisLike | undefined;
+  }
   const axes = normalizeAxes(axis, t.ndim);
 
   if (axes.length === 0) {
@@ -258,9 +317,11 @@ export function median(t: Tensor, axis?: AxisLike, keepdims = false): Tensor {
  *
  * @param t - Input tensor
  * @param axis - Axis or axes along which to compute the mode (undefined = all axes)
- * @returns Tensor containing mode values
+ * @returns `float64` tensor containing mode values. A full reduction (no `axis`) has shape `[1]`;
+ *   otherwise the reduced axes are removed.
  * @throws {InvalidParameterError} If tensor is empty
  * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
@@ -300,10 +361,7 @@ export function mode(t: Tensor, axis?: AxisLike): Tensor {
         modeVal = val;
       }
     });
-    if (hasNaN) {
-      return tensor([Number.NaN]);
-    }
-    return tensor([modeVal]);
+    return scalarF64(hasNaN ? Number.NaN : modeVal, t.device);
   }
 
   // Axis-wise mode implemented via per-output frequency maps.
@@ -370,7 +428,12 @@ export function mode(t: Tensor, axis?: AxisLike): Tensor {
  * Computes the standard deviation along specified axes.
  *
  * Standard deviation is the square root of variance, measuring spread of data.
- * Uses Welford's algorithm for numerical stability via the variance function.
+ * Computed from {@link variance}, which avoids the cancellation of the naive
+ * `E[x²] - E[x]²` formula.
+ *
+ * Accepts either an options object (recommended) or the historical positional
+ * form. Prefer `std(t, { ddof: 1 })` over `std(t, 0, false, 1)`, whose trailing
+ * `keepdims`/`ddof` booleans/numbers are easy to transpose.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes along which to compute std (undefined = all axes)
@@ -380,10 +443,6 @@ export function mode(t: Tensor, axis?: AxisLike): Tensor {
  * @throws {InvalidParameterError} If tensor is empty, ddof < 0, ddof >= sample size, or reduction over empty axis
  * @throws {IndexError} If axis is out of bounds
  * @throws {DTypeError} If tensor has string dtype
- *
- * Accepts either an options object (recommended) or the historical positional
- * form. Prefer `std(t, { ddof: 1 })` over `std(t, 0, false, 1)`, whose trailing
- * `keepdims`/`ddof` booleans/numbers are easy to transpose.
  *
  * @example
  * ```ts
@@ -434,7 +493,11 @@ export function std(
  * Computes the variance along specified axes.
  *
  * Variance measures the average squared deviation from the mean.
- * Uses Welford's online algorithm for numerical stability.
+ * Uses a two-pass algorithm (mean, then squared deviations) or Welford's online update,
+ * both of which are numerically stable.
+ *
+ * Accepts either an options object (recommended) or the historical positional
+ * form. Prefer `variance(t, { ddof: 1 })` over `variance(t, 0, false, 1)`.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes along which to compute variance (undefined = all axes)
@@ -444,9 +507,6 @@ export function std(
  * @throws {InvalidParameterError} If tensor is empty, ddof < 0, ddof >= sample size, or reduction over empty axis
  * @throws {IndexError} If axis is out of bounds
  * @throws {DTypeError} If tensor has string dtype
- *
- * Accepts either an options object (recommended) or the historical positional
- * form. Prefer `variance(t, { ddof: 1 })` over `variance(t, 0, false, 1)`.
  *
  * @example
  * ```ts
@@ -478,17 +538,46 @@ export function variance(
   return reduceVariance(t, axisOrOptions as AxisLike | undefined, keepdims, ddof);
 }
 
+/** Block length for the two-level summation used by the moment fast path. */
+const MOMENT_BLOCK = 256;
+
+/**
+ * SciPy's test for a sample whose variance is rounding noise around a constant:
+ * `m2 <= (eps * mean)^2`. A constant column such as `[0.1, 0.1, 0.1]` has a
+ * mean that is off by one ulp, so its computed variance is tiny but not zero;
+ * without this test the standardized moments of such data come out as
+ * meaningless finite numbers (for example a skewness of -1). Non-finite `m2`
+ * (NaN or infinite input) is also treated as degenerate.
+ */
+function isDegenerateVariance(m2: number, mean: number): boolean {
+  if (!Number.isFinite(m2)) return true;
+  const tol = Number.EPSILON * mean;
+  return m2 <= tol * tol;
+}
+
+/**
+ * True when a finite variance is only rounding noise around a constant sample
+ * (same tolerance as {@link isDegenerateVariance}). Unlike that helper, NaN and
+ * infinite variances are not reported as constant, so non-finite data keeps
+ * propagating as NaN.
+ */
+function isConstantVariance(v: number, mean: number): boolean {
+  return Number.isFinite(v) && isDegenerateVariance(v, mean);
+}
+
 /**
  * Central moments (m2, m3, m4 about the mean) of a whole numeric tensor in two
- * passes — gather+mean, then one narrowed loop accumulating the squared, cubed
+ * passes: gather and mean, then one narrowed loop accumulating the squared, cubed
  * and quartic deviations together. Used by the full-reduction fast paths of
  * `skewness`/`kurtosis`, which otherwise re-fetch the scalar mean/variance and
- * recompute a sqrt per element (several extra passes). Returns null for
- * non-numeric or empty input so callers fall back to the generic path.
+ * recompute a sqrt per element (several extra passes). Sums are accumulated in
+ * blocks so rounding error does not grow linearly with the sample size.
+ * Returns null for non-numeric, empty or non-contiguous input so callers fall
+ * back to the generic path.
  */
 function fullTensorCentralMoments(
   t: Tensor
-): { n: number; m2: number; m3: number; m4: number } | null {
+): { n: number; mean: number; m2: number; m3: number; m4: number } | null {
   if (t.dtype === "string") return null;
   const n = t.size;
   if (n === 0) return null;
@@ -497,25 +586,62 @@ function fullTensorCentralMoments(
 
   // Materialize a contiguous Float64Array once (a narrowed memcpy for contiguous
   // float64 input) so both accumulation passes run as monomorphic typed-array
-  // loops — no `forEachIndexOffset` closure or `getNumberAt` indirection, which
+  // loops, with no `forEachIndexOffset` closure or `getNumberAt` indirection, which
   // otherwise dominate at a few thousand elements.
   const src = isContiguous(t.shape, t.strides) ? copyContiguousToF64(data, t.offset, n) : null;
   if (src === null) return null;
 
   let sum = 0;
-  for (let i = 0; i < n; i++) sum += src[i] as number;
+  for (let start = 0; start < n; start += MOMENT_BLOCK) {
+    const end = Math.min(n, start + MOMENT_BLOCK);
+    let s = 0;
+    for (let i = start; i < end; i++) s += src[i] as number;
+    sum += s;
+  }
   const m = sum / n;
   let s2 = 0;
   let s3 = 0;
   let s4 = 0;
-  for (let i = 0; i < n; i++) {
-    const d = (src[i] as number) - m;
-    const d2 = d * d;
-    s2 += d2;
-    s3 += d2 * d;
-    s4 += d2 * d2;
+  for (let start = 0; start < n; start += MOMENT_BLOCK) {
+    const end = Math.min(n, start + MOMENT_BLOCK);
+    let b2 = 0;
+    let b3 = 0;
+    let b4 = 0;
+    for (let i = start; i < end; i++) {
+      const d = (src[i] as number) - m;
+      const d2 = d * d;
+      b2 += d2;
+      b3 += d2 * d;
+      b4 += d2 * d2;
+    }
+    s2 += b2;
+    s3 += b3;
+    s4 += b4;
   }
-  return { n, m2: s2 / n, m3: s3 / n, m4: s4 / n };
+  return { n, mean: m, m2: s2 / n, m3: s3 / n, m4: s4 / n };
+}
+
+/**
+ * Per-output mean and population standard deviation (ddof = 0) for the
+ * axis-wise standardized-moment loops. The standard deviation is NaN where the
+ * variance is degenerate (see {@link isDegenerateVariance}), which makes every
+ * standardized value of that output NaN.
+ */
+function standardizers(
+  t: Tensor,
+  axis: AxisLike | undefined
+): { means: Float64Array; sds: Float64Array } {
+  const mu = reduceMean(t, axis, false);
+  const sigma2 = reduceVariance(t, axis, false, 0);
+  const means = new Float64Array(mu.size);
+  const sds = new Float64Array(mu.size);
+  for (let i = 0; i < mu.size; i++) {
+    const m = getNumberAt(mu, mu.offset + i);
+    const v = getNumberAt(sigma2, sigma2.offset + i);
+    means[i] = m;
+    sds[i] = isDegenerateVariance(v, m) ? Number.NaN : Math.sqrt(v);
+  }
+  return { means, sds };
 }
 
 /**
@@ -536,6 +662,9 @@ function fullTensorCentralMoments(
  * @param axis - Axis or axes along which to compute skewness (undefined = all axes)
  * @param bias - If false, applies the unbiased Fisher-Pearson correction (default: true)
  * @returns Tensor containing skewness values
+ * @throws {InvalidParameterError} If the tensor is empty or the reduction is over an empty axis
+ * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
@@ -545,14 +674,16 @@ function fullTensorCentralMoments(
  * skewness(t, { bias: false });   // Recommended options-object form
  *
  * const t2 = tensor([1, 2, 2, 3, 3, 3, 4, 4, 4, 4]);
- * skewness(t2); // Positive skew (right-tailed)
+ * skewness(t2); // Negative skew (the longer tail is on the left)
  * ```
  *
  * @remarks
  * This function follows IEEE 754 semantics for special values:
  * - NaN inputs propagate to NaN output
- * - Returns NaN for constant input (zero variance)
- * - Unbiased correction requires at least 3 samples; otherwise returns NaN
+ * - Returns NaN for constant input (zero variance, judged like SciPy: the
+ *   variance is at most `(eps * mean)²`)
+ * - Unbiased correction (`bias: false`) requires at least 3 samples; with fewer it returns NaN,
+ *   as pandas does (SciPy silently returns the uncorrected value instead)
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
@@ -572,16 +703,19 @@ export function skewness(
     axis = axisOrOptions as AxisLike | undefined;
   }
   const axes = normalizeAxes(axis, t.ndim);
+  if (axes.length === 0 && t.size === 0) {
+    throw new InvalidParameterError("skewness() requires at least one element", "size", t.size);
+  }
 
-  // Fast path: reduction over the entire tensor → a single scalar. Two passes
+  // Fast path: reduction over the entire tensor to a single scalar. Two passes
   // instead of the four-pass generic path, with no per-element scalar refetch.
   // (Empty axes is this codebase's "reduce all" shorthand for `axis=undefined`.)
   if (axes.length === 0 || axes.length === t.ndim) {
     const mom = fullTensorCentralMoments(t);
     if (mom) {
-      const { n, m2, m3 } = mom;
+      const { n, mean: mu, m2, m3 } = mom;
       let g1: number;
-      if (!Number.isFinite(m2) || m2 === 0) {
+      if (isDegenerateVariance(m2, mu)) {
         g1 = Number.NaN;
       } else {
         g1 = m3 / m2 ** 1.5;
@@ -598,8 +732,7 @@ export function skewness(
     }
   }
 
-  const mu = reduceMean(t, axis, false);
-  const sigma2 = reduceVariance(t, axis, false, 0);
+  const { means, sds } = standardizers(t, axis);
 
   const reduce = new Set(axes);
   const outShape = reducedShape(t.shape, axes, false);
@@ -617,15 +750,8 @@ export function skewness(
       oi++;
     }
 
-    const m = getNumberAt(mu, mu.offset + outFlat);
-    const v = Math.sqrt(getNumberAt(sigma2, sigma2.offset + outFlat));
-    const x = getNumberAt(t, off);
-    if (!Number.isFinite(v) || v === 0) {
-      sumCube[outFlat] = NaN;
-    } else {
-      const z = (x - m) / v;
-      sumCube[outFlat] = (sumCube[outFlat] ?? 0) + z * z * z;
-    }
+    const z = (getNumberAt(t, off) - (means[outFlat] as number)) / (sds[outFlat] as number);
+    sumCube[outFlat] = (sumCube[outFlat] as number) + z * z * z;
     counts[outFlat] = (counts[outFlat] ?? 0) + 1;
   });
 
@@ -675,6 +801,9 @@ export function skewness(
  * @param fisher - If true, returns excess kurtosis (subtract 3, default: true)
  * @param bias - If false, applies bias correction (requires at least 4 samples, default: true)
  * @returns Tensor containing kurtosis values
+ * @throws {InvalidParameterError} If the tensor is empty or the reduction is over an empty axis
+ * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
@@ -687,8 +816,10 @@ export function skewness(
  * @remarks
  * This function follows IEEE 754 semantics for special values:
  * - NaN inputs propagate to NaN output
- * - Returns NaN for constant input (zero variance)
- * - Unbiased correction requires at least 4 samples; otherwise returns NaN
+ * - Returns NaN for constant input (zero variance, judged like SciPy: the
+ *   variance is at most `(eps * mean)²`)
+ * - Unbiased correction (`bias: false`) requires at least 4 samples; with fewer it returns NaN,
+ *   as pandas does (SciPy silently returns the uncorrected value instead)
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
@@ -710,15 +841,18 @@ export function kurtosis(
     axis = axisOrOptions as AxisLike | undefined;
   }
   const axes = normalizeAxes(axis, t.ndim);
+  if (axes.length === 0 && t.size === 0) {
+    throw new InvalidParameterError("kurtosis() requires at least one element", "size", t.size);
+  }
 
-  // Fast path: reduction over the entire tensor → a single scalar (two passes,
+  // Fast path: reduction over the entire tensor to a single scalar (two passes,
   // no per-element scalar refetch/sqrt). Empty axes = "reduce all".
   if (axes.length === 0 || axes.length === t.ndim) {
     const mom = fullTensorCentralMoments(t);
     if (mom) {
-      const { n, m2, m4 } = mom;
+      const { n, mean: mu, m2, m4 } = mom;
       let out: number;
-      if (!Number.isFinite(m2) || m2 === 0) {
+      if (isDegenerateVariance(m2, mu)) {
         out = Number.NaN;
       } else {
         let g2 = m4 / (m2 * m2);
@@ -742,8 +876,7 @@ export function kurtosis(
     }
   }
 
-  const mu = reduceMean(t, axis, false);
-  const sigma2 = reduceVariance(t, axis, false, 0);
+  const { means, sds } = standardizers(t, axis);
 
   const reduce = new Set(axes);
   const outShape = reducedShape(t.shape, axes, false);
@@ -761,15 +894,9 @@ export function kurtosis(
       oi++;
     }
 
-    const m = getNumberAt(mu, mu.offset + outFlat);
-    const v = Math.sqrt(getNumberAt(sigma2, sigma2.offset + outFlat));
-    const x = getNumberAt(t, off);
-    if (!Number.isFinite(v) || v === 0) {
-      sumQuad[outFlat] = NaN;
-    } else {
-      const z = (x - m) / v;
-      sumQuad[outFlat] = (sumQuad[outFlat] ?? 0) + z ** 4;
-    }
+    const z = (getNumberAt(t, off) - (means[outFlat] as number)) / (sds[outFlat] as number);
+    const z2 = z * z;
+    sumQuad[outFlat] = (sumQuad[outFlat] as number) + z2 * z2;
     counts[outFlat] = (counts[outFlat] ?? 0) + 1;
   });
 
@@ -806,14 +933,16 @@ export function kurtosis(
  * Computes quantiles along specified axes.
  *
  * Quantiles are cut points dividing the range of a probability distribution.
- * Uses linear interpolation between data points.
+ * Uses linear interpolation between data points (NumPy's default `linear` method).
  *
  * @param t - Input tensor
  * @param q - Quantile(s) to compute, in range [0, 1] (0.5 = median)
  * @param axis - Axis or axes along which to compute quantiles (undefined = all axes)
- * @returns Tensor containing quantile values
+ * @returns `float64` tensor with one leading entry per quantile: shape `[q.length]` for a full
+ *   reduction, `[q.length, ...reducedShape]` when `axis` is given (`q.length` is 1 for a scalar `q`)
  * @throws {InvalidParameterError} If q is not in [0, 1], tensor is empty, or reduction over empty axis
  * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
@@ -822,6 +951,10 @@ export function kurtosis(
  * quantile(t, [0.25, 0.75]); // Returns tensor([2, 4]) - quartiles
  * quantile(t, 0.95);       // Returns tensor([4.8]) - 95th percentile
  * ```
+ *
+ * @remarks
+ * A slice containing NaN gives NaN. Infinite values interpolate to the infinite value
+ * rather than NaN (`quantile([1, Infinity], 1)` is `Infinity`).
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
@@ -865,13 +998,16 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
       });
     }
     if (hasNaN) {
-      return tensor(
-        qVals.map(() => Number.NaN),
-        { dtype: "float64" }
-      );
+      return Tensor.fromTypedArray({
+        data: new Float64Array(qVals.length).fill(Number.NaN),
+        shape: [qVals.length],
+        dtype: "float64",
+        device: t.device,
+      });
     }
     const n = arr.length;
-    const results: number[] = [];
+    const results = new Float64Array(qVals.length);
+    let ri = 0;
     // For a handful of quantiles, O(n) quickselect per rank beats an
     // O(n log n) sort. quickSelectF64 mutates `arr` (our private copy); a
     // re-partition on the already-permuted array stays correct. Fall back to a
@@ -883,7 +1019,7 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
         const weight = idx - lower;
         const loVal = quickSelectF64(arr, lower);
         if (weight === 0) {
-          results.push(loVal);
+          results[ri++] = loVal;
         } else {
           // The (lower+1)-th smallest is the min of the right partition, since
           // quickselect leaves arr[lower+1..] all >= arr[lower].
@@ -892,20 +1028,19 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
             const v = arr[i] as number;
             if (v < hiVal) hiVal = v;
           }
-          results.push(loVal * (1 - weight) + hiVal * weight);
+          results[ri++] = lerp(loVal, hiVal, weight);
         }
       }
     } else {
       arr.sort();
-      for (const qVal of qVals) {
-        const idx = qVal * (n - 1);
-        const lower = Math.floor(idx);
-        const upper = Math.ceil(idx);
-        const weight = idx - lower;
-        results.push((arr[lower] ?? 0) * (1 - weight) + (arr[upper] ?? 0) * weight);
-      }
+      for (const qVal of qVals) results[ri++] = quantileOfSorted(arr, qVal);
     }
-    return tensor(results, { dtype: "float64" });
+    return Tensor.fromTypedArray({
+      data: results,
+      shape: [qVals.length],
+      dtype: "float64",
+      device: t.device,
+    });
   }
 
   const outShape = reducedShape(t.shape, axes, false);
@@ -954,12 +1089,7 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
     }
     arr.sort((a, b) => a - b);
     for (let qi = 0; qi < qVals.length; qi++) {
-      const qVal = qVals[qi] ?? 0;
-      const idx = qVal * (arr.length - 1);
-      const lower = Math.floor(idx);
-      const upper = Math.ceil(idx);
-      const weight = idx - lower;
-      out[qi * outSize + g] = (arr[lower] ?? 0) * (1 - weight) + (arr[upper] ?? 0) * weight;
+      out[qi * outSize + g] = quantileOfSorted(arr, qVals[qi] ?? 0);
     }
   }
 
@@ -1010,8 +1140,9 @@ export function percentile(t: Tensor, q: number | number[], axis?: AxisLike): Te
  * Computes the n-th central moment about the mean.
  *
  * The n-th moment is defined as: E[(X - μ)ⁿ]
- * - n=1: Always 0 (by definition of mean)
- * - n=2: Variance
+ * - n=0: Always 1 (NaN if the data contain NaN or Infinity)
+ * - n=1: Always 0 (by definition of mean; NaN if the data contain NaN or Infinity)
+ * - n=2: Population variance
  * - n=3: Related to skewness
  * - n=4: Related to kurtosis
  *
@@ -1019,15 +1150,17 @@ export function percentile(t: Tensor, q: number | number[], axis?: AxisLike): Te
  * @param n - Order of the moment (must be non-negative integer)
  * @param axis - Axis or axes along which to compute moment (undefined = all axes)
  * @returns Tensor containing moment values
- * @throws {InvalidParameterError} If n is not a non-negative integer
+ * @throws {InvalidParameterError} If n is not a non-negative integer, the tensor is empty, or the
+ *   reduction is over an empty axis
  * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
  * const t = tensor([1, 2, 3, 4, 5]);
- * moment(t, 1);  // Returns ~0 (first moment about mean)
- * moment(t, 2);  // Returns variance
- * moment(t, 3);  // Returns third moment (related to skewness)
+ * moment(t, 1);  // Returns 0 (first moment about mean)
+ * moment(t, 2);  // Returns 2 (population variance)
+ * moment(t, 3);  // Returns 0 (third moment of a symmetric sample)
  * ```
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
@@ -1037,8 +1170,11 @@ export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
     throw new InvalidParameterError("n must be a non-negative integer", "n", n);
   }
 
-  const mu = reduceMean(t, axis, false);
   const axes = normalizeAxes(axis, t.ndim);
+  if (axes.length === 0 && t.size === 0) {
+    throw new InvalidParameterError("moment() requires at least one element", "size", t.size);
+  }
+  const mu = reduceMean(t, axis, false);
   const reduce = new Set(axes);
   const outShape = reducedShape(t.shape, axes, false);
   const outStrides = computeStrides(outShape);
@@ -1056,7 +1192,11 @@ export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
     }
     const m = getNumberAt(mu, mu.offset + outFlat);
     const x = getNumberAt(t, off);
-    sums[outFlat] = (sums[outFlat] ?? 0) + (x - m) ** n;
+    // The zeroth moment is exactly one and the first exactly zero; summing (x - m)
+    // would leave a rounding residue of order eps * |m|. `(x - m) * 0` is 0 for
+    // finite data and keeps NaN for NaN/Infinity (note that NaN ** 0 is 1 in JS).
+    const term = n === 0 ? 1 + (x - m) * 0 : n === 1 ? (x - m) * 0 : (x - m) ** n;
+    sums[outFlat] = (sums[outFlat] ?? 0) + term;
     counts[outFlat] = (counts[outFlat] ?? 0) + 1;
   });
 
@@ -1072,6 +1212,19 @@ export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
     dtype: "float64",
     device: t.device,
   });
+}
+
+/**
+ * Returns a `Float64Array` copy of a contiguous numeric tensor for whole-tensor reductions,
+ * or null when the input is not a simple contiguous numeric buffer (the caller falls
+ * back to the generic strided path).
+ */
+function fullReduceDenseF64(t: Tensor): Float64Array | null {
+  if (t.dtype === "string") return null;
+  const data = t.data;
+  if (Array.isArray(data) || data instanceof BigInt64Array) return null;
+  if (!isContiguous(t.shape, t.strides)) return null;
+  return copyContiguousToF64(data, t.offset, t.size);
 }
 
 /**
@@ -1099,19 +1252,6 @@ export function moment(t: Tensor, n: number, axis?: AxisLike): Tensor {
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
-/**
- * Contiguous numeric tensor → a `Float64Array` copy for whole-tensor reductions,
- * or null when the input isn't a simple contiguous numeric buffer (caller falls
- * back to the generic strided path).
- */
-function fullReduceDenseF64(t: Tensor): Float64Array | null {
-  if (t.dtype === "string") return null;
-  const data = t.data;
-  if (Array.isArray(data) || data instanceof BigInt64Array) return null;
-  if (!isContiguous(t.shape, t.strides)) return null;
-  return copyContiguousToF64(data, t.offset, t.size);
-}
-
 export function geometricMean(t: Tensor, axis?: AxisLike): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
   if (axes.length === 0 && t.size === 0) {
@@ -1122,7 +1262,7 @@ export function geometricMean(t: Tensor, axis?: AxisLike): Tensor {
     );
   }
 
-  // Fast path: whole-tensor reduction over a contiguous numeric buffer — one
+  // Fast path: whole-tensor reduction over a contiguous numeric buffer, using one
   // narrowed loop instead of the forEachIndexOffset closure + getNumberAt.
   if (axes.length === 0 || axes.length === t.ndim) {
     const src = fullReduceDenseF64(t);
@@ -1294,25 +1434,48 @@ export function harmonicMean(t: Tensor, axis?: AxisLike): Tensor {
 }
 
 /**
+ * Sum of `arr[from .. to)` accumulated in blocks of 256 so rounding error does
+ * not grow linearly with the length.
+ */
+function blockSum(arr: Float64Array, from: number, to: number): number {
+  let total = 0;
+  for (let start = from; start < to; start += 256) {
+    const end = Math.min(to, start + 256);
+    let s = 0;
+    for (let i = start; i < end; i++) s += arr[i] as number;
+    total += s;
+  }
+  return total;
+}
+
+/**
  * Computes the trimmed mean (mean after removing outliers from both tails).
  *
  * Removes a specified proportion of extreme values from both ends before computing mean.
- * More robust to outliers than regular mean, less extreme than median.
+ * Less sensitive to outliers than the regular mean, less extreme than the median. The number of
+ * values removed from each tail is `floor(n * proportiontocut)`, as in
+ * `scipy.stats.trim_mean`.
  *
  * @param t - Input tensor
  * @param proportiontocut - Fraction to cut from each tail, in range [0, 0.5)
  * @param axis - Axis or axes along which to compute trimmed mean (undefined = all axes)
- * @returns Tensor containing trimmed mean values
+ * @returns `float64` tensor of trimmed means. For a full reduction (no `axis`) the result has
+ *   shape `[1]`; otherwise the reduced axes are removed.
  * @throws {InvalidParameterError} If proportiontocut is not in [0, 0.5), tensor is empty, or reduction over empty axis
  * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
  * const t = tensor([1, 2, 3, 4, 5, 100]); // 100 is outlier
  * mean(t);                    // Returns ~19.17 (affected by outlier)
  * trimMean(t, 0.2);          // Returns 3.5 (removes 1 and 100)
- * trimMean(t, 0.1);          // Returns ~22.8 (removes only 100)
+ * trimMean(t, 0.1);          // Returns ~19.17 (floor(6 * 0.1) = 0 values removed)
  * ```
+ *
+ * @remarks
+ * NaN in a slice makes that slice's result NaN. Infinite values are dropped like any other
+ * extreme value when they fall in a trimmed tail.
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
@@ -1332,35 +1495,41 @@ export function trimMean(t: Tensor, proportiontocut: number, axis?: AxisLike): T
     const n = t.size;
     if (n === 0)
       throw new InvalidParameterError("trimMean() requires at least one element", "size", n);
-    // Gather into a flat Float64Array (no boxed number[]) while accumulating the
-    // total and a NaN flag in the same pass.
-    const arr = new Float64Array(n);
-    let w = 0;
-    let total = 0;
+    // Gather into a flat Float64Array (no boxed number[]) and flag NaN.
+    let arr = fullReduceDenseF64(t);
     let hasNaN = false;
-    forEachIndexOffset(t, (off) => {
-      const v = getNumberAt(t, off);
-      arr[w++] = v;
-      total += v;
-      if (Number.isNaN(v)) hasNaN = true;
-    });
+    if (arr === null) {
+      arr = new Float64Array(n);
+      let w = 0;
+      const gathered = arr;
+      forEachIndexOffset(t, (off) => {
+        gathered[w++] = getNumberAt(t, off);
+      });
+    }
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(arr[i] as number)) {
+        hasNaN = true;
+        break;
+      }
+    }
     if (hasNaN) {
-      return tensor([Number.NaN]);
+      return scalarF64(Number.NaN, t.device);
     }
     const nTrim = Math.floor(n * proportiontocut);
     if (nTrim === 0) {
-      return tensor([total / n]);
+      return scalarF64(blockSum(arr, 0, n) / n, t.device);
     }
-    // Trimmed mean = (total − smallest nTrim − largest nTrim) / (n − 2·nTrim).
-    // Two O(n) quickselect partitions beat a full O(n log n) sort: after
-    // quickselect(k), arr[0..k) holds the k smallest and arr[k..n) the rest.
+    // Two O(n) quickselect partitions beat a full O(n log n) sort. The first
+    // moves the nTrim smallest values to arr[0..nTrim); the second, on the
+    // remaining n - nTrim values, moves the (n - 2·nTrim) smallest of them to
+    // the front. The kept middle is then summed directly: subtracting the
+    // trimmed tails from a grand total instead would lose the kept values
+    // entirely next to a huge outlier and give NaN for infinite tails.
     quickSelectF64(arr, nTrim);
-    let bottom = 0;
-    for (let i = 0; i < nTrim; i++) bottom += arr[i] as number;
-    quickSelectF64(arr, n - nTrim);
-    let topSum = 0;
-    for (let i = n - nTrim; i < n; i++) topSum += arr[i] as number;
-    return tensor([(total - bottom - topSum) / (n - 2 * nTrim)]);
+    const rest = arr.subarray(nTrim);
+    const keep = n - 2 * nTrim;
+    quickSelectF64(rest, keep);
+    return scalarF64(blockSum(rest, 0, keep) / keep, t.device);
   }
 
   const outShape = reducedShape(t.shape, axes, false);
@@ -1403,9 +1572,9 @@ export function trimMean(t: Tensor, proportiontocut: number, axis?: AxisLike): T
     }
     arr.sort((a, b) => a - b);
     const nTrim = Math.floor(arr.length * proportiontocut);
-    const trimmed = arr.slice(nTrim, arr.length - nTrim);
-    const sum = trimmed.reduce((a, b) => a + b, 0);
-    out[i] = sum / trimmed.length;
+    let sum = 0;
+    for (let j = nTrim; j < arr.length - nTrim; j++) sum += arr[j] as number;
+    out[i] = sum / (arr.length - 2 * nTrim);
   }
 
   return Tensor.fromTypedArray({
@@ -1421,62 +1590,76 @@ export function trimMean(t: Tensor, proportiontocut: number, axis?: AxisLike): T
  *
  * z = (x - mean) / std
  *
+ * Without `axis` the mean and standard deviation are taken over every element
+ * (note that `scipy.stats.zscore` defaults to `axis=0`; pass `axis` to get that
+ * behavior). The output always has the same shape as the input. A slice with
+ * zero standard deviation maps to zeros instead of NaN.
+ *
  * @param t - Input tensor
  * @param ddof - Delta degrees of freedom for std (default 0)
- * @returns Tensor of z-scores (flattened)
+ * @param axis - Axis or axes along which to standardize (undefined = all elements)
+ * @returns `float64` tensor of z-scores with the same shape as `t`
+ * @throws {InvalidParameterError} If the tensor is empty, `ddof` is negative or not finite, or
+ *   `ddof` is not smaller than the number of elements being standardized together
+ * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
+ *
+ * @example
+ * ```ts
+ * zscore(tensor([1, 2, 3, 4, 5]));                  // (x - 3) / sqrt(2)
+ * zscore(tensor([[1, 2], [3, 6]]), 0, 0);           // standardize each column
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
-export function zscore(t: Tensor, ddof = 0): Tensor {
+export function zscore(t: Tensor, ddof = 0, axis?: AxisLike): Tensor {
+  if (!Number.isFinite(ddof) || ddof < 0) {
+    throw new InvalidParameterError("ddof must be a non-negative finite number", "ddof", ddof);
+  }
   if (t.size === 0) {
     throw new InvalidParameterError("zscore() requires non-empty tensor", "t");
   }
+  const axes = normalizeAxes(axis, t.ndim);
+
+  if (axes.length > 0 && axes.length < t.ndim) {
+    return zscoreAlongAxes(t, axes, ddof);
+  }
+
+  if (t.size <= ddof) {
+    throw new InvalidParameterError(
+      `ddof=${ddof} >= size=${t.size}, standard deviation undefined`,
+      "ddof",
+      ddof
+    );
+  }
 
   // Fast path: contiguous numeric input. Standardize in three narrowed passes
-  // over one Float64Array (mean, variance, write) — no boxed number[] gather.
+  // over one Float64Array (mean, variance, write), with no boxed number[] gather.
   // Output is row-major, matching the contiguous input positions.
-  const dense = fullReduceDenseF64(t);
-  if (dense) {
-    const n = dense.length;
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += dense[i] as number;
-    const m = sum / n;
-    let ss = 0;
-    for (let i = 0; i < n; i++) {
-      const d = (dense[i] as number) - m;
-      ss += d * d;
-    }
-    const s = Math.sqrt(ss / (n - ddof));
-    const out = new Float64Array(n);
-    if (s !== 0) {
-      const inv = 1 / s;
-      for (let i = 0; i < n; i++) out[i] = ((dense[i] as number) - m) * inv;
-    }
-    return Tensor.fromTypedArray({
-      data: out,
-      shape: [...t.shape],
-      dtype: "float64",
-      device: t.device,
+  let dense = fullReduceDenseF64(t);
+  if (dense === null) {
+    // Non-contiguous / non-numeric fallback: gather in row-major order.
+    const gathered = new Float64Array(t.size);
+    let w = 0;
+    forEachIndexOffset(t, (off) => {
+      gathered[w++] = getNumberAt(t, off);
     });
+    dense = gathered;
   }
-
-  // Collect all values (non-contiguous / non-numeric fallback)
-  const vals: number[] = [];
-  forEachIndexOffset(t, (off) => {
-    vals.push(getNumberAt(t, off));
-  });
-
-  // Compute global mean
-  const m = vals.reduce((a, b) => a + b, 0) / vals.length;
-
-  // Compute global std
+  const n = dense.length;
+  const m = blockSum(dense, 0, n) / n;
   let ss = 0;
-  for (const v of vals) {
-    ss += (v - m) ** 2;
+  for (let i = 0; i < n; i++) {
+    const d = (dense[i] as number) - m;
+    ss += d * d;
   }
-  const s = Math.sqrt(ss / (vals.length - ddof));
-
-  const out = new Float64Array(vals.length);
-  for (let i = 0; i < vals.length; i++) {
-    out[i] = s === 0 ? 0 : ((vals[i] ?? 0) - m) / s;
+  const v = ss / (n - ddof);
+  const s = Math.sqrt(v);
+  const out = new Float64Array(n);
+  // A constant sample (including one whose computed variance is only rounding
+  // noise, such as [0.1, 0.1, 0.1]) maps to zeros.
+  if (s !== 0 && !isConstantVariance(v, m)) {
+    for (let i = 0; i < n; i++) out[i] = ((dense[i] as number) - m) / s;
   }
   return Tensor.fromTypedArray({
     data: out,
@@ -1486,74 +1669,208 @@ export function zscore(t: Tensor, ddof = 0): Tensor {
   });
 }
 
+/** Axis-wise {@link zscore} for a non-empty strict subset of axes. */
+function zscoreAlongAxes(t: Tensor, axes: readonly number[], ddof: number): Tensor {
+  const mu = reduceMean(t, axes, true);
+  const variance = reduceVariance(t, axes, true, ddof);
+  const keptShape = reducedShape(t.shape, axes, true);
+  const keptStrides = computeStrides(keptShape);
+  const reduce = new Set(axes);
+  const contrib = new Array<number>(t.ndim).fill(0);
+  for (let i = 0; i < t.ndim; i++) {
+    if (!reduce.has(i)) contrib[i] = keptStrides[i] ?? 0;
+  }
+  const means = new Float64Array(mu.size);
+  const sds = new Float64Array(mu.size);
+  for (let i = 0; i < mu.size; i++) {
+    const m = getNumberAt(mu, mu.offset + i);
+    const v = getNumberAt(variance, variance.offset + i);
+    means[i] = m;
+    // Zero marks a constant slice, which standardizes to zeros.
+    sds[i] = isConstantVariance(v, m) ? 0 : Math.sqrt(v);
+  }
+  const out = new Float64Array(t.size);
+  let w = 0;
+  forEachIndexOffset(t, (off, idx) => {
+    let k = 0;
+    for (let i = 0; i < t.ndim; i++) k += (idx[i] ?? 0) * (contrib[i] ?? 0);
+    const s = sds[k] as number;
+    out[w++] = s === 0 ? 0 : (getNumberAt(t, off) - (means[k] as number)) / s;
+  });
+  return Tensor.fromTypedArray({
+    data: out,
+    shape: [...t.shape],
+    dtype: "float64",
+    device: t.device,
+  });
+}
+
+/**
+ * Mean and sample variance (ddof = 1) of a sample with at least two values. A sample of
+ * one repeated finite value is reported exactly (its mean is that value and its variance
+ * is 0): the computed mean of `[0.1, 0.1, 0.1]` is off by one ulp, which would otherwise
+ * leave a variance of about 1e-34 instead of 0.
+ */
+function meanAndSampleVariance(x: readonly number[]): [number, number] {
+  const first = x[0] as number;
+  if (Number.isFinite(first) && x.every((v) => v === first)) return [first, 0];
+  const m = x.reduce((s, v) => s + v, 0) / x.length;
+  const v = x.reduce((s, e) => s + (e - m) ** 2, 0) / (x.length - 1);
+  return [m, v];
+}
+
 /**
  * Compute Cohen's d effect size between two samples.
  *
  * d = (mean1 - mean2) / pooled_std
  *
+ * The pooled standard deviation uses the sample variance (ddof = 1) of each group.
+ * When both groups are constant the pooled standard deviation is 0: the result is 0
+ * if the two means are equal and `Infinity` or `-Infinity` (the sign of the mean
+ * difference) otherwise.
+ *
  * @param a - First sample (1-D array of numbers)
  * @param b - Second sample (1-D array of numbers)
  * @returns Cohen's d value
+ * @throws {InvalidParameterError} If either sample has fewer than 2 observations
+ *
+ * @example
+ * ```ts
+ * cohenD([1, 2, 3, 4, 5], [3, 4, 5, 6, 7]); // -2 / sqrt(2.5) ≈ -1.265
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
-export function cohenD(a: number[], b: number[]): number {
+export function cohenD(a: readonly number[], b: readonly number[]): number {
   if (a.length < 2 || b.length < 2) {
-    throw new InvalidParameterError("cohenD requires at least 2 observations per group", "a");
+    const shortGroup = a.length < 2 ? "a" : "b";
+    throw new InvalidParameterError(
+      "cohenD requires at least 2 observations per group",
+      shortGroup,
+      shortGroup === "a" ? a.length : b.length
+    );
   }
-  const ma = a.reduce((s, v) => s + v, 0) / a.length;
-  const mb = b.reduce((s, v) => s + v, 0) / b.length;
-  const va = a.reduce((s, v) => s + (v - ma) ** 2, 0) / (a.length - 1);
-  const vb = b.reduce((s, v) => s + (v - mb) ** 2, 0) / (b.length - 1);
+  const [ma, va] = meanAndSampleVariance(a);
+  const [mb, vb] = meanAndSampleVariance(b);
   const pooled = Math.sqrt(((a.length - 1) * va + (b.length - 1) * vb) / (a.length + b.length - 2));
-  return pooled === 0 ? 0 : (ma - mb) / pooled;
+  if (pooled === 0) {
+    const diff = ma - mb;
+    return diff === 0 ? 0 : diff > 0 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+  }
+  return (ma - mb) / pooled;
+}
+
+/** Options for {@link bootstrap}. */
+export interface BootstrapOptions {
+  /** Number of resamples to draw (positive integer, default: 1000). */
+  nResamples?: number | undefined;
+  /**
+   * Seed for a private, reproducible generator. When omitted the shared random
+   * generator is used, so `setSeed` from `deepbox/random` makes the result
+   * reproducible too.
+   */
+  seed?: number | undefined;
+  /** Confidence level of the interval, in (0, 1) (default: 0.95). */
+  confidenceLevel?: number | undefined;
+}
+
+/** Result of {@link bootstrap}. */
+export interface BootstrapResult {
+  /** The statistic evaluated on the original data. */
+  estimate: number;
+  /** Percentile confidence interval `[lower, upper]`. */
+  ci: [number, number];
+  /** The statistic on every resample, in ascending order. */
+  samples: number[];
 }
 
 /**
  * Non-parametric bootstrap: resample a statistic.
  *
+ * Draws `nResamples` samples of the same size as `data` with replacement,
+ * evaluates `statFn` on each, and reports the percentile interval of those values
+ * (linear interpolation between order statistics, like `numpy.percentile`). If
+ * `statFn` returns NaN on any resample the interval is `[NaN, NaN]`.
+ *
  * @param data - 1-D array of observations
- * @param statFn - Function that computes a statistic from a sample
+ * @param statFn - Function that computes a statistic from a sample. It receives a fresh array
+ *   on every call, so it may modify it.
  * @param options - nResamples (default 1000), seed (optional), confidenceLevel (default 0.95)
  * @returns Object with estimate, ci (confidence interval), and samples array
+ * @throws {InvalidParameterError} If `data` is empty, `nResamples` is not a positive integer,
+ *   `confidenceLevel` is not in (0, 1), or `seed` is not finite
+ *
+ * @example
+ * ```ts
+ * const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+ * const { estimate, ci } = bootstrap([2, 4, 4, 5, 7, 9], mean, { seed: 42 });
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function bootstrap(
-  data: number[],
+  data: readonly number[],
   statFn: (sample: number[]) => number,
-  options: {
-    nResamples?: number;
-    seed?: number;
-    confidenceLevel?: number;
-  } = {}
-): { estimate: number; ci: [number, number]; samples: number[] } {
+  options: BootstrapOptions = {}
+): BootstrapResult {
   const nResamples = options.nResamples ?? 1000;
   const confidenceLevel = options.confidenceLevel ?? 0.95;
   const n = data.length;
   if (n === 0) {
     throw new InvalidParameterError("bootstrap requires non-empty data", "data");
   }
-
-  // Simple seeded RNG (LCG)
-  let rngState = options.seed ?? Date.now() ^ 0xdeadbeef;
-  const nextRng = () => {
-    rngState = (rngState * 1664525 + 1013904223) & 0x7fffffff;
-    return rngState / 0x7fffffff;
-  };
-
-  const samples: number[] = [];
-  for (let r = 0; r < nResamples; r++) {
-    const resample: number[] = [];
-    for (let i = 0; i < n; i++) {
-      resample.push(data[Math.floor(nextRng() * n)]!);
-    }
-    samples.push(statFn(resample));
+  if (!Number.isInteger(nResamples) || nResamples < 1) {
+    throw new InvalidParameterError(
+      "nResamples must be a positive integer",
+      "nResamples",
+      nResamples
+    );
+  }
+  if (!(confidenceLevel > 0 && confidenceLevel < 1)) {
+    throw new InvalidParameterError(
+      "confidenceLevel must be in the open interval (0, 1)",
+      "confidenceLevel",
+      confidenceLevel
+    );
+  }
+  if (options.seed !== undefined && !Number.isFinite(options.seed)) {
+    throw new InvalidParameterError("seed must be a finite number", "seed", options.seed);
   }
 
-  samples.sort((a, b) => a - b);
-  const estimate = statFn(data);
-  const alpha = 1 - confidenceLevel;
-  const lo = samples[Math.floor((alpha / 2) * nResamples)]!;
-  const hi = samples[Math.floor((1 - alpha / 2) * nResamples)]!;
+  // Seeded runs use a small private LCG so results are reproducible per seed;
+  // unseeded runs draw from the shared generator (which honors `setSeed`).
+  let nextRng: () => number;
+  if (options.seed === undefined) {
+    nextRng = __random;
+  } else {
+    let rngState = Math.trunc(options.seed) >>> 0;
+    nextRng = () => {
+      rngState = (rngState * 1664525 + 1013904223) & 0x7fffffff;
+      // Divide by 2^31 (not 2^31 - 1) so the result stays strictly below 1.
+      return rngState / 0x80000000;
+    };
+  }
 
-  return { estimate, ci: [lo, hi], samples };
+  const samples = new Float64Array(nResamples);
+  for (let r = 0; r < nResamples; r++) {
+    const resample: number[] = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      resample[i] = data[Math.floor(nextRng() * n)] as number;
+    }
+    samples[r] = statFn(resample);
+  }
+
+  // Typed-array sort is numeric and places NaN last.
+  samples.sort();
+  const estimate = statFn(data.slice());
+  // Percentile interval with linear interpolation (NumPy's default), symmetric in
+  // both tails. A NaN statistic on any resample makes the interval undefined.
+  const alpha = 1 - confidenceLevel;
+  const hasNaN = Number.isNaN(samples[nResamples - 1] as number);
+  const lo = hasNaN ? Number.NaN : quantileOfSorted(samples, alpha / 2);
+  const hi = hasNaN ? Number.NaN : quantileOfSorted(samples, 1 - alpha / 2);
+
+  return { estimate, ci: [lo, hi], samples: Array.from(samples) };
 }
 
 /**
@@ -1568,123 +1885,72 @@ export function bootstrap(
  * @param axis - Axis or axes along which to compute SEM (undefined = all axes)
  * @param ddof - Delta degrees of freedom for std computation (default: 1)
  * @returns Tensor containing SEM values
- * @throws {InvalidParameterError} If tensor is empty or has fewer observations than ddof+1
+ * @throws {InvalidParameterError} If tensor is empty, the reduction is over an empty axis, or it
+ *   has no more than `ddof` observations
+ * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
  * const t = tensor([1, 2, 3, 4, 5]);
- * sem(t);  // Returns std(t, ddof=1) / sqrt(5)
+ * sem(t);  // Returns std(t, ddof=1) / sqrt(5) ≈ 0.7071
  * ```
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
  */
 export function sem(t: Tensor, axis?: AxisLike, ddof = 1): Tensor {
   const axes = normalizeAxes(axis, t.ndim);
-  const reduce = new Set(axes);
-
-  if (axes.length === 0) {
-    if (t.size === 0) {
-      throw new InvalidParameterError("sem() requires at least one element", "size", t.size);
-    }
-    const vals: number[] = [];
-    forEachIndexOffset(t, (off) => {
-      vals.push(getNumberAt(t, off));
-    });
-    const n = vals.length;
-    if (n <= ddof) {
-      throw new InvalidParameterError(
-        `sem() requires more than ddof=${ddof} observations`,
-        "ddof",
-        ddof
-      );
-    }
-    const m = vals.reduce((a, b) => a + b, 0) / n;
-    let ss = 0;
-    for (const v of vals) {
-      ss += (v - m) ** 2;
-    }
-    const s = Math.sqrt(ss / (n - ddof));
-    const out = new Float64Array(1);
-    out[0] = s / Math.sqrt(n);
-    return Tensor.fromTypedArray({
-      data: out,
-      shape: [],
-      dtype: "float64",
-      device: t.device,
-    });
+  const count = axes.length === 0 ? t.size : axes.reduce((acc, ax) => acc * (t.shape[ax] ?? 0), 1);
+  if (count === 0) {
+    throw new InvalidParameterError(
+      axes.length === 0
+        ? "sem() requires at least one element"
+        : "sem() reduction over empty axis is undefined",
+      axes.length === 0 ? "size" : "axis",
+      count
+    );
   }
-
-  const outShape = reducedShape(t.shape, axes, false);
-  const outStrides = computeStrides(outShape);
-  const outSize = outShape.reduce((a, b) => a * b, 1);
-  const sums = new Float64Array(outSize);
-  const sumsSq = new Float64Array(outSize);
-  const counts = new Int32Array(outSize);
-
-  forEachIndexOffset(t, (off, idx) => {
-    let outFlat = 0;
-    let oi = 0;
-    for (let i = 0; i < t.ndim; i++) {
-      if (reduce.has(i)) continue;
-      outFlat += (idx[i] ?? 0) * (outStrides[oi] ?? 0);
-      oi++;
-    }
-    const val = getNumberAt(t, off);
-    sums[outFlat] = (sums[outFlat] ?? 0) + val;
-    counts[outFlat] = (counts[outFlat] ?? 0) + 1;
-  });
-
-  // Second pass: compute sum of squared deviations
-  forEachIndexOffset(t, (off, idx) => {
-    let outFlat = 0;
-    let oi = 0;
-    for (let i = 0; i < t.ndim; i++) {
-      if (reduce.has(i)) continue;
-      outFlat += (idx[i] ?? 0) * (outStrides[oi] ?? 0);
-      oi++;
-    }
-    const val = getNumberAt(t, off);
-    const n = counts[outFlat] ?? 1;
-    const m = (sums[outFlat] ?? 0) / n;
-    sumsSq[outFlat] = (sumsSq[outFlat] ?? 0) + (val - m) ** 2;
-  });
-
-  const out = new Float64Array(outSize);
-  for (let i = 0; i < outSize; i++) {
-    const n = counts[i] ?? 0;
-    if (n <= ddof) {
-      out[i] = NaN;
-    } else {
-      const s = Math.sqrt((sumsSq[i] ?? 0) / (n - ddof));
-      out[i] = s / Math.sqrt(n);
-    }
+  if (count <= ddof) {
+    throw new InvalidParameterError(
+      `sem() requires more than ddof=${ddof} observations`,
+      "ddof",
+      ddof
+    );
   }
-
+  const v = reduceVariance(t, axis, false, ddof);
+  const root = Math.sqrt(count);
+  const out = new Float64Array(v.size);
+  for (let i = 0; i < v.size; i++) {
+    out[i] = Math.sqrt(getNumberAt(v, v.offset + i)) / root;
+  }
   return Tensor.fromTypedArray({
     data: out,
-    shape: outShape,
+    shape: v.shape,
     dtype: "float64",
-    device: t.device,
+    device: v.device,
   });
 }
 
 /**
  * Computes the interquartile range (IQR).
  *
- * IQR = Q3 - Q1 = percentile(75) - percentile(25)
+ * IQR = Q3 - Q1 = percentile(75) - percentile(25), with linear interpolation
+ * between order statistics (NumPy's default).
  *
- * The IQR is a robust measure of spread that is less sensitive to outliers
+ * The IQR is a measure of spread that is less sensitive to outliers
  * than the standard deviation.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes along which to compute IQR (undefined = all axes)
  * @returns Tensor containing IQR values
  * @throws {InvalidParameterError} If tensor is empty or reduction over empty axis
+ * @throws {IndexError} If axis is out of bounds
+ * @throws {DTypeError} If tensor has string dtype
  *
  * @example
  * ```ts
  * const t = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
- * iqr(t);  // Returns tensor([4.5]) - Q3(7.75) - Q1(3.25)
+ * iqr(t);  // Returns 4.5 (a scalar tensor): Q3 (7.75) - Q1 (3.25)
  * ```
  *
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Descriptive Statistics}
@@ -1697,27 +1963,24 @@ export function iqr(t: Tensor, axis?: AxisLike): Tensor {
     if (t.size === 0) {
       throw new InvalidParameterError("iqr() requires at least one element", "size", t.size);
     }
-    const arr: number[] = [];
-    let hasNaN = false;
-    forEachIndexOffset(t, (off) => {
-      const v = getNumberAt(t, off);
-      if (Number.isNaN(v)) hasNaN = true;
-      arr.push(v);
-    });
-    if (hasNaN) return tensor([NaN]);
-    arr.sort((a, b) => a - b);
-    const q1Idx = 0.25 * (arr.length - 1);
-    const q3Idx = 0.75 * (arr.length - 1);
-    const interp = (idx: number): number => {
-      const lo = Math.floor(idx);
-      const hi = Math.ceil(idx);
-      const w = idx - lo;
-      return (arr[lo] ?? 0) * (1 - w) + (arr[hi] ?? 0) * w;
-    };
-    const out = new Float64Array(1);
-    out[0] = interp(q3Idx) - interp(q1Idx);
+    let arr = fullReduceDenseF64(t);
+    if (arr === null) {
+      arr = new Float64Array(t.size);
+      let w = 0;
+      const gathered = arr;
+      forEachIndexOffset(t, (off) => {
+        gathered[w++] = getNumberAt(t, off);
+      });
+    }
+    let value: number;
+    if (arr.some((v) => Number.isNaN(v))) {
+      value = Number.NaN;
+    } else {
+      arr.sort();
+      value = quantileOfSorted(arr, 0.75) - quantileOfSorted(arr, 0.25);
+    }
     return Tensor.fromTypedArray({
-      data: out,
+      data: new Float64Array([value]),
       shape: [],
       dtype: "float64",
       device: t.device,
@@ -1763,17 +2026,7 @@ export function iqr(t: Tensor, axis?: AxisLike): Tensor {
       );
     }
     arr.sort((a, b) => a - b);
-    const q1Idx = 0.25 * (arr.length - 1);
-    const q3Idx = 0.75 * (arr.length - 1);
-    const lo1 = Math.floor(q1Idx);
-    const hi1 = Math.ceil(q1Idx);
-    const w1 = q1Idx - lo1;
-    const q1 = (arr[lo1] ?? 0) * (1 - w1) + (arr[hi1] ?? 0) * w1;
-    const lo3 = Math.floor(q3Idx);
-    const hi3 = Math.ceil(q3Idx);
-    const w3 = q3Idx - lo3;
-    const q3 = (arr[lo3] ?? 0) * (1 - w3) + (arr[hi3] ?? 0) * w3;
-    out[i] = q3 - q1;
+    out[i] = quantileOfSorted(arr, 0.75) - quantileOfSorted(arr, 0.25);
   }
 
   return Tensor.fromTypedArray({

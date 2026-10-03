@@ -4,7 +4,7 @@
 <rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
 <clipPath id="dbclip-50-50-700-300"><path d="M50 50 L750 50 L750 350 L50 350 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-700-300)">
-<polyline fill="none" stroke="#2196f3" stroke-width="2" points="81.82,63.64 98.14,239.46 114.45,280.82 130.77,298.94 147.09,309.14 163.40,315.23 179.72,319.41 196.04,322.57 212.35,324.88 228.67,326.68 244.99,328.15 261.31,329.32 277.62,330.28 293.94,331.13 310.26,331.81 326.57,332.38 342.89,332.88 359.21,333.30 375.52,333.69 391.84,334.00 408.16,334.29 424.48,334.52 440.79,334.72 457.11,334.96 473.43,335.11 489.74,335.25 506.06,335.39 522.38,335.52 538.69,335.64 555.01,335.74 571.33,335.83 587.65,335.91 603.96,335.99 620.28,336.06 636.60,336.12 652.91,336.18 669.23,336.23 685.55,336.27 701.86,336.32 718.18,336.36" />
+<polyline fill="none" stroke="#2196f3" stroke-width="2" points="81.82,63.64 98.14,217.15 114.45,278.73 130.77,300.40 147.09,310.55 163.40,316.77 179.72,320.90 196.04,323.83 212.35,326.04 228.67,327.77 244.99,329.15 261.31,330.18 277.62,331.13 293.94,331.82 310.26,332.47 326.57,333.00 342.89,333.43 359.21,333.80 375.52,334.17 391.84,334.41 408.16,334.66 424.48,334.87 440.79,335.08 457.11,335.21 473.43,335.36 489.74,335.46 506.06,335.62 522.38,335.71 538.69,335.80 555.01,335.88 571.33,335.95 587.65,336.02 603.96,336.07 620.28,336.13 636.60,336.18 652.91,336.22 669.23,336.26 685.55,336.30 701.86,336.33 718.18,336.36" />
 </g>
 <line class="x-tick" x1="65.50" y1="350.00" x2="65.50" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="65.50" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
@@ -16,14 +16,14 @@
 <text class="tick-label tick-label-x" x="555.01" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">30</text>
 <line class="x-tick" x1="718.18" y1="350.00" x2="718.18" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="718.18" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">40</text>
-<line class="y-tick" x1="50.00" y1="337.10" x2="45.00" y2="337.10" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="337.10" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
-<line class="y-tick" x1="50.00" y1="248.20" x2="45.00" y2="248.20" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="248.20" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.5</text>
-<line class="y-tick" x1="50.00" y1="159.30" x2="45.00" y2="159.30" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="159.30" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1</text>
-<line class="y-tick" x1="50.00" y1="70.40" x2="45.00" y2="70.40" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="70.40" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1.5</text>
+<line class="y-tick" x1="50.00" y1="336.88" x2="45.00" y2="336.88" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="336.88" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
+<line class="y-tick" x1="50.00" y1="257.69" x2="45.00" y2="257.69" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="257.69" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0.5</text>
+<line class="y-tick" x1="50.00" y1="178.49" x2="45.00" y2="178.49" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="178.49" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1</text>
+<line class="y-tick" x1="50.00" y1="99.30" x2="45.00" y2="99.30" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="99.30" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">1.5</text>
 <text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Training Loss Curve</text>
 <text x="400" y="385" text-anchor="middle" font-size="12" fill="#000">Epoch</text>
 <text x="15" y="200" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 200)">Loss</text>

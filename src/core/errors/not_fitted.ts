@@ -24,8 +24,7 @@ import { DeepboxError } from "./base";
  * }
  * ```
  *
- * References:
- * - Deepbox NotFittedError: https://deepbox.dev/docs/core-errors
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
  */
 export class NotFittedError extends DeepboxError {
   override name = "NotFittedError";
@@ -33,8 +32,8 @@ export class NotFittedError extends DeepboxError {
   /** The name of the model or estimator that was not fitted */
   readonly modelName?: string;
 
-  constructor(message: string, modelName?: string) {
-    super(message);
+  constructor(message: string, modelName?: string, options?: { readonly cause?: unknown }) {
+    super(message, options);
     if (modelName !== undefined) {
       this.modelName = modelName;
     }

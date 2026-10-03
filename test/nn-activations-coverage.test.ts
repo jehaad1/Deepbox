@@ -260,7 +260,7 @@ describe("PReLU", () => {
   it("forward float32 input (dtype alignment, no DTypeError)", () => {
     const x32 = tensor([-2, -1, 0, 1, 2], { dtype: "float32" });
     const act = new PReLU(1, 0.25);
-    const out = act.forward(x32);
+    const out = act.forward(x32) as GradTensor; // tracks the slope, so a GradTensor
     expect(out.shape).toEqual([5]);
     expect(out.tensor.dtype).toBe("float32");
     // PReLU(x) = relu(x) - 0.25*relu(-x): [-0.5, -0.25, 0, 1, 2]
@@ -269,7 +269,7 @@ describe("PReLU", () => {
   it("forward float64 input still works (upcast path)", () => {
     const x64 = tensor([-4, 0, 4], { dtype: "float64" });
     const act = new PReLU(1, 0.5);
-    const out = act.forward(x64);
+    const out = act.forward(x64) as GradTensor; // tracks the slope, so a GradTensor
     expect(out.shape).toEqual([3]);
     expect(Array.from(out.tensor.data as Float32Array | Float64Array)).toEqual([-2, 0, 4]);
   });

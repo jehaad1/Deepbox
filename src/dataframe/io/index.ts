@@ -5,7 +5,7 @@
  * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox documentation}
  */
 
-export type { ParquetReadOptions, ParquetWriteOptions } from "./parquet";
+export type { ParquetReadOptions, ParquetReadResult, ParquetWriteOptions } from "./parquet";
 export { readParquet, writeParquet } from "./parquet";
-export type { XlsxReadOptions, XlsxWriteOptions } from "./xlsx";
+export type { XlsxCell, XlsxReadOptions, XlsxReadResult, XlsxWriteOptions } from "./xlsx";
 export { readXlsx, writeXlsx } from "./xlsx";

@@ -2,16 +2,24 @@
 
 > **View online:** https://deepbox.dev/examples/03-data-analysis
 
-Comprehensive data analysis workflow using DataFrames, statistics, and plotting. Explores, analyzes, and visualizes employee data.
+An exploratory workflow on a 20-row employee table: summarize it, compute statistics, group and filter rows, and draw four charts.
 
 ## Deepbox Modules Used
 
-| Module              | Features Used                           |
-| ------------------- | --------------------------------------- |
-| `deepbox/dataframe` | DataFrame, groupBy, agg, filter, select |
-| `deepbox/ndarray`   | tensor                                  |
-| `deepbox/stats`     | mean, std, corrcoef                     |
-| `deepbox/plot`      | Figure, scatter, hist, bar, heatmap     |
+| Module              | Features Used                                                                |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `deepbox/dataframe` | `DataFrame`, `groupBy`, `agg`, `filter`, `select`, `head`                    |
+| `deepbox/ndarray`   | `tensor`, `item`                                                             |
+| `deepbox/stats`     | `mean`, `std`, `corrcoef`                                                    |
+| `deepbox/plot`      | `Figure`, `scatter`, `hist`, `bar`, `heatmap`, `renderSVG`                   |
+
+## What It Shows
+
+- Pull DataFrame columns out as arrays with `get(name).toArray()` and turn them into tensors.
+- `mean(t).item()` and `std(t).item()` return plain numbers.
+- `groupBy("department").agg({ salary: "mean", experience: "mean" })` gives one row per department. Groups appear in order of first occurrence.
+- `corrcoef` expects rows to be observations and columns to be variables.
+- The closing summary is computed from the data, not typed in.
 
 ## Usage
 
@@ -21,17 +29,18 @@ npm run example:03
 
 ## Output
 
-- 4 SVG visualizations in `output/`:
-  - `salary-vs-experience.svg` — Scatter plot
-  - `salary-distribution.svg` — Histogram
-  - `dept-salaries.svg` — Bar chart
-  - `correlation-heatmap.svg` — Heatmap
+Four SVG files are written to `output/`:
 
-## Architecture
+- `salary-vs-experience.svg`: scatter plot
+- `salary-distribution.svg`: histogram
+- `dept-salaries.svg`: bar chart
+- `correlation-heatmap.svg`: heatmap of the correlation matrix
+
+## Files
 
 ```
 03-data-analysis/
 ├── index.ts     # Main entry point
 ├── README.md    # This file
-└── output/      # Generated SVG visualizations
+└── output/      # Generated SVG charts
 ```

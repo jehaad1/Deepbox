@@ -56,7 +56,8 @@ describe("deepbox/ml - Ridge", () => {
     expect(() => model.setParams({ unknown: 123 })).toThrow("Unknown parameter");
   });
 
-  it("should throw on singular design matrix when alpha is zero", () => {
+  it("should fall back to the minimum-norm solution on a singular design matrix when alpha is zero", () => {
+    // scikit-learn: Ridge(alpha=0, fit_intercept=False).fit(X, y).coef_ is [0.2, 0.4]
     const model = new Ridge({ alpha: 0, fitIntercept: false });
     const X = tensor([
       [1, 2],
@@ -64,6 +65,9 @@ describe("deepbox/ml - Ridge", () => {
       [3, 6],
     ]);
     const y = tensor([1, 2, 3]);
-    expect(() => model.fit(X, y)).toThrow(/singular|ill-conditioned/i);
+    model.fit(X, y);
+    const coef = Array.from(model.coef.data as ArrayLike<number>);
+    expect(coef[0]).toBeCloseTo(0.2, 10);
+    expect(coef[1]).toBeCloseTo(0.4, 10);
   });
 });

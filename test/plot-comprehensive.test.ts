@@ -4,7 +4,7 @@ import { Figure } from "../src/plot";
 
 const renderSvg = (fig: Figure): string => fig.renderSVG().svg;
 
-describe("Plot - Comprehensive Test Suite", () => {
+describe("Plot tests", () => {
   describe("Figure Creation", () => {
     it("should create figure with minimum dimensions", () => {
       const fig = new Figure({ width: 1, height: 1 });

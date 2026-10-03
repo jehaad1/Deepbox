@@ -11,7 +11,7 @@ describe("MLPClassifier", () => {
   ]);
 
   it("should classify linearly separable data", () => {
-    // OR gate — linearly separable
+    // OR gate, linearly separable
     const y = tensor([0, 1, 1, 1]);
     const clf = new MLPClassifier({ hiddenLayerSizes: [4], maxIter: 500, learningRate: 0.1 });
     clf.fit(X, y);

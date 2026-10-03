@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
-import { ShapeError } from "../../core";
+import { InvalidParameterError, ShapeError } from "../../core";
 import type {
   Color,
   DataRange,
@@ -19,6 +19,8 @@ import { escapeXml } from "../utils/xml";
 
 /**
  * Stem plot: draws vertical lines from a baseline to data points with markers.
+ * A dashed baseline spans the smallest to the largest finite x. Points with a
+ * non-finite x or y are skipped.
  * @internal
  */
 export class Stem2D implements Drawable {
@@ -36,17 +38,55 @@ export class Stem2D implements Drawable {
     this.x = x;
     this.y = y;
     this.color = normalizeColor(options.color, "#1f77b4");
-    this.linewidth = options.linewidth ?? 1.5;
-    this.markerSize = options.size ?? 4;
-    this.baseline = options.baseline ?? 0;
+    const lw = options.linewidth ?? 1.5;
+    if (!Number.isFinite(lw) || lw <= 0) {
+      throw new InvalidParameterError(
+        `linewidth must be a positive number; received ${lw}`,
+        "linewidth",
+        lw
+      );
+    }
+    this.linewidth = lw;
+    const size = options.size ?? 4;
+    if (!Number.isFinite(size) || size <= 0) {
+      throw new InvalidParameterError(
+        `size must be a positive number; received ${size}`,
+        "size",
+        size
+      );
+    }
+    this.markerSize = size;
+    const baseline = options.baseline ?? 0;
+    if (!Number.isFinite(baseline)) {
+      throw new InvalidParameterError(
+        `baseline must be finite; received ${baseline}`,
+        "baseline",
+        baseline
+      );
+    }
+    this.baseline = baseline;
     this.label = normalizeLegendLabel(options.label);
+  }
+
+  /** Smallest and largest x among points that are drawn, or null if there are none. */
+  private finiteXSpan(): readonly [number, number] | null {
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < this.x.length; i++) {
+      const xi = this.x[i] ?? 0;
+      const yi = this.y[i] ?? 0;
+      if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
+      if (xi < lo) lo = xi;
+      if (xi > hi) hi = xi;
+    }
+    return lo <= hi ? [lo, hi] : null;
   }
 
   getDataRange(): DataRange | null {
     let xmin = Infinity;
     let xmax = -Infinity;
-    let ymin = Math.min(this.baseline, Infinity);
-    let ymax = Math.max(this.baseline, -Infinity);
+    let ymin = this.baseline;
+    let ymax = this.baseline;
 
     for (let i = 0; i < this.x.length; i++) {
       const xi = this.x[i] ?? 0;
@@ -66,12 +106,15 @@ export class Stem2D implements Drawable {
     const basePy = ctx.transform.yToPx(this.baseline);
     const ec = escapeXml(this.color);
 
-    // Draw baseline
-    const x0 = this.x.length > 0 ? ctx.transform.xToPx(this.x[0] ?? 0) : 0;
-    const xn = this.x.length > 0 ? ctx.transform.xToPx(this.x[this.x.length - 1] ?? 0) : 0;
-    ctx.push(
-      `<line x1="${x0.toFixed(2)}" y1="${basePy.toFixed(2)}" x2="${xn.toFixed(2)}" y2="${basePy.toFixed(2)}" stroke="${ec}" stroke-width="0.8" stroke-dasharray="4,2" />`
-    );
+    // Draw baseline across the finite x extent
+    const span = this.finiteXSpan();
+    if (span) {
+      const x0 = ctx.transform.xToPx(span[0]);
+      const xn = ctx.transform.xToPx(span[1]);
+      ctx.push(
+        `<line x1="${x0.toFixed(2)}" y1="${basePy.toFixed(2)}" x2="${xn.toFixed(2)}" y2="${basePy.toFixed(2)}" stroke="${ec}" stroke-width="0.8" stroke-dasharray="4,2" />`
+      );
+    }
 
     // Draw stems and markers
     for (let i = 0; i < this.x.length; i++) {
@@ -92,6 +135,18 @@ export class Stem2D implements Drawable {
   drawRaster(ctx: RasterDrawContext): void {
     const rgba = parseHexColorToRGBA(this.color);
     const basePy = Math.round(ctx.transform.yToPx(this.baseline));
+    const span = this.finiteXSpan();
+    if (span) {
+      const x0 = Math.round(ctx.transform.xToPx(span[0]));
+      const xn = Math.round(ctx.transform.xToPx(span[1]));
+      // Dashed like the SVG baseline: 4 px on, 2 px off.
+      const left = Math.min(x0, xn);
+      const right = Math.max(x0, xn);
+      for (let xs = left; xs <= right; xs += 6) {
+        const xe = Math.min(xs + 4, right);
+        ctx.canvas.drawLineRGBA(xs, basePy, xe, basePy, rgba.r, rgba.g, rgba.b, rgba.a);
+      }
+    }
     for (let i = 0; i < this.x.length; i++) {
       const xi = this.x[i] ?? 0;
       const yi = this.y[i] ?? 0;

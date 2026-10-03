@@ -1,31 +1,114 @@
+/**
+ * K-nearest-neighbors estimators: classifier, regressor and unsupervised neighbor search.
+ *
+ * @module ml/neighbors
+ * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
+ */
+
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import {
   assertContiguous,
+  toFloat64View,
   validateFitInputs,
   validatePredictInputs,
   validateUnsupervisedFitInputs,
 } from "../_validation";
-import type { Classifier, Regressor } from "../base";
+import type { Classifier, EstimatorTags, Regressor } from "../base";
+
+type NeighborWeights = "uniform" | "distance";
+type NeighborMetric = "euclidean" | "manhattan";
+
+/**
+ * Inverse-distance weights for a list of neighbor distances, as in scikit-learn.
+ *
+ * Each weight is `1 / distance`. If any neighbor sits at distance zero (or so close
+ * that the inverse overflows), those neighbors get weight 1 and all others weight 0,
+ * so an exact match decides the prediction without producing infinities.
+ *
+ * @param distances - Distances from one query point to its neighbors
+ * @returns One weight per distance
+ *
+ * @internal
+ */
+export function inverseDistanceWeights(distances: ArrayLike<number>): number[] {
+  const n = distances.length;
+  const weights = new Array<number>(n);
+  let anyExact = false;
+  for (let i = 0; i < n; i++) {
+    const w = 1 / (distances[i] as number);
+    weights[i] = w;
+    if (!Number.isFinite(w)) anyExact = true;
+  }
+  if (anyExact) {
+    for (let i = 0; i < n; i++) weights[i] = Number.isFinite(weights[i] as number) ? 0 : 1;
+  }
+  return weights;
+}
+
+/**
+ * Check a score target: 1-D, contiguous, finite and non-empty.
+ *
+ * @internal
+ */
+export function assertScoreTarget(y: Tensor): void {
+  if (y.ndim !== 1) {
+    throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
+  }
+  assertContiguous(y, "y");
+  if (y.size === 0) {
+    throw new DataValidationError("y must contain at least one sample");
+  }
+  for (let i = 0; i < y.size; i++) {
+    const val = y.data[y.offset + i] ?? 0;
+    if (typeof val === "number" && !Number.isFinite(val)) {
+      throw new DataValidationError("y contains non-finite values (NaN or Inf)");
+    }
+  }
+}
+
+/**
+ * Throw a ShapeError unless the prediction and target lengths match.
+ *
+ * @internal
+ */
+export function assertSameSampleCount(nPredicted: number, nTrue: number): void {
+  if (nPredicted !== nTrue) {
+    throw new ShapeError(
+      `X and y must have the same number of samples; got X=${nPredicted}, y=${nTrue}`
+    );
+  }
+}
+
+/**
+ * Build a 1-D label tensor: int32 when every class is an int32 integer, float64 otherwise.
+ *
+ * @internal
+ */
+export function labelTensor(values: ArrayLike<number>, classes: readonly number[]): Tensor {
+  const integral = classes.every((c) => Number.isInteger(c) && c >= -2147483648 && c <= 2147483647);
+  return integral ? tensor(Int32Array.from(values)) : tensor(Float64Array.from(values));
+}
 
 /**
  * K-Nearest Neighbors base class.
  */
 abstract class KNeighborsBase {
   protected nNeighbors: number;
-  protected weights: "uniform" | "distance";
-  protected metric: "euclidean" | "manhattan";
+  protected weights: NeighborWeights;
+  protected metric: NeighborMetric;
 
-  protected XTrain_?: Tensor;
-  protected yTrain_?: Tensor;
-  protected nFeaturesIn_?: number;
+  /** Row-major snapshot of the training samples (taken at fit time). */
+  protected xTrain_?: Float64Array;
+  protected nTrain_ = 0;
+  protected nFeaturesIn_ = 0;
   protected fitted = false;
 
   constructor(
     options: {
       readonly nNeighbors?: number;
-      readonly weights?: "uniform" | "distance";
-      readonly metric?: "euclidean" | "manhattan";
+      readonly weights?: NeighborWeights;
+      readonly metric?: NeighborMetric;
     } = {}
   ) {
     this.nNeighbors = options.nNeighbors ?? 5;
@@ -55,85 +138,112 @@ abstract class KNeighborsBase {
     }
   }
 
-  protected calculateDistance(x1: number[], x2: number[]): number {
-    let dist = 0;
-    if (this.metric === "euclidean") {
-      for (let i = 0; i < x1.length; i++) {
-        const diff = (x1[i] ?? 0) - (x2[i] ?? 0);
-        dist += diff * diff;
-      }
-      return Math.sqrt(dist);
-    } else {
-      // manhattan
-      for (let i = 0; i < x1.length; i++) {
-        dist += Math.abs((x1[i] ?? 0) - (x2[i] ?? 0));
-      }
-      return dist;
-    }
+  /** Copy the (validated) training matrix so later edits of `X` cannot change the model. */
+  protected storeTrainingData(X: Tensor): void {
+    this.xTrain_ = Float64Array.from(toFloat64View(X));
+    this.nTrain_ = X.shape[0] ?? 0;
+    this.nFeaturesIn_ = X.shape[1] ?? 0;
   }
 
+  /**
+   * Find the `k` nearest training samples of one query row.
+   *
+   * Results are ordered by distance; equal distances keep training order.
+   *
+   * @param query - Flat array holding the query row
+   * @param offset - Index of the row's first feature in `query`
+   * @param k - Number of neighbors to return (at most the number of candidates)
+   * @param exclude - Training index to skip (used to leave out a sample itself), or -1
+   */
   protected findNearest(
-    sample: number[],
+    query: Float64Array,
+    offset: number,
     k: number,
-    excludeIndex?: number
+    exclude = -1
   ): Array<{ index: number; distance: number }> {
-    if (!this.XTrain_) {
+    const train = this.xTrain_;
+    if (!train) {
       throw new NotFittedError("Model must be fitted before finding neighbors");
     }
+    const nF = this.nFeaturesIn_;
+    const euclidean = this.metric === "euclidean";
+    const bestKey: number[] = [];
+    const bestIdx: number[] = [];
 
-    const nSamples = this.XTrain_.shape[0] ?? 0;
-    const nFeatures = this.XTrain_.shape[1] ?? 0;
-    const distances: Array<{ index: number; distance: number }> = [];
+    for (let i = 0; i < this.nTrain_; i++) {
+      if (i === exclude) continue;
+      const full = bestKey.length === k;
+      const limit = full ? (bestKey[k - 1] as number) : Number.POSITIVE_INFINITY;
+      const base = i * nF;
+      let acc = 0;
+      for (let f = 0; f < nF; f++) {
+        const diff = (query[offset + f] as number) - (train[base + f] as number);
+        acc += euclidean ? diff * diff : Math.abs(diff);
+        if (full && acc >= limit) break;
+      }
+      // Training indices ascend, so a candidate that only ties the k-th key loses.
+      if (full && acc >= limit) continue;
 
-    for (let i = 0; i < nSamples; i++) {
-      if (excludeIndex !== undefined && i === excludeIndex) {
-        continue;
+      let pos = bestKey.length;
+      while (pos > 0 && (bestKey[pos - 1] as number) > acc) pos--;
+      bestKey.splice(pos, 0, acc);
+      bestIdx.splice(pos, 0, i);
+      if (bestKey.length > k) {
+        bestKey.pop();
+        bestIdx.pop();
       }
-      const trainSample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        trainSample.push(Number(this.XTrain_.data[this.XTrain_.offset + i * nFeatures + j]));
-      }
-      const dist = this.calculateDistance(sample, trainSample);
-      distances.push({ index: i, distance: dist });
     }
 
-    distances.sort((a, b) => a.distance - b.distance);
-    return distances.slice(0, k);
+    return bestKey.map((key, j) => ({
+      index: bestIdx[j] as number,
+      distance: euclidean ? Math.sqrt(key) : key,
+    }));
   }
 
+  /** Find every training sample within `radius` of one query row, nearest first. */
   protected findWithinRadius(
-    sample: number[],
+    query: Float64Array,
+    offset: number,
     radius: number,
-    excludeIndex?: number
+    exclude = -1
   ): Array<{ index: number; distance: number }> {
-    if (!this.XTrain_) {
+    const train = this.xTrain_;
+    if (!train) {
       throw new NotFittedError("Model must be fitted before finding neighbors");
     }
+    const nF = this.nFeaturesIn_;
+    const euclidean = this.metric === "euclidean";
+    const limit = euclidean ? radius * radius : radius;
+    const hits: Array<{ index: number; key: number }> = [];
 
-    const nSamples = this.XTrain_.shape[0] ?? 0;
-    const nFeatures = this.XTrain_.shape[1] ?? 0;
-    const distances: Array<{ index: number; distance: number }> = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      if (excludeIndex !== undefined && i === excludeIndex) {
-        continue;
+    for (let i = 0; i < this.nTrain_; i++) {
+      if (i === exclude) continue;
+      const base = i * nF;
+      let acc = 0;
+      for (let f = 0; f < nF; f++) {
+        const diff = (query[offset + f] as number) - (train[base + f] as number);
+        acc += euclidean ? diff * diff : Math.abs(diff);
+        if (acc > limit) break;
       }
-      const trainSample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        trainSample.push(Number(this.XTrain_.data[this.XTrain_.offset + i * nFeatures + j]));
-      }
-      const dist = this.calculateDistance(sample, trainSample);
-      if (dist <= radius) {
-        distances.push({ index: i, distance: dist });
-      }
+      if (acc <= limit) hits.push({ index: i, key: acc });
     }
 
-    distances.sort((a, b) => a.distance - b.distance);
-    return distances;
+    hits.sort((a, b) => a.key - b.key || a.index - b.index);
+    return hits.map((h) => ({
+      index: h.index,
+      distance: euclidean ? Math.sqrt(h.key) : h.key,
+    }));
   }
 
-  protected findKNearest(sample: number[]): Array<{ index: number; distance: number }> {
-    return this.findNearest(sample, this.nNeighbors);
+  /** Throw if `nNeighbors` (possibly changed by `setParams`) exceeds the training set size. */
+  protected assertEnoughTrainingSamples(): void {
+    if (this.nNeighbors > this.nTrain_) {
+      throw new InvalidParameterError(
+        `nNeighbors must be <= n_samples; received ${this.nNeighbors} > ${this.nTrain_}`,
+        "nNeighbors",
+        this.nNeighbors
+      );
+    }
   }
 
   /**
@@ -200,15 +310,16 @@ abstract class KNeighborsBase {
  * K-Nearest Neighbors Classifier.
  *
  * Classification based on k nearest neighbors. Predicts class by majority vote
- * of k nearest training samples.
+ * of k nearest training samples. When classes tie, the smallest label wins, as in
+ * scikit-learn.
  *
  * **Algorithm**: Instance-based learning
  * 1. Store all training data
  * 2. For each test sample, find k nearest training samples
- * 3. Predict class by majority vote (or weighted vote)
+ * 3. Predict class by majority vote (or inverse-distance weighted vote)
  *
  * **Time Complexity**:
- * - Training: O(1) (just stores data)
+ * - Training: O(n * d) (copies the data)
  * - Prediction: O(n * d) per sample where n=training samples, d=features
  *
  * @example
@@ -226,9 +337,12 @@ abstract class KNeighborsBase {
  * ```
  *
  * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
- * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
  */
 export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
+  private classes_: number[] = [];
+  /** Class index (position in `classes_`) of every training sample. */
+  private yIndex_?: Int32Array;
+
   /**
    * Fit the k-nearest neighbors classifier from the training set.
    *
@@ -243,7 +357,6 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
     if (this.nNeighbors > nSamples) {
       throw new InvalidParameterError(
         `nNeighbors must be <= n_samples; received ${this.nNeighbors} > ${nSamples}`,
@@ -252,9 +365,20 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
       );
     }
 
-    this.XTrain_ = X;
-    this.yTrain_ = y;
-    this.nFeaturesIn_ = nFeatures;
+    const labels = toFloat64View(y);
+    const classes = [...new Set(labels)].sort((a, b) => a - b);
+    const classIndex = new Map<number, number>();
+    classes.forEach((c, i) => {
+      classIndex.set(c, i);
+    });
+    const yIndex = new Int32Array(nSamples);
+    for (let i = 0; i < nSamples; i++) {
+      yIndex[i] = classIndex.get(labels[i] as number) as number;
+    }
+
+    this.storeTrainingData(X);
+    this.classes_ = classes;
+    this.yIndex_ = yIndex;
     this.fitted = true;
 
     return this;
@@ -264,111 +388,55 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
    * Predict class labels for samples in X.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted class labels of shape (n_samples,)
+   * @returns Predicted class labels of shape (n_samples,); int32 when all training
+   *   labels are integers, float64 otherwise
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted || !this.XTrain_ || !this.yTrain_) {
-      throw new NotFittedError("KNeighborsClassifier must be fitted before prediction");
-    }
-
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "KNeighborsClassifier");
-
+    const proba = this.votes(X, "KNeighborsClassifier");
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
+    const nClasses = this.classes_.length;
+    const predictions = new Float64Array(nSamples);
 
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
+      // Strict comparison over ascending classes: the smallest label wins ties.
+      let best = 0;
+      for (let c = 1; c < nClasses; c++) {
+        if ((proba[i * nClasses + c] as number) > (proba[i * nClasses + best] as number)) best = c;
       }
-
-      const neighbors = this.findKNearest(sample);
-
-      // Count votes for each class
-      const votes = new Map<number, number>();
-
-      for (const neighbor of neighbors) {
-        const label = Number(this.yTrain_.data[this.yTrain_.offset + neighbor.index]);
-        const weight = this.weights === "uniform" ? 1 : 1 / (neighbor.distance + 1e-10);
-        votes.set(label, (votes.get(label) ?? 0) + weight);
-      }
-
-      // Find class with most votes
-      let maxVotes = -1;
-      let predictedClass = 0;
-      for (const [label, voteCount] of votes.entries()) {
-        if (voteCount > maxVotes) {
-          maxVotes = voteCount;
-          predictedClass = label;
-        }
-      }
-
-      predictions.push(predictedClass);
+      predictions[i] = this.classes_[best] as number;
     }
 
-    return tensor(predictions, { dtype: "int32" });
+    return labelTensor(predictions, this.classes_);
   }
 
   /**
    * Predict class probabilities for samples in X.
    *
+   * With `weights: "uniform"` the probability of a class is the fraction of the k
+   * neighbors that carry it; with `weights: "distance"` neighbors are weighted by
+   * inverse distance. Columns follow the sorted unique training labels.
+   *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Class probability matrix of shape (n_samples, n_classes)
+   * @returns Class probability matrix of shape (n_samples, n_classes), float64
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predictProba(X: Tensor): Tensor {
-    if (!this.fitted || !this.XTrain_ || !this.yTrain_) {
-      throw new NotFittedError("KNeighborsClassifier must be fitted before prediction");
-    }
-
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "KNeighborsClassifier");
-
+    const proba = this.votes(X, "KNeighborsClassifier");
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-
-    // Get unique classes
-    const classSet = new Set<number>();
-    for (let i = 0; i < this.yTrain_.size; i++) {
-      classSet.add(Number(this.yTrain_.data[this.yTrain_.offset + i]));
-    }
-    const classes = Array.from(classSet).sort((a, b) => a - b);
-
-    const probabilities: number[][] = [];
-
+    const nClasses = this.classes_.length;
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
+      let total = 0;
+      for (let c = 0; c < nClasses; c++) total += proba[i * nClasses + c] as number;
+      for (let c = 0; c < nClasses; c++) {
+        proba[i * nClasses + c] = (proba[i * nClasses + c] as number) / total;
       }
-
-      const neighbors = this.findKNearest(sample);
-
-      // Count votes for each class
-      const votes = new Map<number, number>();
-      let totalWeight = 0;
-
-      for (const neighbor of neighbors) {
-        const label = Number(this.yTrain_.data[this.yTrain_.offset + neighbor.index]);
-        const weight = this.weights === "uniform" ? 1 : 1 / (neighbor.distance + 1e-10);
-        votes.set(label, (votes.get(label) ?? 0) + weight);
-        totalWeight += weight;
-      }
-
-      // Convert to probabilities
-      const probs: number[] = [];
-      for (const cls of classes) {
-        probs.push((votes.get(cls) ?? 0) / totalWeight);
-      }
-      probabilities.push(probs);
     }
-
-    return tensor(probabilities);
+    return tensor(proba).reshape([nSamples, nClasses]);
   }
 
   /**
@@ -379,27 +447,14 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
    * @returns Accuracy score in range [0, 1]
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf values
    */
   score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
+    assertScoreTarget(y);
     const yPred = this.predict(X);
-    if (yPred.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${yPred.size}, y=${y.size}`
-      );
-    }
-    let correct = 0;
+    assertSameSampleCount(yPred.size, y.size);
 
+    let correct = 0;
     for (let i = 0; i < y.size; i++) {
       if (Number(y.data[y.offset + i]) === Number(yPred.data[yPred.offset + i])) {
         correct++;
@@ -407,6 +462,61 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
     }
 
     return correct / y.size;
+  }
+
+  /**
+   * Sorted unique class labels seen during fit; columns of `predictProba` follow this order.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get classes(): Tensor {
+    if (!this.fitted)
+      throw new NotFittedError("KNeighborsClassifier must be fitted to access classes");
+    return labelTensor(this.classes_, this.classes_);
+  }
+
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   *
+   * @returns A new KNeighborsClassifier
+   */
+  clone(): KNeighborsClassifier {
+    return new KNeighborsClassifier({
+      nNeighbors: this.nNeighbors,
+      weights: this.weights,
+      metric: this.metric,
+    });
+  }
+
+  /**
+   * Weighted vote totals of the k nearest neighbors, flat `(n_samples, n_classes)`.
+   */
+  private votes(X: Tensor, name: string): Float64Array {
+    if (!this.fitted || !this.xTrain_ || !this.yIndex_) {
+      throw new NotFittedError(`${name} must be fitted before prediction`);
+    }
+    validatePredictInputs(X, this.nFeaturesIn_, name);
+    this.assertEnoughTrainingSamples();
+
+    const nSamples = X.shape[0] ?? 0;
+    const nF = this.nFeaturesIn_;
+    const nClasses = this.classes_.length;
+    const rows = toFloat64View(X);
+    const totals = new Float64Array(nSamples * nClasses);
+
+    for (let i = 0; i < nSamples; i++) {
+      const neighbors = this.findNearest(rows, i * nF, this.nNeighbors);
+      const w =
+        this.weights === "uniform"
+          ? null
+          : inverseDistanceWeights(neighbors.map((n) => n.distance));
+      for (let j = 0; j < neighbors.length; j++) {
+        const cls = this.yIndex_[(neighbors[j] as { index: number }).index] as number;
+        totals[i * nClasses + cls] =
+          (totals[i * nClasses + cls] as number) + (w ? (w[j] as number) : 1);
+      }
+    }
+    return totals;
   }
 }
 
@@ -433,6 +543,8 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
  * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
  */
 export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
+  private yTrain_?: Float64Array;
+
   /**
    * Fit the k-nearest neighbors regressor from the training set.
    *
@@ -447,7 +559,6 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
     if (this.nNeighbors > nSamples) {
       throw new InvalidParameterError(
         `nNeighbors must be <= n_samples; received ${this.nNeighbors} > ${nSamples}`,
@@ -456,9 +567,8 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
       );
     }
 
-    this.XTrain_ = X;
-    this.yTrain_ = y;
-    this.nFeaturesIn_ = nFeatures;
+    this.storeTrainingData(X);
+    this.yTrain_ = Float64Array.from(toFloat64View(y));
     this.fitted = true;
 
     return this;
@@ -468,42 +578,40 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
    * Predict target values for samples in X.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted values of shape (n_samples,)
+   * @returns Predicted values of shape (n_samples,), float64
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted || !this.XTrain_ || !this.yTrain_) {
+    if (!this.fitted || !this.xTrain_ || !this.yTrain_) {
       throw new NotFittedError("KNeighborsRegressor must be fitted before prediction");
     }
 
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "KNeighborsRegressor");
+    validatePredictInputs(X, this.nFeaturesIn_, "KNeighborsRegressor");
+    this.assertEnoughTrainingSamples();
 
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
+    const nF = this.nFeaturesIn_;
+    const rows = toFloat64View(X);
+    const predictions = new Float64Array(nSamples);
 
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
+      const neighbors = this.findNearest(rows, i * nF, this.nNeighbors);
+      const w =
+        this.weights === "uniform"
+          ? null
+          : inverseDistanceWeights(neighbors.map((n) => n.distance));
 
-      const neighbors = this.findKNearest(sample);
-
-      // Calculate weighted mean
       let sumValues = 0;
       let sumWeights = 0;
-
-      for (const neighbor of neighbors) {
-        const value = Number(this.yTrain_.data[this.yTrain_.offset + neighbor.index]);
-        const weight = this.weights === "uniform" ? 1 : 1 / (neighbor.distance + 1e-10);
-        sumValues += value * weight;
+      for (let j = 0; j < neighbors.length; j++) {
+        const weight = w ? (w[j] as number) : 1;
+        sumValues += (this.yTrain_[(neighbors[j] as { index: number }).index] as number) * weight;
         sumWeights += weight;
       }
 
-      predictions.push(sumValues / sumWeights);
+      predictions[i] = sumValues / sumWeights;
     }
 
     return tensor(predictions);
@@ -517,25 +625,12 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
    * @returns R² score (best possible is 1.0, can be negative)
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf values
    */
   score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
+    assertScoreTarget(y);
     const yPred = this.predict(X);
-    if (yPred.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${yPred.size}, y=${y.size}`
-      );
-    }
+    assertSameSampleCount(yPred.size, y.size);
 
     let ssRes = 0;
     let ssTot = 0;
@@ -559,21 +654,58 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
 
     return 1 - ssRes / ssTot;
   }
+
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   *
+   * @returns A new KNeighborsRegressor
+   */
+  clone(): KNeighborsRegressor {
+    return new KNeighborsRegressor({
+      nNeighbors: this.nNeighbors,
+      weights: this.weights,
+      metric: this.metric,
+    });
+  }
 }
 
+/**
+ * Unsupervised nearest-neighbor search.
+ *
+ * Stores the training samples and answers k-nearest and fixed-radius queries
+ * with the chosen metric. Distances and indices are exact (brute force).
+ *
+ * @example
+ * ```ts
+ * import { NearestNeighbors } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0, 0], [1, 0], [0, 2], [5, 5]]);
+ * const nn = new NearestNeighbors({ nNeighbors: 2 }).fit(X);
+ * const { distances, indices } = nn.kneighbors(tensor([[0.2, 0]]));
+ * // indices -> [[0, 1]]
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-neighbors | Deepbox Nearest Neighbors}
+ */
 export class NearestNeighbors extends KNeighborsBase {
   private radius: number;
 
+  /**
+   * @param options.nNeighbors - Default number of neighbors for `kneighbors` (default: 5)
+   * @param options.radius - Default radius for `radiusNeighbors` (default: 1)
+   * @param options.metric - "euclidean" (default) or "manhattan"
+   */
   constructor(
     options: {
       readonly nNeighbors?: number;
       readonly radius?: number;
-      readonly metric?: "euclidean" | "manhattan";
+      readonly metric?: NeighborMetric;
     } = {}
   ) {
     const baseOptions: {
       readonly nNeighbors?: number;
-      readonly metric?: "euclidean" | "manhattan";
+      readonly metric?: NeighborMetric;
     } = {
       ...(options.nNeighbors !== undefined ? { nNeighbors: options.nNeighbors } : {}),
       ...(options.metric !== undefined ? { metric: options.metric } : {}),
@@ -586,86 +718,128 @@ export class NearestNeighbors extends KNeighborsBase {
     }
   }
 
+  /**
+   * Store the samples that later queries are answered against.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {ShapeError} If X is not 2D
+   * @throws {DataValidationError} If X is empty or contains NaN/Inf values
+   */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
-    this.XTrain_ = X;
-    this.nFeaturesIn_ = X.shape[1] ?? 0;
+    this.storeTrainingData(X);
     this.fitted = true;
     return this;
   }
 
-  kneighbors(X?: Tensor): { distances: Tensor; indices: Tensor } {
-    if (!this.fitted || !this.XTrain_) {
+  /**
+   * Find the k nearest training samples of each query row.
+   *
+   * When `X` is omitted the training samples themselves are queried and every
+   * sample is excluded from its own neighbor list.
+   *
+   * @param X - Query samples of shape (n_queries, n_features); defaults to the training data
+   * @param nNeighbors - Number of neighbors; defaults to the `nNeighbors` option
+   * @returns `distances` (float64) and `indices` (int32), both of shape (n_queries, nNeighbors),
+   *   nearest first
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {InvalidParameterError} If nNeighbors is invalid or larger than the number of
+   *   available training samples
+   * @throws {ShapeError} If X has the wrong dimensions or feature count
+   */
+  kneighbors(X?: Tensor, nNeighbors?: number): { distances: Tensor; indices: Tensor } {
+    const train = this.xTrain_;
+    if (!this.fitted || !train) {
       throw new NotFittedError("NearestNeighbors must be fitted before querying neighbors");
     }
 
-    const query = X ?? this.XTrain_;
+    const k = nNeighbors ?? this.nNeighbors;
+    if (!Number.isInteger(k) || k < 1) {
+      throw new InvalidParameterError("nNeighbors must be an integer >= 1", "nNeighbors", k);
+    }
+
     const queryingTrainingData = X === undefined;
-    if (!queryingTrainingData) {
-      validatePredictInputs(query, this.nFeaturesIn_ ?? 0, "NearestNeighbors");
+    let query: Float64Array;
+    let nQueries: number;
+    if (queryingTrainingData) {
+      query = train;
+      nQueries = this.nTrain_;
+    } else {
+      validatePredictInputs(X, this.nFeaturesIn_, "NearestNeighbors");
+      query = toFloat64View(X);
+      nQueries = X.shape[0] ?? 0;
     }
 
-    const trainSamples = this.XTrain_.shape[0] ?? 0;
-    const maxNeighbors = queryingTrainingData ? trainSamples - 1 : trainSamples;
-    if (this.nNeighbors > maxNeighbors) {
+    const maxNeighbors = queryingTrainingData ? this.nTrain_ - 1 : this.nTrain_;
+    if (k > maxNeighbors) {
       throw new InvalidParameterError(
-        `nNeighbors must be <= ${maxNeighbors} for this query; received ${this.nNeighbors}`,
+        `nNeighbors must be <= ${maxNeighbors} for this query; received ${k}`,
         "nNeighbors",
-        this.nNeighbors
+        k
       );
     }
 
-    const nSamples = query.shape[0] ?? 0;
-    const nFeatures = query.shape[1] ?? 0;
-    const distanceRows: number[][] = [];
-    const indexRows: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(query.data[query.offset + i * nFeatures + j]));
+    const nF = this.nFeaturesIn_;
+    const distances = new Float64Array(nQueries * k);
+    const indices = new Int32Array(nQueries * k);
+    for (let i = 0; i < nQueries; i++) {
+      const neighbors = this.findNearest(query, i * nF, k, queryingTrainingData ? i : -1);
+      for (let j = 0; j < k; j++) {
+        const neighbor = neighbors[j] as { index: number; distance: number };
+        distances[i * k + j] = neighbor.distance;
+        indices[i * k + j] = neighbor.index;
       }
-      const neighbors = this.findNearest(
-        sample,
-        this.nNeighbors,
-        queryingTrainingData ? i : undefined
-      );
-      distanceRows.push(neighbors.map((neighbor) => neighbor.distance));
-      indexRows.push(neighbors.map((neighbor) => neighbor.index));
     }
 
     return {
-      distances: tensor(distanceRows),
-      indices: tensor(indexRows, { dtype: "int32" }),
+      distances: tensor(distances).reshape([nQueries, k]),
+      indices: tensor(indices).reshape([nQueries, k]),
     };
   }
 
-  radiusNeighbors(X?: Tensor): { distances: number[][]; indices: number[][] } {
-    if (!this.fitted || !this.XTrain_) {
+  /**
+   * Find all training samples within a radius of each query row.
+   *
+   * When `X` is omitted the training samples themselves are queried and every
+   * sample is excluded from its own neighbor list.
+   *
+   * @param X - Query samples of shape (n_queries, n_features); defaults to the training data
+   * @param radius - Search radius; defaults to the `radius` option
+   * @returns For every query, the neighbor distances and training indices, nearest first
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {InvalidParameterError} If radius is not a finite number > 0
+   * @throws {ShapeError} If X has the wrong dimensions or feature count
+   */
+  radiusNeighbors(X?: Tensor, radius?: number): { distances: number[][]; indices: number[][] } {
+    const train = this.xTrain_;
+    if (!this.fitted || !train) {
       throw new NotFittedError("NearestNeighbors must be fitted before querying neighbors");
     }
 
-    const query = X ?? this.XTrain_;
-    const queryingTrainingData = X === undefined;
-    if (!queryingTrainingData) {
-      validatePredictInputs(query, this.nFeaturesIn_ ?? 0, "NearestNeighbors");
+    const r = radius ?? this.radius;
+    if (typeof r !== "number" || !Number.isFinite(r) || r <= 0) {
+      throw new InvalidParameterError("radius must be a finite number > 0", "radius", r);
     }
 
-    const nSamples = query.shape[0] ?? 0;
-    const nFeatures = query.shape[1] ?? 0;
+    const queryingTrainingData = X === undefined;
+    let query: Float64Array;
+    let nQueries: number;
+    if (queryingTrainingData) {
+      query = train;
+      nQueries = this.nTrain_;
+    } else {
+      validatePredictInputs(X, this.nFeaturesIn_, "NearestNeighbors");
+      query = toFloat64View(X);
+      nQueries = X.shape[0] ?? 0;
+    }
+
+    const nF = this.nFeaturesIn_;
     const distanceRows: number[][] = [];
     const indexRows: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(query.data[query.offset + i * nFeatures + j]));
-      }
-      const neighbors = this.findWithinRadius(
-        sample,
-        this.radius,
-        queryingTrainingData ? i : undefined
-      );
+    for (let i = 0; i < nQueries; i++) {
+      const neighbors = this.findWithinRadius(query, i * nF, r, queryingTrainingData ? i : -1);
       distanceRows.push(neighbors.map((neighbor) => neighbor.distance));
       indexRows.push(neighbors.map((neighbor) => neighbor.index));
     }
@@ -715,5 +889,28 @@ export class NearestNeighbors extends KNeighborsBase {
       }
     }
     return this;
+  }
+
+  /**
+   * Estimator tags. The model has no `predict`, `transform` or `scoreSamples`, so tag
+   * inference would report a classifier that needs `y`; it is unsupervised.
+   *
+   * @internal
+   */
+  _getTags(): Partial<EstimatorTags> {
+    return { estimatorType: "transformer", requiresY: false };
+  }
+
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   *
+   * @returns A new NearestNeighbors
+   */
+  clone(): NearestNeighbors {
+    return new NearestNeighbors({
+      nNeighbors: this.nNeighbors,
+      radius: this.radius,
+      metric: this.metric,
+    });
   }
 }

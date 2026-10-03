@@ -15,8 +15,11 @@ class MockScoringEstimator {
     this.importances = importances;
   }
 
-  fit(_X: Tensor, y: Tensor): this {
-    this.featureImportances_ = [...this.importances];
+  fit(X: Tensor, y: Tensor): this {
+    // Importances follow the original columns, identified by their first-row value.
+    const keys = [1, 10, 100, 1000];
+    const firstRow = (X.toArray() as number[][])[0] ?? [];
+    this.featureImportances_ = firstRow.map((v) => this.importances[keys.indexOf(v)] ?? 0);
     this.lastY = y;
     return this;
   }

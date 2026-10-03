@@ -1,33 +1,25 @@
 /**
  * Sentiment Analysis System
  *
- * Text classification for sentiment analysis using bag-of-words and ML classifiers.
+ * Classifies synthetic reviews as positive or negative. Reviews are turned into
+ * TF-IDF vectors by hand, then two classifiers are trained and compared.
  *
  * Deepbox Modules Used:
  * - deepbox/ml: LogisticRegression, GaussianNB
  * - deepbox/preprocess: StandardScaler, trainTestSplit
  * - deepbox/metrics: Classification metrics
- * - deepbox/dataframe: Data manipulation
- * - deepbox/ndarray: Tensor operations
+ * - deepbox/dataframe: Tables for console output
+ * - deepbox/ndarray: tensor
+ * - deepbox/plot: SVG charts
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
 import { accuracy, confusionMatrix, f1Score, precision, recall } from "deepbox/metrics";
 import { GaussianNB, LogisticRegression } from "deepbox/ml";
 import { tensor } from "deepbox/ndarray";
 import { Figure } from "deepbox/plot";
 import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 // ============================================================================
 // Configuration
@@ -245,7 +237,7 @@ function calculateTFIDF(documents: number[][], vocabulary: string[]): number[][]
 
 console.log("═".repeat(70));
 console.log("  SENTIMENT ANALYSIS SYSTEM");
-console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
+console.log("  Built with Deepbox: TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -257,7 +249,7 @@ if (!existsSync(OUTPUT_DIR)) {
 // Step 1: Generate Data
 // ============================================================================
 
-console.log("\n📊 STEP 1: Generating Sentiment Data");
+console.log("\nSTEP 1: Generating Sentiment Data");
 console.log("─".repeat(70));
 
 const reviews: { text: string; words: string[]; label: number }[] = [];
@@ -268,16 +260,12 @@ for (let i = 0; i < NUM_SAMPLES; i++) {
   reviews.push({ text, words, label: isPositive ? 1 : 0 });
 }
 
-// Shuffle reviews
-for (let i = reviews.length - 1; i > 0; i--) {
-  const j = Math.floor(Math.random() * (i + 1));
-  [reviews[i], reviews[j]] = [reviews[j], reviews[i]];
-}
+// The reviews are ordered (positive first). trainTestSplit shuffles with a fixed seed.
 
 const numPositive = reviews.filter((r) => r.label === 1).length;
 const numNegative = reviews.filter((r) => r.label === 0).length;
 
-console.log(`\n✓ Generated ${NUM_SAMPLES} reviews`);
+console.log(`\nGenerated ${NUM_SAMPLES} reviews`);
 console.log(`  Positive: ${numPositive} (${((numPositive / NUM_SAMPLES) * 100).toFixed(1)}%)`);
 console.log(`  Negative: ${numNegative} (${((numNegative / NUM_SAMPLES) * 100).toFixed(1)}%)`);
 
@@ -290,14 +278,14 @@ console.log(`  [Negative] "${reviews.find((r) => r.label === 0)?.text.slice(0, 6
 // Step 2: Build Vocabulary & Features
 // ============================================================================
 
-console.log("\n📝 STEP 2: Building Vocabulary & Features");
+console.log("\nSTEP 2: Building Vocabulary & Features");
 console.log("─".repeat(70));
 
 // Build vocabulary
 const allWords = reviews.map((r) => r.words);
 const vocabulary = buildVocabulary(allWords, VOCAB_SIZE);
 
-console.log(`\n✓ Built vocabulary with ${vocabulary.length} terms`);
+console.log(`\nBuilt vocabulary with ${vocabulary.length} terms`);
 console.log(`  Top terms: ${vocabulary.slice(0, 10).join(", ")}...`);
 
 // Convert to bag-of-words
@@ -306,7 +294,7 @@ const bowVectors = reviews.map((r) => textToVector(r.words, vocabulary));
 // Calculate TF-IDF
 const tfidfVectors = calculateTFIDF(bowVectors, vocabulary);
 
-console.log(`✓ Created TF-IDF vectors`);
+console.log(`Created TF-IDF vectors`);
 console.log(`  Vector dimension: ${tfidfVectors[0].length}`);
 
 // Prepare data
@@ -317,7 +305,7 @@ const y = tensor(reviews.map((r) => r.label));
 // Step 3: Train/Test Split
 // ============================================================================
 
-console.log("\n📦 STEP 3: Train/Test Split");
+console.log("\nSTEP 3: Train/Test Split");
 console.log("─".repeat(70));
 
 const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, {
@@ -326,7 +314,7 @@ const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, {
   shuffle: true,
 });
 
-console.log(`\n✓ Split data`);
+console.log(`\nSplit data`);
 console.log(`  Training: ${XTrain.shape[0]} samples`);
 console.log(`  Testing: ${XTest.shape[0]} samples`);
 
@@ -336,13 +324,13 @@ scaler.fit(XTrain);
 const XTrainScaled = scaler.transform(XTrain);
 const XTestScaled = scaler.transform(XTest);
 
-console.log(`✓ Applied StandardScaler`);
+console.log(`Applied StandardScaler`);
 
 // ============================================================================
 // Step 4: Model Training
 // ============================================================================
 
-console.log("\n🤖 STEP 4: Model Training");
+console.log("\nSTEP 4: Model Training");
 console.log("─".repeat(70));
 
 // Logistic Regression
@@ -351,7 +339,7 @@ const lr = new LogisticRegression({ maxIter: 200, learningRate: 0.1 });
 const lrStart = Date.now();
 lr.fit(XTrainScaled, yTrain);
 const lrTime = Date.now() - lrStart;
-console.log(`  ✓ Trained in ${lrTime}ms`);
+console.log(`  Trained in ${lrTime}ms`);
 
 // Naive Bayes
 console.log("Training Gaussian Naive Bayes...");
@@ -359,20 +347,19 @@ const nb = new GaussianNB();
 const nbStart = Date.now();
 nb.fit(XTrainScaled, yTrain);
 const nbTime = Date.now() - nbStart;
-console.log(`  ✓ Trained in ${nbTime}ms`);
+console.log(`  Trained in ${nbTime}ms`);
 
 // ============================================================================
 // Step 5: Model Evaluation
 // ============================================================================
 
-console.log("\n📈 STEP 5: Model Evaluation");
+console.log("\nSTEP 5: Model Evaluation");
 console.log("─".repeat(70));
 
-// Get predictions
 const yPredLR = lr.predict(XTestScaled);
 const yPredNB = nb.predict(XTestScaled);
 
-// Calculate metrics
+// Metrics on the held-out test set
 const results = [
   {
     name: "Logistic Regression",
@@ -397,42 +384,33 @@ const results = [
 console.log("\nModel Comparison:\n");
 const metricsDF = new DataFrame({
   Model: results.map((r) => r.name),
-  "Accuracy (%)": results.map((r) => (Number(r.accuracy) * 100).toFixed(2)),
-  "Precision (%)": results.map((r) => (Number(r.precision) * 100).toFixed(2)),
-  "Recall (%)": results.map((r) => (Number(r.recall) * 100).toFixed(2)),
-  "F1 Score (%)": results.map((r) => (Number(r.f1) * 100).toFixed(2)),
+  "Accuracy (%)": results.map((r) => (r.accuracy * 100).toFixed(2)),
+  "Precision (%)": results.map((r) => (r.precision * 100).toFixed(2)),
+  "Recall (%)": results.map((r) => (r.recall * 100).toFixed(2)),
+  "F1 Score (%)": results.map((r) => (r.f1 * 100).toFixed(2)),
   "Time (ms)": results.map((r) => r.time.toString()),
 });
 console.log(metricsDF.toString());
 
 // Best model
-const bestModel = results.reduce((best, r) => (Number(r.f1) > Number(best.f1) ? r : best));
-console.log(`\n🏆 Best Model: ${bestModel.name} (F1: ${(Number(bestModel.f1) * 100).toFixed(2)}%)`);
+const bestModel = results.reduce((best, r) => (r.f1 > best.f1 ? r : best));
+console.log(`\nBest Model: ${bestModel.name} (F1: ${(bestModel.f1 * 100).toFixed(2)}%)`);
 
 // ============================================================================
 // Step 6: Confusion Matrix
 // ============================================================================
 
-console.log("\n📊 STEP 6: Confusion Matrix Analysis");
+console.log("\nSTEP 6: Confusion Matrix Analysis");
 console.log("─".repeat(70));
 
 const cm = confusionMatrix(yTest, bestModel.predictions);
-const cmData = expectNumericTypedArray(cm.data);
+const [[tn, fp], [fn, tp]] = cm.toArray() as number[][];
 
 console.log(`\nConfusion Matrix (${bestModel.name}):`);
 console.log("                  Predicted");
 console.log("                  Negative  Positive");
-console.log(
-  `  Actual Negative    ${String(cmData[0]).padStart(4)}      ${String(cmData[1]).padStart(4)}`
-);
-console.log(
-  `  Actual Positive    ${String(cmData[2]).padStart(4)}      ${String(cmData[3]).padStart(4)}`
-);
-
-const tn = cmData[0];
-const fp = cmData[1];
-const fn = cmData[2];
-const tp = cmData[3];
+console.log(`  Actual Negative    ${String(tn).padStart(4)}      ${String(fp).padStart(4)}`);
+console.log(`  Actual Positive    ${String(fn).padStart(4)}      ${String(tp).padStart(4)}`);
 
 console.log(`\n  True Negatives:  ${tn}`);
 console.log(`  False Positives: ${fp}`);
@@ -443,7 +421,7 @@ console.log(`  True Positives:  ${tp}`);
 // Step 7: Feature Analysis
 // ============================================================================
 
-console.log("\n🔍 STEP 7: Feature Analysis");
+console.log("\nSTEP 7: Feature Analysis");
 console.log("─".repeat(70));
 
 // Analyze most predictive words (simple frequency analysis)
@@ -493,12 +471,12 @@ for (const { word, ratio, posCount, negCount } of mostNegative) {
 // Step 8: Sample Predictions
 // ============================================================================
 
-console.log("\n🎯 STEP 8: Sample Predictions");
+console.log("\nSTEP 8: Sample Predictions");
 console.log("─".repeat(70));
 
 // Show some predictions
-const testLabels = yTest.data;
-const predLabels = bestModel.predictions.data;
+const testLabels = yTest.toArray() as number[];
+const predLabels = bestModel.predictions.toArray() as number[];
 
 console.log("\nSample Test Predictions:\n");
 const sampleCount = Math.min(10, XTest.shape[0]);
@@ -509,10 +487,10 @@ let shown = 0;
 for (let i = 0; i < XTest.shape[0]; i++) {
   const actual = testLabels[i] === 1 ? "Positive" : "Negative";
   const predicted = predLabels[i] === 1 ? "Positive" : "Negative";
-  const status = testLabels[i] === predLabels[i] ? "✓" : "✗";
+  const status = testLabels[i] === predLabels[i] ? "ok" : "wrong";
 
   if (i < sampleCount && shown < 5) {
-    console.log(`  ${status} Actual: ${actual.padEnd(10)} Predicted: ${predicted}`);
+    console.log(`  [${status}] Actual: ${actual.padEnd(10)} Predicted: ${predicted}`);
     shown++;
   }
 
@@ -531,7 +509,7 @@ console.log(`  Full test correct:    ${totalCorrect}/${XTest.shape[0]}`);
 // Step 9: Visualizations
 // ============================================================================
 
-console.log("\n📊 STEP 9: Generating Visualizations");
+console.log("\nSTEP 9: Generating Visualizations");
 console.log("─".repeat(70));
 
 // Model comparison chart
@@ -540,7 +518,7 @@ try {
   const ax = fig.addAxes();
 
   const modelIndices = [0, 1];
-  const f1Scores = results.map((r) => Number(r.f1) * 100);
+  const f1Scores = results.map((r) => r.f1 * 100);
 
   ax.bar(tensor(modelIndices), tensor(f1Scores), { color: "#4CAF50" });
   ax.setTitle("Model Comparison (F1 Score)");
@@ -549,9 +527,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/model-comparison.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/model-comparison.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/model-comparison.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate model comparison: ${e}`);
+  console.log(`  Warning: could not generate model comparison: ${e}`);
 }
 
 // ============================================================================
@@ -562,7 +540,7 @@ console.log(`\n${"═".repeat(70)}`);
 console.log("  SENTIMENT ANALYSIS COMPLETE - SUMMARY");
 console.log("═".repeat(70));
 
-console.log("\n📌 Key Findings:\n");
+console.log("\nKey Findings:\n");
 console.log("  1. Data Overview:");
 console.log(`     • ${NUM_SAMPLES} reviews analyzed`);
 console.log(`     • Vocabulary size: ${vocabulary.length} terms`);
@@ -570,18 +548,17 @@ console.log(`     • Balanced classes (50/50)`);
 
 console.log("\n  2. Best Model:");
 console.log(`     • ${bestModel.name}`);
-console.log(`     • Accuracy: ${(Number(bestModel.accuracy) * 100).toFixed(2)}%`);
-console.log(`     • F1 Score: ${(Number(bestModel.f1) * 100).toFixed(2)}%`);
+console.log(`     • Accuracy: ${(bestModel.accuracy * 100).toFixed(2)}%`);
+console.log(`     • F1 Score: ${(bestModel.f1 * 100).toFixed(2)}%`);
 console.log(`     • Training time: ${bestModel.time}ms`);
 
 console.log("\n  3. Observations:");
-console.log("     • TF-IDF features capture sentiment effectively");
-console.log("     • Both models achieve good performance");
-console.log("     • Sentiment words are strong predictors");
+console.log("     • The reviews are drawn from fixed positive, negative and neutral word lists");
+console.log("     • High scores are expected on data this regular, and say little about real text");
 
-console.log("\n📁 Output Files:");
+console.log("\nOutput Files:");
 console.log(`   • ${OUTPUT_DIR}/model-comparison.svg`);
 
 console.log(`\n${"═".repeat(70)}`);
-console.log("  ✅ Sentiment Analysis Complete!");
+console.log("  Sentiment Analysis Complete!");
 console.log("═".repeat(70));

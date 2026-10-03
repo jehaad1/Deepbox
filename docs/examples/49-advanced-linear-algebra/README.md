@@ -2,14 +2,14 @@
 
 > **View online:** https://deepbox.dev/examples/49-advanced-linear-algebra
 
-A focused v1.0.0 linear algebra example covering the new advanced routines missing from the earlier decomposition walkthrough: Hessenberg and Schur decompositions, polar decomposition, matrix functions, structured solvers, sparse CSR solving, and Sylvester/Lyapunov equations.
+Linear algebra routines beyond SVD, QR and LU: Hessenberg and Schur decompositions, polar decomposition, matrix functions (`expm`, `logm`, `sqrtm`, `matrixPower`), banded and sparse solvers, Sylvester and Lyapunov equations, and special matrix builders. Reconstruction errors are computed with the fluent `Tensor` methods `matmul`, `T`, `sub`, `square`, `sum` and `sqrt`.
 
 ## Deepbox Modules Used
 
-| Module           | Features Used |
-| ---------------- | ------------- |
-| `deepbox/linalg` | `hessenberg`, `schur`, `polar`, `expm`, `logm`, `sqrtm`, `matrix_power`, `solve_banded`, `denseToCSR`, `sparseSolve`, `sylvester`, `lyapunov`, `toeplitz`, `hadamard`, `block_diag` |
-| `deepbox/ndarray`| `tensor` |
+| Module            | Features Used                                                                                                                                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/linalg`  | `hessenberg`, `schur`, `polar`, `expm`, `logm`, `sqrtm`, `matrixPower`, `solveBanded`, `denseToCSR`, `sparseSolve`, `sylvester`, `lyapunov`, `toeplitz`, `hadamard`, `blockDiag` |
+| `deepbox/ndarray` | `tensor`                                                                                                                                                                         |
 
 ## Usage
 
@@ -19,9 +19,10 @@ npm run example:49
 
 ## Output
 
-- Console walkthrough with reconstruction errors, solver results, and special-matrix examples
+- Console output only: reconstruction errors, solver results, matrix equation solutions and special matrices.
+- The older names `matrix_power`, `solve_banded` and `block_diag` still work. Use the camelCase names.
 
-## Architecture
+## Files
 
 ```text
 49-advanced-linear-algebra/

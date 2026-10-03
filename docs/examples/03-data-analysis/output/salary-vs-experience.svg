@@ -26,15 +26,15 @@
 <circle cx="123.64" cy="349.39" r="8" fill="#1f77b4" />
 </g>
 <line class="x-tick" x1="99.09" y1="430.00" x2="99.09" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="99.09" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">3</text>
+<text class="tick-label tick-label-x" x="99.09" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">2.5</text>
 <line class="x-tick" x1="221.82" y1="430.00" x2="221.82" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="221.82" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
 <line class="x-tick" x1="344.55" y1="430.00" x2="344.55" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="344.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">8</text>
+<text class="tick-label tick-label-x" x="344.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">7.5</text>
 <line class="x-tick" x1="467.27" y1="430.00" x2="467.27" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="467.27" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">10</text>
 <line class="x-tick" x1="590.00" y1="430.00" x2="590.00" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="590.00" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">13</text>
+<text class="tick-label tick-label-x" x="590.00" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">12.5</text>
 <line class="y-tick" x1="50.00" y1="383.94" x2="45.00" y2="383.94" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="383.94" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60000</text>
 <line class="y-tick" x1="50.00" y1="268.79" x2="45.00" y2="268.79" stroke="#000" />

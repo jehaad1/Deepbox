@@ -1,26 +1,30 @@
-# Customer Churn Prediction System
+# Customer Churn Prediction
 
 > **View online:** https://deepbox.dev/projects/03-customer-churn-prediction
 
-A production-grade customer churn prediction system demonstrating classical machine learning with Deepbox.
+Predicts churn on 1,000 synthetic customers. Six classifiers are trained and compared, then the best one by F1 is cross-validated and inspected.
 
 ## Features
 
-- **Multiple Models**: Logistic Regression, Decision Tree, Random Forest, Gradient Boosting, KNN, Gaussian Naive Bayes
-- **Feature Engineering**: Synthetic customer data generation
-- **Cross-Validation**: K-Fold validation for robust evaluation
-- **Model Comparison**: Comprehensive metrics comparison
-- **Interpretability notes**: Domain-oriented discussion of drivers (model-native feature importance is not exposed in this walkthrough)
+- Models: `LogisticRegression`, `DecisionTreeClassifier`, `RandomForestClassifier`, `GradientBoostingClassifier`, `KNeighborsClassifier`, `GaussianNB`
+- Synthetic customer data with ten features and a seeded generator
+- Five-fold cross-validation with `crossValScore`. The `StandardScaler` sits inside a `Pipeline`, so each fold fits it on its own training rows only. Folds are stratified by class for classifiers
+- Confusion matrix, detection rate and false alarm rate for the best model
+- Random forest feature importances
+
+## What to expect
+
+The generator draws churn from a probability that depends on a few features plus random noise, so the best possible accuracy is low. Every model lands near 60% accuracy. Differences of one or two points between models are within noise on a 200-row test set. Read the table as a demonstration of the workflow, not as a ranking of the algorithms.
 
 ## Deepbox Modules Used
 
-| Module               | Features Used                                                                                                                    |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `deepbox/ml`         | LogisticRegression, DecisionTreeClassifier, RandomForestClassifier, GradientBoostingClassifier, KNeighborsClassifier, GaussianNB |
-| `deepbox/preprocess` | StandardScaler, trainTestSplit, KFold                                                                                            |
-| `deepbox/metrics`    | accuracy, precision, recall, f1Score, confusionMatrix                                                                            |
-| `deepbox/dataframe`  | DataFrame for data manipulation                                                                                                  |
-| `deepbox/plot`       | Model comparison and cross-validation visualization                                                                              |
+| Module               | Features Used                                                                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/ml`         | `LogisticRegression`, `DecisionTreeClassifier`, `RandomForestClassifier`, `GradientBoostingClassifier`, `KNeighborsClassifier`, `GaussianNB`, `Pipeline`, `crossValScore` |
+| `deepbox/preprocess` | `StandardScaler`, `trainTestSplit`                                                                                                                                        |
+| `deepbox/metrics`    | `accuracy`, `precision`, `recall`, `f1Score`, `confusionMatrix`                                                                                                           |
+| `deepbox/dataframe`  | `DataFrame` for the console tables                                                                                                                                        |
+| `deepbox/plot`       | `Figure`, model comparison and cross-validation bar charts                                                                                                                |
 
 ## Usage
 
@@ -31,8 +35,10 @@ npm run project:03
 ## Output
 
 - Model comparison table
-- Confusion matrix summaries
-- Interpretability discussion (domain notes, not model-derived importances)
+- Cross-validation scores per fold
+- Confusion matrix and detection metrics
+- `output/model-comparison.svg`
+- `output/cv-scores.svg`
 
 ## Architecture
 

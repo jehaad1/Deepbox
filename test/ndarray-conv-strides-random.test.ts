@@ -60,7 +60,7 @@ describe("strides utilities", () => {
     });
 
     it("broadcasts a 1-element dimension correctly", () => {
-      // out [2, 3], in [1, 3] — first dim is broadcast
+      // out [2, 3], in [1, 3], first dim is broadcast
       const outStrides = computeStrides([2, 3]); // [3, 1]
       const inStrides = computeStrides([1, 3]); // [3, 1]
       // flat=0 -> out [0,0] -> in dim0=1 skip, dim1 coord=0 -> 0
@@ -72,7 +72,7 @@ describe("strides utilities", () => {
     });
 
     it("handles rank difference (lower-rank input)", () => {
-      // out [2, 3], in [3] — input has rank 1
+      // out [2, 3], in [3], input has rank 1
       const outStrides = computeStrides([2, 3]); // [3, 1]
       const inStrides = computeStrides([3]); // [1]
       // flat=0 -> out [0,0] -> rankDiff=1, axis=1 maps to in axis 0 -> coord 0
@@ -223,7 +223,7 @@ describe("conv operations", () => {
 
   describe("col2im", () => {
     it("is the inverse of im2col for non-overlapping windows", () => {
-      // 1x1x2x2, kernel 2x2, stride 2x2 — one window, no overlap
+      // 1x1x2x2, kernel 2x2, stride 2x2, one window, no overlap
       const input = tensor(
         [
           [

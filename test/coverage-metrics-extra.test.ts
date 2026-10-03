@@ -472,7 +472,7 @@ describe("labelRankingLoss", () => {
     expect(labelRankingLoss(yt, ys)).toBe(0);
   });
 
-  it("all positive labels — no negative => loss 0 for that sample", () => {
+  it("all positive labels, no negative => loss 0 for that sample", () => {
     const yt = tensor([
       [1, 1],
       [0, 1],

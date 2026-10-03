@@ -1,3 +1,7 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   type Axis,
   type DType,
@@ -38,17 +42,17 @@ function isNumericTensor(t: Tensor): t is Tensor<Shape, NumericDType> {
  * ```ts
  * import { squeeze, tensor } from 'deepbox/ndarray';
  *
- * const x = tensor([[[1], [2], [3]]]);
-  // shape: (1, 3, 1)
+ * const x = tensor([[[1], [2], [3]]]);  // shape: (1, 3, 1)
  * const y = squeeze(x);                  // shape: (3,)
  * const z = squeeze(x, 2);               // shape: (1, 3)
  * ```
  *
- * @throws {Error} If axis is specified and dimension is not 1
+ * @throws {ShapeError} If an axis is specified and its dimension is not 1
+ * @throws {InvalidParameterError} If an axis is out of range or listed twice
  *
  * @see {@link https://deepbox.dev/docs/ndarray-shape | Deepbox Shape & Indexing}
  */
-export function squeeze(t: Tensor, axis?: Axis | Axis[]): Tensor {
+export function squeeze(t: Tensor, axis?: Axis | readonly Axis[]): Tensor {
   let axesToSqueeze: Set<number>;
 
   if (axis === undefined) {
@@ -152,6 +156,9 @@ export function squeeze(t: Tensor, axis?: Axis | Axis[]): Tensor {
  * @see {@link https://deepbox.dev/docs/ndarray-shape | Deepbox Shape & Indexing}
  */
 export function unsqueeze(t: Tensor, axis: number): Tensor {
+  if (!Number.isInteger(axis)) {
+    throw new InvalidParameterError(`axis must be an integer; received ${axis}`, "axis", axis);
+  }
   // New ndim will be one more than current
   const newNdim = t.ndim + 1;
 
@@ -235,6 +242,6 @@ export function unsqueeze(t: Tensor, axis: number): Tensor {
 }
 
 /**
- * Alias for unsqueeze.
+ * Alias for {@link unsqueeze} (NumPy name).
  */
 export const expandDims = unsqueeze;

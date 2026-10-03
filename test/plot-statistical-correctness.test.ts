@@ -95,9 +95,10 @@ describe("Plot Statistical Correctness", () => {
       const result = calculateWhiskers(data, q1, q3);
 
       expect(result.lowerWhisker).toBe(1);
-      // Under numpy/matplotlib quartiles, 100 lies beyond 1.5·IQR, so the
-      // upper whisker is the last non-outlier value.
-      expect(result.upperWhisker).toBe(3);
+      // Under numpy/matplotlib quartiles, 100 lies beyond 1.5·IQR and q3 is 27.25. The largest
+      // in-fence value (3) would end inside the box, so the whisker is clamped to q3, as in
+      // matplotlib's boxplot_stats.
+      expect(result.upperWhisker).toBe(27.25);
       expect(result.outliers).toEqual([100]);
     });
   });

@@ -1,9 +1,8 @@
 /**
  * Example 04: DataFrame Basics
  *
- * Learn fundamental DataFrame operations for working with tabular data.
- * Covers creation, selection, filtering, and sorting.
- * DataFrames are for tabular data analysis.
+ * Basic DataFrame operations on tabular data: creation, column selection,
+ * row filtering, sorting, and head/tail.
  */
 
 import { DataFrame } from "deepbox/dataframe";
@@ -17,9 +16,7 @@ const expectNumber = (value: unknown): number => {
 
 console.log("=== DataFrame Basics ===\n");
 
-// Create a DataFrame from an object with column arrays
-
-// Creating a DataFrame from an object
+// Create a DataFrame from an object of column arrays. All columns must have the same length.
 const df = new DataFrame({
   name: ["Alice", "Bob", "Charlie", "David", "Eve"],
   age: [25, 30, 35, 28, 32],
@@ -32,44 +29,40 @@ console.log("Full DataFrame:");
 console.log(df.toString());
 
 // Display DataFrame dimensions
-console.log(`\nShape: ${df.shape[0]} rows × ${df.shape[1]} columns`);
+console.log(`\nShape: ${df.shape[0]} rows x ${df.shape[1]} columns`);
 
 // Access individual columns
 console.log("\nColumn Access:");
 console.log(`Columns: ${df.columns.join(", ")}\n`);
 
-// Accessing columns
 // Get a single column as a Series
 const ages = df.get("age");
 console.log("Age column:");
 console.log(`${ages.toString()}\n`);
 
-// Selecting specific columns
-// Select multiple columns at once
+// Select several columns at once; the result is a DataFrame
 const subset = df.select(["name", "salary"]);
 console.log("\nSelecting Multiple Columns:");
 console.log("Selected columns (name, salary):");
 console.log(`${subset.toString()}\n`);
 
-// Filtering rows
-// Filter for high earners (salary > 60000)
+// Keep the rows for which the callback returns true (salary > 60000)
 const highEarners = df.filter((row) => expectNumber(row.salary) > 60000);
 console.log("Employees with salary > 60000:");
 console.log(`${highEarners.toString()}\n`);
 
-// Sorting
-// Sort by salary in descending order
+// Sort by one column. The second argument is "ascending", so false means descending.
 const sortedBySalary = df.sort("salary", false);
 console.log("\nSorting:");
 console.log("Sorted by salary (descending):");
 console.log(`${sortedBySalary.toString()}\n`);
 
 // Head and tail
-console.log("\nFiltering Rows:");
 console.log("First 3 rows:");
 console.log(`${df.head(3).toString()}\n`);
 
 console.log("Last 2 rows:");
 console.log(`${df.tail(2).toString()}\n`);
 
-console.log("✓ DataFrame basics complete!");
+// Series values come back as a plain array
+console.log("Ages as an array:", ages.toArray());

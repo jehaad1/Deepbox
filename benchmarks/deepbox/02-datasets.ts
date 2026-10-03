@@ -1,5 +1,5 @@
 /**
- * Benchmark 02 — Dataset Loading & Generation
+ * Benchmark 02: Dataset Loading & Generation
  * Deepbox vs scikit-learn
  */
 
@@ -36,7 +36,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("datasets");
-header("Benchmark 02 — Dataset Loading & Generation");
+header("Benchmark 02: Dataset Loading & Generation");
 
 // ── Built-in Loaders ────────────────────────────────────
 

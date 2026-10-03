@@ -1,5 +1,5 @@
 /**
- * Benchmark 08 — Optimizers & LR Schedulers
+ * Benchmark 08: Optimizers & LR Schedulers
  * Deepbox vs PyTorch
  */
 
@@ -38,7 +38,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("optim");
-header("Benchmark 08 — Optimizers & LR Schedulers");
+header("Benchmark 08: Optimizers & LR Schedulers");
 
 // ── Helper ──────────────────────────────────────────────
 
@@ -75,28 +75,28 @@ function trainLoop(
 const baseModel = makeModel(10, 32);
 const params = () => baseModel.parameters();
 
-run(suite, "SGD create", "—", () => new SGD(params(), { lr: 0.01 }));
-run(suite, "SGD create (momentum)", "—", () => new SGD(params(), { lr: 0.01, momentum: 0.9 }));
-run(suite, "Adam create", "—", () => new Adam(params(), { lr: 0.001 }));
-run(suite, "AdamW create", "—", () => new AdamW(params(), { lr: 0.001 }));
-run(suite, "Adamax create", "—", () => new Adamax(params(), { lr: 0.002 }));
-run(suite, "Adagrad create", "—", () => new Adagrad(params(), { lr: 0.01 }));
-run(suite, "AdaDelta create", "—", () => new AdaDelta(params(), { lr: 1.0 }));
-run(suite, "Nadam create", "—", () => new Nadam(params(), { lr: 0.002 }));
-run(suite, "RAdam create", "—", () => new RAdam(params(), { lr: 0.002 }));
-run(suite, "ASGD create", "—", () => new ASGD(params(), { lr: 0.01 }));
-run(suite, "Rprop create", "—", () => new Rprop(params(), { lr: 0.01 }));
-run(suite, "LBFGS create", "—", () => new LBFGS(params(), { lr: 1.0 }));
-run(suite, "SparseAdam create", "—", () => new SparseAdam(params(), { lr: 0.01 }));
-run(suite, "LAMB create", "—", () => new LAMB(params(), { lr: 0.01 }), {
+run(suite, "SGD create", "n/a", () => new SGD(params(), { lr: 0.01 }));
+run(suite, "SGD create (momentum)", "n/a", () => new SGD(params(), { lr: 0.01, momentum: 0.9 }));
+run(suite, "Adam create", "n/a", () => new Adam(params(), { lr: 0.001 }));
+run(suite, "AdamW create", "n/a", () => new AdamW(params(), { lr: 0.001 }));
+run(suite, "Adamax create", "n/a", () => new Adamax(params(), { lr: 0.002 }));
+run(suite, "Adagrad create", "n/a", () => new Adagrad(params(), { lr: 0.01 }));
+run(suite, "AdaDelta create", "n/a", () => new AdaDelta(params(), { lr: 1.0 }));
+run(suite, "Nadam create", "n/a", () => new Nadam(params(), { lr: 0.002 }));
+run(suite, "RAdam create", "n/a", () => new RAdam(params(), { lr: 0.002 }));
+run(suite, "ASGD create", "n/a", () => new ASGD(params(), { lr: 0.01 }));
+run(suite, "Rprop create", "n/a", () => new Rprop(params(), { lr: 0.01 }));
+run(suite, "LBFGS create", "n/a", () => new LBFGS(params(), { lr: 1.0 }));
+run(suite, "SparseAdam create", "n/a", () => new SparseAdam(params(), { lr: 0.01 }));
+run(suite, "LAMB create", "n/a", () => new LAMB(params(), { lr: 0.01 }), {
   comparable: false,
   tags: ["deepbox-only"],
 });
-run(suite, "LARS create", "—", () => new LARS(params(), { lr: 0.01 }), {
+run(suite, "LARS create", "n/a", () => new LARS(params(), { lr: 0.01 }), {
   comparable: false,
   tags: ["deepbox-only"],
 });
-run(suite, "RMSprop create", "—", () => new RMSprop(params(), { lr: 0.01 }));
+run(suite, "RMSprop create", "n/a", () => new RMSprop(params(), { lr: 0.01 }));
 
 // ── Optimizer Step ──────────────────────────────────────
 
@@ -218,40 +218,40 @@ function schedStep(makeSched: (opt: SGD) => { step(metric?: number): void }, ste
 run(
   suite,
   "StepLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new StepLR(o, { stepSize: 10, gamma: 0.1 }), 100)
 );
 run(
   suite,
   "MultiStepLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new MultiStepLR(o, { milestones: [30, 60, 80], gamma: 0.1 }), 100)
 );
 run(
   suite,
   "ExponentialLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new ExponentialLR(o, { gamma: 0.95 }), 100)
 );
 run(
   suite,
   "CosineAnnealingLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new CosineAnnealingLR(o, { T_max: 100 }), 100)
 );
 run(
   suite,
   "LinearLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new LinearLR(o, { startFactor: 0.1, totalIters: 100 }), 100)
 );
 run(
   suite,
   "OneCycleLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new OneCycleLR(o, { maxLr: 0.1, totalSteps: 100 }), 100)
 );
-run(suite, "ReduceLROnPlateau (100 steps)", "—", () => {
+run(suite, "ReduceLROnPlateau (100 steps)", "n/a", () => {
   const m = makeModel(10, 16);
   const opt = new SGD(m.parameters(), { lr: 0.1 });
   const sched = new ReduceLROnPlateau(opt, { patience: 10 });
@@ -260,34 +260,34 @@ run(suite, "ReduceLROnPlateau (100 steps)", "—", () => {
 run(
   suite,
   "WarmupLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new WarmupLR(o, null, { warmupEpochs: 50 }), 100)
 );
 run(
   suite,
   "CosineAnnealingWarmRestarts (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new CosineAnnealingWarmRestarts(o, { T_0: 10 }), 100)
 );
 run(
   suite,
   "CyclicLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new CyclicLR(o, { baseLr: 0.001, maxLr: 0.01, stepSizeUp: 5 }), 100)
 );
 run(
   suite,
   "LambdaLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new LambdaLR(o, { lrLambda: () => 0.95 }), 100)
 );
 run(
   suite,
   "PolynomialLR (100 steps)",
-  "—",
+  "n/a",
   schedStep((o) => new PolynomialLR(o, { totalIters: 100, power: 2 }), 100)
 );
-run(suite, "SequentialLR (100 steps)", "—", () => {
+run(suite, "SequentialLR (100 steps)", "n/a", () => {
   const m = makeModel(10, 16);
   const opt = new SGD(m.parameters(), { lr: 0.1 });
   const warm = new LambdaLR(opt, { lrLambda: () => 0.5 });

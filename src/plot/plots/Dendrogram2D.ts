@@ -2,6 +2,7 @@
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
+import { InvalidParameterError } from "../../core";
 import type {
   Color,
   DataRange,
@@ -25,10 +26,18 @@ export type LinkageRow = readonly [number, number, number, number];
  *
  * Each merge in the linkage matrix is rendered as a U-shaped connection:
  * a horizontal bar at the merge height connecting two vertical lines
- * down to the child nodes.
+ * down to the child nodes. Leaves are placed left to right in the order
+ * given by a depth-first walk from the root (first child before second
+ * child), the same order as `scipy.cluster.hierarchy.dendrogram`, so the
+ * U shapes never cross. The walk order is exposed as {@link Dendrogram2D.leaves}.
  */
 export class Dendrogram2D implements Drawable {
   readonly kind = "dendrogram";
+  /**
+   * Original observation indices in the left-to-right order they are drawn.
+   * Leaf `leaves[k]` sits at x = k.
+   */
+  readonly leaves: readonly number[];
   private readonly color: Color;
   private readonly linewidth: number;
 
@@ -38,60 +47,132 @@ export class Dendrogram2D implements Drawable {
   private readonly yRange: [number, number];
 
   constructor(linkage: readonly LinkageRow[], nLeaves: number, options: PlotOptions) {
+    if (!Number.isInteger(nLeaves) || nLeaves <= 0) {
+      throw new InvalidParameterError(
+        `nLeaves must be a positive integer; received ${nLeaves}`,
+        "nLeaves",
+        nLeaves
+      );
+    }
     this.color = normalizeColor(options.color, "#1f77b4");
     this.linewidth = 1.5;
 
-    // Compute x-positions of each node (leaves are evenly spaced)
-    const nodeX = new Map<number, number>();
-    const nodeY = new Map<number, number>();
+    const merges = linkage.length;
+    const total = nLeaves + merges;
+    const left = new Int32Array(merges);
+    const right = new Int32Array(merges);
+    const height = new Float64Array(total); // leaves stay at 0
+    const hasParent = new Uint8Array(total);
 
-    // Leaves at y=0, evenly spaced from 0..nLeaves-1
-    for (let i = 0; i < nLeaves; i++) {
-      nodeX.set(i, i);
-      nodeY.set(i, 0);
+    for (let i = 0; i < merges; i++) {
+      const row = linkage[i];
+      const a = row?.[0];
+      const b = row?.[1];
+      const dist = row?.[2];
+      if (a === undefined || b === undefined || dist === undefined) {
+        throw new InvalidParameterError(
+          `linkage row ${i} must have 4 entries [a, b, distance, count]`,
+          "linkage",
+          row
+        );
+      }
+      const limit = nLeaves + i;
+      for (const id of [a, b]) {
+        if (!Number.isInteger(id) || id < 0 || id >= limit) {
+          throw new InvalidParameterError(
+            `linkage row ${i} references cluster ${id}; ids must be integers in [0, ${limit})`,
+            "linkage",
+            row
+          );
+        }
+        if (hasParent[id] === 1) {
+          throw new InvalidParameterError(
+            `linkage row ${i} merges cluster ${id} more than once`,
+            "linkage",
+            row
+          );
+        }
+      }
+      if (a === b) {
+        throw new InvalidParameterError(
+          `linkage row ${i} merges cluster ${a} with itself`,
+          "linkage",
+          row
+        );
+      }
+      if (!Number.isFinite(dist)) {
+        throw new InvalidParameterError(
+          `linkage row ${i} has a non-finite distance (${dist})`,
+          "linkage",
+          row
+        );
+      }
+      hasParent[a] = 1;
+      hasParent[b] = 1;
+      left[i] = a;
+      right[i] = b;
+      height[nLeaves + i] = dist;
     }
+
+    // Depth-first leaf order (iterative, trees can be as deep as the leaf count).
+    // A complete linkage has one root; an incomplete one is a forest, whose trees are
+    // laid out in order of their smallest leaf index.
+    const nodeX = new Float64Array(total);
+    const leafOrder: number[] = [];
+    const minLeaf = new Int32Array(total);
+    for (let i = 0; i < nLeaves; i++) minLeaf[i] = i;
+    for (let i = 0; i < merges; i++) {
+      minLeaf[nLeaves + i] = Math.min(minLeaf[left[i] ?? 0] ?? 0, minLeaf[right[i] ?? 0] ?? 0);
+    }
+    const roots: number[] = [];
+    for (let node = 0; node < total; node++) {
+      if (hasParent[node] === 0) roots.push(node);
+    }
+    roots.sort((p, q) => (minLeaf[q] ?? 0) - (minLeaf[p] ?? 0));
+    // Reverse order on a LIFO stack: the root with the smallest leaf pops first.
+    const stack: number[] = roots;
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (node === undefined) break;
+      if (node < nLeaves) {
+        nodeX[node] = leafOrder.length;
+        leafOrder.push(node);
+      } else {
+        const m = node - nLeaves;
+        stack.push(right[m] ?? 0);
+        stack.push(left[m] ?? 0);
+      }
+    }
+    this.leaves = leafOrder;
 
     const segs: Array<readonly [number, number, number, number]> = [];
+    for (let i = 0; i < merges; i++) {
+      const a = left[i] ?? 0;
+      const b = right[i] ?? 0;
+      const node = nLeaves + i;
+      const xA = nodeX[a] ?? 0;
+      const xB = nodeX[b] ?? 0;
+      const yA = height[a] ?? 0;
+      const yB = height[b] ?? 0;
+      const dist = height[node] ?? 0;
+      nodeX[node] = (xA + xB) / 2;
 
-    for (let i = 0; i < linkage.length; i++) {
-      const row = linkage[i]!;
-      const [a, b, dist] = row;
-      const newNode = nLeaves + i;
-
-      const xA = nodeX.get(a) ?? 0;
-      const yA = nodeY.get(a) ?? 0;
-      const xB = nodeX.get(b) ?? 0;
-      const yB = nodeY.get(b) ?? 0;
-
-      // The merged node's x is the midpoint
-      const xMid = (xA + xB) / 2;
-
-      nodeX.set(newNode, xMid);
-      nodeY.set(newNode, dist);
-
-      // Draw U-shape: vertical from A up to dist, horizontal across, vertical down to B
-      // Left vertical: (xA, yA) -> (xA, dist)
+      // U shape: left vertical, horizontal bar, right vertical.
       segs.push([xA, yA, xA, dist]);
-      // Horizontal: (xA, dist) -> (xB, dist)
       segs.push([xA, dist, xB, dist]);
-      // Right vertical: (xB, yB) -> (xB, dist)
       segs.push([xB, yB, xB, dist]);
     }
-
     this.segments = segs;
 
-    // Compute ranges
-    let xmin = 0;
-    let xmax = Math.max(nLeaves - 1, 1);
+    // Axis ranges follow the data; leaves occupy x = 0 .. nLeaves - 1.
     let ymin = 0;
-    let ymax = 1;
-    for (const [x0, y0, x1, y1] of segs) {
-      xmin = Math.min(xmin, x0, x1);
-      xmax = Math.max(xmax, x0, x1);
+    let ymax = 0;
+    for (const [, y0, , y1] of segs) {
       ymin = Math.min(ymin, y0, y1);
       ymax = Math.max(ymax, y0, y1);
     }
-    this.xRange = [xmin - 0.5, xmax + 0.5];
+    if (ymax <= 0) ymax = 1;
+    this.xRange = [-0.5, Math.max(nLeaves - 1, 1) + 0.5];
     this.yRange = [ymin, ymax * 1.05];
   }
 

@@ -1,7 +1,7 @@
 /**
  * Financial Portfolio Risk Analysis System
  *
- * A comprehensive financial risk analysis application demonstrating:
+ * Analyzes a synthetic eight-asset portfolio and prints a risk report:
  * - Portfolio construction and management
  * - Risk metrics (VaR, CVaR, Sharpe, Sortino)
  * - Mean-variance optimization
@@ -18,12 +18,11 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
 import { det, trace } from "deepbox/linalg";
 import { tensor } from "deepbox/ndarray";
 import { Figure } from "deepbox/plot";
-import { pearsonr, shapiro, spearmanr } from "deepbox/stats";
+import { chi2, pearsonr, shapiro, spearmanr } from "deepbox/stats";
 import {
   bootstrapConfidenceInterval,
   bootstrapReturns,
@@ -53,22 +52,13 @@ const OUTPUT_DIR = "docs/projects/01-financial-risk-analysis/output";
 const NUM_PERIODS = 60; // 5 years of monthly data
 const RISK_FREE_RATE = 0.02; // 2% annual risk-free rate
 
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
-
 // ============================================================================
 // Main Execution
 // ============================================================================
 
 console.log("═".repeat(70));
 console.log("  FINANCIAL PORTFOLIO RISK ANALYSIS SYSTEM");
-console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
+console.log("  Built with Deepbox: TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -80,7 +70,7 @@ if (!existsSync(OUTPUT_DIR)) {
 // Step 1: Generate Synthetic Asset Data
 // ============================================================================
 
-console.log("\n📊 STEP 1: Generating Asset Data");
+console.log("\nSTEP 1: Generating Asset Data");
 console.log("─".repeat(70));
 
 const assets = generateSyntheticAssets(NUM_PERIODS);
@@ -107,7 +97,7 @@ console.log(assetSummary.toString());
 // Step 2: Build Initial Portfolio
 // ============================================================================
 
-console.log("\n📈 STEP 2: Building Initial Portfolio");
+console.log("\nSTEP 2: Building Initial Portfolio");
 console.log("─".repeat(70));
 
 // Start with equal weights
@@ -130,11 +120,11 @@ console.log(`  Maximum Drawdown:       ${(initialMetrics.maxDrawdown * 100).toFi
 // Step 3: Risk Analysis
 // ============================================================================
 
-console.log("\n⚠️  STEP 3: Risk Analysis");
+console.log("\nSTEP 3: Risk Analysis");
 console.log("─".repeat(70));
 
 const portfolioReturns = portfolio.getPortfolioReturns();
-const returnsArray = Array.from(expectNumericTypedArray(portfolioReturns.data));
+const returnsArray = portfolioReturns.toArray() as number[];
 
 const riskMetrics = calculateRiskMetrics(returnsArray);
 
@@ -168,7 +158,7 @@ console.log(
 // Step 4: Correlation Analysis
 // ============================================================================
 
-console.log("\n🔗 STEP 4: Correlation Analysis");
+console.log("\nSTEP 4: Correlation Analysis");
 console.log("─".repeat(70));
 
 const corrMatrix = portfolio.getCorrelationMatrix();
@@ -176,21 +166,18 @@ const covMatrix = portfolio.getCovarianceMatrix();
 
 console.log("\nCorrelation Matrix:");
 const symbols = portfolio.getSymbols();
+const corrRows = corrMatrix.toArray() as number[][];
 const corrData: { [key: string]: number[] } = {};
-for (let i = 0; i < symbols.length; i++) {
-  const symbol = symbols[i];
-  corrData[symbol] = [];
-  for (let j = 0; j < symbols.length; j++) {
-    corrData[symbol].push(Number(Number(corrMatrix.data[i * symbols.length + j]).toFixed(3)));
-  }
-}
+symbols.forEach((symbol, i) => {
+  corrData[symbol] = corrRows[i].map((value) => Number(value.toFixed(3)));
+});
 const corrDF = new DataFrame(corrData);
 console.log(corrDF.toString());
 
 // Covariance matrix properties
 console.log("\nCovariance Matrix Properties:");
 console.log(`  Determinant: ${det(covMatrix).toExponential(4)}`);
-console.log(`  Trace:       ${Number(trace(covMatrix).data[0]).toFixed(6)}`);
+console.log(`  Trace:       ${Number(trace(covMatrix).item()).toFixed(6)}`);
 
 // Statistical tests on returns
 console.log("\nStatistical Tests (First Asset vs Last Asset):");
@@ -217,7 +204,7 @@ console.log(
 // Step 5: Portfolio Optimization
 // ============================================================================
 
-console.log("\n🎯 STEP 5: Portfolio Optimization");
+console.log("\nSTEP 5: Portfolio Optimization");
 console.log("─".repeat(70));
 
 const expectedReturns = assets.map((a) => a.returns.reduce((s, r) => s + r, 0) / a.returns.length);
@@ -265,7 +252,7 @@ console.log(frontierDF.toString());
 // Step 6: Monte Carlo Simulation
 // ============================================================================
 
-console.log("\n🎲 STEP 6: Monte Carlo Simulation");
+console.log("\nSTEP 6: Monte Carlo Simulation");
 console.log("─".repeat(70));
 
 const optimalWeights = maxSharpeResult.weights;
@@ -307,7 +294,7 @@ console.log(`  Bootstrap Mean: ${(ci.mean * 100).toFixed(3)}%`);
 // Step 7: Stress Testing
 // ============================================================================
 
-console.log("\n💥 STEP 7: Stress Testing");
+console.log("\nSTEP 7: Stress Testing");
 console.log("─".repeat(70));
 
 const stressScenarios = getHistoricalStressScenarios();
@@ -324,7 +311,7 @@ console.log(stressDF.toString());
 // Step 8: VaR Backtesting
 // ============================================================================
 
-console.log("\n📋 STEP 8: VaR Backtesting");
+console.log("\nSTEP 8: VaR Backtesting");
 console.log("─".repeat(70));
 
 // Calculate rolling VaR
@@ -339,15 +326,28 @@ console.log(`  Number of Periods:    ${backtestReturns.length}`);
 console.log(`  VaR Exceedances:      ${backtestResult.exceedances}`);
 console.log(`  Exceedance Rate:      ${(backtestResult.rate * 100).toFixed(2)}%`);
 console.log(`  Expected Rate (95%):  ${(backtestResult.expected * 100).toFixed(2)}%`);
+// Kupiec's proportion-of-failures test: a likelihood-ratio test of whether the
+// observed exceedance rate is consistent with the expected 5%. A fixed cutoff
+// would ignore how few periods there are; the test accounts for sample size.
+const nPeriods = backtestReturns.length;
+const nExceed = backtestResult.exceedances;
+const pExpected = backtestResult.expected;
+const pObserved = nExceed / nPeriods;
+const logLik = (rate: number) =>
+  (nPeriods - nExceed) * Math.log(1 - rate) + (nExceed > 0 ? nExceed * Math.log(rate) : 0);
+const kupiecLR =
+  nExceed === 0 || nExceed === nPeriods ? 0 : -2 * (logLik(pExpected) - logLik(pObserved));
+const kupiecP = chi2(1).sf(kupiecLR);
+console.log(`  Kupiec POF statistic: ${kupiecLR.toFixed(3)} (p-value ${kupiecP.toFixed(3)})`);
 console.log(
-  `  Model ${backtestResult.rate <= 0.07 ? "PASSES" : "FAILS"} validation (tolerance: 7%)`
+  `  ${kupiecP >= 0.05 ? "The exceedance rate is consistent with the 95% VaR model" : "The exceedance rate is not consistent with the 95% VaR model"} at the 5% level.`
 );
 
 // ============================================================================
 // Step 9: Generate Visualizations
 // ============================================================================
 
-console.log("\n📊 STEP 9: Generating Visualizations");
+console.log("\nSTEP 9: Generating Visualizations");
 console.log("─".repeat(70));
 
 // 1. Efficient Frontier Plot
@@ -382,9 +382,9 @@ try {
 
   const frontierSvg = frontierFig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/efficient-frontier.svg`, frontierSvg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/efficient-frontier.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/efficient-frontier.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate efficient frontier plot: ${e}`);
+  console.log(`  Warning: could not generate efficient frontier plot: ${e}`);
 }
 
 // 2. Monte Carlo Distribution Plot
@@ -417,9 +417,9 @@ try {
 
   const mcSvg = mcFig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/monte-carlo-distribution.svg`, mcSvg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/monte-carlo-distribution.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/monte-carlo-distribution.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate Monte Carlo plot: ${e}`);
+  console.log(`  Warning: could not generate Monte Carlo plot: ${e}`);
 }
 
 // 3. Correlation Heatmap
@@ -432,9 +432,9 @@ try {
 
   const heatSvg = heatFig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/correlation-heatmap.svg`, heatSvg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/correlation-heatmap.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/correlation-heatmap.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate correlation heatmap: ${e}`);
+  console.log(`  Warning: could not generate correlation heatmap: ${e}`);
 }
 
 // ============================================================================
@@ -445,7 +445,7 @@ console.log(`\n${"═".repeat(70)}`);
 console.log("  ANALYSIS COMPLETE - SUMMARY");
 console.log("═".repeat(70));
 
-console.log("\n📌 Key Findings:\n");
+console.log("\nKey Findings:\n");
 console.log("  1. Portfolio Comparison:");
 console.log(`     • Equal-Weight Sharpe:   ${initialMetrics.sharpeRatio.toFixed(3)}`);
 console.log(`     • Min-Variance Sharpe:   ${minVarMetrics.sharpeRatio.toFixed(3)}`);
@@ -468,11 +468,11 @@ const worstStress = stressResults.reduce((worst, r) =>
 );
 console.log(`     • ${worstStress.scenario}: ${(worstStress.portfolioImpact * 100).toFixed(2)}%`);
 
-console.log("\n📁 Output Files:");
+console.log("\nOutput Files:");
 console.log(`   • ${OUTPUT_DIR}/efficient-frontier.svg`);
 console.log(`   • ${OUTPUT_DIR}/monte-carlo-distribution.svg`);
 console.log(`   • ${OUTPUT_DIR}/correlation-heatmap.svg`);
 
 console.log(`\n${"═".repeat(70)}`);
-console.log("  ✅ Financial Risk Analysis Complete!");
+console.log("  Financial Risk Analysis Complete!");
 console.log("═".repeat(70));

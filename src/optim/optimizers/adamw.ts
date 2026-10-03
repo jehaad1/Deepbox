@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { DeepboxError, InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -23,7 +22,6 @@ import {
   assertInRange,
   deviceMaxTensor,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -34,7 +32,7 @@ import { Optimizer, type ParamGroup } from "../Optimizer";
  * @property beta1 - Exponential decay rate for first moment estimates
  * @property beta2 - Exponential decay rate for second moment estimates
  * @property eps - Small constant for numerical stability
- * @property weightDecay - Weight decay coefficient (L2 penalty)
+ * @property weightDecay - Decoupled weight decay coefficient
  * @property amsgrad - Whether to use the AMSGrad variant
  */
 type AdamWOptions = {
@@ -44,6 +42,7 @@ type AdamWOptions = {
   eps: number;
   weightDecay: number;
   amsgrad: boolean;
+  maximize: boolean;
 };
 
 /**
@@ -67,11 +66,18 @@ type AdamWState = {
 };
 
 /**
- * AdamW (Adam with decoupled Weight decay) optimizer.
+ * AdamW (Adam with decoupled weight decay) optimizer (Loshchilov and Hutter, 2019).
  *
- * AdamW fixes the weight decay implementation in Adam by decoupling it from the
- * gradient-based update. This leads to better generalization and is the recommended
- * variant for most applications.
+ * AdamW applies weight decay directly to the parameters instead of adding it to
+ * the gradient, so the decay is not rescaled by the adaptive denominator. The update
+ * follows `torch.optim.AdamW`:
+ *
+ * ```
+ * theta *= 1 - lr * weightDecay
+ * m = beta1 * m + (1 - beta1) * g
+ * v = beta2 * v + (1 - beta2) * g^2
+ * theta -= (lr / (1 - beta1^t)) * m / (sqrt(v / (1 - beta2^t)) + eps)
+ * ```
  *
  * @example
  * ```ts
@@ -95,18 +101,6 @@ type AdamWState = {
  * @category Optimizers
  */
 export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
-  /** Internal counter tracking total number of optimization steps */
-  private _stepCount = 0;
-
-  /**
-   * Get the total number of optimization steps performed.
-   *
-   * @returns Number of steps taken
-   */
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
   /**
    * Create a new AdamW optimizer.
    *
@@ -116,8 +110,9 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
    * @param options.beta1 - First moment decay rate (default: 0.9)
    * @param options.beta2 - Second moment decay rate (default: 0.999)
    * @param options.eps - Numerical stability constant (default: 1e-8)
-   * @param options.weightDecay - Weight decay coefficient (default: 0.01)
+   * @param options.weightDecay - Decoupled weight decay coefficient (default: 0.01)
    * @param options.amsgrad - Enable AMSGrad variant (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
    * @throws {InvalidParameterError} If a parameter is invalid
    */
   constructor(
@@ -129,6 +124,7 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
       readonly eps?: number;
       readonly weightDecay?: number;
       readonly amsgrad?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
     // Set default values for all options
@@ -139,56 +135,20 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
       eps: options.eps ?? 1e-8,
       weightDecay: options.weightDecay ?? 0.01, // Higher default than Adam
       amsgrad: options.amsgrad ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    // Validate all hyperparameters
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
+  protected override validateOptions(options: Readonly<AdamWOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
-  }
-
-  /**
-   * Perform a single optimization step (parameter update).
-   *
-   * Implements the AdamW update rule with decoupled weight decay.
-   *
-   * @param closure - Optional closure that reevaluates the model and returns the loss
-   * @returns Loss value if closure is provided, undefined otherwise
-   */
   protected isState(state: Record<string, unknown>): state is AdamWState {
     const hasRequired =
       typeof state["step"] === "number" &&
@@ -201,6 +161,17 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
     return true;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * Implements the AdamW update rule with decoupled weight decay.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -209,27 +180,23 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("AdamW");
+    this.countStep();
 
     // Update each parameter group
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps, weightDecay, amsgrad } = group.options;
+      const { lr, beta1, beta2, eps, weightDecay, amsgrad, maximize } = group.options;
 
       // Re-validate hyperparameters (they might have been changed)
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
 
       // Update each parameter in the group
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: keep the entire AdamW update resident on the accelerator,
         // composing it from device-dispatched tensor ops (no host readback).
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { step: 0, expAvg: new Float64Array(0), expAvgSq: new Float64Array(0) };
@@ -281,12 +248,10 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
         const state =
           existing ??
           (() => {
-            // Initialize state on first use
-            const next = {
+            const next: AdamWState = {
               step: 0,
               expAvg: new Float64Array(size), // First moment
               expAvgSq: new Float64Array(size), // Second moment
-              ...(amsgrad ? { maxExpAvgSq: new Float64Array(size) } : {}), // AMSGrad buffer
             };
             this.state.set(param, next);
             return next;
@@ -295,8 +260,12 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
         // Validate state buffer sizes
         assertBufferSize(state.expAvg, size, "AdamW expAvg");
         assertBufferSize(state.expAvgSq, size, "AdamW expAvgSq");
-        if (amsgrad && state.maxExpAvgSq) {
-          assertBufferSize(state.maxExpAvgSq, size, "AdamW maxExpAvgSq");
+        // `amsgrad` may be switched on after state was created (or the state may
+        // have been saved without the buffer), so create the maximum lazily.
+        let maxBuf: Float64Array | undefined;
+        if (amsgrad) {
+          maxBuf = state.maxExpAvgSq ??= new Float64Array(size);
+          assertBufferSize(maxBuf, size, "AdamW maxExpAvgSq");
         }
 
         // Increment per-parameter step counter
@@ -308,50 +277,42 @@ export class AdamW extends Optimizer<AdamWOptions, AdamWState> {
 
         // Compute step size with bias correction
         const stepSize = lr / biasCorrection1;
+        const decay = lr * weightDecay;
+        const expAvg = state.expAvg;
+        const expAvgSq = state.expAvgSq;
 
         // Update each element of the parameter
         for (let i = 0; i < size; i++) {
-          // Get current gradient and parameter values
-          const gi = safeArrayAccess(grad, gradOffset + i, "AdamW gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "AdamW parameter");
+          const rawGi = grad[gradOffset + i] as number;
+          const pi = pData[pOff + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
 
-          // Validate values are finite
-          assertFinite("gradient", gi);
-          assertFinite("parameter", pi);
+          // Update biased first moment estimate: m(t) = beta1 * m(t-1) + (1 - beta1) * g(t)
+          const mNew = beta1 * (expAvg[i] as number) + (1 - beta1) * gi;
 
-          // Get current moment estimates
-          const m = safeArrayAccess(state.expAvg, i, "AdamW expAvg");
-          const v = safeArrayAccess(state.expAvgSq, i, "AdamW expAvgSq");
+          // Update biased second raw moment estimate: v(t) = beta2 * v(t-1) + (1 - beta2) * g(t)^2
+          const vNew = beta2 * (expAvgSq[i] as number) + (1 - beta2) * gi * gi;
 
-          // Update biased first moment estimate: m(t) = β1 * m(t-1) + (1 - β1) * g(t)
-          const mNew = beta1 * m + (1 - beta1) * gi;
-
-          // Update biased second raw moment estimate: v(t) = β2 * v(t-1) + (1 - β2) * g(t)^2
-          const vNew = beta2 * v + (1 - beta2) * gi * gi;
-
-          // Store updated moments
-          state.expAvg[i] = mNew;
-          state.expAvgSq[i] = vNew;
+          expAvg[i] = mNew;
+          expAvgSq[i] = vNew;
 
           // Determine which second moment to use (AMSGrad or standard)
           let denomSq = vNew;
-          if (amsgrad) {
-            const maxBuf = state.maxExpAvgSq;
-            if (!maxBuf) {
-              throw new DeepboxError("Internal error: AMSGrad enabled but maxExpAvgSq is missing");
-            }
+          if (maxBuf) {
             // AMSGrad: use maximum of all past second moments
-            const maxV = Math.max(safeArrayAccess(maxBuf, i, "AdamW maxExpAvgSq"), vNew);
+            const maxV = Math.max(maxBuf[i] as number, vNew);
             maxBuf[i] = maxV;
             denomSq = maxV;
           }
 
-          // Compute denominator with bias correction: √(v̂(t)) + ε
+          // Denominator with bias correction: sqrt(v_hat(t)) + eps
           const denom = Math.sqrt(denomSq / biasCorrection2) + eps;
 
-          // AdamW update: θ(t+1) = θ(t) - lr * (m̂(t) / denom + λ * θ(t))
-          // Note: weight decay is applied directly to parameters (decoupled)
-          pData[pOff + i] = pi - stepSize * (mNew / denom) - lr * weightDecay * pi;
+          // AdamW update: theta(t+1) = theta(t) * (1 - lr * lambda) - stepSize * m(t) / denom
+          // The weight decay is applied directly to the parameters (decoupled).
+          pData[pOff + i] = pi - stepSize * (mNew / denom) - decay * pi;
         }
       }
     }

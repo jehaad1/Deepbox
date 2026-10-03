@@ -53,10 +53,18 @@ describe("deepbox/preprocess - Split Extra", () => {
     });
     const trainLabels = toNumberArray(yTrain, "yTrain");
     const testLabels = toNumberArray(yTest, "yTest");
-    expect(trainLabels.filter((v) => v === 0).length).toBe(1);
-    expect(trainLabels.filter((v) => v === 1).length).toBe(2);
-    expect(testLabels.filter((v) => v === 0).length).toBe(2);
-    expect(testLabels.filter((v) => v === 1).length).toBe(1);
+    // 3 + 3 samples with testSize 0.5 gives a 1.5/1.5 tie per class; like scikit-learn the
+    // extra test sample goes to a randomly chosen class, so only the totals are fixed.
+    const train0 = trainLabels.filter((v) => v === 0).length;
+    const train1 = trainLabels.filter((v) => v === 1).length;
+    const test0 = testLabels.filter((v) => v === 0).length;
+    const test1 = testLabels.filter((v) => v === 1).length;
+    expect(train0 + train1).toBe(3);
+    expect(test0 + test1).toBe(3);
+    expect(train0 + test0).toBe(3);
+    expect(train1 + test1).toBe(3);
+    expect([1, 2]).toContain(train0);
+    expect([1, 2]).toContain(test0);
   });
 
   it("KFold returns correct number of splits", () => {

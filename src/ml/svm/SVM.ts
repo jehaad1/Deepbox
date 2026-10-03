@@ -1,19 +1,374 @@
-import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
+/**
+ * Linear support vector machines: {@link LinearSVC} and {@link LinearSVR}.
+ *
+ * Both solve the L2-regularized problem in the dual with coordinate descent
+ * (Hsieh et al. 2008, Ho and Lin 2012), the algorithm behind LIBLINEAR and scikit-learn's
+ * `LinearSVC` and `LinearSVR`. The intercept is handled like LIBLINEAR does, as an extra
+ * constant feature `interceptScaling` that is regularized together with the weights.
+ *
+ * @module ml/svm/SVM
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
+ */
+
+import { InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import { __random, __randomBelow } from "../../random/random";
+import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
+import {
+  accuracyOf,
+  type ClassWeightOption,
+  copyClassWeight,
+  encodeLabels,
+  labelsToTensor,
+  mergeParams,
+  optionOr,
+  parseC,
+  parseClassWeight,
+  parseEpsilon,
+  parseMaxIter,
+  parseTol,
+  r2Of,
+  readSampleWeight,
+  resolveClassWeights,
+  stableSigmoid,
+  warnNotConverged,
+} from "./KernelSVM";
+
+/** Loss of {@link LinearSVC}: `"hinge"` or `"squaredHinge"`. */
+export type LinearSVCLoss = "hinge" | "squaredHinge";
+
+/** Loss of {@link LinearSVR}: `"epsilonInsensitive"` or `"squaredEpsilonInsensitive"`. */
+export type LinearSVRLoss = "epsilonInsensitive" | "squaredEpsilonInsensitive";
+
+function parseFitIntercept(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new InvalidParameterError("fitIntercept must be a boolean", "fitIntercept", value);
+  }
+  return value;
+}
+
+function parseInterceptScaling(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new InvalidParameterError(
+      "interceptScaling must be positive and finite",
+      "interceptScaling",
+      value
+    );
+  }
+  return value;
+}
+
+function parseRandomState(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new InvalidParameterError("randomState must be a finite number", "randomState", value);
+  }
+  return value;
+}
+
+function parseSvcLoss(value: unknown): LinearSVCLoss {
+  if (value !== "hinge" && value !== "squaredHinge") {
+    throw new InvalidParameterError('loss must be "hinge" or "squaredHinge"', "loss", value);
+  }
+  return value;
+}
+
+function parseSvrLoss(value: unknown): LinearSVRLoss {
+  if (value !== "epsilonInsensitive" && value !== "squaredEpsilonInsensitive") {
+    throw new InvalidParameterError(
+      'loss must be "epsilonInsensitive" or "squaredEpsilonInsensitive"',
+      "loss",
+      value
+    );
+  }
+  return value;
+}
+
+/** Integer seeds keep their low 32 bits; fractional ones use their IEEE bits (0.5 and 0.7 differ). */
+function seedToUint32(seed: number): number {
+  if (Number.isInteger(seed)) return seed >>> 0;
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, seed);
+  return (view.getUint32(0) ^ view.getUint32(4)) >>> 0;
+}
+
+/** Uniform [0, 1) generator: the global seeded one, or mulberry32 seeded with `seed`. */
+function makeRng(seed: number | undefined): () => number {
+  if (seed === undefined) return __random;
+  let s = seedToUint32(seed);
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** In-place Fisher-Yates shuffle. */
+function shuffle(order: Int32Array, rng: () => number): void {
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = __randomBelow(rng, i + 1);
+    const tmp = order[i] as number;
+    order[i] = order[j] as number;
+    order[j] = tmp;
+  }
+}
+
+type LinearSolution = {
+  readonly w: Float64Array;
+  readonly bias: number;
+  readonly iterations: number;
+  readonly converged: boolean;
+};
 
 /**
- * Support Vector Machine (SVM) Classifier.
+ * Dual coordinate descent for the L2-regularized L1-loss and L2-loss SVM.
  *
- * Implements a linear SVM using sub-gradient descent on the hinge loss
- * with L2 regularization (soft margin). Suitable for binary classification tasks.
+ * Minimizes `0.5 ||w||^2 + sum_i C_i loss(y_i, w.x_i)` where the intercept, when `scale > 0`,
+ * is the weight of an extra feature that always equals `scale`.
+ */
+function solveLinearSvc(
+  X: Float64Array,
+  n: number,
+  d: number,
+  y: Int8Array,
+  C: Float64Array,
+  squared: boolean,
+  scale: number,
+  maxIter: number,
+  tol: number,
+  rng: () => number
+): LinearSolution {
+  const w = new Float64Array(d);
+  let wb = 0;
+  const alpha = new Float64Array(n);
+  const diag = new Float64Array(n);
+  const upper = new Float64Array(n);
+  const QD = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const ci = C[i] as number;
+    diag[i] = squared ? 0.5 / ci : 0;
+    upper[i] = squared ? Number.POSITIVE_INFINITY : ci;
+    let sq = scale * scale;
+    for (let k = 0; k < d; k++) {
+      const v = X[i * d + k] as number;
+      sq += v * v;
+    }
+    QD[i] = (diag[i] as number) + sq;
+  }
+
+  const order = new Int32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  let converged = false;
+  let iter = 0;
+  while (iter < maxIter) {
+    shuffle(order, rng);
+    let pgMax = Number.NEGATIVE_INFINITY;
+    let pgMin = Number.POSITIVE_INFINITY;
+    for (let s = 0; s < n; s++) {
+      const i = order[s] as number;
+      if ((C[i] as number) === 0) continue;
+      const yi = y[i] as number;
+      const base = i * d;
+      let wx = wb * scale;
+      for (let k = 0; k < d; k++) wx += (w[k] as number) * (X[base + k] as number);
+      const ai = alpha[i] as number;
+      const G = yi * wx - 1 + ai * (diag[i] as number);
+      let PG: number;
+      if (ai === 0) PG = Math.min(G, 0);
+      else if (ai >= (upper[i] as number)) PG = Math.max(G, 0);
+      else PG = G;
+      if (PG > pgMax) pgMax = PG;
+      if (PG < pgMin) pgMin = PG;
+      if (Math.abs(PG) > 1e-12) {
+        const next = Math.min(Math.max(ai - G / (QD[i] as number), 0), upper[i] as number);
+        alpha[i] = next;
+        const step = (next - ai) * yi;
+        for (let k = 0; k < d; k++) w[k] = (w[k] as number) + step * (X[base + k] as number);
+        wb += step * scale;
+      }
+    }
+    iter++;
+    if (pgMax - pgMin <= tol) {
+      converged = true;
+      break;
+    }
+  }
+  return { w, bias: wb * scale, iterations: iter, converged };
+}
+
+/**
+ * Dual coordinate descent for L2-regularized epsilon-insensitive regression
+ * (LIBLINEAR `solve_l2r_l1l2_svr`).
+ */
+function solveLinearSvr(
+  X: Float64Array,
+  n: number,
+  d: number,
+  y: Float64Array,
+  C: number,
+  epsilon: number,
+  squared: boolean,
+  scale: number,
+  maxIter: number,
+  tol: number,
+  rng: () => number
+): LinearSolution {
+  const w = new Float64Array(d);
+  let wb = 0;
+  const beta = new Float64Array(n);
+  const lambda = squared ? 0.5 / C : 0;
+  const upper = squared ? Number.POSITIVE_INFINITY : C;
+  const QD = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sq = scale * scale;
+    for (let k = 0; k < d; k++) {
+      const v = X[i * d + k] as number;
+      sq += v * v;
+    }
+    QD[i] = sq;
+  }
+
+  const order = new Int32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  let converged = false;
+  let iter = 0;
+  let gnormInit = 0;
+  while (iter < maxIter) {
+    shuffle(order, rng);
+    let gmaxNew = 0;
+    for (let s = 0; s < n; s++) {
+      const i = order[s] as number;
+      const base = i * d;
+      const bi = beta[i] as number;
+      const H = (QD[i] as number) + lambda;
+      let wx = wb * scale;
+      for (let k = 0; k < d; k++) wx += (w[k] as number) * (X[base + k] as number);
+      const G = -(y[i] as number) + lambda * bi + wx;
+      const Gp = G + epsilon;
+      const Gn = G - epsilon;
+      let violation = 0;
+      if (bi === 0) {
+        if (Gp < 0) violation = -Gp;
+        else if (Gn > 0) violation = Gn;
+      } else if (bi >= upper) {
+        if (Gp > 0) violation = Gp;
+      } else if (bi <= -upper) {
+        if (Gn < 0) violation = -Gn;
+      } else if (bi > 0) {
+        violation = Math.abs(Gp);
+      } else {
+        violation = Math.abs(Gn);
+      }
+      if (violation > gmaxNew) gmaxNew = violation;
+
+      let step: number;
+      if (Gp < H * bi) step = -Gp / H;
+      else if (Gn > H * bi) step = -Gn / H;
+      else step = -bi;
+      if (Math.abs(step) < 1e-12) continue;
+      const next = Math.min(Math.max(bi + step, -upper), upper);
+      step = next - bi;
+      if (step !== 0) {
+        beta[i] = next;
+        for (let k = 0; k < d; k++) w[k] = (w[k] as number) + step * (X[base + k] as number);
+        wb += step * scale;
+      }
+    }
+    if (iter === 0) gnormInit = gmaxNew;
+    iter++;
+    if (gmaxNew <= tol * gnormInit) {
+      converged = true;
+      break;
+    }
+  }
+  return { w, bias: wb * scale, iterations: iter, converged };
+}
+
+// ---------------------------------------------------------------------------
+// LinearSVC
+// ---------------------------------------------------------------------------
+
+/** Constructor options of {@link LinearSVC}. */
+export type LinearSVCOptions = {
+  /** Penalty of margin violations, must be positive (default: 1.0). */
+  readonly C?: number;
+  /** Loss function (default: "hinge"). scikit-learn defaults to the squared hinge. */
+  readonly loss?: LinearSVCLoss;
+  /** Fit an intercept (default: true). */
+  readonly fitIntercept?: boolean;
+  /**
+   * Value of the constant feature that carries the intercept (default: 1). The intercept is
+   * regularized, so larger values weaken the penalty on it.
+   */
+  readonly interceptScaling?: number;
+  /** Maximum number of passes over the data (default: 1000). */
+  readonly maxIter?: number;
+  /** Stopping tolerance on the projected-gradient range (default: 1e-4). */
+  readonly tol?: number;
+  /** Per-class multiplier of `C`: "balanced" or a map from class label to weight. */
+  readonly classWeight?: ClassWeightOption;
+  /**
+   * Seed of the coordinate order. When omitted the global generator is used, so `setSeed`
+   * makes fits reproducible.
+   */
+  readonly randomState?: number;
+};
+
+type LinearSvcConfig = {
+  C: number;
+  loss: LinearSVCLoss;
+  fitIntercept: boolean;
+  interceptScaling: number;
+  maxIter: number;
+  tol: number;
+  classWeight: ClassWeightOption | undefined;
+  randomState: number | undefined;
+};
+
+const LINEAR_SVC_KEYS = [
+  "C",
+  "loss",
+  "fitIntercept",
+  "interceptScaling",
+  "maxIter",
+  "tol",
+  "classWeight",
+  "randomState",
+] as const;
+
+function normalizeLinearSvcConfig(o: Record<string, unknown>): LinearSvcConfig {
+  return {
+    C: optionOr(o, "C", 1.0, parseC),
+    loss: optionOr<LinearSVCLoss>(o, "loss", "hinge", parseSvcLoss),
+    fitIntercept: optionOr(o, "fitIntercept", true, parseFitIntercept),
+    interceptScaling: optionOr(o, "interceptScaling", 1, parseInterceptScaling),
+    maxIter: optionOr(o, "maxIter", 1000, parseMaxIter),
+    tol: optionOr(o, "tol", 1e-4, parseTol),
+    classWeight: o["classWeight"] === undefined ? undefined : parseClassWeight(o["classWeight"]),
+    randomState: o["randomState"] === undefined ? undefined : parseRandomState(o["randomState"]),
+  };
+}
+
+type LinearSvcModel = {
+  readonly labels: Float64Array;
+  readonly nFeatures: number;
+  /** One weight vector for two classes, one per class otherwise (row-major). */
+  readonly weights: Float64Array;
+  readonly biases: Float64Array;
+  readonly nModels: number;
+  readonly nIter: number;
+};
+
+/**
+ * Support Vector Machine classifier with a linear kernel.
  *
- * **Algorithm**: Sub-gradient descent on hinge loss (linear kernel)
+ * Minimizes `0.5 ||w||^2 + C * sum_i loss(y_i, w.x_i + b)` with dual coordinate descent
+ * (the LIBLINEAR algorithm). More than two classes are handled one-vs-rest.
  *
- * **Mathematical Formulation**:
- * - Decision function: f(x) = sign(w · x + b)
- * - Optimization: minimize (1/2)||w||² + C * Σmax(0, 1 - y_i(w · x_i + b))
+ * `predictProba` returns a monotone squashing of the decision values, not calibrated
+ * probabilities.
  *
  * @example
  * ```ts
@@ -31,449 +386,366 @@ import type { Classifier, Regressor } from "../base";
  * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class LinearSVC implements Classifier {
-  /** Regularization parameter (inverse of regularization strength) */
-  private C: number;
-
-  /** Maximum number of iterations for optimization */
-  private maxIter: number;
-
-  /** Tolerance for stopping criterion */
-  private tol: number;
-
-  /** Class weight strategy */
-  private classWeight: "balanced" | Record<number, number> | undefined;
-
-  /** Per-class weight vectors (OvR for multiclass, single for binary) */
-  private weightsPerClass: number[][] = [];
-
-  /** Per-class bias terms */
-  private biasPerClass: number[] = [];
-
-  /** Number of features seen during fit */
-  private nFeatures = 0;
-
-  /** Unique class labels */
-  private classLabels: number[] = [];
-
-  /** Whether the model has been fitted */
-  private fitted = false;
+  private cfg: LinearSvcConfig;
+  private model_: LinearSvcModel | undefined;
 
   /**
-   * Create a new SVM Classifier.
-   *
-   * @param options - Configuration options
-   * @param options.C - Regularization parameter (default: 1.0). Larger C = stronger penalty on errors = harder margin.
-   * @param options.maxIter - Maximum iterations (default: 1000)
-   * @param options.tol - Convergence tolerance (default: 1e-4)
-   * @param options.classWeight - Class weights: 'balanced' or {classLabel: weight} (default: undefined = equal weights)
+   * @param options - Hyperparameters, see {@link LinearSVCOptions}
+   * @throws {InvalidParameterError} If an option is out of range
    */
-  constructor(
-    options: {
-      readonly C?: number;
-      readonly maxIter?: number;
-      readonly tol?: number;
-      readonly classWeight?: "balanced" | Record<number, number>;
-    } = {}
-  ) {
-    this.C = options.C ?? 1.0;
-    this.maxIter = options.maxIter ?? 1000;
-    this.tol = options.tol ?? 1e-4;
-    this.classWeight = options.classWeight;
+  constructor(options: LinearSVCOptions = {}) {
+    this.cfg = normalizeLinearSvcConfig(options as Record<string, unknown>);
+  }
 
-    // Validate parameters
-    if (!Number.isFinite(this.C) || this.C <= 0) {
-      throw new InvalidParameterError("C must be positive", "C", this.C);
+  private get fitted(): LinearSvcModel {
+    if (this.model_ === undefined) {
+      throw new NotFittedError("LinearSVC must be fitted before prediction");
     }
-    if (!Number.isInteger(this.maxIter) || this.maxIter <= 0) {
-      throw new InvalidParameterError(
-        "maxIter must be a positive integer",
-        "maxIter",
-        this.maxIter
-      );
-    }
-    if (!Number.isFinite(this.tol) || this.tol < 0) {
-      throw new InvalidParameterError("tol must be >= 0", "tol", this.tol);
-    }
+    return this.model_;
   }
 
   /**
-   * Fit a single binary SVM using sub-gradient descent on hinge loss.
-   * Maps labels to {-1, +1} and returns learned weights + bias.
-   */
-  private fitBinary(
-    XData: number[][],
-    yMapped: number[],
-    nSamples: number,
-    nFeatures: number,
-    sampleWeights?: Float64Array
-  ): { weights: number[]; bias: number } {
-    const weights = new Array<number>(nFeatures).fill(0);
-    let bias = 0;
-    const learningRate = 0.01;
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let maxViolation = 0;
-
-      for (let i = 0; i < nSamples; i++) {
-        const xi = XData[i];
-        const yi = yMapped[i];
-        if (xi === undefined || yi === undefined) continue;
-
-        let decision = bias;
-        for (let j = 0; j < nFeatures; j++) {
-          decision += (weights[j] ?? 0) * (xi[j] ?? 0);
-        }
-
-        const margin = yi * decision;
-        if (margin < 1) {
-          maxViolation = Math.max(maxViolation, 1 - margin);
-        }
-
-        const sw = sampleWeights ? (sampleWeights[i] ?? 1) : 1;
-        const effectiveLR = Math.min(learningRate, 1.0 / (this.C * 10));
-
-        if (margin < 1) {
-          for (let j = 0; j < nFeatures; j++) {
-            weights[j] =
-              (weights[j] ?? 0) * (1 - effectiveLR) + effectiveLR * this.C * sw * yi * (xi[j] ?? 0);
-          }
-          bias += effectiveLR * this.C * sw * yi;
-        } else {
-          for (let j = 0; j < nFeatures; j++) {
-            weights[j] = (weights[j] ?? 0) * (1 - effectiveLR);
-          }
-        }
-      }
-
-      if (maxViolation < this.tol) break;
-    }
-
-    return { weights, bias };
-  }
-
-  /**
-   * Compute decision value for a single binary classifier.
-   */
-  private decisionBinary(x: number[], classIdx: number): number {
-    const w = this.weightsPerClass[classIdx];
-    let d = this.biasPerClass[classIdx] ?? 0;
-    if (w) {
-      for (let j = 0; j < w.length; j++) {
-        d += (w[j] ?? 0) * (x[j] ?? 0);
-      }
-    }
-    return d;
-  }
-
-  /**
-   * Fit the SVM classifier using sub-gradient descent.
-   *
-   * Supports both binary and multiclass classification (via OvR).
+   * Fit the classifier.
    *
    * @param X - Training data of shape (n_samples, n_features)
-   * @param y - Target labels of shape (n_samples,). Must contain at least 2 classes.
-   * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
-   * @throws {InvalidParameterError} If y does not contain at least 2 classes
+   * @param y - Class labels of shape (n_samples,), at least two distinct values
+   * @param sampleWeight - Optional per-sample multipliers of `C`, shape (n_samples,)
+   * @returns this
+   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
+   * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {InvalidParameterError} If y has fewer than 2 classes
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
+    const sampleWeight = sampleWeightArg as Tensor | undefined;
     validateFitInputs(X, y);
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-
-    this.nFeatures = nFeatures;
-
-    const XData: number[][] = [];
-    const yData: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      XData.push(row);
-      yData.push(Number(y.data[y.offset + i]));
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const Xf = toFloat64View(X);
+    const { labels, index } = encodeLabels(toFloat64View(y));
+    const K = labels.length;
+    if (K < 2) {
+      throw new InvalidParameterError("LinearSVC requires at least 2 classes", "y", K);
     }
+    const sw = readSampleWeight(sampleWeight, n);
+    const cw = resolveClassWeights(this.cfg.classWeight, labels, index);
+    const scale = this.cfg.fitIntercept ? this.cfg.interceptScaling : 0;
+    const rng = makeRng(this.cfg.randomState);
+    const squared = this.cfg.loss === "squaredHinge";
 
-    this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
-    if (this.classLabels.length < 2) {
-      throw new InvalidParameterError(
-        "LinearSVC requires at least 2 classes",
-        "y",
-        this.classLabels.length
+    const nModels = K === 2 ? 1 : K;
+    const weights = new Float64Array(nModels * d);
+    const biases = new Float64Array(nModels);
+    let converged = true;
+    let nIter = 0;
+    const ySub = new Int8Array(n);
+    const C = new Float64Array(n);
+    for (let m = 0; m < nModels; m++) {
+      for (let i = 0; i < n; i++) {
+        const c = index[i] as number;
+        const swi = sw ? (sw[i] as number) : 1;
+        if (K === 2) {
+          ySub[i] = c === 1 ? 1 : -1;
+          C[i] = this.cfg.C * (cw[c] as number) * swi;
+        } else {
+          // One-vs-rest, as in LIBLINEAR: only the positive class carries its class weight.
+          ySub[i] = c === m ? 1 : -1;
+          C[i] = this.cfg.C * (c === m ? (cw[c] as number) : 1) * swi;
+        }
+      }
+      const sol = solveLinearSvc(
+        Xf,
+        n,
+        d,
+        ySub,
+        C,
+        squared,
+        scale,
+        this.cfg.maxIter,
+        this.cfg.tol,
+        rng
       );
+      converged = converged && sol.converged;
+      nIter = Math.max(nIter, sol.iterations);
+      weights.set(sol.w, m * d);
+      biases[m] = sol.bias;
     }
+    if (!converged) warnNotConverged("LinearSVC", this.cfg.maxIter);
 
-    this.weightsPerClass = [];
-    this.biasPerClass = [];
-
-    // Compute sample weights from class_weight
-    let sampleWeights: Float64Array | undefined;
-    if (this.classWeight !== undefined) {
-      sampleWeights = new Float64Array(nSamples);
-      if (this.classWeight === "balanced") {
-        const classCounts = new Map<number, number>();
-        for (const label of yData) {
-          classCounts.set(label, (classCounts.get(label) ?? 0) + 1);
-        }
-        const nClasses = this.classLabels.length;
-        for (let i = 0; i < nSamples; i++) {
-          const count = classCounts.get(yData[i] ?? 0) ?? 1;
-          sampleWeights[i] = nSamples / (nClasses * count);
-        }
-      } else {
-        for (let i = 0; i < nSamples; i++) {
-          sampleWeights[i] = this.classWeight[yData[i] ?? 0] ?? 1;
-        }
-      }
-    }
-
-    if (this.classLabels.length === 2) {
-      // Binary: single SVM, map to {-1, +1}
-      const yMapped = yData.map((label) => (label === this.classLabels[0] ? -1 : 1));
-      const { weights, bias } = this.fitBinary(XData, yMapped, nSamples, nFeatures, sampleWeights);
-      this.weightsPerClass.push(weights);
-      this.biasPerClass.push(bias);
-    } else {
-      // Multiclass: One-vs-Rest — one binary SVM per class
-      for (const classLabel of this.classLabels) {
-        const yMapped = yData.map((label) => (label === classLabel ? 1 : -1));
-        const { weights, bias } = this.fitBinary(
-          XData,
-          yMapped,
-          nSamples,
-          nFeatures,
-          sampleWeights
-        );
-        this.weightsPerClass.push(weights);
-        this.biasPerClass.push(bias);
-      }
-    }
-
-    this.fitted = true;
+    this.model_ = { labels, nFeatures: d, weights, biases, nModels, nIter };
     return this;
   }
 
+  /** Raw scores, row-major `(n, nModels)`. */
+  private scores(X: Tensor): { scores: Float64Array; n: number } {
+    const model = this.fitted;
+    validatePredictInputs(X, model.nFeatures, "LinearSVC");
+    const n = X.shape[0] ?? 0;
+    const d = model.nFeatures;
+    const Xf = toFloat64View(X);
+    const out = new Float64Array(n * model.nModels);
+    for (let i = 0; i < n; i++) {
+      for (let m = 0; m < model.nModels; m++) {
+        let s = model.biases[m] as number;
+        for (let k = 0; k < d; k++) {
+          s += (model.weights[m * d + k] as number) * (Xf[i * d + k] as number);
+        }
+        out[i * model.nModels + m] = s;
+      }
+    }
+    return { scores: out, n };
+  }
+
   /**
-   * Predict class labels for samples in X.
+   * Predict class labels.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted labels of shape (n_samples,)
+   * @returns Labels of shape (n_samples,): int32 for integer classes, float64 otherwise
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("SVC must be fitted before prediction");
-    }
-
-    validatePredictInputs(X, this.nFeatures ?? 0, "LinearSVC");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j]));
+    const { scores, n } = this.scores(X);
+    const model = this.fitted;
+    const out = new Float64Array(n);
+    if (model.nModels === 1) {
+      for (let i = 0; i < n; i++) {
+        out[i] = model.labels[(scores[i] as number) > 0 ? 1 : 0] as number;
       }
-
-      if (this.classLabels.length === 2) {
-        // Binary
-        const d = this.decisionBinary(xi, 0);
-        predictions.push(d >= 0 ? (this.classLabels[1] ?? 0) : (this.classLabels[0] ?? 0));
-      } else {
-        // Multiclass OvR: pick class with highest decision value
-        let bestClass = 0;
-        let bestScore = -Infinity;
-        for (let c = 0; c < this.classLabels.length; c++) {
-          const score = this.decisionBinary(xi, c);
-          if (score > bestScore) {
-            bestScore = score;
-            bestClass = c;
-          }
+    } else {
+      const K = model.nModels;
+      for (let i = 0; i < n; i++) {
+        let best = 0;
+        for (let c = 1; c < K; c++) {
+          if ((scores[i * K + c] as number) > (scores[i * K + best] as number)) best = c;
         }
-        predictions.push(this.classLabels[bestClass] ?? 0);
+        out[i] = model.labels[best] as number;
       }
     }
-
-    return tensor(predictions, { dtype: "int32" });
+    return labelsToTensor(out);
   }
 
   /**
-   * Predict class probabilities using Platt scaling approximation.
+   * Signed distances `X @ coef.T + intercept` to the separating hyperplanes.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Probability estimates of shape (n_samples, 2)
+   * @returns Shape (n_samples,) for two classes (positive means `classes[1]`), otherwise
+   * (n_samples, n_classes)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  decisionFunction(X: Tensor): Tensor {
+    const { scores, n } = this.scores(X);
+    const model = this.fitted;
+    if (model.nModels === 1) return tensor(scores, { dtype: "float64" });
+    return tensor(scores, { dtype: "float64" }).reshape([n, model.nModels]);
+  }
+
+  /**
+   * Class scores squashed into rows that sum to one: the logistic function of the decision
+   * value for two classes, the per-class logistic values normalized to sum to one otherwise.
+   * These are not calibrated probabilities.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Probability-like scores of shape (n_samples, n_classes)
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predictProba(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("LinearSVC must be fitted before prediction");
-    }
-
-    validatePredictInputs(X, this.nFeatures ?? 0, "LinearSVC");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const nClasses = this.classLabels.length;
-    const proba: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j]));
+    const { scores, n } = this.scores(X);
+    const model = this.fitted;
+    if (model.nModels === 1) {
+      const out = new Float64Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        const p1 = stableSigmoid(scores[i] as number);
+        out[i * 2] = 1 - p1;
+        out[i * 2 + 1] = p1;
       }
-
-      if (nClasses === 2) {
-        const d = this.decisionBinary(xi, 0);
-        const p1 = 1 / (1 + Math.exp(-d));
-        proba.push([1 - p1, p1]);
-      } else {
-        // Softmax over per-class sigmoid scores
-        const sigScores: number[] = [];
-        for (let c = 0; c < nClasses; c++) {
-          sigScores.push(1 / (1 + Math.exp(-this.decisionBinary(xi, c))));
-        }
-        const total = sigScores.reduce((s, v) => s + v, 0) || 1;
-        proba.push(sigScores.map((v) => v / total));
+      return tensor(out, { dtype: "float64" }).reshape([n, 2]);
+    }
+    const K = model.nModels;
+    const out = new Float64Array(n * K);
+    for (let i = 0; i < n; i++) {
+      let total = 0;
+      for (let c = 0; c < K; c++) {
+        const p = stableSigmoid(scores[i * K + c] as number);
+        out[i * K + c] = p;
+        total += p;
+      }
+      for (let c = 0; c < K; c++) {
+        out[i * K + c] = total > 0 ? (out[i * K + c] as number) / total : 1 / K;
       }
     }
-
-    return tensor(proba);
+    return tensor(out, { dtype: "float64" }).reshape([n, K]);
   }
 
   /**
-   * Return the mean accuracy on the given test data and labels.
+   * Mean accuracy on the given data.
    *
    * @param X - Test samples of shape (n_samples, n_features)
    * @param y - True labels of shape (n_samples,)
-   * @returns Accuracy score in range [0, 1]
+   * @returns Accuracy in [0, 1]
    * @throws {NotFittedError} If the model has not been fitted
-   * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {ShapeError} If y is not 1-dimensional or the sample counts differ
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf
    */
   score(X: Tensor, y: Tensor): number {
     if (y.ndim !== 1) {
       throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
     }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const predictions = this.predict(X);
-    if (predictions.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${predictions.size}, y=${y.size}`
-      );
-    }
-    let correct = 0;
-    for (let i = 0; i < y.size; i++) {
-      if (Number(predictions.data[predictions.offset + i]) === Number(y.data[y.offset + i])) {
-        correct++;
-      }
-    }
-    return correct / y.size;
+    return accuracyOf(this.predict(X), y);
+  }
+
+  /** Sorted class labels seen during `fit`, or `undefined` before fitting. */
+  get classes(): Tensor | undefined {
+    return this.model_ === undefined ? undefined : labelsToTensor(this.model_.labels);
   }
 
   /**
-   * Get the weight vector.
+   * Weight vectors, shape (1, n_features) for two classes (positive means `classes[1]`) and
+   * (n_classes, n_features) otherwise.
    *
-   * @returns Weight vector as tensor of shape (1, n_features)
    * @throws {NotFittedError} If the model has not been fitted
    */
   get coef(): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("LinearSVC must be fitted to access coefficients");
-    }
-    return tensor(this.weightsPerClass);
+    const model = this.fitted;
+    return tensor(Float64Array.from(model.weights), { dtype: "float64" }).reshape([
+      model.nModels,
+      model.nFeatures,
+    ]);
   }
 
   /**
-   * Get the bias terms.
+   * Intercepts, shape (1,) for two classes and (n_classes,) otherwise.
    *
-   * @returns Bias values as tensor
    * @throws {NotFittedError} If the model has not been fitted
    */
   get intercept(): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("LinearSVC must be fitted to access intercept");
-    }
-    return tensor(this.biasPerClass);
+    return tensor(Float64Array.from(this.fitted.biases), { dtype: "float64" });
   }
 
   /**
-   * Get hyperparameters for this estimator.
+   * Number of passes over the data used by the slowest binary problem.
    *
-   * @returns Object containing all hyperparameters
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nIter(): number {
+    return this.fitted.nIter;
+  }
+
+  /**
+   * Get hyperparameters, including `classWeight` and `randomState` only when set.
+   *
+   * @returns Object that can be passed back to the constructor
    */
   getParams(): Record<string, unknown> {
-    return {
-      C: this.C,
-      maxIter: this.maxIter,
-      tol: this.tol,
-    };
+    const { classWeight, randomState, ...rest } = this.cfg;
+    const out: Record<string, unknown> = { ...rest };
+    if (classWeight !== undefined) out["classWeight"] = copyClassWeight(classWeight);
+    if (randomState !== undefined) out["randomState"] = randomState;
+    return out;
   }
 
   /**
-   * Set the parameters of this estimator.
+   * Set hyperparameters. The call is atomic: if any value is invalid nothing changes.
    *
    * @param params - Parameters to set
-   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   * @throws {InvalidParameterError} If a parameter is unknown or its value is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "C":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("C must be > 0", "C", value);
-          }
-          this.C = value;
-          break;
-        case "maxIter":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
-          }
-          this.maxIter = value;
-          break;
-        case "tol":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("tol must be >= 0", "tol", value);
-          }
-          this.tol = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    this.cfg = normalizeLinearSvcConfig(
+      mergeParams(this.getParams(), params, LINEAR_SVC_KEYS, ["classWeight", "randomState"])
+    );
     return this;
   }
 
+  /** Create an unfitted copy with the same hyperparameters. */
   clone(): LinearSVC {
-    return new LinearSVC(
-      this.getParams() as {
-        C?: number;
-        maxIter?: number;
-        tol?: number;
-      }
-    );
+    return new LinearSVC(this.getParams() as LinearSVCOptions);
   }
 }
 
+// ---------------------------------------------------------------------------
+// LinearSVR
+// ---------------------------------------------------------------------------
+
+/** Constructor options of {@link LinearSVR}. */
+export type LinearSVROptions = {
+  /** Penalty of errors outside the epsilon tube, must be positive (default: 1.0). */
+  readonly C?: number;
+  /**
+   * Half-width of the tube in which errors are not penalized (default: 0.1). scikit-learn
+   * defaults to 0.
+   */
+  readonly epsilon?: number;
+  /** Loss function (default: "epsilonInsensitive"). */
+  readonly loss?: LinearSVRLoss;
+  /** Fit an intercept (default: true). */
+  readonly fitIntercept?: boolean;
+  /**
+   * Value of the constant feature that carries the intercept (default: 1). The intercept is
+   * regularized, so larger values weaken the penalty on it.
+   */
+  readonly interceptScaling?: number;
+  /** Maximum number of passes over the data (default: 1000). */
+  readonly maxIter?: number;
+  /** Stopping tolerance relative to the violation of the first pass (default: 1e-4). */
+  readonly tol?: number;
+  /**
+   * Seed of the coordinate order. When omitted the global generator is used, so `setSeed`
+   * makes fits reproducible.
+   */
+  readonly randomState?: number;
+};
+
+type LinearSvrConfig = {
+  C: number;
+  epsilon: number;
+  loss: LinearSVRLoss;
+  fitIntercept: boolean;
+  interceptScaling: number;
+  maxIter: number;
+  tol: number;
+  randomState: number | undefined;
+};
+
+const LINEAR_SVR_KEYS = [
+  "C",
+  "epsilon",
+  "loss",
+  "fitIntercept",
+  "interceptScaling",
+  "maxIter",
+  "tol",
+  "randomState",
+] as const;
+
+function parseSvrMaxIter(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new InvalidParameterError("maxIter must be positive (an integer >= 1)", "maxIter", value);
+  }
+  return value;
+}
+
+function normalizeLinearSvrConfig(o: Record<string, unknown>): LinearSvrConfig {
+  return {
+    C: optionOr(o, "C", 1.0, parseC),
+    epsilon: optionOr(o, "epsilon", 0.1, parseEpsilon),
+    loss: optionOr<LinearSVRLoss>(o, "loss", "epsilonInsensitive", parseSvrLoss),
+    fitIntercept: optionOr(o, "fitIntercept", true, parseFitIntercept),
+    interceptScaling: optionOr(o, "interceptScaling", 1, parseInterceptScaling),
+    maxIter: optionOr(o, "maxIter", 1000, parseSvrMaxIter),
+    tol: optionOr(o, "tol", 1e-4, parseTol),
+    randomState: o["randomState"] === undefined ? undefined : parseRandomState(o["randomState"]),
+  };
+}
+
 /**
- * Support Vector Machine (SVM) Regressor.
+ * Support Vector Regression with a linear kernel.
  *
- * Implements epsilon-SVR (Support Vector Regression) using sub-gradient descent.
+ * Minimizes `0.5 ||w||^2 + C * sum_i loss(|y_i - w.x_i - b| - epsilon)` with dual coordinate
+ * descent (the LIBLINEAR algorithm).
  *
  * @example
  * ```ts
@@ -491,283 +763,159 @@ export class LinearSVC implements Classifier {
  * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class LinearSVR implements Regressor {
-  /** Regularization parameter */
-  private C: number;
+  private cfg: LinearSvrConfig;
+  private weights_: Float64Array | undefined;
+  private bias_ = 0;
+  private nFeatures_ = 0;
+  private nIter_ = 0;
 
-  /** Epsilon in the epsilon-SVR model */
-  private epsilon: number;
+  /**
+   * @param options - Hyperparameters, see {@link LinearSVROptions}
+   * @throws {InvalidParameterError} If an option is out of range
+   */
+  constructor(options: LinearSVROptions = {}) {
+    this.cfg = normalizeLinearSvrConfig(options as Record<string, unknown>);
+  }
 
-  /** Maximum number of iterations */
-  private maxIter: number;
-
-  /** Tolerance for stopping criterion */
-  private tol: number;
-
-  /** Weight vector */
-  private weights: number[] = [];
-
-  /** Bias term */
-  private bias = 0;
-
-  /** Number of features */
-  private nFeatures = 0;
-
-  /** Whether the model has been fitted */
-  private fitted = false;
-
-  constructor(
-    options: {
-      readonly C?: number;
-      readonly epsilon?: number;
-      readonly maxIter?: number;
-      readonly tol?: number;
-    } = {}
-  ) {
-    this.C = options.C ?? 1.0;
-    this.epsilon = options.epsilon ?? 0.1;
-    this.maxIter = options.maxIter ?? 1000;
-    this.tol = options.tol ?? 1e-4;
-
-    if (!Number.isFinite(this.C) || this.C <= 0) {
-      throw new InvalidParameterError("C must be positive", "C", this.C);
+  private get weights(): Float64Array {
+    if (this.weights_ === undefined) {
+      throw new NotFittedError("LinearSVR must be fitted before prediction");
     }
-    if (!Number.isFinite(this.epsilon) || this.epsilon < 0) {
-      throw new InvalidParameterError("epsilon must be >= 0", "epsilon", this.epsilon);
-    }
-    if (!Number.isInteger(this.maxIter) || this.maxIter <= 0) {
-      throw new InvalidParameterError("maxIter must be positive", "maxIter", this.maxIter);
-    }
-    if (!Number.isFinite(this.tol) || this.tol < 0) {
-      throw new InvalidParameterError("tol must be >= 0", "tol", this.tol);
-    }
+    return this.weights_;
   }
 
   /**
-   * Fit the SVR model using sub-gradient descent on epsilon-insensitive loss.
+   * Fit the regressor.
    *
    * @param X - Training data of shape (n_samples, n_features)
-   * @param y - Target values of shape (n_samples,)
-   * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @param y - Targets of shape (n_samples,)
+   * @returns this
+   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
+   * @throws {DataValidationError} If X or y contain NaN/Inf
    */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const sol = solveLinearSvr(
+      toFloat64View(X),
+      n,
+      d,
+      toFloat64View(y),
+      this.cfg.C,
+      this.cfg.epsilon,
+      this.cfg.loss === "squaredEpsilonInsensitive",
+      this.cfg.fitIntercept ? this.cfg.interceptScaling : 0,
+      this.cfg.maxIter,
+      this.cfg.tol,
+      makeRng(this.cfg.randomState)
+    );
+    if (!sol.converged) warnNotConverged("LinearSVR", this.cfg.maxIter);
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-
-    this.nFeatures = nFeatures;
-
-    // Extract data
-    const XData: number[][] = [];
-    const yData: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      XData.push(row);
-      yData.push(Number(y.data[y.offset + i]));
-    }
-
-    // Initialize weights
-    this.weights = new Array(nFeatures).fill(0);
-    this.bias = 0;
-
-    const learningRate = 0.01;
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let totalLoss = 0;
-
-      for (let i = 0; i < nSamples; i++) {
-        const xi = XData[i];
-        const yi = yData[i];
-
-        if (xi === undefined || yi === undefined) continue;
-
-        // Compute prediction
-        let pred = this.bias;
-        for (let j = 0; j < nFeatures; j++) {
-          pred += (this.weights[j] ?? 0) * (xi[j] ?? 0);
-        }
-
-        const error = pred - yi;
-        const absError = Math.abs(error);
-
-        // Epsilon-insensitive loss
-        if (absError > this.epsilon) {
-          totalLoss += absError - this.epsilon;
-
-          // Sub-gradient
-          const sign = error > 0 ? 1 : -1;
-
-          for (let j = 0; j < nFeatures; j++) {
-            this.weights[j] =
-              (this.weights[j] ?? 0) -
-              learningRate * (this.C * sign * (xi[j] ?? 0) + (this.weights[j] ?? 0));
-          }
-          this.bias -= learningRate * this.C * sign;
-        } else {
-          // Only regularization
-          for (let j = 0; j < nFeatures; j++) {
-            this.weights[j] = (this.weights[j] ?? 0) - learningRate * (this.weights[j] ?? 0);
-          }
-        }
-      }
-
-      if (totalLoss / nSamples < this.tol) {
-        break;
-      }
-    }
-
-    this.fitted = true;
+    this.weights_ = sol.w;
+    this.bias_ = sol.bias;
+    this.nFeatures_ = d;
+    this.nIter_ = sol.iterations;
     return this;
   }
 
   /**
-   * Predict target values for samples in X.
+   * Predict target values.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted values of shape (n_samples,)
+   * @returns Predictions of shape (n_samples,), dtype float64
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("SVR must be fitted before prediction");
+    const w = this.weights;
+    validatePredictInputs(X, this.nFeatures_, "LinearSVR");
+    const n = X.shape[0] ?? 0;
+    const d = this.nFeatures_;
+    const Xf = toFloat64View(X);
+    const out = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let s = this.bias_;
+      for (let k = 0; k < d; k++) s += (w[k] as number) * (Xf[i * d + k] as number);
+      out[i] = s;
     }
-
-    validatePredictInputs(X, this.nFeatures ?? 0, "SVR");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      let pred = this.bias;
-      for (let j = 0; j < nFeatures; j++) {
-        pred += (this.weights[j] ?? 0) * Number(X.data[X.offset + i * nFeatures + j]);
-      }
-      predictions.push(pred);
-    }
-
-    return tensor(predictions);
+    return tensor(out, { dtype: "float64" });
   }
 
   /**
-   * Return the R² score on the given test data and target values.
+   * Coefficient of determination R^2 on the given data.
    *
    * @param X - Test samples of shape (n_samples, n_features)
-   * @param y - True target values of shape (n_samples,)
-   * @returns R² score (best possible is 1.0, can be negative)
+   * @param y - True targets of shape (n_samples,)
+   * @returns R^2 (1 is perfect, can be negative); a constant y scores 1 or 0
    * @throws {NotFittedError} If the model has not been fitted
-   * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {ShapeError} If y is not 1-dimensional or the sample counts differ
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf
    */
   score(X: Tensor, y: Tensor): number {
     if (y.ndim !== 1) {
       throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
     }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const predictions = this.predict(X);
-    if (predictions.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${predictions.size}, y=${y.size}`
-      );
-    }
-
-    let ssRes = 0;
-    let ssTot = 0;
-    let yMean = 0;
-
-    for (let i = 0; i < y.size; i++) {
-      yMean += Number(y.data[y.offset + i]);
-    }
-    yMean /= y.size;
-
-    for (let i = 0; i < y.size; i++) {
-      const yTrue = Number(y.data[y.offset + i]);
-      const yPred = Number(predictions.data[predictions.offset + i]);
-      ssRes += (yTrue - yPred) ** 2;
-      ssTot += (yTrue - yMean) ** 2;
-    }
-
-    return ssTot === 0 ? (ssRes === 0 ? 1.0 : 0.0) : 1 - ssRes / ssTot;
+    return r2Of(this.predict(X), y);
   }
 
   /**
-   * Get hyperparameters for this estimator.
+   * Weight vector, shape (n_features,).
    *
-   * @returns Object containing all hyperparameters
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get coef(): Tensor {
+    return tensor(Float64Array.from(this.weights), { dtype: "float64" });
+  }
+
+  /**
+   * Intercept, shape (1,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get intercept(): Tensor {
+    void this.weights;
+    return tensor(Float64Array.of(this.bias_), { dtype: "float64" });
+  }
+
+  /**
+   * Number of passes over the data used by the last fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nIter(): number {
+    void this.weights;
+    return this.nIter_;
+  }
+
+  /**
+   * Get hyperparameters, including `randomState` only when set.
+   *
+   * @returns Object that can be passed back to the constructor
    */
   getParams(): Record<string, unknown> {
-    return {
-      C: this.C,
-      epsilon: this.epsilon,
-      maxIter: this.maxIter,
-      tol: this.tol,
-    };
+    const { randomState, ...rest } = this.cfg;
+    const out: Record<string, unknown> = { ...rest };
+    if (randomState !== undefined) out["randomState"] = randomState;
+    return out;
   }
 
   /**
-   * Set the parameters of this estimator.
+   * Set hyperparameters. The call is atomic: if any value is invalid nothing changes.
    *
    * @param params - Parameters to set
-   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   * @throws {InvalidParameterError} If a parameter is unknown or its value is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "C":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("C must be > 0", "C", value);
-          }
-          this.C = value;
-          break;
-        case "epsilon":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("epsilon must be >= 0", "epsilon", value);
-          }
-          this.epsilon = value;
-          break;
-        case "maxIter":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
-          }
-          this.maxIter = value;
-          break;
-        case "tol":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("tol must be >= 0", "tol", value);
-          }
-          this.tol = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    this.cfg = normalizeLinearSvrConfig(
+      mergeParams(this.getParams(), params, LINEAR_SVR_KEYS, ["randomState"])
+    );
     return this;
   }
 
+  /** Create an unfitted copy with the same hyperparameters. */
   clone(): LinearSVR {
-    return new LinearSVR(
-      this.getParams() as {
-        C?: number;
-        epsilon?: number;
-        maxIter?: number;
-        tol?: number;
-      }
-    );
+    return new LinearSVR(this.getParams() as LinearSVROptions);
   }
 }

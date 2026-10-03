@@ -1,14 +1,235 @@
-import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
+/**
+ * Matrix decomposition and dimensionality reduction estimators.
+ *
+ * Provides `PCA`, `TruncatedSVD`, `NMF`, `FastICA` and `LatentDirichletAllocation`.
+ * All estimators follow the usual `fit` / `transform` / `fitTransform` contract and
+ * keep their fitted state in internal arrays; the public getters return fresh tensors.
+ *
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
+ */
+
+import {
+  ConvergenceError,
+  DataValidationError,
+  InvalidParameterError,
+  NotFittedError,
+  ShapeError,
+  warn,
+} from "../../core";
 import { svd } from "../../linalg";
-import { mean, type Tensor, tensor } from "../../ndarray";
+import { type Tensor, tensor } from "../../ndarray";
 import { Generator } from "../../random/Generator";
 import { __random } from "../../random/random";
+import { digamma, jacobiEigenSymmetric } from "../_internal";
 import {
   assertContiguous,
+  toFloat64View,
   validatePredictInputs,
   validateUnsupervisedFitInputs,
 } from "../_validation";
 import type { Transformer } from "../base";
+
+export { digamma, jacobiEigenSymmetric } from "../_internal";
+
+// ---------------------------------------------------------------------------
+// Shared helpers (module private unless marked @internal)
+// ---------------------------------------------------------------------------
+
+type FloatDType = "float32" | "float64";
+
+/** Floating point dtype used for the outputs of an estimator fitted on `X`. */
+function floatDTypeOf(X: Tensor): FloatDType {
+  return X.dtype === "float32" ? "float32" : "float64";
+}
+
+/**
+ * Wrap a flat row-major buffer in a tensor of the given shape. The tensor takes
+ * ownership of `data` when the dtype is float64, so callers pass a fresh array.
+ */
+function makeTensor(data: Float64Array, shape: number[], dtype: FloatDType): Tensor {
+  const flat = dtype === "float64" ? tensor(data) : tensor(Float32Array.from(data));
+  return flat.reshape(shape);
+}
+
+/**
+ * Create a random generator. A given `randomState` always yields the same stream;
+ * without one the generator is seeded from the global random stream, so `setSeed`
+ * still makes results reproducible.
+ */
+function createGenerator(randomState: number | undefined): Generator {
+  return new Generator(randomState ?? Math.floor(__random() * 4294967296));
+}
+
+function validateRandomStateValue(value: unknown): void {
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw new InvalidParameterError("randomState must be a finite number", "randomState", value);
+  }
+}
+
+function validateTolValue(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new InvalidParameterError("tol must be a finite number >= 0", "tol", value);
+  }
+  return value;
+}
+
+function validatePositiveInt(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new InvalidParameterError(`${name} must be an integer >= 1`, name, value);
+  }
+  return value;
+}
+
+/** Column means of a row-major (n x f) matrix with a second pass to cancel rounding error. */
+function columnMeans(data: Float64Array, n: number, f: number): Float64Array {
+  const mean = new Float64Array(f);
+  for (let i = 0; i < n; i++) {
+    const base = i * f;
+    for (let j = 0; j < f; j++) mean[j] = (mean[j] ?? 0) + (data[base + j] ?? 0);
+  }
+  for (let j = 0; j < f; j++) mean[j] = (mean[j] ?? 0) / n;
+  const corr = new Float64Array(f);
+  for (let i = 0; i < n; i++) {
+    const base = i * f;
+    for (let j = 0; j < f; j++) corr[j] = (corr[j] ?? 0) + ((data[base + j] ?? 0) - (mean[j] ?? 0));
+  }
+  for (let j = 0; j < f; j++) mean[j] = (mean[j] ?? 0) + (corr[j] ?? 0) / n;
+  return mean;
+}
+
+/**
+ * Flip the sign of each row of `Vt` so that its entry of largest magnitude is
+ * positive. This is scikit-learn's `svd_flip(..., u_based_decision=False)` and
+ * makes component signs independent of the SVD routine.
+ */
+function flipRowSigns(Vt: Float64Array, rows: number, cols: number): void {
+  for (let i = 0; i < rows; i++) {
+    let best = 0;
+    let bestAbs = -1;
+    for (let j = 0; j < cols; j++) {
+      const a = Math.abs(Vt[i * cols + j] ?? 0);
+      if (a > bestAbs) {
+        bestAbs = a;
+        best = j;
+      }
+    }
+    if ((Vt[i * cols + best] ?? 0) < 0) {
+      for (let j = 0; j < cols; j++) Vt[i * cols + j] = -(Vt[i * cols + j] ?? 0);
+    }
+  }
+}
+
+/** Singular value decomposition of a row-major (m x n) matrix, returning `s` and the rows of `Vt`. */
+function economySvd(
+  data: Float64Array,
+  m: number,
+  n: number
+): { s: Float64Array; Vt: Float64Array; rank: number } {
+  const [, S, Vt] = svd(tensor(Float64Array.from(data)).reshape([m, n]), false);
+  const s = Float64Array.from(toFloat64View(S));
+  return { s, Vt: Float64Array.from(toFloat64View(Vt)), rank: s.length };
+}
+
+/** C = A (m x k) @ B (k x n) for row-major buffers. */
+function matmul(A: Float64Array, m: number, k: number, B: Float64Array, n: number): Float64Array {
+  const C = new Float64Array(m * n);
+  for (let i = 0; i < m; i++) {
+    const cBase = i * n;
+    for (let l = 0; l < k; l++) {
+      const a = A[i * k + l] ?? 0;
+      if (a === 0) continue;
+      const bBase = l * n;
+      for (let j = 0; j < n; j++) C[cBase + j] = (C[cBase + j] ?? 0) + a * (B[bBase + j] ?? 0);
+    }
+  }
+  return C;
+}
+
+/** C = A^T (n x m) @ B (m x p) where A is (m x n); both row-major. */
+function matmulAtB(
+  A: Float64Array,
+  m: number,
+  n: number,
+  B: Float64Array,
+  p: number
+): Float64Array {
+  const C = new Float64Array(n * p);
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < n; j++) {
+      const a = A[i * n + j] ?? 0;
+      if (a === 0) continue;
+      const cBase = j * p;
+      const bBase = i * p;
+      for (let l = 0; l < p; l++) C[cBase + l] = (C[cBase + l] ?? 0) + a * (B[bBase + l] ?? 0);
+    }
+  }
+  return C;
+}
+
+/**
+ * Orthonormalize the columns of the row-major (rows x cols) matrix `M` in place using
+ * modified Gram-Schmidt with one re-orthogonalization pass. Columns that are numerically
+ * dependent on the previous ones are set to zero.
+ */
+function orthonormalizeColumns(M: Float64Array, rows: number, cols: number): void {
+  for (let j = 0; j < cols; j++) {
+    let initial = 0;
+    for (let i = 0; i < rows; i++) initial += (M[i * cols + j] ?? 0) ** 2;
+    initial = Math.sqrt(initial);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let prev = 0; prev < j; prev++) {
+        let dot = 0;
+        for (let i = 0; i < rows; i++) dot += (M[i * cols + prev] ?? 0) * (M[i * cols + j] ?? 0);
+        if (dot === 0) continue;
+        for (let i = 0; i < rows; i++) {
+          M[i * cols + j] = (M[i * cols + j] ?? 0) - dot * (M[i * cols + prev] ?? 0);
+        }
+      }
+    }
+    let norm = 0;
+    for (let i = 0; i < rows; i++) norm += (M[i * cols + j] ?? 0) ** 2;
+    norm = Math.sqrt(norm);
+    if (norm > initial * 1e-12 && norm > 0) {
+      for (let i = 0; i < rows; i++) M[i * cols + j] = (M[i * cols + j] ?? 0) / norm;
+    } else {
+      for (let i = 0; i < rows; i++) M[i * cols + j] = 0;
+    }
+  }
+}
+
+function assertAllNonNegative(X: Tensor, message: string): void {
+  const data = toFloat64View(X);
+  for (let i = 0; i < data.length; i++) {
+    if ((data[i] ?? 0) < 0) throw new DataValidationError(message);
+  }
+}
+
+function assertFinite(values: Float64Array, message: string): void {
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) throw new DataValidationError(message);
+  }
+}
+
+/**
+ * Validate a (n_samples, nColumns) input for `inverseTransform` and return it as a flat view.
+ */
+function readLatentInput(X: Tensor, nColumns: number, what: string): Float64Array {
+  if (X.ndim !== 2) {
+    throw new ShapeError(`X must be 2-dimensional; got ndim=${X.ndim}`);
+  }
+  assertContiguous(X, "X");
+  const data = toFloat64View(X);
+  const cols = X.shape[1] ?? 0;
+  if (cols !== nColumns) {
+    throw new ShapeError(`X must have ${nColumns} ${what}; got ${cols}`);
+  }
+  assertFinite(data, "X contains non-finite values (NaN or Inf)");
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// PCA
+// ---------------------------------------------------------------------------
 
 /**
  * Principal Component Analysis (PCA).
@@ -17,12 +238,13 @@ import type { Transformer } from "../base";
  * to project data to a lower dimensional space.
  *
  * **Algorithm**:
- * 1. Center the data by subtracting the mean
- * 2. Compute SVD: X = U * Σ * V^T
- * 3. Principal components are columns of V
- * 4. Transform data by projecting onto principal components
+ * 1. Center the data by subtracting the column means
+ * 2. Compute SVD: X = U * Σ * V^T (exact, or randomized with power iterations)
+ * 3. Principal components are the rows of V^T, signed so that the entry of
+ *    largest magnitude in each component is positive (same convention as scikit-learn)
+ * 4. Transform data by projecting onto the principal components
  *
- * **Time Complexity**: O(min(n*d^2, d*n^2)) where n=samples, d=features
+ * **Time Complexity**: O(min(n*d^2, d*n^2)) for the exact solver, where n=samples, d=features
  *
  * @example
  * ```ts
@@ -38,7 +260,6 @@ import type { Transformer } from "../base";
  * ```
  *
  * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
- * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class PCA implements Transformer {
   private nComponents: number | undefined;
@@ -47,20 +268,25 @@ export class PCA implements Transformer {
   private nOversamples: number;
   private randomState: number | undefined;
 
-  private components_?: Tensor;
-  private explainedVariance_?: Tensor;
-  private explainedVarianceRatio_?: Tensor;
-  private mean_?: Tensor;
-  private nComponentsActual_?: number;
-  private nFeaturesIn_?: number;
+  private components_?: Float64Array; // (k, f)
+  private explainedVariance_?: Float64Array;
+  private explainedVarianceRatio_?: Float64Array;
+  private singularValues_?: Float64Array;
+  private mean_?: Float64Array;
+  private noiseVariance_ = 0;
+  private nComponentsFit_ = 0;
+  private nFeaturesIn_ = 0;
+  private outDType_: FloatDType = "float64";
   private fitted = false;
 
   /**
    * Create a new PCA model.
    *
    * @param options - Configuration options
-   * @param options.nComponents - Number of components to keep (default: min(n_samples, n_features))
-   * @param options.whiten - Whether to whiten the data (default: false)
+   * @param options.nComponents - Number of components to keep (default: min(n_samples, n_features)).
+   *   A number in (0, 1) keeps the smallest number of components whose cumulative explained
+   *   variance ratio exceeds that fraction (exact solver only).
+   * @param options.whiten - Scale the projected components to unit variance (default: false)
    * @param options.svdSolver - SVD solver: 'auto', 'full', or 'randomized' (default: 'auto')
    * @param options.nOversamples - Additional random vectors for randomized SVD (default: 10)
    * @param options.randomState - Random seed for randomized SVD
@@ -75,23 +301,18 @@ export class PCA implements Transformer {
     } = {}
   ) {
     if (options.nComponents !== undefined) {
-      this.nComponents = options.nComponents;
+      this.nComponents = PCA.checkNComponents(options.nComponents);
     }
     this.whiten = options.whiten ?? false;
     this.svdSolver = options.svdSolver ?? "auto";
     this.nOversamples = options.nOversamples ?? 10;
     if (options.randomState !== undefined) {
+      validateRandomStateValue(options.randomState);
       this.randomState = options.randomState;
     }
 
-    if (this.nComponents !== undefined) {
-      if (!Number.isInteger(this.nComponents) || this.nComponents < 1) {
-        throw new InvalidParameterError(
-          "nComponents must be an integer >= 1",
-          "nComponents",
-          this.nComponents
-        );
-      }
+    if (typeof this.whiten !== "boolean") {
+      throw new InvalidParameterError("whiten must be a boolean", "whiten", this.whiten);
     }
     if (this.svdSolver !== "auto" && this.svdSolver !== "full" && this.svdSolver !== "randomized") {
       throw new InvalidParameterError(
@@ -109,127 +330,55 @@ export class PCA implements Transformer {
     }
   }
 
+  private static checkNComponents(value: unknown): number {
+    if (
+      typeof value !== "number" ||
+      !((Number.isInteger(value) && value >= 1) || (value > 0 && value < 1))
+    ) {
+      throw new InvalidParameterError(
+        "nComponents must be an integer >= 1 or a variance fraction in (0, 1)",
+        "nComponents",
+        value
+      );
+    }
+    return value;
+  }
+
   /**
-   * Randomized SVD using the Halko-Martinsson-Tropp algorithm.
-   * Computes an approximate truncated SVD.
+   * Randomized SVD using the Halko-Martinsson-Tropp algorithm with power iterations.
+   * Computes an approximate truncated SVD of a row-major (m x n) matrix.
    *
-   * @param X - Matrix of shape (m, n)
-   * @param k - Number of singular values/vectors to compute
-   * @param nOversamples - Additional random vectors for accuracy
-   * @returns [U, s, Vt] approximate truncated SVD
+   * @returns The top `k` singular values and the matching rows of V^T
    */
-  private randomizedSvd(X: Tensor, k: number, nOversamples: number): [Tensor, Tensor, Tensor] {
-    const m = X.shape[0] ?? 0;
-    const n = X.shape[1] ?? 0;
-    const p = Math.min(k + nOversamples, n);
+  private randomizedSvd(
+    X: Float64Array,
+    m: number,
+    n: number,
+    k: number
+  ): { s: Float64Array; Vt: Float64Array } {
+    const maxRank = Math.min(m, n);
+    const p = Math.min(k + this.nOversamples, maxRank);
+    const generator = createGenerator(this.randomState);
 
-    // Create PCG-based RNG for reproducible random projections
-    const rng = this.randomState !== undefined ? new Generator(this.randomState) : null;
+    // Range finder: Y = X @ Omega with Omega ~ N(0, 1) of shape (n, p).
+    const omega = generator.normalArray(0, 1, n * p);
+    let Y = matmul(X, m, n, omega, p);
 
-    const nextRandom = (): number => {
-      if (rng) return rng.random();
-      return __random();
-    };
-
-    // Step 1: Generate random Gaussian matrix Omega of shape (n, p)
-    const omega = new Float64Array(n * p);
-    for (let i = 0; i < n * p; i++) {
-      // Box-Muller transform for Gaussian
-      const u1 = Math.max(1e-15, nextRandom());
-      const u2 = nextRandom();
-      omega[i] = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    // Power iterations sharpen the spectrum; re-orthonormalize every half step.
+    const nIter = k < 0.1 * maxRank ? 7 : 4;
+    for (let it = 0; it < nIter; it++) {
+      orthonormalizeColumns(Y, m, p);
+      const Z = matmulAtB(X, m, n, Y, p); // (n, p)
+      orthonormalizeColumns(Z, n, p);
+      Y = matmul(X, m, n, Z, p);
     }
+    orthonormalizeColumns(Y, m, p); // Q, shape (m, p)
 
-    // Step 2: Form Y = X @ Omega, shape (m, p)
-    const Y = new Float64Array(m * p);
-    for (let i = 0; i < m; i++) {
-      for (let j = 0; j < p; j++) {
-        let s = 0;
-        for (let l = 0; l < n; l++) {
-          s += Number(X.data[X.offset + i * n + l]) * (omega[l * p + j] ?? 0);
-        }
-        Y[i * p + j] = s;
-      }
-    }
-
-    // Step 3: QR factorization of Y to get orthonormal basis Q, shape (m, p)
-    // Using modified Gram-Schmidt
-    const Q = new Float64Array(m * p);
-    Q.set(Y);
-    for (let j = 0; j < p; j++) {
-      // Normalize column j
-      let norm = 0;
-      for (let i = 0; i < m; i++) {
-        norm += (Q[i * p + j] ?? 0) * (Q[i * p + j] ?? 0);
-      }
-      norm = Math.sqrt(norm);
-      if (norm > 1e-15) {
-        for (let i = 0; i < m; i++) {
-          Q[i * p + j] = (Q[i * p + j] ?? 0) / norm;
-        }
-      }
-      // Orthogonalize remaining columns
-      for (let jj = j + 1; jj < p; jj++) {
-        let dot = 0;
-        for (let i = 0; i < m; i++) {
-          dot += (Q[i * p + j] ?? 0) * (Q[i * p + jj] ?? 0);
-        }
-        for (let i = 0; i < m; i++) {
-          Q[i * p + jj] = (Q[i * p + jj] ?? 0) - dot * (Q[i * p + j] ?? 0);
-        }
-      }
-    }
-
-    // Step 4: Form B = Q^T @ X, shape (p, n)
-    const B = new Float64Array(p * n);
-    for (let i = 0; i < p; i++) {
-      for (let j = 0; j < n; j++) {
-        let s = 0;
-        for (let l = 0; l < m; l++) {
-          s += (Q[l * p + i] ?? 0) * Number(X.data[X.offset + l * n + j]);
-        }
-        B[i * n + j] = s;
-      }
-    }
-
-    // Step 5: Compute SVD of small matrix B
-    const BTensor = tensor(Array.from(B)).reshape([p, n]);
-    const [Ub, sb, Vtb] = svd(BTensor, false);
-
-    // Step 6: U = Q @ Ub, truncated to k columns
-    const kActual = Math.min(k, p, Math.min(m, n));
-    const Ufull = new Float64Array(m * kActual);
-    const UbSize = Ub.shape[1] ?? 0;
-    for (let i = 0; i < m; i++) {
-      for (let j = 0; j < kActual; j++) {
-        let s = 0;
-        const ubCols = Math.min(p, UbSize);
-        for (let l = 0; l < ubCols; l++) {
-          s += (Q[i * p + l] ?? 0) * Number(Ub.data[Ub.offset + l * UbSize + j] ?? 0);
-        }
-        Ufull[i * kActual + j] = s;
-      }
-    }
-
-    // Extract truncated s and Vt
-    const sData = new Float64Array(kActual);
-    for (let i = 0; i < kActual; i++) {
-      sData[i] = Number(sb.data[sb.offset + i] ?? 0);
-    }
-
-    const VtData = new Float64Array(kActual * n);
-    const vtCols = Vtb.shape[1] ?? n;
-    for (let i = 0; i < kActual; i++) {
-      for (let j = 0; j < n; j++) {
-        VtData[i * n + j] = Number(Vtb.data[Vtb.offset + i * vtCols + j] ?? 0);
-      }
-    }
-
-    return [
-      tensor(Array.from(Ufull)).reshape([m, kActual]),
-      tensor(Array.from(sData)),
-      tensor(Array.from(VtData)).reshape([kActual, n]),
-    ];
+    // B = Q^T X has shape (p, n); its SVD gives the singular values and V^T of X.
+    const B = matmulAtB(Y, m, p, X, n);
+    const { s, Vt, rank } = economySvd(B, p, n);
+    const kk = Math.min(k, rank);
+    return { s: s.slice(0, kk), Vt: Vt.slice(0, kk * n) };
   }
 
   /**
@@ -238,104 +387,128 @@ export class PCA implements Transformer {
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Ignored (exists for compatibility)
    * @returns this
+   * @throws {DataValidationError} If X has fewer than 2 samples or contains non-finite values
+   * @throws {InvalidParameterError} If nComponents exceeds min(n_samples, n_features)
    */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
-
     if (nSamples < 2) {
       throw new DataValidationError("X must have at least 2 samples for PCA");
     }
 
-    // Determine number of components
-    const nComponentsActual = this.nComponents ?? Math.min(nSamples, nFeatures);
-    if (nComponentsActual > Math.min(nSamples, nFeatures)) {
+    const maxComponents = Math.min(nSamples, nFeatures);
+    const isFraction = this.nComponents !== undefined && this.nComponents < 1;
+    if (isFraction && this.svdSolver === "randomized") {
       throw new InvalidParameterError(
-        `nComponents=${nComponentsActual} must be <= min(n_samples, n_features)=${Math.min(nSamples, nFeatures)}`,
+        "A fractional nComponents requires svdSolver 'full' or 'auto'",
+        "svdSolver",
+        this.svdSolver
+      );
+    }
+    let nComp = isFraction ? maxComponents : (this.nComponents ?? maxComponents);
+    if (nComp > maxComponents) {
+      throw new InvalidParameterError(
+        `nComponents=${nComp} must be <= min(n_samples, n_features)=${maxComponents}`,
         "nComponents",
-        nComponentsActual
+        nComp
       );
     }
 
-    // Center the data
-    const meanVec = mean(X, 0);
-    this.mean_ = meanVec;
-
-    const XCentered = this.centerData(X, meanVec);
-
-    // Determine solver
-    let useSolver = this.svdSolver;
-    if (useSolver === "auto") {
-      // Use randomized for large matrices when requesting few components
-      if (
-        nComponentsActual < Math.min(nSamples, nFeatures) &&
-        Math.max(nSamples, nFeatures) > 500
-      ) {
-        useSolver = "randomized";
-      } else {
-        useSolver = "full";
-      }
+    // Center the data (copy: the input tensor is never modified).
+    const raw = toFloat64View(X);
+    const mean = columnMeans(raw, nSamples, nFeatures);
+    const Xc = new Float64Array(nSamples * nFeatures);
+    for (let i = 0; i < nSamples; i++) {
+      const base = i * nFeatures;
+      for (let j = 0; j < nFeatures; j++) Xc[base + j] = (raw[base + j] ?? 0) - (mean[j] ?? 0);
     }
 
-    // Compute SVD
-    let s: Tensor;
-    let Vt: Tensor;
-    if (useSolver === "randomized") {
-      const [, sR, VtR] = this.randomizedSvd(XCentered, nComponentsActual, this.nOversamples);
-      s = sR;
-      Vt = VtR;
+    // Total variance is the trace of the covariance, taken from the centered data (the
+    // randomized solver only returns k singular values, so they cannot give the total).
+    let sumSq = 0;
+    for (let i = 0; i < Xc.length; i++) sumSq += (Xc[i] ?? 0) ** 2;
+    const totalVariance = sumSq / (nSamples - 1);
+
+    let solver = this.svdSolver;
+    if (solver === "auto") {
+      solver =
+        !isFraction && Math.max(nSamples, nFeatures) > 500 && nComp < 0.8 * maxComponents
+          ? "randomized"
+          : "full";
+    }
+
+    let s: Float64Array;
+    let Vt: Float64Array;
+    if (solver === "randomized") {
+      ({ s, Vt } = this.randomizedSvd(Xc, nSamples, nFeatures, nComp));
     } else {
-      const [, sF, VtF] = svd(XCentered, false);
-      s = sF;
-      Vt = VtF;
+      ({ s, Vt } = economySvd(Xc, nSamples, nFeatures));
     }
+    flipRowSigns(Vt, s.length, nFeatures);
 
-    // Extract components (rows of Vt are principal components)
-    const components: number[][] = [];
-    for (let i = 0; i < nComponentsActual; i++) {
-      const component: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        component.push(Number(Vt.data[Vt.offset + i * nFeatures + j]));
+    if (isFraction) {
+      // Smallest k whose cumulative explained variance ratio exceeds the requested fraction.
+      const fraction = this.nComponents as number;
+      let cumulative = 0;
+      nComp = s.length;
+      for (let i = 0; i < s.length; i++) {
+        cumulative += totalVariance > 0 ? (s[i] ?? 0) ** 2 / (nSamples - 1) / totalVariance : 0;
+        if (cumulative > fraction) {
+          nComp = i + 1;
+          break;
+        }
       }
-      components.push(component);
     }
-    this.components_ = tensor(components);
 
-    // Compute explained variance
-    const explainedVariance: number[] = [];
-    for (let i = 0; i < nComponentsActual; i++) {
-      const sv = Number(s.data[s.offset + i]);
-      explainedVariance.push((sv * sv) / (nSamples - 1));
+    const explainedVariance = new Float64Array(nComp);
+    const explainedVarianceRatio = new Float64Array(nComp);
+    const singularValues = new Float64Array(nComp);
+    let explainedSum = 0;
+    for (let i = 0; i < nComp; i++) {
+      const sv = s[i] ?? 0;
+      singularValues[i] = sv;
+      const ev = (sv * sv) / (nSamples - 1);
+      explainedVariance[i] = ev;
+      explainedVarianceRatio[i] = totalVariance > 0 ? ev / totalVariance : 0;
+      explainedSum += ev;
     }
-    this.explainedVariance_ = tensor(explainedVariance);
+    const noise =
+      nComp < maxComponents
+        ? Math.max(0, totalVariance - explainedSum) / (maxComponents - nComp)
+        : 0;
 
-    // Compute explained variance ratio. Total variance is the trace of the
-    // covariance (sum of all feature variances), computed from the CENTERED
-    // data — NOT from the singular values, because the randomized solver
-    // returns only k truncated singular values, which would make the ratio
-    // spuriously sum to 1.
-    let totalVariance = 0;
-    for (let j = 0; j < nFeatures; j++) {
-      let colSumSq = 0;
-      for (let i = 0; i < nSamples; i++) {
-        const v = Number(XCentered.data[XCentered.offset + i * nFeatures + j]);
-        colSumSq += v * v;
-      }
-      totalVariance += colSumSq / (nSamples - 1);
-    }
-    const explainedVarianceRatio =
-      totalVariance === 0
-        ? explainedVariance.map(() => 0)
-        : explainedVariance.map((v) => v / totalVariance);
-    this.explainedVarianceRatio_ = tensor(explainedVarianceRatio);
-
-    this.nComponentsActual_ = nComponentsActual;
+    this.components_ = Vt.slice(0, nComp * nFeatures);
+    this.explainedVariance_ = explainedVariance;
+    this.explainedVarianceRatio_ = explainedVarianceRatio;
+    this.singularValues_ = singularValues;
+    this.mean_ = mean;
+    this.noiseVariance_ = noise;
+    this.nComponentsFit_ = nComp;
+    this.nFeaturesIn_ = nFeatures;
+    this.outDType_ = floatDTypeOf(X);
     this.fitted = true;
-
     return this;
+  }
+
+  /**
+   * Whitening scale of component `c`: the standard deviation of its projection.
+   * Components whose variance is numerically zero are mapped to 0 instead of being amplified.
+   */
+  private whitenFactors(): { scale: Float64Array; inverse: Float64Array } {
+    const ev = this.explainedVariance_ ?? new Float64Array(0);
+    const k = ev.length;
+    const scale = new Float64Array(k);
+    const inverse = new Float64Array(k);
+    const top = ev[0] ?? 0;
+    for (let c = 0; c < k; c++) {
+      const v = ev[c] ?? 0;
+      scale[c] = Math.sqrt(v);
+      inverse[c] = v > top * 1e-20 && v > 0 ? 1 / Math.sqrt(v) : 0;
+    }
+    return { scale, inverse };
   }
 
   /**
@@ -343,47 +516,35 @@ export class PCA implements Transformer {
    *
    * @param X - Data of shape (n_samples, n_features)
    * @returns Transformed data of shape (n_samples, n_components)
+   * @throws {NotFittedError} If the model has not been fitted
    */
   transform(X: Tensor): Tensor {
     if (!this.fitted || !this.components_ || !this.mean_) {
       throw new NotFittedError("PCA must be fitted before transform");
     }
-
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "PCA");
+    validatePredictInputs(X, this.nFeaturesIn_, "PCA");
 
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const nComponents = this.nComponentsActual_ ?? 0;
+    const nFeatures = this.nFeaturesIn_;
+    const k = this.nComponentsFit_;
+    const data = toFloat64View(X);
+    const comps = this.components_;
+    const mean = this.mean_;
+    const inverse = this.whiten ? this.whitenFactors().inverse : undefined;
 
-    // Center the data
-    const XCentered = this.centerData(X, this.mean_);
-
-    // Project onto principal components: X_transformed = X_centered @ components.T
-    const transformed: number[][] = [];
-    const varianceEps = 1e-12;
+    const out = new Float64Array(nSamples * k);
     for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let k = 0; k < nComponents; k++) {
+      const base = i * nFeatures;
+      for (let c = 0; c < k; c++) {
+        const cBase = c * nFeatures;
         let sum = 0;
         for (let j = 0; j < nFeatures; j++) {
-          sum +=
-            Number(XCentered.data[XCentered.offset + i * nFeatures + j]) *
-            Number(this.components_.data[this.components_.offset + k * nFeatures + j]);
+          sum += ((data[base + j] ?? 0) - (mean[j] ?? 0)) * (comps[cBase + j] ?? 0);
         }
-        // If whitening is enabled, scale each component to unit variance.
-        if (this.whiten) {
-          const variance = Number(
-            this.explainedVariance_?.data[this.explainedVariance_.offset + k] ?? 0
-          );
-          row.push(sum / Math.sqrt(variance + varianceEps));
-        } else {
-          row.push(sum);
-        }
+        out[i * k + c] = inverse ? sum * (inverse[c] ?? 0) : sum;
       }
-      transformed.push(row);
     }
-
-    return tensor(transformed);
+    return makeTensor(out, [nSamples, k], floatDTypeOf(X));
   }
 
   /**
@@ -403,109 +564,137 @@ export class PCA implements Transformer {
    *
    * @param X - Transformed data of shape (n_samples, n_components)
    * @returns Reconstructed data of shape (n_samples, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
    */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted || !this.components_ || !this.mean_) {
       throw new NotFittedError("PCA must be fitted before inverse transform");
     }
-
-    if (X.ndim !== 2) {
-      throw new ShapeError(`X must be 2-dimensional; got ndim=${X.ndim}`);
-    }
-    assertContiguous(X, "X");
-
+    const k = this.nComponentsFit_;
+    const nFeatures = this.nFeaturesIn_;
+    const data = readLatentInput(X, k, "components");
     const nSamples = X.shape[0] ?? 0;
-    const nComponents = this.nComponentsActual_ ?? 0;
-    const nFeatures = this.components_.shape[1] ?? 0;
-    if ((X.shape[1] ?? 0) !== nComponents) {
-      throw new ShapeError(
-        `X must have ${nComponents} components; got ${(X.shape[1] ?? 0).toString()}`
-      );
-    }
+    const comps = this.components_;
+    const mean = this.mean_;
+    // Undo whitening by restoring the original component scale.
+    const scale = this.whiten ? this.whitenFactors().scale : undefined;
 
-    for (let i = 0; i < X.size; i++) {
-      const val = X.data[X.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("X contains non-finite values (NaN or Inf)");
-      }
-    }
-
-    // Reconstruct: X_reconstructed = X_transformed @ components
-    const reconstructed: number[][] = [];
-    const varianceEps = 1e-12;
+    const out = new Float64Array(nSamples * nFeatures);
     for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        let sum = 0;
-        for (let k = 0; k < nComponents; k++) {
-          const xVal = Number(X.data[X.offset + i * nComponents + k]);
-          const variance = Number(
-            this.explainedVariance_?.data[this.explainedVariance_.offset + k] ?? 0
-          );
-          // Undo whitening by restoring the original component scale.
-          const scaled = this.whiten ? xVal * Math.sqrt(variance + varianceEps) : xVal;
-          sum +=
-            scaled * Number(this.components_.data[this.components_.offset + k * nFeatures + j]);
+      for (let c = 0; c < k; c++) {
+        const xv = (data[i * k + c] ?? 0) * (scale ? (scale[c] ?? 0) : 1);
+        if (xv === 0) continue;
+        const cBase = c * nFeatures;
+        const oBase = i * nFeatures;
+        for (let j = 0; j < nFeatures; j++) {
+          out[oBase + j] = (out[oBase + j] ?? 0) + xv * (comps[cBase + j] ?? 0);
         }
-        // Add back the mean
-        sum += Number(this.mean_.data[this.mean_.offset + j]);
-        row.push(sum);
       }
-      reconstructed.push(row);
-    }
-
-    return tensor(reconstructed);
-  }
-
-  /**
-   * Center data by subtracting mean.
-   */
-  private centerData(X: Tensor, meanVec: Tensor): Tensor {
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const centered: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
       for (let j = 0; j < nFeatures; j++) {
-        const val = Number(X.data[X.offset + i * nFeatures + j]);
-        const meanVal = Number(meanVec.data[meanVec.offset + j]);
-        row.push(val - meanVal);
+        out[i * nFeatures + j] = (out[i * nFeatures + j] ?? 0) + (mean[j] ?? 0);
       }
-      centered.push(row);
     }
-
-    return tensor(centered);
+    return makeTensor(out, [nSamples, nFeatures], floatDTypeOf(X));
   }
 
   /**
-   * Get principal components.
+   * Principal axes in feature space, shape (n_components, n_features).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
    */
   get components(): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("PCA must be fitted to access components");
     }
-    return this.components_;
+    return makeTensor(
+      Float64Array.from(this.components_),
+      [this.nComponentsFit_, this.nFeaturesIn_],
+      this.outDType_
+    );
   }
 
   /**
-   * Get explained variance.
+   * Variance explained by each component, shape (n_components,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
    */
   get explainedVariance(): Tensor {
     if (!this.fitted || !this.explainedVariance_) {
       throw new NotFittedError("PCA must be fitted to access explained variance");
     }
-    return this.explainedVariance_;
+    return makeTensor(
+      Float64Array.from(this.explainedVariance_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
   }
 
   /**
-   * Get explained variance ratio.
+   * Fraction of the total variance explained by each component, shape (n_components,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
    */
   get explainedVarianceRatio(): Tensor {
     if (!this.fitted || !this.explainedVarianceRatio_) {
       throw new NotFittedError("PCA must be fitted to access explained variance ratio");
     }
-    return this.explainedVarianceRatio_;
+    return makeTensor(
+      Float64Array.from(this.explainedVarianceRatio_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
+  }
+
+  /**
+   * Singular values of the centered training data for the kept components, shape (n_components,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get singularValues(): Tensor {
+    if (!this.fitted || !this.singularValues_) {
+      throw new NotFittedError("PCA must be fitted to access singular values");
+    }
+    return makeTensor(
+      Float64Array.from(this.singularValues_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
+  }
+
+  /**
+   * Per-feature mean of the training data, shape (n_features,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get mean(): Tensor {
+    if (!this.fitted || !this.mean_) {
+      throw new NotFittedError("PCA must be fitted to access the mean");
+    }
+    return makeTensor(Float64Array.from(this.mean_), [this.nFeaturesIn_], this.outDType_);
+  }
+
+  /**
+   * Average variance of the discarded components (0 when all components are kept).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get noiseVariance(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("PCA must be fitted to access noise variance");
+    }
+    return this.noiseVariance_;
+  }
+
+  /**
+   * Number of features seen during fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("PCA must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
   }
 
   /**
@@ -517,6 +706,9 @@ export class PCA implements Transformer {
     return {
       nComponents: this.nComponents,
       whiten: this.whiten,
+      svdSolver: this.svdSolver,
+      nOversamples: this.nOversamples,
+      randomState: this.randomState,
     };
   }
 
@@ -530,23 +722,37 @@ export class PCA implements Transformer {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nComponents":
-          if (
-            value !== undefined &&
-            (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-          ) {
-            throw new InvalidParameterError(
-              "nComponents must be an integer >= 1 or undefined",
-              "nComponents",
-              value
-            );
-          }
-          this.nComponents = value;
+          this.nComponents = value === undefined ? undefined : PCA.checkNComponents(value);
           break;
         case "whiten":
           if (typeof value !== "boolean") {
             throw new InvalidParameterError("whiten must be a boolean", "whiten", value);
           }
           this.whiten = value;
+          break;
+        case "svdSolver":
+          if (value !== "auto" && value !== "full" && value !== "randomized") {
+            throw new InvalidParameterError(
+              "svdSolver must be 'auto', 'full', or 'randomized'",
+              "svdSolver",
+              value
+            );
+          }
+          this.svdSolver = value;
+          break;
+        case "nOversamples":
+          if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+            throw new InvalidParameterError(
+              "nOversamples must be an integer >= 0",
+              "nOversamples",
+              value
+            );
+          }
+          this.nOversamples = value;
+          break;
+        case "randomState":
+          validateRandomStateValue(value);
+          this.randomState = value as number | undefined;
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -556,8 +762,12 @@ export class PCA implements Transformer {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TruncatedSVD
+// ---------------------------------------------------------------------------
+
 /**
- * Truncated SVD (aka LSA — Latent Semantic Analysis).
+ * Truncated SVD (aka LSA: Latent Semantic Analysis).
  *
  * Unlike PCA, TruncatedSVD does **not** center the data before computing SVD.
  * This makes it suitable for sparse data (e.g., TF-IDF matrices from text),
@@ -565,215 +775,286 @@ export class PCA implements Transformer {
  *
  * **Algorithm**:
  * 1. Compute SVD of X directly: X ≈ U * Σ * V^T (truncated to nComponents)
- * 2. Components are rows of V^T
+ * 2. Components are rows of V^T (signed so the largest-magnitude entry is positive)
  * 3. Transform: X_new = X @ V = U * Σ
+ *
+ * `explainedVariance` is the variance of each transformed column (population variance,
+ * ddof = 0) and `explainedVarianceRatio` divides it by the total variance of the columns
+ * of X, as in scikit-learn.
  *
  * @example
  * ```ts
  * import { TruncatedSVD } from 'deepbox/ml';
  * import { tensor } from 'deepbox/ndarray';
  *
+ * const X = tensor([[1, 0, 2, 0], [0, 3, 0, 1], [4, 0, 1, 0], [0, 2, 0, 5]]);
  * const tsvd = new TruncatedSVD({ nComponents: 2 });
- * const X_reduced = tsvd.fitTransform(X_tfidf);
+ * const XReduced = tsvd.fitTransform(X);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class TruncatedSVD implements Transformer {
   private nComponents: number;
 
-  private components_?: Tensor;
-  private explainedVariance_?: Tensor;
-  private explainedVarianceRatio_?: Tensor;
-  private singularValues_?: Tensor;
-  private nFeaturesIn_?: number;
+  private components_?: Float64Array; // (k, f)
+  private explainedVariance_?: Float64Array;
+  private explainedVarianceRatio_?: Float64Array;
+  private singularValues_?: Float64Array;
+  private nComponentsFit_ = 0;
+  private nFeaturesIn_ = 0;
+  private outDType_: FloatDType = "float64";
   private fitted = false;
 
+  /**
+   * @param options.nComponents - Number of singular vectors to keep (default: 2)
+   */
   constructor(
     options: {
       readonly nComponents?: number;
     } = {}
   ) {
-    this.nComponents = options.nComponents ?? 2;
-    if (!Number.isInteger(this.nComponents) || this.nComponents < 1) {
-      throw new InvalidParameterError(
-        "nComponents must be an integer >= 1",
-        "nComponents",
-        this.nComponents
-      );
-    }
+    this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
   }
 
+  /**
+   * Fit the model on X.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Ignored (exists for compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If nComponents exceeds min(n_samples, n_features)
+   */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
-
+    const k = this.nComponents;
     const maxComponents = Math.min(nSamples, nFeatures);
-    if (this.nComponents > maxComponents) {
+    if (k > maxComponents) {
       throw new InvalidParameterError(
-        `nComponents=${this.nComponents} must be <= min(n_samples, n_features)=${maxComponents}`,
+        `nComponents=${k} must be <= min(n_samples, n_features)=${maxComponents}`,
         "nComponents",
-        this.nComponents
+        k
       );
     }
 
     // SVD without centering
-    const [_U, s, Vt] = svd(X, false);
+    const data = toFloat64View(X);
+    const { s, Vt } = economySvd(data, nSamples, nFeatures);
+    flipRowSigns(Vt, s.length, nFeatures);
+    const components = Vt.slice(0, k * nFeatures);
+    const singularValues = s.slice(0, k);
 
-    // Extract components (top nComponents rows of Vt)
-    const components: number[][] = [];
-    for (let i = 0; i < this.nComponents; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(Vt.data[Vt.offset + i * nFeatures + j]));
+    // Variance of the transformed columns (ddof = 0) and of the original columns.
+    const projected = new Float64Array(nSamples * k);
+    for (let i = 0; i < nSamples; i++) {
+      for (let c = 0; c < k; c++) {
+        let sum = 0;
+        for (let j = 0; j < nFeatures; j++) {
+          sum += (data[i * nFeatures + j] ?? 0) * (components[c * nFeatures + j] ?? 0);
+        }
+        projected[i * k + c] = sum;
       }
-      components.push(row);
     }
-    this.components_ = tensor(components);
-
-    // Singular values
-    const svals: number[] = [];
-    for (let i = 0; i < this.nComponents; i++) {
-      svals.push(Number(s.data[s.offset + i]));
+    const explainedVariance = new Float64Array(k);
+    const projMean = columnMeans(projected, nSamples, k);
+    for (let i = 0; i < nSamples; i++) {
+      for (let c = 0; c < k; c++) {
+        const d = (projected[i * k + c] ?? 0) - (projMean[c] ?? 0);
+        explainedVariance[c] = (explainedVariance[c] ?? 0) + d * d;
+      }
     }
-    this.singularValues_ = tensor(svals);
+    for (let c = 0; c < k; c++) explainedVariance[c] = (explainedVariance[c] ?? 0) / nSamples;
 
-    // Explained variance = s^2 / (n_samples - 1)
-    const explVar: number[] = svals.map((sv) => (sv * sv) / (nSamples - 1));
-    this.explainedVariance_ = tensor(explVar);
-
-    // Total variance from all singular values
+    const colMean = columnMeans(data, nSamples, nFeatures);
     let totalVar = 0;
-    for (let i = 0; i < s.size; i++) {
-      const sv = Number(s.data[s.offset + i]);
-      totalVar += (sv * sv) / (nSamples - 1);
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        const d = (data[i * nFeatures + j] ?? 0) - (colMean[j] ?? 0);
+        totalVar += d * d;
+      }
     }
-    this.explainedVarianceRatio_ = tensor(
-      totalVar === 0 ? explVar.map(() => 0) : explVar.map((v) => v / totalVar)
-    );
+    totalVar /= nSamples;
+    const ratio = new Float64Array(k);
+    if (totalVar > 0) {
+      for (let c = 0; c < k; c++) ratio[c] = (explainedVariance[c] ?? 0) / totalVar;
+    }
 
+    this.components_ = components;
+    this.singularValues_ = singularValues;
+    this.explainedVariance_ = explainedVariance;
+    this.explainedVarianceRatio_ = ratio;
+    this.nComponentsFit_ = k;
+    this.nFeaturesIn_ = nFeatures;
+    this.outDType_ = floatDTypeOf(X);
     this.fitted = true;
     return this;
   }
 
+  /**
+   * Project X onto the fitted right singular vectors.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Reduced data of shape (n_samples, n_components)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("TruncatedSVD must be fitted before transform");
     }
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "TruncatedSVD");
+    validatePredictInputs(X, this.nFeaturesIn_, "TruncatedSVD");
 
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
+    const nFeatures = this.nFeaturesIn_;
+    const k = this.nComponentsFit_;
+    const data = toFloat64View(X);
+    const comps = this.components_;
 
-    // X_new = X @ V (components_.T)
-    const result: number[][] = [];
+    // X_new = X @ V (components^T)
+    const out = new Float64Array(nSamples * k);
     for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let k = 0; k < this.nComponents; k++) {
+      for (let c = 0; c < k; c++) {
         let sum = 0;
         for (let j = 0; j < nFeatures; j++) {
-          sum +=
-            Number(X.data[X.offset + i * nFeatures + j]) *
-            Number(this.components_.data[this.components_.offset + k * nFeatures + j]);
+          sum += (data[i * nFeatures + j] ?? 0) * (comps[c * nFeatures + j] ?? 0);
         }
-        row.push(sum);
+        out[i * k + c] = sum;
       }
-      result.push(row);
     }
-    return tensor(result);
+    return makeTensor(out, [nSamples, k], floatDTypeOf(X));
   }
 
+  /**
+   * Fit the model and return the reduced data.
+   *
+   * @param X - Training data
+   * @param y - Ignored (exists for compatibility)
+   * @returns Reduced data of shape (n_samples, n_components)
+   */
   fitTransform(X: Tensor, _y?: Tensor): Tensor {
     this.fit(X);
     return this.transform(X);
   }
 
+  /**
+   * Map reduced data back to the original feature space.
+   *
+   * @param X - Reduced data of shape (n_samples, n_components)
+   * @returns Approximate reconstruction of shape (n_samples, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("TruncatedSVD must be fitted before inverse transform");
     }
-    if (X.ndim !== 2) {
-      throw new ShapeError(`X must be 2-dimensional; got ndim=${X.ndim}`);
-    }
-    assertContiguous(X, "X");
-
+    const k = this.nComponentsFit_;
+    const nFeatures = this.nFeaturesIn_;
+    const data = readLatentInput(X, k, "components");
     const nSamples = X.shape[0] ?? 0;
-    const nComponents = this.nComponents;
-    const nFeatures = this.components_.shape[1] ?? 0;
-    if ((X.shape[1] ?? 0) !== nComponents) {
-      throw new ShapeError(`X must have ${nComponents} components; got ${X.shape[1] ?? 0}`);
-    }
 
-    for (let i = 0; i < X.size; i++) {
-      const val = X.data[X.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("X contains non-finite values (NaN or Inf)");
-      }
-    }
-
-    // Reconstruct: X_reconstructed = X_reduced @ components
-    const result: number[][] = [];
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        let sum = 0;
-        for (let k = 0; k < nComponents; k++) {
-          sum +=
-            Number(X.data[X.offset + i * nComponents + k]) *
-            Number(this.components_.data[this.components_.offset + k * nFeatures + j]);
-        }
-        row.push(sum);
-      }
-      result.push(row);
-    }
-    return tensor(result);
+    // X_reconstructed = X_reduced @ components
+    const out = matmul(data, nSamples, k, this.components_, nFeatures);
+    return makeTensor(out, [nSamples, nFeatures], floatDTypeOf(X));
   }
 
+  /**
+   * Right singular vectors, shape (n_components, n_features).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get components(): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("TruncatedSVD must be fitted to access components");
     }
-    return this.components_;
+    return makeTensor(
+      Float64Array.from(this.components_),
+      [this.nComponentsFit_, this.nFeaturesIn_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Variance of each transformed column (ddof = 0), shape (n_components,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get explainedVariance(): Tensor {
     if (!this.fitted || !this.explainedVariance_) {
       throw new NotFittedError("TruncatedSVD must be fitted to access explained variance");
     }
-    return this.explainedVariance_;
+    return makeTensor(
+      Float64Array.from(this.explainedVariance_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Fraction of the total column variance of X explained by each component.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get explainedVarianceRatio(): Tensor {
     if (!this.fitted || !this.explainedVarianceRatio_) {
       throw new NotFittedError("TruncatedSVD must be fitted to access explained variance ratio");
     }
-    return this.explainedVarianceRatio_;
+    return makeTensor(
+      Float64Array.from(this.explainedVarianceRatio_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Singular values of X for the kept components, shape (n_components,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get singularValues(): Tensor {
     if (!this.fitted || !this.singularValues_) {
       throw new NotFittedError("TruncatedSVD must be fitted to access singular values");
     }
-    return this.singularValues_;
+    return makeTensor(
+      Float64Array.from(this.singularValues_),
+      [this.nComponentsFit_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Number of features seen during fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("TruncatedSVD must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Get hyperparameters for this estimator.
+   *
+   * @returns Object containing all hyperparameters
+   */
   getParams(): Record<string, unknown> {
     return { nComponents: this.nComponents };
   }
 
+  /**
+   * Set the parameters of this estimator.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nComponents":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "nComponents must be an integer >= 1",
-              "nComponents",
-              value
-            );
-          }
-          this.nComponents = value;
+          this.nComponents = validatePositiveInt(value, "nComponents");
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -781,6 +1062,19 @@ export class TruncatedSVD implements Transformer {
     }
     return this;
   }
+}
+
+// ---------------------------------------------------------------------------
+// NMF
+// ---------------------------------------------------------------------------
+
+type NmfInit = "random" | "nndsvd" | "nndsvda";
+
+function validateNmfInit(value: unknown): NmfInit {
+  if (value !== "random" && value !== "nndsvd" && value !== "nndsvda") {
+    throw new InvalidParameterError("init must be 'random', 'nndsvd', or 'nndsvda'", "init", value);
+  }
+  return value;
 }
 
 /**
@@ -791,7 +1085,12 @@ export class TruncatedSVD implements Transformer {
  * - H is the components matrix (n_components × n_features)
  * - Both W and H are non-negative
  *
- * Uses multiplicative update rules (Lee & Seung, 2001).
+ * Uses multiplicative update rules (Lee & Seung, 2001) that minimize the squared
+ * Frobenius norm. With `init: "random"` the factors start from non-negative random
+ * values scaled to the data (sqrt(mean(X) / nComponents)); `"nndsvd"` and `"nndsvda"`
+ * use a deterministic SVD-based start (Boutsidis & Gallopoulos, 2008). Plain `"nndsvd"`
+ * produces exact zeros, which multiplicative updates never change, so `"nndsvda"` is
+ * usually the better choice.
  *
  * Useful for topic modeling, recommendation systems, and signal separation.
  *
@@ -800,292 +1099,444 @@ export class TruncatedSVD implements Transformer {
  * import { NMF } from 'deepbox/ml';
  * import { tensor } from 'deepbox/ndarray';
  *
- * const nmf = new NMF({ nComponents: 3 });
+ * const X = tensor([[1, 0, 2], [0, 3, 1], [2, 1, 0], [1, 2, 3]]);
+ * const nmf = new NMF({ nComponents: 2, randomState: 0 });
  * const W = nmf.fitTransform(X);  // X must be non-negative
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class NMF implements Transformer {
   private nComponents: number;
   private maxIter: number;
   private tol: number;
   private randomState: number | undefined;
+  private init: NmfInit;
 
-  private H_?: Float64Array; // (nComponents x nFeatures) row-major
-  private nFeaturesIn_?: number;
+  private H_?: Float64Array; // (nComponentsFit x nFeatures) row-major
+  private nComponentsFit_ = 0;
+  private nFeaturesIn_ = 0;
   private nIter_ = 0;
+  private reconstructionErr_ = 0;
+  private outDType_: FloatDType = "float64";
   private fitted = false;
 
+  /**
+   * @param options.nComponents - Number of components (default: 2)
+   * @param options.maxIter - Maximum number of update iterations (default: 200)
+   * @param options.tol - Stop when the relative change of the squared error is below this (default: 1e-4)
+   * @param options.randomState - Seed for the random initialization
+   * @param options.init - Initialization: "random" (default), "nndsvd" or "nndsvda"
+   */
   constructor(
     options: {
       readonly nComponents?: number;
       readonly maxIter?: number;
       readonly tol?: number;
       readonly randomState?: number;
+      readonly init?: NmfInit;
     } = {}
   ) {
-    this.nComponents = options.nComponents ?? 2;
-    this.maxIter = options.maxIter ?? 200;
-    this.tol = options.tol ?? 1e-4;
-    if (options.randomState !== undefined) this.randomState = options.randomState;
-
-    if (!Number.isInteger(this.nComponents) || this.nComponents < 1) {
-      throw new InvalidParameterError(
-        "nComponents must be an integer >= 1",
-        "nComponents",
-        this.nComponents
-      );
-    }
-    if (!Number.isInteger(this.maxIter) || this.maxIter < 1) {
-      throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", this.maxIter);
+    this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
+    this.maxIter = validatePositiveInt(options.maxIter ?? 200, "maxIter");
+    this.tol = validateTolValue(options.tol ?? 1e-4);
+    this.init = validateNmfInit(options.init ?? "random");
+    if (options.randomState !== undefined) {
+      validateRandomStateValue(options.randomState);
+      this.randomState = options.randomState;
     }
   }
 
-  fit(X: Tensor, _y?: Tensor): this {
+  /** Squared Frobenius norm of X - W @ H. */
+  private static squaredError(
+    X: Float64Array,
+    W: Float64Array,
+    H: Float64Array,
+    n: number,
+    f: number,
+    k: number
+  ): number {
+    let cost = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < f; j++) {
+        let wh = 0;
+        for (let c = 0; c < k; c++) wh += (W[i * k + c] ?? 0) * (H[c * f + j] ?? 0);
+        const diff = (X[i * f + j] ?? 0) - wh;
+        cost += diff * diff;
+      }
+    }
+    return cost;
+  }
+
+  /** Non-negative double SVD initialization (NNDSVD). */
+  private nndsvdInit(
+    X: Float64Array,
+    n: number,
+    f: number,
+    k: number,
+    fillZeros: boolean,
+    mean: number
+  ): { W: Float64Array; H: Float64Array } {
+    const [U, S, Vt] = svd(tensor(Float64Array.from(X)).reshape([n, f]), false);
+    const u = toFloat64View(U);
+    const s = toFloat64View(S);
+    const vt = toFloat64View(Vt);
+    const r = s.length;
+    const W = new Float64Array(n * k);
+    const H = new Float64Array(k * f);
+
+    const s0 = Math.sqrt(s[0] ?? 0);
+    for (let i = 0; i < n; i++) W[i * k] = s0 * Math.abs(u[i * r] ?? 0);
+    for (let j = 0; j < f; j++) H[j] = s0 * Math.abs(vt[j] ?? 0);
+
+    for (let c = 1; c < k; c++) {
+      let xpn = 0;
+      let xnn = 0;
+      let ypn = 0;
+      let ynn = 0;
+      for (let i = 0; i < n; i++) {
+        const x = u[i * r + c] ?? 0;
+        if (x > 0) xpn += x * x;
+        else xnn += x * x;
+      }
+      for (let j = 0; j < f; j++) {
+        const y = vt[c * f + j] ?? 0;
+        if (y > 0) ypn += y * y;
+        else ynn += y * y;
+      }
+      xpn = Math.sqrt(xpn);
+      xnn = Math.sqrt(xnn);
+      ypn = Math.sqrt(ypn);
+      ynn = Math.sqrt(ynn);
+      const mp = xpn * ypn;
+      const mn = xnn * ynn;
+      const usePositive = mp > mn;
+      const xNorm = usePositive ? xpn : xnn;
+      const yNorm = usePositive ? ypn : ynn;
+      const sigma = usePositive ? mp : mn;
+      if (xNorm === 0 || yNorm === 0) continue;
+      const lbd = Math.sqrt((s[c] ?? 0) * sigma);
+      for (let i = 0; i < n; i++) {
+        const x = u[i * r + c] ?? 0;
+        const part = usePositive ? Math.max(x, 0) : Math.max(-x, 0);
+        W[i * k + c] = (lbd * part) / xNorm;
+      }
+      for (let j = 0; j < f; j++) {
+        const y = vt[c * f + j] ?? 0;
+        const part = usePositive ? Math.max(y, 0) : Math.max(-y, 0);
+        H[c * f + j] = (lbd * part) / yNorm;
+      }
+    }
+
+    for (let i = 0; i < W.length; i++) {
+      if ((W[i] ?? 0) < 1e-6) W[i] = fillZeros ? mean : 0;
+    }
+    for (let i = 0; i < H.length; i++) {
+      if ((H[i] ?? 0) < 1e-6) H[i] = fillZeros ? mean : 0;
+    }
+    return { W, H };
+  }
+
+  /** Fit the factorization and return W. Fitted state is only replaced on success. */
+  private fitInternal(X: Tensor): Float64Array {
     validateUnsupervisedFitInputs(X);
-    this.validateNonNegative(X);
+    assertAllNonNegative(X, "NMF requires all values in X to be non-negative");
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
+    const n = X.shape[0] ?? 0;
+    const f = X.shape[1] ?? 0;
     const k = this.nComponents;
+    const Xd = toFloat64View(X);
 
-    // Initialize W and H with small positive random values
-    const rng = this.createRng();
-    const W = new Float64Array(nSamples * k);
-    const H = new Float64Array(k * nFeatures);
-    for (let i = 0; i < W.length; i++) W[i] = Math.abs(rng()) * 0.1 + 1e-6;
-    for (let i = 0; i < H.length; i++) H[i] = Math.abs(rng()) * 0.1 + 1e-6;
+    let total = 0;
+    for (let i = 0; i < Xd.length; i++) total += Xd[i] ?? 0;
+    const mean = total / Xd.length;
 
-    // Extract X data
-    const Xd = new Float64Array(nSamples * nFeatures);
-    for (let i = 0; i < nSamples * nFeatures; i++) {
-      Xd[i] = Number(X.data[X.offset + i]);
+    let W: Float64Array;
+    let H: Float64Array;
+    if (this.init === "random") {
+      const rng = createGenerator(this.randomState);
+      const scale = Math.sqrt(mean / k);
+      W = rng.randomArray(n * k);
+      H = rng.randomArray(k * f);
+      for (let i = 0; i < W.length; i++) W[i] = (W[i] ?? 0) * scale + 1e-12;
+      for (let i = 0; i < H.length; i++) H[i] = (H[i] ?? 0) * scale + 1e-12;
+    } else {
+      if (k > Math.min(n, f)) {
+        throw new InvalidParameterError(
+          `init='${this.init}' requires nComponents <= min(n_samples, n_features)=${Math.min(n, f)}; got ${k}`,
+          "init",
+          this.init
+        );
+      }
+      ({ W, H } = this.nndsvdInit(Xd, n, f, k, this.init === "nndsvda", mean));
     }
 
     const eps = 1e-12;
-    let prevCost = Infinity;
+    let prevCost = Number.POSITIVE_INFINITY;
+    let cost = 0;
+    let iterations = 0;
+    let converged = false;
 
     for (let iter = 0; iter < this.maxIter; iter++) {
-      // Update W: W *= (X @ H^T) / (W @ H @ H^T)
-      // Numerator: X @ H^T → (nSamples x nFeatures) @ (nFeatures x k) = (nSamples x k)
-      const XHt = new Float64Array(nSamples * k);
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < k; j++) {
+      // Update W: W *= (X @ H^T) / (W @ (H @ H^T))
+      const HHt = new Float64Array(k * k);
+      for (let a = 0; a < k; a++) {
+        for (let b = a; b < k; b++) {
           let sum = 0;
-          for (let f = 0; f < nFeatures; f++) {
-            sum += (Xd[i * nFeatures + f] ?? 0) * (H[j * nFeatures + f] ?? 0);
-          }
-          XHt[i * k + j] = sum;
+          for (let j = 0; j < f; j++) sum += (H[a * f + j] ?? 0) * (H[b * f + j] ?? 0);
+          HHt[a * k + b] = sum;
+          HHt[b * k + a] = sum;
         }
       }
-
-      // Denominator: W @ H @ H^T = (W @ H) @ H^T
-      // First: WH = W @ H → (nSamples x nFeatures)
-      // Then: WH @ H^T → (nSamples x k)
-      const WHHt = new Float64Array(nSamples * k);
-      for (let i = 0; i < nSamples; i++) {
-        // Compute WH[i,f] for all f, then multiply by H^T
-        for (let j = 0; j < k; j++) {
-          let sum = 0;
-          for (let f = 0; f < nFeatures; f++) {
-            // WH[i,f] = sum_c W[i,c] * H[c,f]
-            let wh_if = 0;
-            for (let c = 0; c < k; c++) {
-              wh_if += (W[i * k + c] ?? 0) * (H[c * nFeatures + f] ?? 0);
-            }
-            sum += wh_if * (H[j * nFeatures + f] ?? 0);
-          }
-          WHHt[i * k + j] = sum;
+      // The denominator of every entry of a row uses the row's values from before the update.
+      const wRow = new Float64Array(k);
+      for (let i = 0; i < n; i++) {
+        for (let c = 0; c < k; c++) {
+          let num = 0;
+          for (let j = 0; j < f; j++) num += (Xd[i * f + j] ?? 0) * (H[c * f + j] ?? 0);
+          let den = 0;
+          for (let b = 0; b < k; b++) den += (W[i * k + b] ?? 0) * (HHt[b * k + c] ?? 0);
+          wRow[c] = (W[i * k + c] ?? 0) * (num / (den + eps));
         }
+        for (let c = 0; c < k; c++) W[i * k + c] = wRow[c] ?? 0;
       }
 
-      for (let i = 0; i < nSamples * k; i++) {
-        W[i] = (W[i] ?? 0) * ((XHt[i] ?? 0) / ((WHHt[i] ?? 0) + eps));
-      }
-
-      // Update H: H *= (W^T @ X) / (W^T @ W @ H)
-      // Numerator: W^T @ X → (k x nSamples) @ (nSamples x nFeatures) = (k x nFeatures)
-      const WtX = new Float64Array(k * nFeatures);
-      for (let i = 0; i < k; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          let sum = 0;
-          for (let s = 0; s < nSamples; s++) {
-            sum += (W[s * k + i] ?? 0) * (Xd[s * nFeatures + j] ?? 0);
-          }
-          WtX[i * nFeatures + j] = sum;
-        }
-      }
-
-      // Denominator: W^T @ W @ H
-      // W^T @ W → (k x k)
-      const WtW = new Float64Array(k * k);
-      for (let i = 0; i < k; i++) {
-        for (let j = 0; j < k; j++) {
-          let sum = 0;
-          for (let s = 0; s < nSamples; s++) {
-            sum += (W[s * k + i] ?? 0) * (W[s * k + j] ?? 0);
-          }
-          WtW[i * k + j] = sum;
-        }
-      }
-      // WtW @ H → (k x nFeatures)
-      const WtWH = new Float64Array(k * nFeatures);
-      for (let i = 0; i < k; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          let sum = 0;
-          for (let c = 0; c < k; c++) {
-            sum += (WtW[i * k + c] ?? 0) * (H[c * nFeatures + j] ?? 0);
-          }
-          WtWH[i * nFeatures + j] = sum;
-        }
-      }
-
-      for (let i = 0; i < k * nFeatures; i++) {
+      // Update H: H *= (W^T @ X) / ((W^T @ W) @ H)
+      const WtX = matmulAtB(W, n, k, Xd, f);
+      const WtW = matmulAtB(W, n, k, W, k);
+      const WtWH = matmul(WtW, k, k, H, f);
+      for (let i = 0; i < k * f; i++) {
         H[i] = (H[i] ?? 0) * ((WtX[i] ?? 0) / ((WtWH[i] ?? 0) + eps));
       }
 
-      // Check convergence: Frobenius norm of (X - W@H)
-      let cost = 0;
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          let wh = 0;
-          for (let c = 0; c < k; c++) {
-            wh += (W[i * k + c] ?? 0) * (H[c * nFeatures + j] ?? 0);
-          }
-          const diff = (Xd[i * nFeatures + j] ?? 0) - wh;
-          cost += diff * diff;
-        }
+      cost = NMF.squaredError(Xd, W, H, n, f, k);
+      iterations = iter + 1;
+      if (cost === 0 || Math.abs(prevCost - cost) / (prevCost + eps) < this.tol) {
+        converged = true;
+        break;
       }
-
-      this.nIter_ = iter + 1;
-      if (Math.abs(prevCost - cost) / (prevCost + eps) < this.tol) break;
       prevCost = cost;
     }
 
+    if (!converged) {
+      warn(
+        `NMF did not converge within maxIter=${this.maxIter} iterations; increase maxIter or tol.`,
+        "ConvergenceWarning",
+        "NMF"
+      );
+    }
+
     this.H_ = H;
+    this.nComponentsFit_ = k;
+    this.nFeaturesIn_ = f;
+    this.nIter_ = iterations;
+    this.reconstructionErr_ = Math.sqrt(cost);
+    this.outDType_ = floatDTypeOf(X);
     this.fitted = true;
+    return W;
+  }
+
+  /**
+   * Fit the model to a non-negative matrix.
+   *
+   * @param X - Non-negative data of shape (n_samples, n_features)
+   * @param y - Ignored (exists for compatibility)
+   * @returns this
+   * @throws {DataValidationError} If X contains negative or non-finite values
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    this.fitInternal(X);
     return this;
   }
 
+  /**
+   * Compute W for new data with H held fixed.
+   *
+   * W starts from the constant sqrt(mean(X) / nComponents) and is refined with
+   * multiplicative updates, so the result is deterministic.
+   *
+   * @param X - Non-negative data of shape (n_samples, n_features)
+   * @returns W of shape (n_samples, n_components)
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {DataValidationError} If X contains negative or non-finite values
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted || !this.H_) {
       throw new NotFittedError("NMF must be fitted before transform");
     }
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "NMF");
-    this.validateNonNegative(X);
+    validatePredictInputs(X, this.nFeaturesIn_, "NMF");
+    assertAllNonNegative(X, "NMF requires all values in X to be non-negative");
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const k = this.nComponents;
+    const n = X.shape[0] ?? 0;
+    const f = this.nFeaturesIn_;
+    const k = this.nComponentsFit_;
     const H = this.H_;
+    const Xd = toFloat64View(X);
 
-    // Solve for W given fixed H using multiplicative updates
-    const rng = this.createRng();
-    const W = new Float64Array(nSamples * k);
-    for (let i = 0; i < W.length; i++) W[i] = Math.abs(rng()) * 0.1 + 1e-6;
-
-    const Xd = new Float64Array(nSamples * nFeatures);
-    for (let i = 0; i < nSamples * nFeatures; i++) {
-      Xd[i] = Number(X.data[X.offset + i]);
-    }
+    let total = 0;
+    for (let i = 0; i < Xd.length; i++) total += Xd[i] ?? 0;
+    const start = Xd.length > 0 ? Math.sqrt(total / Xd.length / k) : 0;
+    const W = new Float64Array(n * k).fill(start);
 
     const eps = 1e-12;
-    // HHt = H @ H^T → (k x k)
     const HHt = new Float64Array(k * k);
-    for (let i = 0; i < k; i++) {
-      for (let j = 0; j < k; j++) {
+    for (let a = 0; a < k; a++) {
+      for (let b = a; b < k; b++) {
         let sum = 0;
-        for (let f = 0; f < nFeatures; f++) {
-          sum += (H[i * nFeatures + f] ?? 0) * (H[j * nFeatures + f] ?? 0);
-        }
-        HHt[i * k + j] = sum;
+        for (let j = 0; j < f; j++) sum += (H[a * f + j] ?? 0) * (H[b * f + j] ?? 0);
+        HHt[a * k + b] = sum;
+        HHt[b * k + a] = sum;
+      }
+    }
+    // Numerator X @ H^T does not depend on W.
+    const XHt = new Float64Array(n * k);
+    for (let i = 0; i < n; i++) {
+      for (let c = 0; c < k; c++) {
+        let num = 0;
+        for (let j = 0; j < f; j++) num += (Xd[i * f + j] ?? 0) * (H[c * f + j] ?? 0);
+        XHt[i * k + c] = num;
       }
     }
 
-    for (let iter = 0; iter < 100; iter++) {
-      // Numerator: X @ H^T
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < k; j++) {
-          let num = 0;
-          for (let f = 0; f < nFeatures; f++) {
-            num += (Xd[i * nFeatures + f] ?? 0) * (H[j * nFeatures + f] ?? 0);
-          }
-          // Denominator: W @ HHt
+    const stopTol = Math.min(this.tol, 1e-6);
+    const maxIter = Math.max(this.maxIter, 100);
+    const row = new Float64Array(k);
+    for (let iter = 0; iter < maxIter; iter++) {
+      let change = 0;
+      let magnitude = 0;
+      for (let i = 0; i < n; i++) {
+        for (let c = 0; c < k; c++) {
           let den = 0;
-          for (let c = 0; c < k; c++) {
-            den += (W[i * k + c] ?? 0) * (HHt[c * k + j] ?? 0);
-          }
-          W[i * k + j] = (W[i * k + j] ?? 0) * (num / (den + eps));
+          for (let b = 0; b < k; b++) den += (W[i * k + b] ?? 0) * (HHt[b * k + c] ?? 0);
+          row[c] = (W[i * k + c] ?? 0) * ((XHt[i * k + c] ?? 0) / (den + eps));
+        }
+        for (let c = 0; c < k; c++) {
+          const nv = row[c] ?? 0;
+          change += Math.abs(nv - (W[i * k + c] ?? 0));
+          magnitude += nv;
+          W[i * k + c] = nv;
         }
       }
+      if (change <= stopTol * (magnitude + eps)) break;
     }
 
-    const result: number[] = Array.from(W);
-    return tensor(result).reshape([nSamples, k]);
+    return makeTensor(W, [n, k], floatDTypeOf(X));
   }
 
+  /**
+   * Fit the model and return W from the fit.
+   *
+   * @param X - Non-negative data of shape (n_samples, n_features)
+   * @param y - Ignored (exists for compatibility)
+   * @returns W of shape (n_samples, n_components)
+   */
   fitTransform(X: Tensor, _y?: Tensor): Tensor {
-    this.fit(X);
-    return this.transform(X);
+    const W = this.fitInternal(X);
+    return makeTensor(W, [X.shape[0] ?? 0, this.nComponentsFit_], floatDTypeOf(X));
   }
 
+  /**
+   * Reconstruct data as W @ H.
+   *
+   * @param X - W matrix of shape (n_samples, n_components)
+   * @returns Reconstructed data of shape (n_samples, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  inverseTransform(X: Tensor): Tensor {
+    if (!this.fitted || !this.H_) {
+      throw new NotFittedError("NMF must be fitted before inverse transform");
+    }
+    const k = this.nComponentsFit_;
+    const data = readLatentInput(X, k, "components");
+    const n = X.shape[0] ?? 0;
+    const out = matmul(data, n, k, this.H_, this.nFeaturesIn_);
+    return makeTensor(out, [n, this.nFeaturesIn_], floatDTypeOf(X));
+  }
+
+  /**
+   * Factorization matrix H, shape (n_components, n_features).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get components(): Tensor {
     if (!this.fitted || !this.H_) {
       throw new NotFittedError("NMF must be fitted to access components");
     }
-    const k = this.nComponents;
-    const nF = this.nFeaturesIn_ ?? 0;
-    const data: number[] = Array.from(this.H_);
-    return tensor(data).reshape([k, nF]);
+    return makeTensor(
+      Float64Array.from(this.H_),
+      [this.nComponentsFit_, this.nFeaturesIn_],
+      this.outDType_
+    );
   }
 
+  /** Number of iterations run by the last fit. */
   get nIter(): number {
     return this.nIter_;
   }
 
+  /**
+   * Frobenius norm of X - W @ H for the training data of the last fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get reconstructionErr(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("NMF must be fitted to access reconstruction error");
+    }
+    return this.reconstructionErr_;
+  }
+
+  /**
+   * Number of features seen during fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("NMF must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Get hyperparameters for this estimator.
+   *
+   * @returns Object containing all hyperparameters
+   */
   getParams(): Record<string, unknown> {
     return {
       nComponents: this.nComponents,
       maxIter: this.maxIter,
       tol: this.tol,
       randomState: this.randomState,
+      init: this.init,
     };
   }
 
+  /**
+   * Set the parameters of this estimator.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nComponents":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "nComponents must be an integer >= 1",
-              "nComponents",
-              value
-            );
-          }
-          this.nComponents = value;
+          this.nComponents = validatePositiveInt(value, "nComponents");
           break;
         case "maxIter":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
-          }
-          this.maxIter = value;
+          this.maxIter = validatePositiveInt(value, "maxIter");
           break;
         case "tol":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("tol must be >= 0", "tol", value);
-          }
-          this.tol = value;
+          this.tol = validateTolValue(value);
           break;
         case "randomState":
-          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
-            throw new InvalidParameterError(
-              "randomState must be a finite number",
-              "randomState",
-              value
-            );
-          }
-          this.randomState = value;
+          validateRandomStateValue(value);
+          this.randomState = value as number | undefined;
+          break;
+        case "init":
+          this.init = validateNmfInit(value);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -1093,358 +1544,443 @@ export class NMF implements Transformer {
     }
     return this;
   }
+}
 
-  private validateNonNegative(X: Tensor): void {
-    for (let i = 0; i < X.size; i++) {
-      const val = Number(X.data[X.offset + i]);
-      if (val < 0) {
-        throw new DataValidationError("NMF requires all values in X to be non-negative");
-      }
-    }
-  }
+// ---------------------------------------------------------------------------
+// FastICA
+// ---------------------------------------------------------------------------
 
-  private createRng(): () => number {
-    if (this.randomState === undefined) return __random;
-    let s = this.randomState;
-    return () => {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    };
+type IcaFun = "logcosh" | "exp" | "cube";
+
+function validateIcaFun(value: unknown): IcaFun {
+  if (value !== "logcosh" && value !== "exp" && value !== "cube") {
+    throw new InvalidParameterError(`fun must be "logcosh", "exp", or "cube"`, "fun", value);
   }
+  return value;
 }
 
 /**
- * FastICA — Independent Component Analysis using the fast fixed-point algorithm.
+ * FastICA: Independent Component Analysis using the fast fixed-point algorithm.
  *
  * Separates a multivariate signal into additive, independent non-Gaussian
  * components. Uses negentropy maximization with the logcosh or exp
- * contrast functions.
+ * contrast functions (or the kurtosis-based cube function), symmetric
+ * decorrelation (parallel algorithm) and, by default, whitening to unit variance.
+ *
+ * After fitting, `components` holds the unmixing matrix W·K of shape
+ * (n_components, n_features) so that `transform(X) = (X - mean) @ componentsᵀ`, and
+ * `mixingMatrix` is its pseudo-inverse of shape (n_features, n_components).
+ * Independent components are only defined up to sign, scale and order.
  *
  * @example
  * ```ts
  * import { FastICA } from 'deepbox/ml';
  * import { tensor } from 'deepbox/ndarray';
  *
- * const X = tensor([[1, 2], [3, 4], [5, 6], [7, 8]]);
- * const ica = new FastICA({ nComponents: 2 });
+ * const X = tensor([[1, 5], [3, 1], [5, 4], [7, 3], [9, 8], [2, 6]]);
+ * const ica = new FastICA({ nComponents: 2, randomState: 0 });
  * const S = ica.fitTransform(X);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class FastICA implements Transformer {
   private nComponents: number;
   private maxIter: number;
   private tol: number;
-  private fun: "logcosh" | "exp" | "cube";
+  private fun: IcaFun;
   private whiten: boolean;
   private randomState: number | undefined;
 
   private mean_?: Float64Array;
-  private whitening_?: Float64Array; // whitening matrix (nComponents x nFeatures)
-  private unmixing_?: Float64Array; // unmixing matrix W (nComponents x nComponents)
-  private mixing_?: Float64Array; // mixing matrix A = pinv(W) (nComponents x nComponents)
+  private components_?: Float64Array; // unmixing matrix in feature space (k x f)
+  private mixing_?: Float64Array; // pseudo-inverse of components_ (f x k)
   private nFeaturesIn_ = 0;
   private nIter_ = 0;
-  private fitted = false;
-  // Actual component count after clamping to min(nComponents, nFeatures);
-  // getters use this (not the requested nComponents) to avoid reshape errors
-  // when nComponents > nFeatures.
+  // Actual component count after clamping to min(nComponents, nFeatures, nSamples).
   private kActual_ = 0;
+  private outDType_: FloatDType = "float64";
+  private fitted = false;
 
+  /**
+   * @param options.nComponents - Number of components to extract (default: 2). Clamped to
+   *   min(n_samples, n_features) with a warning when larger.
+   * @param options.maxIter - Maximum number of fixed-point iterations (default: 200)
+   * @param options.tol - Convergence tolerance on 1 - |<w_new, w_old>| (default: 1e-4)
+   * @param options.fun - Contrast function: "logcosh" (default), "exp" or "cube"
+   * @param options.whiten - Whiten the data to unit variance before iterating (default: true)
+   * @param options.randomState - Seed for the random initial unmixing matrix
+   */
   constructor(
     options: {
       readonly nComponents?: number;
       readonly maxIter?: number;
       readonly tol?: number;
-      readonly fun?: "logcosh" | "exp" | "cube";
+      readonly fun?: IcaFun;
       readonly whiten?: boolean;
       readonly randomState?: number;
     } = {}
   ) {
-    this.nComponents = options.nComponents ?? 2;
-    this.maxIter = options.maxIter ?? 200;
-    this.tol = options.tol ?? 1e-4;
-    this.fun = options.fun ?? "logcosh";
+    this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
+    this.maxIter = validatePositiveInt(options.maxIter ?? 200, "maxIter");
+    this.tol = validateTolValue(options.tol ?? 1e-4);
+    this.fun = validateIcaFun(options.fun ?? "logcosh");
     this.whiten = options.whiten ?? true;
-    if (options.randomState !== undefined) this.randomState = options.randomState;
-
-    if (!Number.isInteger(this.nComponents) || this.nComponents < 1) {
-      throw new InvalidParameterError("nComponents must be >= 1", "nComponents", this.nComponents);
+    if (typeof this.whiten !== "boolean") {
+      throw new InvalidParameterError("whiten must be a boolean", "whiten", this.whiten);
     }
-    if (!Number.isInteger(this.maxIter) || this.maxIter < 1) {
-      throw new InvalidParameterError("maxIter must be >= 1", "maxIter", this.maxIter);
+    if (options.randomState !== undefined) {
+      validateRandomStateValue(options.randomState);
+      this.randomState = options.randomState;
     }
   }
 
+  /**
+   * Fit the model: estimate the unmixing matrix.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Ignored (exists for compatibility)
+   * @returns this
+   * @throws {DataValidationError} If X has fewer than 2 samples or is rank deficient
+   *   for the requested number of components
+   * @throws {ConvergenceError} If the iteration diverges to non-finite values
+   */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
-    const k = Math.min(this.nComponents, nFeatures);
-    this.kActual_ = k;
-
-    // Extract & center data
-    const data = new Float64Array(nSamples * nFeatures);
-    this.mean_ = new Float64Array(nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      let s = 0;
-      for (let i = 0; i < nSamples; i++) {
-        s += Number(X.data[X.offset + i * nFeatures + j]);
-      }
-      this.mean_[j] = s / nSamples;
+    if (nSamples < 2) {
+      throw new DataValidationError("X must have at least 2 samples for FastICA");
     }
+    const maxK = Math.min(nSamples, nFeatures);
+    const k = Math.min(this.nComponents, maxK);
+    if (this.nComponents > maxK) {
+      warn(
+        `nComponents=${this.nComponents} exceeds min(n_samples, n_features)=${maxK}; using ${k} components.`,
+        "UserWarning",
+        "FastICA"
+      );
+    }
+
+    // Center the data
+    const raw = toFloat64View(X);
+    const mean = columnMeans(raw, nSamples, nFeatures);
+    const data = new Float64Array(nSamples * nFeatures);
     for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        data[i * nFeatures + j] =
-          Number(X.data[X.offset + i * nFeatures + j]) - (this.mean_[j] ?? 0);
+        data[i * nFeatures + j] = (raw[i * nFeatures + j] ?? 0) - (mean[j] ?? 0);
       }
     }
 
-    // Whiten using SVD
-    let Z: Float64Array; // whitened data (nSamples x k)
+    // Whiten using the SVD of the centered data. K = sqrt(n) * diag(1/S[:k]) @ Vt[:k]
+    // gives Z = X K^T unit variance and identity covariance (scikit-learn's convention).
+    // Without the sqrt(n) factor Z would have variance 1/n, w^T z would stay in the linear
+    // regime of the nonlinearity and the fixed point would never move.
+    let Z: Float64Array;
+    let dim: number;
+    let whiteningVt: Float64Array | undefined; // rows of Vt kept (k x f)
+    let whiteningS: Float64Array | undefined;
+    let whitening: Float64Array | undefined; // K (k x f)
+    const sqrtN = Math.sqrt(nSamples);
     if (this.whiten) {
-      const dataTensor = tensor(Array.from(data)).reshape([nSamples, nFeatures]);
-      // Reduced SVD: whitening only needs S and Vt (the right singular
-      // vectors), not the full n×n U — building U for a tall matrix is O(n²)
-      // memory/time and dominated FastICA runtime (~30s for 500 samples).
-      const [, S, Vt] = svd(dataTensor, false);
-
-      // K = sqrt(n) * diag(1/S[:k]) @ Vt[:k, :]  (whitening matrix: k x nFeatures).
-      // The sqrt(n) factor (scikit-learn's convention) makes the whitened data
-      // Z = X·Kᵀ have UNIT variance. Without it Z has variance 1/n, so wᵀz lies
-      // in the linear regime of the nonlinearity and the FastICA fixed-point
-      // never moves — it "converges" at iteration 1 to a random rotation.
-      const sqrtN = Math.sqrt(nSamples);
-      this.whitening_ = new Float64Array(k * nFeatures);
+      const { s, Vt } = economySvd(data, nSamples, nFeatures);
+      const sTop = s[0] ?? 0;
+      const minS = sTop * Math.max(nSamples, nFeatures) * Number.EPSILON;
+      if (!((s[k - 1] ?? 0) > minS)) {
+        throw new DataValidationError(
+          `After centering, X has rank below nComponents=${k}; reduce nComponents or remove collinear features`
+        );
+      }
+      whiteningVt = Vt.slice(0, k * nFeatures);
+      whiteningS = s.slice(0, k);
+      whitening = new Float64Array(k * nFeatures);
       for (let c = 0; c < k; c++) {
-        const sVal = Math.max(Number(S.data[S.offset + c]), 1e-12);
+        const factor = sqrtN / (s[c] ?? 1);
         for (let j = 0; j < nFeatures; j++) {
-          this.whitening_[c * nFeatures + j] =
-            (Number(Vt.data[Vt.offset + c * nFeatures + j]) / sVal) * sqrtN;
+          whitening[c * nFeatures + j] = (Vt[c * nFeatures + j] ?? 0) * factor;
         }
       }
-
-      // Z = X_centered @ K^T  (nSamples x k)
+      dim = k;
       Z = new Float64Array(nSamples * k);
       for (let i = 0; i < nSamples; i++) {
         for (let c = 0; c < k; c++) {
-          let s = 0;
+          let sum = 0;
           for (let j = 0; j < nFeatures; j++) {
-            s += (data[i * nFeatures + j] ?? 0) * (this.whitening_[c * nFeatures + j] ?? 0);
+            sum += (data[i * nFeatures + j] ?? 0) * (whitening[c * nFeatures + j] ?? 0);
           }
-          Z[i * k + c] = s;
+          Z[i * k + c] = sum;
         }
       }
     } else {
-      Z = new Float64Array(data);
+      dim = nFeatures;
+      Z = data;
     }
 
-    // FastICA fixed-point iteration
-    const dim = this.whiten ? k : nFeatures;
-    const rng = this.createRng();
+    // Random initial unmixing matrix W (k x dim), orthogonalized.
+    const generator = createGenerator(this.randomState);
+    const W = generator.normalArray(0, 1, k * dim);
+    FastICA.symmetricDecorrelation(W, k, dim);
 
-    // Initialize W randomly (k x dim)
-    const W = new Float64Array(k * dim);
-    for (let i = 0; i < k * dim; i++) {
-      W[i] = rng() - 0.5;
-    }
-
-    // Orthogonalize W using symmetric decorrelation
-    this.symmetricDecorrelation(W, k, dim);
-
+    const gpMean = new Float64Array(k);
+    const wx = new Float64Array(k);
+    let converged = false;
+    let iterations = 0;
     for (let iter = 0; iter < this.maxIter; iter++) {
+      // Wnew = E[z g(Wz)^T]^T - diag(E[g'(Wz)]) W
       const Wnew = new Float64Array(k * dim);
-      let maxChange = 0;
-
-      for (let c = 0; c < k; c++) {
-        // Compute w^T z for all samples
-        const wx = new Float64Array(nSamples);
-        for (let i = 0; i < nSamples; i++) {
-          let s = 0;
+      gpMean.fill(0);
+      for (let i = 0; i < nSamples; i++) {
+        const zBase = i * dim;
+        for (let c = 0; c < k; c++) {
+          let sum = 0;
+          for (let d = 0; d < dim; d++) sum += (W[c * dim + d] ?? 0) * (Z[zBase + d] ?? 0);
+          wx[c] = sum;
+        }
+        for (let c = 0; c < k; c++) {
+          const u = wx[c] ?? 0;
+          let g: number;
+          let gp: number;
+          if (this.fun === "logcosh") {
+            const t = Math.tanh(u);
+            g = t;
+            gp = 1 - t * t;
+          } else if (this.fun === "exp") {
+            const e = Math.exp(-0.5 * u * u);
+            g = u * e;
+            gp = (1 - u * u) * e;
+          } else {
+            g = u * u * u;
+            gp = 3 * u * u;
+          }
+          gpMean[c] = (gpMean[c] ?? 0) + gp;
+          const wBase = c * dim;
           for (let d = 0; d < dim; d++) {
-            s += (W[c * dim + d] ?? 0) * (Z[i * dim + d] ?? 0);
+            Wnew[wBase + d] = (Wnew[wBase + d] ?? 0) + (Z[zBase + d] ?? 0) * g;
           }
-          wx[i] = s;
-        }
-
-        // Apply nonlinearity g and g'
-        const gx = new Float64Array(nSamples);
-        const gpx = new Float64Array(nSamples);
-        this.applyNonlinearity(wx, gx, gpx, nSamples);
-
-        // Update: w_new = E[z * g(w^T z)] - E[g'(w^T z)] * w
-        const meanGp = gpx.reduce((a, b) => a + b, 0) / nSamples;
-        for (let d = 0; d < dim; d++) {
-          let eZg = 0;
-          for (let i = 0; i < nSamples; i++) {
-            eZg += (Z[i * dim + d] ?? 0) * (gx[i] ?? 0);
-          }
-          eZg /= nSamples;
-          Wnew[c * dim + d] = eZg - meanGp * (W[c * dim + d] ?? 0);
         }
       }
-
-      // Symmetric decorrelation of Wnew
-      this.symmetricDecorrelation(Wnew, k, dim);
-
-      // Check convergence (max abs change in dot products)
       for (let c = 0; c < k; c++) {
-        let dotProd = 0;
+        const meanGp = (gpMean[c] ?? 0) / nSamples;
         for (let d = 0; d < dim; d++) {
-          dotProd += (Wnew[c * dim + d] ?? 0) * (W[c * dim + d] ?? 0);
+          Wnew[c * dim + d] = (Wnew[c * dim + d] ?? 0) / nSamples - meanGp * (W[c * dim + d] ?? 0);
         }
-        const change = 1 - Math.abs(dotProd);
-        if (change > maxChange) maxChange = change;
       }
+      FastICA.symmetricDecorrelation(Wnew, k, dim);
 
-      // Copy Wnew -> W
-      for (let i = 0; i < k * dim; i++) {
-        W[i] = Wnew[i] ?? 0;
+      let maxChange = 0;
+      let finite = true;
+      for (let c = 0; c < k; c++) {
+        let dot = 0;
+        for (let d = 0; d < dim; d++) dot += (Wnew[c * dim + d] ?? 0) * (W[c * dim + d] ?? 0);
+        const change = Math.abs(Math.abs(dot) - 1);
+        if (!Number.isFinite(change)) finite = false;
+        else if (change > maxChange) maxChange = change;
       }
-
-      this.nIter_ = iter + 1;
-      if (maxChange < this.tol) break;
+      W.set(Wnew);
+      iterations = iter + 1;
+      if (!finite) {
+        throw new ConvergenceError(
+          `FastICA diverged to non-finite values with fun="${this.fun}"; try fun="logcosh" or standardize X`,
+          { iterations: iter + 1, tolerance: this.tol }
+        );
+      }
+      if (maxChange < this.tol) {
+        converged = true;
+        break;
+      }
+    }
+    if (!converged) {
+      warn(
+        `FastICA did not converge within maxIter=${this.maxIter} iterations; increase maxIter or tol.`,
+        "ConvergenceWarning",
+        "FastICA"
+      );
     }
 
-    this.unmixing_ = W;
+    // Unmixing matrix in feature space and its pseudo-inverse.
+    const components = new Float64Array(k * nFeatures);
+    const mixing = new Float64Array(nFeatures * k);
+    if (whitening && whiteningVt && whiteningS) {
+      // components = W @ K ; pinv(W K) = K^+ W^T with K^+ = Vt^T diag(S) / sqrt(n) (W is orthogonal).
+      for (let c = 0; c < k; c++) {
+        for (let j = 0; j < nFeatures; j++) {
+          let sum = 0;
+          for (let m = 0; m < k; m++) {
+            sum += (W[c * k + m] ?? 0) * (whitening[m * nFeatures + j] ?? 0);
+          }
+          components[c * nFeatures + j] = sum;
+        }
+      }
+      for (let j = 0; j < nFeatures; j++) {
+        for (let c = 0; c < k; c++) {
+          let sum = 0;
+          for (let m = 0; m < k; m++) {
+            sum +=
+              (whiteningVt[m * nFeatures + j] ?? 0) *
+              (((whiteningS[m] ?? 0) / sqrtN) * (W[c * k + m] ?? 0));
+          }
+          mixing[j * k + c] = sum;
+        }
+      }
+    } else {
+      // Rows of W are orthonormal, so pinv(W) = W^T.
+      components.set(W);
+      for (let c = 0; c < k; c++) {
+        for (let j = 0; j < nFeatures; j++) mixing[j * k + c] = W[c * nFeatures + j] ?? 0;
+      }
+    }
 
-    // Compute mixing matrix (pseudo-inverse of W)
-    // For square W: A = W^{-1}; for non-square: A = pinv(W)
-    this.mixing_ = this.pseudoInverse(W, k, dim);
-
+    this.mean_ = mean;
+    this.components_ = components;
+    this.mixing_ = mixing;
+    this.nFeaturesIn_ = nFeatures;
+    this.nIter_ = iterations;
+    this.kActual_ = k;
+    this.outDType_ = floatDTypeOf(X);
     this.fitted = true;
     return this;
   }
 
+  /**
+   * Recover the sources: `(X - mean) @ componentsᵀ`.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Sources of shape (n_samples, n_components)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   transform(X: Tensor): Tensor {
-    if (!this.fitted || !this.mean_) {
+    if (!this.fitted || !this.mean_ || !this.components_) {
       throw new NotFittedError("FastICA must be fitted before transform");
     }
     validatePredictInputs(X, this.nFeaturesIn_, "FastICA");
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const k = Math.min(this.nComponents, nFeatures);
+    const nFeatures = this.nFeaturesIn_;
+    const k = this.kActual_;
+    const data = toFloat64View(X);
+    const mean = this.mean_;
+    const comps = this.components_;
 
-    // Center
-    const centered = new Float64Array(nSamples * nFeatures);
-    for (let i = 0; i < nSamples; i++) {
-      for (let j = 0; j < nFeatures; j++) {
-        centered[i * nFeatures + j] =
-          Number(X.data[X.offset + i * nFeatures + j]) - (this.mean_[j] ?? 0);
-      }
-    }
-
-    let Z: Float64Array;
-    if (this.whiten && this.whitening_) {
-      Z = new Float64Array(nSamples * k);
-      for (let i = 0; i < nSamples; i++) {
-        for (let c = 0; c < k; c++) {
-          let s = 0;
-          for (let j = 0; j < nFeatures; j++) {
-            s += (centered[i * nFeatures + j] ?? 0) * (this.whitening_[c * nFeatures + j] ?? 0);
-          }
-          Z[i * k + c] = s;
-        }
-      }
-    } else {
-      Z = centered;
-    }
-
-    // Apply unmixing: S = Z @ W^T
-    const dim = this.whiten ? k : nFeatures;
-    const W = this.unmixing_!;
-    const result = new Float64Array(nSamples * k);
+    const out = new Float64Array(nSamples * k);
     for (let i = 0; i < nSamples; i++) {
       for (let c = 0; c < k; c++) {
-        let s = 0;
-        for (let d = 0; d < dim; d++) {
-          s += (Z[i * dim + d] ?? 0) * (W[c * dim + d] ?? 0);
+        let sum = 0;
+        for (let j = 0; j < nFeatures; j++) {
+          sum +=
+            ((data[i * nFeatures + j] ?? 0) - (mean[j] ?? 0)) * (comps[c * nFeatures + j] ?? 0);
         }
-        result[i * k + c] = s;
+        out[i * k + c] = sum;
       }
     }
-
-    return tensor(Array.from(result)).reshape([nSamples, k]);
+    return makeTensor(out, [nSamples, k], floatDTypeOf(X));
   }
 
+  /**
+   * Fit the model and return the recovered sources.
+   *
+   * @param X - Training data
+   * @param y - Ignored (exists for compatibility)
+   * @returns Sources of shape (n_samples, n_components)
+   */
   fitTransform(X: Tensor, _y?: Tensor): Tensor {
     this.fit(X);
     return this.transform(X);
   }
 
+  /**
+   * Map sources back to the feature space: `S @ mixingMatrixᵀ + mean`.
+   *
+   * @param X - Sources of shape (n_samples, n_components)
+   * @returns Reconstructed data of shape (n_samples, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted || !this.mixing_ || !this.mean_) {
       throw new NotFittedError("FastICA must be fitted before inverseTransform");
     }
-    const nSamples = X.shape[0] ?? 0;
-    const k = Math.min(this.nComponents, this.nFeaturesIn_);
+    const k = this.kActual_;
     const nFeatures = this.nFeaturesIn_;
-    const dim = this.whiten ? k : nFeatures;
+    const data = readLatentInput(X, k, "components");
+    const nSamples = X.shape[0] ?? 0;
+    const A = this.mixing_;
+    const mean = this.mean_;
 
-    // Reconstruct: X_centered = S @ A^T, then un-whiten and add mean
-    // S @ A^T gives back the whitened space, then K^{-1} maps to original
-    // Simplified: use mixing_ (pseudo-inverse of unmixing)
-    const A = this.mixing_!;
-
-    // Z_recon = S @ A^T
-    const Zrecon = new Float64Array(nSamples * dim);
+    const out = new Float64Array(nSamples * nFeatures);
     for (let i = 0; i < nSamples; i++) {
-      for (let d = 0; d < dim; d++) {
-        let s = 0;
-        for (let c = 0; c < k; c++) {
-          s += Number(X.data[X.offset + i * k + c]) * (A[d * k + c] ?? 0);
-        }
-        Zrecon[i * dim + d] = s;
+      for (let j = 0; j < nFeatures; j++) {
+        let sum = mean[j] ?? 0;
+        for (let c = 0; c < k; c++) sum += (data[i * k + c] ?? 0) * (A[j * k + c] ?? 0);
+        out[i * nFeatures + j] = sum;
       }
     }
-
-    // Un-whiten if needed
-    const result = new Float64Array(nSamples * nFeatures);
-    if (this.whiten && this.whitening_) {
-      // K is k x nFeatures, so K^+ (pseudoinverse) is nFeatures x k
-      const Kpinv = this.pseudoInverse(this.whitening_, k, nFeatures);
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          let s = 0;
-          for (let c = 0; c < k; c++) {
-            s += (Zrecon[i * k + c] ?? 0) * (Kpinv[j * k + c] ?? 0);
-          }
-          result[i * nFeatures + j] = s + (this.mean_[j] ?? 0);
-        }
-      }
-    } else {
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          result[i * nFeatures + j] = (Zrecon[i * nFeatures + j] ?? 0) + (this.mean_[j] ?? 0);
-        }
-      }
-    }
-
-    return tensor(Array.from(result)).reshape([nSamples, nFeatures]);
+    return makeTensor(out, [nSamples, nFeatures], floatDTypeOf(X));
   }
 
+  /**
+   * Unmixing matrix in feature space, shape (n_components, n_features).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get components(): Tensor {
-    if (!this.fitted || !this.unmixing_) {
+    if (!this.fitted || !this.components_) {
       throw new NotFittedError("FastICA must be fitted to access components");
     }
-    const k = this.kActual_;
-    const dim = this.whiten ? k : this.nFeaturesIn_;
-    return tensor(Array.from(this.unmixing_)).reshape([k, dim]);
+    return makeTensor(
+      Float64Array.from(this.components_),
+      [this.kActual_, this.nFeaturesIn_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Mixing matrix (pseudo-inverse of `components`), shape (n_features, n_components).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get mixingMatrix(): Tensor {
     if (!this.fitted || !this.mixing_) {
       throw new NotFittedError("FastICA must be fitted to access mixing matrix");
     }
-    const k = this.kActual_;
-    const dim = this.whiten ? k : this.nFeaturesIn_;
-    return tensor(Array.from(this.mixing_)).reshape([dim, k]);
+    return makeTensor(
+      Float64Array.from(this.mixing_),
+      [this.nFeaturesIn_, this.kActual_],
+      this.outDType_
+    );
   }
 
+  /**
+   * Per-feature mean of the training data, shape (n_features,).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get mean(): Tensor {
+    if (!this.fitted || !this.mean_) {
+      throw new NotFittedError("FastICA must be fitted to access the mean");
+    }
+    return makeTensor(Float64Array.from(this.mean_), [this.nFeaturesIn_], this.outDType_);
+  }
+
+  /** Number of fixed-point iterations run by the last fit. */
   get nIter(): number {
     return this.nIter_;
   }
 
+  /**
+   * Number of features seen during fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("FastICA must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Get hyperparameters for this estimator.
+   *
+   * @returns Object containing all hyperparameters
+   */
   getParams(): Record<string, unknown> {
     return {
       nComponents: this.nComponents,
@@ -1456,40 +1992,26 @@ export class FastICA implements Transformer {
     };
   }
 
+  /**
+   * Set the parameters of this estimator.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nComponents":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "nComponents must be an integer >= 1",
-              "nComponents",
-              value
-            );
-          }
-          this.nComponents = value;
+          this.nComponents = validatePositiveInt(value, "nComponents");
           break;
         case "maxIter":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
-          }
-          this.maxIter = value;
+          this.maxIter = validatePositiveInt(value, "maxIter");
           break;
         case "tol":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("tol must be >= 0", "tol", value);
-          }
-          this.tol = value;
+          this.tol = validateTolValue(value);
           break;
         case "fun":
-          if (value !== "logcosh" && value !== "exp" && value !== "cube") {
-            throw new InvalidParameterError(
-              `fun must be "logcosh", "exp", or "cube"`,
-              "fun",
-              value
-            );
-          }
-          this.fun = value;
+          this.fun = validateIcaFun(value);
           break;
         case "whiten":
           if (typeof value !== "boolean") {
@@ -1498,14 +2020,8 @@ export class FastICA implements Transformer {
           this.whiten = value;
           break;
         case "randomState":
-          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
-            throw new InvalidParameterError(
-              "randomState must be a finite number",
-              "randomState",
-              value
-            );
-          }
-          this.randomState = value;
+          validateRandomStateValue(value);
+          this.randomState = value as number | undefined;
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -1514,244 +2030,50 @@ export class FastICA implements Transformer {
     return this;
   }
 
-  private applyNonlinearity(
-    wx: Float64Array,
-    gx: Float64Array,
-    gpx: Float64Array,
-    n: number
-  ): void {
-    if (this.fun === "logcosh") {
-      for (let i = 0; i < n; i++) {
-        const t = Math.tanh(wx[i] ?? 0);
-        gx[i] = t;
-        gpx[i] = 1 - t * t;
-      }
-    } else if (this.fun === "exp") {
-      for (let i = 0; i < n; i++) {
-        const u = wx[i] ?? 0;
-        const e = Math.exp(-0.5 * u * u);
-        gx[i] = u * e;
-        gpx[i] = (1 - u * u) * e;
-      }
-    } else {
-      // cube
-      for (let i = 0; i < n; i++) {
-        const u = wx[i] ?? 0;
-        gx[i] = u * u * u;
-        gpx[i] = 3 * u * u;
-      }
-    }
-  }
-
-  private symmetricDecorrelation(W: Float64Array, rows: number, cols: number): void {
-    // W = W @ (W @ W^T)^{-1/2}
-    // Compute WWT = W @ W^T
+  /**
+   * Symmetric decorrelation in place: W <- (W W^T)^(-1/2) W for a row-major (rows x cols) W.
+   */
+  private static symmetricDecorrelation(W: Float64Array, rows: number, cols: number): void {
     const WWT = new Float64Array(rows * rows);
     for (let i = 0; i < rows; i++) {
       for (let j = i; j < rows; j++) {
         let s = 0;
-        for (let d = 0; d < cols; d++) {
-          s += (W[i * cols + d] ?? 0) * (W[j * cols + d] ?? 0);
-        }
+        for (let d = 0; d < cols; d++) s += (W[i * cols + d] ?? 0) * (W[j * cols + d] ?? 0);
         WWT[i * rows + j] = s;
         WWT[j * rows + i] = s;
       }
     }
+    const { values, vectors } = jacobiEigenSymmetric(WWT, rows);
+    const floor = Math.max((values[0] ?? 0) * 1e-14, 1e-300);
 
-    // Eigen-decompose WWT (small symmetric matrix)
-    const eigenvals = new Float64Array(rows);
-    const eigenvecs = new Float64Array(rows * rows);
-    for (let i = 0; i < rows; i++) eigenvecs[i * rows + i] = 1;
-
-    // Jacobi iteration for small symmetric matrix
-    const A = new Float64Array(WWT);
-    const V = new Float64Array(eigenvecs);
-    for (let sweep = 0; sweep < 100; sweep++) {
-      let off = 0;
-      for (let i = 0; i < rows; i++) {
-        for (let j = i + 1; j < rows; j++) {
-          off += Math.abs(A[i * rows + j] ?? 0);
-        }
-      }
-      if (off < 1e-12) break;
-
-      for (let p = 0; p < rows; p++) {
-        for (let q = p + 1; q < rows; q++) {
-          const apq = A[p * rows + q] ?? 0;
-          if (Math.abs(apq) < 1e-15) continue;
-          const theta = 0.5 * Math.atan2(2 * apq, (A[p * rows + p] ?? 0) - (A[q * rows + q] ?? 0));
-          const c = Math.cos(theta);
-          const s = Math.sin(theta);
-
-          for (let i = 0; i < rows; i++) {
-            const aip = A[i * rows + p] ?? 0;
-            const aiq = A[i * rows + q] ?? 0;
-            A[i * rows + p] = c * aip + s * aiq;
-            A[i * rows + q] = -s * aip + c * aiq;
-          }
-          for (let j = 0; j < rows; j++) {
-            const apj = A[p * rows + j] ?? 0;
-            const aqj = A[q * rows + j] ?? 0;
-            A[p * rows + j] = c * apj + s * aqj;
-            A[q * rows + j] = -s * apj + c * aqj;
-          }
-          for (let i = 0; i < rows; i++) {
-            const vip = V[i * rows + p] ?? 0;
-            const viq = V[i * rows + q] ?? 0;
-            V[i * rows + p] = c * vip + s * viq;
-            V[i * rows + q] = -s * vip + c * viq;
-          }
-        }
-      }
-    }
-
-    // eigenvals = diag(A), compute D^{-1/2}
-    for (let i = 0; i < rows; i++) {
-      eigenvals[i] = Math.max(A[i * rows + i] ?? 0, 1e-12);
-    }
-
-    // Compute (WWT)^{-1/2} = V @ diag(1/sqrt(eigenvals)) @ V^T
+    // invSqrt = V diag(1/sqrt(lambda)) V^T
     const invSqrt = new Float64Array(rows * rows);
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < rows; j++) {
         let s = 0;
         for (let d = 0; d < rows; d++) {
-          s += (V[i * rows + d] ?? 0) * (1 / Math.sqrt(eigenvals[d] ?? 1)) * (V[j * rows + d] ?? 0);
+          s +=
+            (vectors[i * rows + d] ?? 0) *
+            (vectors[j * rows + d] ?? 0) *
+            (1 / Math.sqrt(Math.max(values[d] ?? 0, floor)));
         }
         invSqrt[i * rows + j] = s;
       }
     }
-
-    // W_new = invSqrt @ W
-    const Wnew = new Float64Array(rows * cols);
-    for (let i = 0; i < rows; i++) {
-      for (let d = 0; d < cols; d++) {
-        let s = 0;
-        for (let j = 0; j < rows; j++) {
-          s += (invSqrt[i * rows + j] ?? 0) * (W[j * cols + d] ?? 0);
-        }
-        Wnew[i * cols + d] = s;
-      }
-    }
-
-    for (let i = 0; i < rows * cols; i++) {
-      W[i] = Wnew[i] ?? 0;
-    }
-  }
-
-  private pseudoInverse(M: Float64Array, rows: number, cols: number): Float64Array {
-    // Compute M^+ = (M^T M)^{-1} M^T for rows <= cols (tall pseudo-inverse)
-    // or M^T (M M^T)^{-1} for rows > cols
-    if (rows <= cols) {
-      // M^+ = M^T (M M^T)^{-1}
-      const MMT = new Float64Array(rows * rows);
-      for (let i = 0; i < rows; i++) {
-        for (let j = i; j < rows; j++) {
-          let s = 0;
-          for (let d = 0; d < cols; d++) {
-            s += (M[i * cols + d] ?? 0) * (M[j * cols + d] ?? 0);
-          }
-          MMT[i * rows + j] = s;
-          MMT[j * rows + i] = s;
-        }
-      }
-      const MMTinv = this.invertSmall(MMT, rows);
-      // Result is cols x rows
-      const result = new Float64Array(cols * rows);
-      for (let i = 0; i < cols; i++) {
-        for (let j = 0; j < rows; j++) {
-          let s = 0;
-          for (let k = 0; k < rows; k++) {
-            s += (M[k * cols + i] ?? 0) * (MMTinv[k * rows + j] ?? 0);
-          }
-          result[i * rows + j] = s;
-        }
-      }
-      return result;
-    } else {
-      // M^+ = (M^T M)^{-1} M^T
-      const MTM = new Float64Array(cols * cols);
-      for (let i = 0; i < cols; i++) {
-        for (let j = i; j < cols; j++) {
-          let s = 0;
-          for (let d = 0; d < rows; d++) {
-            s += (M[d * cols + i] ?? 0) * (M[d * cols + j] ?? 0);
-          }
-          MTM[i * cols + j] = s;
-          MTM[j * cols + i] = s;
-        }
-      }
-      const MTMinv = this.invertSmall(MTM, cols);
-      const result = new Float64Array(cols * rows);
-      for (let i = 0; i < cols; i++) {
-        for (let j = 0; j < rows; j++) {
-          let s = 0;
-          for (let k = 0; k < cols; k++) {
-            s += (MTMinv[i * cols + k] ?? 0) * (M[j * cols + k] ?? 0);
-          }
-          result[i * rows + j] = s;
-        }
-      }
-      return result;
-    }
-  }
-
-  private invertSmall(A: Float64Array, n: number): Float64Array {
-    const aug = new Float64Array(n * 2 * n);
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) aug[i * 2 * n + j] = A[i * n + j] ?? 0;
-      aug[i * 2 * n + n + i] = 1;
-    }
-    for (let col = 0; col < n; col++) {
-      let maxVal = Math.abs(aug[col * 2 * n + col] ?? 0);
-      let maxRow = col;
-      for (let row = col + 1; row < n; row++) {
-        const val = Math.abs(aug[row * 2 * n + col] ?? 0);
-        if (val > maxVal) {
-          maxVal = val;
-          maxRow = row;
-        }
-      }
-      if (maxRow !== col) {
-        for (let j = 0; j < 2 * n; j++) {
-          const tmp = aug[col * 2 * n + j] ?? 0;
-          aug[col * 2 * n + j] = aug[maxRow * 2 * n + j] ?? 0;
-          aug[maxRow * 2 * n + j] = tmp;
-        }
-      }
-      const pivot = aug[col * 2 * n + col] ?? 1;
-      if (Math.abs(pivot) < 1e-20) continue;
-      for (let j = 0; j < 2 * n; j++) aug[col * 2 * n + j] = (aug[col * 2 * n + j] ?? 0) / pivot;
-      for (let row = 0; row < n; row++) {
-        if (row === col) continue;
-        const factor = aug[row * 2 * n + col] ?? 0;
-        for (let j = 0; j < 2 * n; j++) {
-          aug[row * 2 * n + j] = (aug[row * 2 * n + j] ?? 0) - factor * (aug[col * 2 * n + j] ?? 0);
-        }
-      }
-    }
-    const inv = new Float64Array(n * n);
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) inv[i * n + j] = aug[i * 2 * n + n + j] ?? 0;
-    }
-    return inv;
-  }
-
-  private createRng(): () => number {
-    if (this.randomState === undefined) return __random;
-    let s = this.randomState;
-    return () => {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    };
+    W.set(matmul(invSqrt, rows, rows, W, cols));
   }
 }
+
+// ---------------------------------------------------------------------------
+// LatentDirichletAllocation
+// ---------------------------------------------------------------------------
 
 /**
  * Latent Dirichlet Allocation (LDA) for topic modeling.
  *
  * Decomposes a document-term matrix into document-topic and topic-term
- * distributions using online variational Bayes inference.
+ * distributions using batch variational Bayes inference. This is the topic
+ * model, not Linear Discriminant Analysis (see `LinearDiscriminantAnalysis`).
  *
  * Input X should be a non-negative matrix (e.g., from CountVectorizer).
  *
@@ -1761,23 +2083,36 @@ export class FastICA implements Transformer {
  * import { tensor } from 'deepbox/ndarray';
  *
  * const X = tensor([[3, 0, 1], [0, 2, 4], [1, 1, 1]]);
- * const lda = new LatentDirichletAllocation({ nComponents: 2 });
+ * const lda = new LatentDirichletAllocation({ nComponents: 2, randomState: 0 });
  * const docTopics = lda.fitTransform(X);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-decomposition | Deepbox Dimensionality Reduction}
  */
 export class LatentDirichletAllocation implements Transformer {
   private nComponents: number;
   private maxIter: number;
   private tol: number;
-  private docTopicPrior: number;
-  private topicWordPrior: number;
+  private docTopicPrior: number | undefined;
+  private topicWordPrior: number | undefined;
   private randomState: number | undefined;
 
-  private components_?: Float64Array;
+  private components_?: Float64Array; // lambda (K x V)
+  private nComponentsFit_ = 0;
+  private docTopicPriorFit_ = 0;
   private nFeaturesIn_ = 0;
   private nIter_ = 0;
+  private outDType_: FloatDType = "float64";
   private fitted = false;
 
+  /**
+   * @param options.nComponents - Number of topics (default: 10)
+   * @param options.maxIter - Maximum number of passes over the corpus (default: 10)
+   * @param options.tol - Stop when the largest change of a topic-word parameter is below this (default: 1e-3)
+   * @param options.docTopicPrior - Dirichlet prior on document-topic weights (default: 1 / nComponents)
+   * @param options.topicWordPrior - Dirichlet prior on topic-word weights (default: 1 / nComponents)
+   * @param options.randomState - Seed for the random initialization
+   */
   constructor(
     options: {
       readonly nComponents?: number;
@@ -1788,221 +2123,218 @@ export class LatentDirichletAllocation implements Transformer {
       readonly randomState?: number;
     } = {}
   ) {
-    this.nComponents = options.nComponents ?? 10;
-    this.maxIter = options.maxIter ?? 10;
-    this.tol = options.tol ?? 1e-3;
-    this.docTopicPrior = options.docTopicPrior ?? 1 / this.nComponents;
-    this.topicWordPrior = options.topicWordPrior ?? 1 / this.nComponents;
-    if (options.randomState !== undefined) this.randomState = options.randomState;
-
-    if (!Number.isInteger(this.nComponents) || this.nComponents < 1) {
-      throw new InvalidParameterError("nComponents must be >= 1", "nComponents", this.nComponents);
+    this.nComponents = validatePositiveInt(options.nComponents ?? 10, "nComponents");
+    this.maxIter = validatePositiveInt(options.maxIter ?? 10, "maxIter");
+    this.tol = validateTolValue(options.tol ?? 1e-3);
+    if (options.docTopicPrior !== undefined) {
+      this.docTopicPrior = LatentDirichletAllocation.checkPrior(
+        options.docTopicPrior,
+        "docTopicPrior"
+      );
     }
-    if (!Number.isInteger(this.maxIter) || this.maxIter < 1) {
-      throw new InvalidParameterError("maxIter must be >= 1", "maxIter", this.maxIter);
+    if (options.topicWordPrior !== undefined) {
+      this.topicWordPrior = LatentDirichletAllocation.checkPrior(
+        options.topicWordPrior,
+        "topicWordPrior"
+      );
+    }
+    if (options.randomState !== undefined) {
+      validateRandomStateValue(options.randomState);
+      this.randomState = options.randomState;
     }
   }
 
+  private static checkPrior(value: unknown, name: string): number {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      throw new InvalidParameterError(`${name} must be a finite number > 0`, name, value);
+    }
+    return value;
+  }
+
+  /** E[log beta] for each topic: digamma(lambda_kv) - digamma(sum_v lambda_kv). */
+  private static expectedLogBeta(lambda: Float64Array, K: number, V: number): Float64Array {
+    const out = new Float64Array(K * V);
+    for (let k = 0; k < K; k++) {
+      let sumK = 0;
+      for (let v = 0; v < V; v++) sumK += lambda[k * V + v] ?? 0;
+      const digSumK = digamma(sumK);
+      for (let v = 0; v < V; v++) out[k * V + v] = digamma(lambda[k * V + v] ?? 0) - digSumK;
+    }
+    return out;
+  }
+
+  /**
+   * Variational inference of the topic weights gamma of one document.
+   *
+   * `counts` holds the document's word counts at `offset .. offset + V`. When `sstats`
+   * is given, the expected topic-word counts of the document are added to it.
+   */
+  private static inferDocument(
+    counts: Float64Array,
+    offset: number,
+    V: number,
+    eLogBeta: Float64Array,
+    K: number,
+    alpha: number,
+    gamma: Float64Array,
+    sstats: Float64Array | undefined
+  ): void {
+    const words: number[] = [];
+    for (let v = 0; v < V; v++) if ((counts[offset + v] ?? 0) !== 0) words.push(v);
+
+    const eLogTheta = new Float64Array(K);
+    const phi = new Float64Array(K);
+    const gammaNew = new Float64Array(K);
+
+    // Fills `phi` with the responsibilities of word `v` given the current eLogTheta.
+    const responsibilities = (v: number): void => {
+      let maxLp = Number.NEGATIVE_INFINITY;
+      for (let k = 0; k < K; k++) {
+        const lp = (eLogTheta[k] ?? 0) + (eLogBeta[k * V + v] ?? 0);
+        phi[k] = lp;
+        if (lp > maxLp) maxLp = lp;
+      }
+      let sum = 0;
+      for (let k = 0; k < K; k++) {
+        const e = Math.exp((phi[k] ?? 0) - maxLp);
+        phi[k] = e;
+        sum += e;
+      }
+      for (let k = 0; k < K; k++) phi[k] = sum > 0 ? (phi[k] ?? 0) / sum : 1 / K;
+    };
+
+    const updateExpectedLogTheta = (): void => {
+      let sumGamma = 0;
+      for (let k = 0; k < K; k++) sumGamma += gamma[k] ?? 0;
+      const digSum = digamma(sumGamma);
+      for (let k = 0; k < K; k++) eLogTheta[k] = digamma(gamma[k] ?? 0) - digSum;
+    };
+
+    for (let inner = 0; inner < 20; inner++) {
+      updateExpectedLogTheta();
+      gammaNew.fill(alpha);
+      for (const v of words) {
+        const wc = counts[offset + v] ?? 0;
+        responsibilities(v);
+        for (let k = 0; k < K; k++) gammaNew[k] = (gammaNew[k] ?? 0) + wc * (phi[k] ?? 0);
+      }
+      let change = 0;
+      for (let k = 0; k < K; k++) {
+        change += Math.abs((gammaNew[k] ?? 0) - (gamma[k] ?? 0));
+        gamma[k] = gammaNew[k] ?? 0;
+      }
+      if (change < 1e-3) break;
+    }
+
+    if (sstats) {
+      updateExpectedLogTheta();
+      for (const v of words) {
+        const wc = counts[offset + v] ?? 0;
+        responsibilities(v);
+        for (let k = 0; k < K; k++) {
+          sstats[k * V + v] = (sstats[k * V + v] ?? 0) + wc * (phi[k] ?? 0);
+        }
+      }
+    }
+  }
+
+  /**
+   * Fit the topic model with batch variational Bayes.
+   *
+   * @param X - Non-negative document-term matrix of shape (n_samples, n_features)
+   * @param y - Ignored (exists for compatibility)
+   * @returns this
+   * @throws {DataValidationError} If X contains negative or non-finite values
+   */
   fit(X: Tensor, _y?: Tensor): this {
     validateUnsupervisedFitInputs(X);
-    this.ldaValidateNonNeg(X);
+    assertAllNonNegative(X, "LDA requires all values in X to be non-negative");
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
+    const V = X.shape[1] ?? 0;
     const K = this.nComponents;
-    const alpha = this.docTopicPrior;
-    const eta = this.topicWordPrior;
-    const rng = this.createLdaRng();
+    const alpha = this.docTopicPrior ?? 1 / K;
+    const eta = this.topicWordPrior ?? 1 / K;
+    const rng = createGenerator(this.randomState);
+    const data = toFloat64View(X);
 
-    // Initialize topic-word distribution (lambda): K x nFeatures
-    const lambda = new Float64Array(K * nFeatures);
-    for (let i = 0; i < K * nFeatures; i++) {
-      lambda[i] = eta + rng() * 0.1;
-    }
+    // Initialize topic-word parameters lambda (K x V)
+    const lambda = rng.randomArray(K * V);
+    for (let i = 0; i < lambda.length; i++) lambda[i] = eta + (lambda[i] ?? 0) * 0.1;
 
-    const data = new Float64Array(nSamples * nFeatures);
-    for (let i = 0; i < nSamples * nFeatures; i++) {
-      data[i] = Number(X.data[X.offset + i]);
-    }
-
+    let iterations = 0;
     for (let iter = 0; iter < this.maxIter; iter++) {
-      const lambdaOld = new Float64Array(lambda);
-
-      // E[log(beta)]
-      const eLogBeta = new Float64Array(K * nFeatures);
-      for (let k = 0; k < K; k++) {
-        let sumK = 0;
-        for (let v = 0; v < nFeatures; v++) sumK += lambda[k * nFeatures + v] ?? 0;
-        const digSumK = this.ldaDigamma(sumK);
-        for (let v = 0; v < nFeatures; v++) {
-          eLogBeta[k * nFeatures + v] = this.ldaDigamma(lambda[k * nFeatures + v] ?? 0) - digSumK;
-        }
-      }
+      const eLogBeta = LatentDirichletAllocation.expectedLogBeta(lambda, K, V);
+      const sstats = new Float64Array(K * V);
+      const gamma = new Float64Array(K);
 
       // E-step: per-document variational inference
-      const gammaAll = new Float64Array(nSamples * K);
-
       for (let d = 0; d < nSamples; d++) {
-        const gamma = new Float64Array(K);
-        for (let k = 0; k < K; k++) gamma[k] = alpha + rng() * 0.01;
-
-        for (let innerIter = 0; innerIter < 20; innerIter++) {
-          let sumGamma = 0;
-          for (let k = 0; k < K; k++) sumGamma += gamma[k] ?? 0;
-          const digSumG = this.ldaDigamma(sumGamma);
-          const eLogTheta = new Float64Array(K);
-          for (let k = 0; k < K; k++) {
-            eLogTheta[k] = this.ldaDigamma(gamma[k] ?? 0) - digSumG;
-          }
-
-          const gammaNew = new Float64Array(K).fill(alpha);
-          for (let v = 0; v < nFeatures; v++) {
-            const wc = data[d * nFeatures + v] ?? 0;
-            if (wc === 0) continue;
-
-            const logPhi = new Float64Array(K);
-            let maxLP = -Infinity;
-            for (let k = 0; k < K; k++) {
-              const lp = (eLogTheta[k] ?? 0) + (eLogBeta[k * nFeatures + v] ?? 0);
-              logPhi[k] = lp;
-              if (lp > maxLP) maxLP = lp;
-            }
-            let sP = 0;
-            for (let k = 0; k < K; k++) sP += Math.exp((logPhi[k] ?? 0) - maxLP);
-            if (sP > 0) {
-              for (let k = 0; k < K; k++) {
-                gammaNew[k] = (gammaNew[k] ?? 0) + (wc * Math.exp((logPhi[k] ?? 0) - maxLP)) / sP;
-              }
-            }
-          }
-
-          let change = 0;
-          for (let k = 0; k < K; k++) {
-            const gNew = gammaNew[k] ?? 0;
-            const gOld = gamma[k] ?? 0;
-            change += Math.abs(gNew - gOld);
-            gamma[k] = gNew;
-          }
-          if (change < 1e-3) break;
-        }
-
-        for (let k = 0; k < K; k++) gammaAll[d * K + k] = gamma[k] ?? 0;
+        for (let k = 0; k < K; k++) gamma[k] = alpha + rng.random() * 0.01;
+        LatentDirichletAllocation.inferDocument(data, d * V, V, eLogBeta, K, alpha, gamma, sstats);
       }
 
-      // M-step: update lambda
-      for (let k = 0; k < K; k++) {
-        for (let v = 0; v < nFeatures; v++) {
-          let sumPhiW = eta;
-          for (let d = 0; d < nSamples; d++) {
-            const wc = data[d * nFeatures + v] ?? 0;
-            if (wc === 0) continue;
-
-            let sumGD = 0;
-            for (let kk = 0; kk < K; kk++) sumGD += gammaAll[d * K + kk] ?? 0;
-            const digSumD = this.ldaDigamma(sumGD);
-
-            const logPhi = new Float64Array(K);
-            let maxLP = -Infinity;
-            for (let kk = 0; kk < K; kk++) {
-              const elt = this.ldaDigamma(gammaAll[d * K + kk] ?? 0) - digSumD;
-              const lpVal = elt + (eLogBeta[kk * nFeatures + v] ?? 0);
-              logPhi[kk] = lpVal;
-              if (lpVal > maxLP) maxLP = lpVal;
-            }
-            let sP = 0;
-            for (let kk = 0; kk < K; kk++) sP += Math.exp((logPhi[kk] ?? 0) - maxLP);
-            const phiDVK = sP > 0 ? Math.exp((logPhi[k] ?? 0) - maxLP) / sP : 1 / K;
-            sumPhiW += wc * phiDVK;
-          }
-          lambda[k * nFeatures + v] = sumPhiW;
-        }
-      }
-
+      // M-step: lambda = eta + expected topic-word counts
       let maxDiff = 0;
-      for (let i = 0; i < K * nFeatures; i++) {
-        const lNew = lambda[i] ?? 0;
-        const lOld = lambdaOld[i] ?? 0;
-        const diff = Math.abs(lNew - lOld);
+      for (let i = 0; i < K * V; i++) {
+        const next = eta + (sstats[i] ?? 0);
+        const diff = Math.abs(next - (lambda[i] ?? 0));
         if (diff > maxDiff) maxDiff = diff;
+        lambda[i] = next;
       }
-      this.nIter_ = iter + 1;
+      iterations = iter + 1;
       if (maxDiff < this.tol) break;
     }
 
     this.components_ = lambda;
+    this.nComponentsFit_ = K;
+    this.docTopicPriorFit_ = alpha;
+    this.nFeaturesIn_ = V;
+    this.nIter_ = iterations;
+    this.outDType_ = floatDTypeOf(X);
     this.fitted = true;
     return this;
   }
 
+  /**
+   * Infer normalized document-topic distributions for X.
+   *
+   * @param X - Non-negative document-term matrix of shape (n_samples, n_features)
+   * @returns Topic proportions of shape (n_samples, n_components); each row sums to 1
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {DataValidationError} If X contains negative or non-finite values
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("LatentDirichletAllocation must be fitted before transform");
     }
     validatePredictInputs(X, this.nFeaturesIn_, "LatentDirichletAllocation");
-    this.ldaValidateNonNeg(X);
+    assertAllNonNegative(X, "LDA requires all values in X to be non-negative");
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const K = this.nComponents;
-    const alpha = this.docTopicPrior;
-    const lambda = this.components_!;
-
-    const eLogBeta = new Float64Array(K * nFeatures);
-    for (let k = 0; k < K; k++) {
-      let sumK = 0;
-      for (let v = 0; v < nFeatures; v++) sumK += lambda[k * nFeatures + v] ?? 0;
-      const digSumK = this.ldaDigamma(sumK);
-      for (let v = 0; v < nFeatures; v++) {
-        eLogBeta[k * nFeatures + v] = this.ldaDigamma(lambda[k * nFeatures + v] ?? 0) - digSumK;
-      }
-    }
+    const V = this.nFeaturesIn_;
+    const K = this.nComponentsFit_;
+    const alpha = this.docTopicPriorFit_;
+    const data = toFloat64View(X);
+    const eLogBeta = LatentDirichletAllocation.expectedLogBeta(this.components_, K, V);
 
     const result = new Float64Array(nSamples * K);
+    const gamma = new Float64Array(K);
     for (let d = 0; d < nSamples; d++) {
-      const gamma = new Float64Array(K).fill(alpha + 1);
-      for (let innerIter = 0; innerIter < 20; innerIter++) {
-        let sumGamma = 0;
-        for (let k = 0; k < K; k++) sumGamma += gamma[k] ?? 0;
-        const digSum = this.ldaDigamma(sumGamma);
-        const eLogTheta = new Float64Array(K);
-        for (let k = 0; k < K; k++) eLogTheta[k] = this.ldaDigamma(gamma[k] ?? 0) - digSum;
-
-        const gammaNew = new Float64Array(K).fill(alpha);
-        for (let v = 0; v < nFeatures; v++) {
-          const wc = Number(X.data[X.offset + d * nFeatures + v]);
-          if (wc === 0) continue;
-          const logPhi = new Float64Array(K);
-          let maxLP = -Infinity;
-          for (let k = 0; k < K; k++) {
-            const lpv = (eLogTheta[k] ?? 0) + (eLogBeta[k * nFeatures + v] ?? 0);
-            logPhi[k] = lpv;
-            if (lpv > maxLP) maxLP = lpv;
-          }
-          let sP = 0;
-          for (let k = 0; k < K; k++) sP += Math.exp((logPhi[k] ?? 0) - maxLP);
-          if (sP > 0) {
-            for (let k = 0; k < K; k++) {
-              gammaNew[k] = (gammaNew[k] ?? 0) + (wc * Math.exp((logPhi[k] ?? 0) - maxLP)) / sP;
-            }
-          }
-        }
-        let change = 0;
-        for (let k = 0; k < K; k++) {
-          const gN = gammaNew[k] ?? 0;
-          const gO = gamma[k] ?? 0;
-          change += Math.abs(gN - gO);
-          gamma[k] = gN;
-        }
-        if (change < 1e-3) break;
-      }
+      gamma.fill(alpha + 1);
+      LatentDirichletAllocation.inferDocument(data, d * V, V, eLogBeta, K, alpha, gamma, undefined);
       let sumG = 0;
       for (let k = 0; k < K; k++) sumG += gamma[k] ?? 0;
-      for (let k = 0; k < K; k++) {
-        result[d * K + k] = sumG > 0 ? (gamma[k] ?? 0) / sumG : 1 / K;
-      }
+      for (let k = 0; k < K; k++) result[d * K + k] = sumG > 0 ? (gamma[k] ?? 0) / sumG : 1 / K;
     }
-    return tensor(Array.from(result)).reshape([nSamples, K]);
+    return makeTensor(result, [nSamples, K], floatDTypeOf(X));
   }
 
+  /**
+   * Fit the model and return the document-topic distributions of X.
+   *
+   * @param X - Non-negative document-term matrix
+   * @param y - Ignored (exists for compatibility)
+   * @returns Topic proportions of shape (n_samples, n_components)
+   */
   fitTransform(X: Tensor, _y?: Tensor): Tensor {
     this.fit(X);
     return this.transform(X);
@@ -2022,145 +2354,112 @@ export class LatentDirichletAllocation implements Transformer {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("LatentDirichletAllocation must be fitted before inverseTransform");
     }
+    const K = this.nComponentsFit_;
+    const V = this.nFeaturesIn_;
+    const data = readLatentInput(X, K, "topics");
     const nSamples = X.shape[0] ?? 0;
-    const K = this.nComponents;
-    const nFeatures = this.nFeaturesIn_;
 
     // Normalize components_ rows to get topic-word probabilities
-    const beta = new Float64Array(K * nFeatures);
+    const beta = new Float64Array(K * V);
     for (let k = 0; k < K; k++) {
       let rowSum = 0;
-      for (let v = 0; v < nFeatures; v++) {
-        rowSum += this.components_[k * nFeatures + v] ?? 0;
-      }
-      for (let v = 0; v < nFeatures; v++) {
-        beta[k * nFeatures + v] =
-          rowSum > 0 ? (this.components_[k * nFeatures + v] ?? 0) / rowSum : 0;
+      for (let v = 0; v < V; v++) rowSum += this.components_[k * V + v] ?? 0;
+      for (let v = 0; v < V; v++) {
+        beta[k * V + v] = rowSum > 0 ? (this.components_[k * V + v] ?? 0) / rowSum : 0;
       }
     }
-
-    // Reconstruct: result[d, v] = sum_k X[d, k] * beta[k, v]
-    const result = new Float64Array(nSamples * nFeatures);
-    for (let d = 0; d < nSamples; d++) {
-      for (let k = 0; k < K; k++) {
-        const topicWeight = Number(X.data[X.offset + d * K + k]);
-        for (let v = 0; v < nFeatures; v++) {
-          result[d * nFeatures + v] =
-            (result[d * nFeatures + v] ?? 0) + topicWeight * (beta[k * nFeatures + v] ?? 0);
-        }
-      }
-    }
-
-    return tensor(Array.from(result)).reshape([nSamples, nFeatures]);
+    return makeTensor(matmul(data, nSamples, K, beta, V), [nSamples, V], floatDTypeOf(X));
   }
 
+  /**
+   * Topic-word variational parameters (lambda), shape (n_components, n_features).
+   * Normalize each row to get a topic-word distribution.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get components(): Tensor {
     if (!this.fitted || !this.components_) {
       throw new NotFittedError("LatentDirichletAllocation must be fitted to access components");
     }
-    return tensor(Array.from(this.components_)).reshape([this.nComponents, this.nFeaturesIn_]);
+    return makeTensor(
+      Float64Array.from(this.components_),
+      [this.nComponentsFit_, this.nFeaturesIn_],
+      this.outDType_
+    );
   }
 
+  /** Number of passes over the corpus run by the last fit. */
   get nIter(): number {
     return this.nIter_;
   }
 
+  /**
+   * Number of features (vocabulary size) seen during fit.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("LatentDirichletAllocation must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Get hyperparameters for this estimator. Unset priors are reported as their
+   * effective value, 1 / nComponents.
+   *
+   * @returns Object containing all hyperparameters
+   */
   getParams(): Record<string, unknown> {
     return {
       nComponents: this.nComponents,
       maxIter: this.maxIter,
       tol: this.tol,
-      docTopicPrior: this.docTopicPrior,
-      topicWordPrior: this.topicWordPrior,
+      docTopicPrior: this.docTopicPrior ?? 1 / this.nComponents,
+      topicWordPrior: this.topicWordPrior ?? 1 / this.nComponents,
       randomState: this.randomState,
     };
   }
 
+  /**
+   * Set the parameters of this estimator.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter value is invalid or unknown
+   */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "nComponents":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "nComponents must be an integer >= 1",
-              "nComponents",
-              value
-            );
-          }
-          this.nComponents = value;
+          this.nComponents = validatePositiveInt(value, "nComponents");
           break;
         case "maxIter":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxIter must be an integer >= 1", "maxIter", value);
-          }
-          this.maxIter = value;
+          this.maxIter = validatePositiveInt(value, "maxIter");
           break;
         case "tol":
-          if (typeof value !== "number" || value < 0) {
-            throw new InvalidParameterError("tol must be >= 0", "tol", value);
-          }
-          this.tol = value;
+          this.tol = validateTolValue(value);
           break;
         case "docTopicPrior":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("docTopicPrior must be > 0", "docTopicPrior", value);
-          }
-          this.docTopicPrior = value;
+          this.docTopicPrior =
+            value === undefined
+              ? undefined
+              : LatentDirichletAllocation.checkPrior(value, "docTopicPrior");
           break;
         case "topicWordPrior":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("topicWordPrior must be > 0", "topicWordPrior", value);
-          }
-          this.topicWordPrior = value;
+          this.topicWordPrior =
+            value === undefined
+              ? undefined
+              : LatentDirichletAllocation.checkPrior(value, "topicWordPrior");
           break;
         case "randomState":
-          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
-            throw new InvalidParameterError(
-              "randomState must be a finite number",
-              "randomState",
-              value
-            );
-          }
-          this.randomState = value;
+          validateRandomStateValue(value);
+          this.randomState = value as number | undefined;
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
     return this;
-  }
-
-  private ldaDigamma(x: number): number {
-    let result = 0;
-    let val = x;
-    while (val < 6) {
-      if (val <= 0) return -1e10;
-      result -= 1 / val;
-      val += 1;
-    }
-    return (
-      result +
-      Math.log(val) -
-      1 / (2 * val) -
-      1 / (12 * val * val) +
-      1 / (120 * val * val * val * val)
-    );
-  }
-
-  private ldaValidateNonNeg(X: Tensor): void {
-    for (let i = 0; i < X.size; i++) {
-      if (Number(X.data[X.offset + i]) < 0) {
-        throw new DataValidationError("LDA requires all values in X to be non-negative");
-      }
-    }
-  }
-
-  private createLdaRng(): () => number {
-    if (this.randomState === undefined) return __random;
-    let s = this.randomState;
-    return () => {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    };
   }
 }

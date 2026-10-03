@@ -1,5 +1,5 @@
 /**
- * Benchmark 05 — Machine Learning
+ * Benchmark 05: Machine Learning
  * Deepbox vs scikit-learn
  */
 
@@ -53,7 +53,7 @@ import { tensor } from "deepbox/ndarray";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("ml");
-header("Benchmark 05 — Machine Learning");
+header("Benchmark 05: Machine Learning");
 
 // ── Data generators ──────────────────────────────────────
 

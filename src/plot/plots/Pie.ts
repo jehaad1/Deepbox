@@ -18,6 +18,9 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Pie chart. The first slice starts at angle 0 (the positive x direction) and
+ * slices run counter-clockwise, like matplotlib's default. Values must be
+ * finite and non-negative with a positive sum.
  * @internal
  */
 export class Pie implements Drawable {
@@ -64,7 +67,7 @@ export class Pie implements Drawable {
         labels
       );
     }
-    this.labels = labels ?? [];
+    this.labels = labels ? [...labels] : [];
     this.label = normalizeLegendLabel(options.label);
     this.rangeOverride = rangeOverride;
 
@@ -95,11 +98,13 @@ export class Pie implements Drawable {
     // Calculate angles for each slice
     // angles[0] = start of first slice (0)
     // angles[i+1] = end of slice i (cumulative angle after slice i)
+    // Angles come from the running sum of values (not a running sum of angles) so
+    // rounding error does not accumulate, and the last one is exactly 2*pi.
     const angles: number[] = [0];
-    let cumulative = 0;
-    for (const value of validValues) {
-      cumulative += (value / total) * 2 * Math.PI;
-      angles.push(cumulative);
+    let running = 0;
+    for (let i = 0; i < validValues.length; i++) {
+      running += validValues[i] ?? 0;
+      angles.push(i === validValues.length - 1 ? 2 * Math.PI : (running / total) * 2 * Math.PI);
     }
     this.angles = angles;
 
@@ -154,26 +159,34 @@ export class Pie implements Drawable {
     for (let i = 0; i < this.values.length; i++) {
       const startAngle = this.angles[i] ?? 0;
       const endAngle = this.angles[i + 1] ?? 2 * Math.PI;
+      const sweep = endAngle - startAngle;
+      const fillColor = escapeXml(this.colors[i] ?? "#1f77b4");
 
-      // Convert to SVG arc parameters
-      const x1 = cx + r * Math.cos(startAngle);
-      const y1 = cy - r * Math.sin(startAngle); // SVG Y is flipped
-      const x2 = cx + r * Math.cos(endAngle);
-      const y2 = cy - r * Math.sin(endAngle);
+      // A zero-valued slice (sweep 0) has nothing to fill.
+      if (sweep >= 2 * Math.PI - 1e-12) {
+        // A single slice owns the whole disc. An SVG arc whose end point equals its
+        // start point draws nothing, so emit a circle instead.
+        ctx.push(
+          `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}" fill="${fillColor}" stroke="#ffffff" stroke-width="1" />`
+        );
+      } else if (sweep > 0) {
+        // Convert to SVG arc parameters
+        const x1 = cx + r * Math.cos(startAngle);
+        const y1 = cy - r * Math.sin(startAngle); // SVG Y is flipped
+        const x2 = cx + r * Math.cos(endAngle);
+        const y2 = cy - r * Math.sin(endAngle);
 
-      const largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+        const largeArcFlag = sweep > Math.PI ? 1 : 0;
 
-      const pathData = [
-        `M ${cx.toFixed(2)} ${cy.toFixed(2)}`,
-        `L ${x1.toFixed(2)} ${y1.toFixed(2)}`,
-        `A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${largeArcFlag} 0 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
-        "Z",
-      ].join(" ");
+        const pathData = [
+          `M ${cx.toFixed(2)} ${cy.toFixed(2)}`,
+          `L ${x1.toFixed(2)} ${y1.toFixed(2)}`,
+          `A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${largeArcFlag} 0 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
+          "Z",
+        ].join(" ");
 
-      const fillColor = this.colors[i] ?? "#1f77b4";
-      ctx.push(
-        `<path d="${pathData}" fill="${escapeXml(fillColor)}" stroke="#ffffff" stroke-width="1" />`
-      );
+        ctx.push(`<path d="${pathData}" fill="${fillColor}" stroke="#ffffff" stroke-width="1" />`);
+      }
 
       // Add labels if provided
       const label = this.labels[i];
@@ -201,6 +214,8 @@ export class Pie implements Drawable {
     for (let i = 0; i < this.values.length; i++) {
       const startAngle = this.angles[i] ?? 0;
       const endAngle = this.angles[i + 1] ?? 2 * Math.PI;
+
+      if (endAngle - startAngle <= 0) continue;
 
       const fillColor = this.colors[i] ?? "#1f77b4";
       const rgba = parseHexColorToRGBA(fillColor);

@@ -1,5 +1,5 @@
 /**
- * WASM SIMD backend tests — the embedded kernels run in any Node with WASM
+ * WASM SIMD backend tests. The embedded kernels run in any Node with WASM
  * SIMD support (the suite self-skips otherwise). Verifies the kernels are
  * bit-identical to scalar CPU arithmetic and that the ops layer routes
  * `wasm`-device tensors through them with safe CPU fallback.
@@ -55,7 +55,7 @@ describe.skipIf(!wasm.info().available)("WASM SIMD backend", () => {
     const data = Array.from({ length: 1024 }, (_, i) => i + 1);
     const a = tensor(data, { device: "wasm" });
     const b = tensor(data, { device: "wasm" });
-    expect(a.isDeviceTensor).toBe(false); // host storage — zero copy
+    expect(a.isDeviceTensor).toBe(false); // host storage, zero copy
     const out = add(a, b);
     expect(out.device).toBe("wasm");
     expect(flat(out.toArray()).slice(0, 3)).toEqual([2, 4, 6]);

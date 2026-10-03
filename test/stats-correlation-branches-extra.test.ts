@@ -6,7 +6,7 @@ describe("stats correlation branch coverage extras", () => {
   it("pearsonr handles df=0 and constant input", () => {
     const [r, p] = pearsonr(tensor([1, 2]), tensor([2, 3]));
     expect(r).toBeCloseTo(1, 6);
-    expect(Number.isNaN(p)).toBe(true);
+    expect(p).toBe(1); // scipy returns exactly 1.0 for two samples
 
     expect(() => pearsonr(tensor([1, 1, 1]), tensor([2, 2, 2]))).toThrow(/constant/);
   });

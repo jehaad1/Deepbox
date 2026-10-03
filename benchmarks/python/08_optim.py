@@ -1,5 +1,5 @@
 """
-Benchmark 08 — Optimizers & LR Schedulers
+Benchmark 08: Optimizers & LR Schedulers
 PyTorch
 """
 
@@ -16,13 +16,13 @@ try:
         LambdaLR, LinearLR, OneCycleLR, PolynomialLR, ReduceLROnPlateau, SequentialLR,
     )
 except ImportError:
-    print("⚠ PyTorch not installed. Run: pip3 install torch")
+    print("PyTorch not installed. Run: pip3 install torch")
     sys.exit(0)
 
 from utils import run, create_suite, header, footer
 
 suite = create_suite("optim", "PyTorch")
-header("Benchmark 08 — Optimizers & LR Schedulers", "PyTorch")
+header("Benchmark 08: Optimizers & LR Schedulers", "PyTorch")
 
 # ── Helper ──────────────────────────────────────────────
 
@@ -44,20 +44,20 @@ def train_loop(optim_fn, epochs, batch, in_f):
 
 base_model = make_model(10, 32)
 
-run(suite, "SGD create", "—", lambda: optim.SGD(base_model.parameters(), lr=0.01))
-run(suite, "SGD create (momentum)", "—", lambda: optim.SGD(base_model.parameters(), lr=0.01, momentum=0.9))
-run(suite, "Adam create", "—", lambda: optim.Adam(base_model.parameters(), lr=0.001))
-run(suite, "AdamW create", "—", lambda: optim.AdamW(base_model.parameters(), lr=0.001))
-run(suite, "Adamax create", "—", lambda: optim.Adamax(base_model.parameters(), lr=0.002))
-run(suite, "Adagrad create", "—", lambda: optim.Adagrad(base_model.parameters(), lr=0.01))
-run(suite, "AdaDelta create", "—", lambda: optim.Adadelta(base_model.parameters(), lr=1.0))
-run(suite, "Nadam create", "—", lambda: optim.NAdam(base_model.parameters(), lr=0.002))
-run(suite, "RAdam create", "—", lambda: optim.RAdam(base_model.parameters(), lr=0.002))
-run(suite, "ASGD create", "—", lambda: optim.ASGD(base_model.parameters(), lr=0.01))
-run(suite, "Rprop create", "—", lambda: optim.Rprop(base_model.parameters(), lr=0.01))
-run(suite, "LBFGS create", "—", lambda: optim.LBFGS(base_model.parameters(), lr=1.0))
-run(suite, "SparseAdam create", "—", lambda: optim.SparseAdam(base_model.parameters(), lr=0.01))
-run(suite, "RMSprop create", "—", lambda: optim.RMSprop(base_model.parameters(), lr=0.01))
+run(suite, "SGD create", "n/a", lambda: optim.SGD(base_model.parameters(), lr=0.01))
+run(suite, "SGD create (momentum)", "n/a", lambda: optim.SGD(base_model.parameters(), lr=0.01, momentum=0.9))
+run(suite, "Adam create", "n/a", lambda: optim.Adam(base_model.parameters(), lr=0.001))
+run(suite, "AdamW create", "n/a", lambda: optim.AdamW(base_model.parameters(), lr=0.001))
+run(suite, "Adamax create", "n/a", lambda: optim.Adamax(base_model.parameters(), lr=0.002))
+run(suite, "Adagrad create", "n/a", lambda: optim.Adagrad(base_model.parameters(), lr=0.01))
+run(suite, "AdaDelta create", "n/a", lambda: optim.Adadelta(base_model.parameters(), lr=1.0))
+run(suite, "Nadam create", "n/a", lambda: optim.NAdam(base_model.parameters(), lr=0.002))
+run(suite, "RAdam create", "n/a", lambda: optim.RAdam(base_model.parameters(), lr=0.002))
+run(suite, "ASGD create", "n/a", lambda: optim.ASGD(base_model.parameters(), lr=0.01))
+run(suite, "Rprop create", "n/a", lambda: optim.Rprop(base_model.parameters(), lr=0.01))
+run(suite, "LBFGS create", "n/a", lambda: optim.LBFGS(base_model.parameters(), lr=1.0))
+run(suite, "SparseAdam create", "n/a", lambda: optim.SparseAdam(base_model.parameters(), lr=0.01))
+run(suite, "RMSprop create", "n/a", lambda: optim.RMSprop(base_model.parameters(), lr=0.01))
 
 # ── Optimizer Step ──────────────────────────────────────
 
@@ -105,19 +105,19 @@ def sched_step(make_sched, steps):
             sched.step()
     return fn
 
-run(suite, "StepLR (100 steps)", "—", sched_step(lambda o: StepLR(o, step_size=10, gamma=0.1), 100))
-run(suite, "MultiStepLR (100 steps)", "—", sched_step(lambda o: MultiStepLR(o, milestones=[30, 60, 80], gamma=0.1), 100))
-run(suite, "ExponentialLR (100 steps)", "—", sched_step(lambda o: ExponentialLR(o, gamma=0.95), 100))
-run(suite, "CosineAnnealingLR (100 steps)", "—", sched_step(lambda o: CosineAnnealingLR(o, T_max=100), 100))
-run(suite, "LinearLR (100 steps)", "—", sched_step(lambda o: LinearLR(o, start_factor=0.1, total_iters=100), 100))
+run(suite, "StepLR (100 steps)", "n/a", sched_step(lambda o: StepLR(o, step_size=10, gamma=0.1), 100))
+run(suite, "MultiStepLR (100 steps)", "n/a", sched_step(lambda o: MultiStepLR(o, milestones=[30, 60, 80], gamma=0.1), 100))
+run(suite, "ExponentialLR (100 steps)", "n/a", sched_step(lambda o: ExponentialLR(o, gamma=0.95), 100))
+run(suite, "CosineAnnealingLR (100 steps)", "n/a", sched_step(lambda o: CosineAnnealingLR(o, T_max=100), 100))
+run(suite, "LinearLR (100 steps)", "n/a", sched_step(lambda o: LinearLR(o, start_factor=0.1, total_iters=100), 100))
 # total_steps is set high so torch's hard step-count guard never trips across the
 # harness's repeated timing iterations; per-step cost is independent of total_steps,
 # so this measures the same 100 steps/call as every other scheduler (apples-to-apples).
-run(suite, "OneCycleLR (100 steps)", "—", sched_step(lambda o: OneCycleLR(o, max_lr=0.1, total_steps=1_000_000), 100))
-run(suite, "CosineAnnealingWarmRestarts (100 steps)", "—", sched_step(lambda o: CosineAnnealingWarmRestarts(o, T_0=10), 100))
-run(suite, "CyclicLR (100 steps)", "—", sched_step(lambda o: CyclicLR(o, base_lr=0.001, max_lr=0.01, step_size_up=5), 100))
-run(suite, "LambdaLR (100 steps)", "—", sched_step(lambda o: LambdaLR(o, lr_lambda=lambda _: 0.95), 100))
-run(suite, "PolynomialLR (100 steps)", "—", sched_step(lambda o: PolynomialLR(o, total_iters=100, power=2.0), 100))
+run(suite, "OneCycleLR (100 steps)", "n/a", sched_step(lambda o: OneCycleLR(o, max_lr=0.1, total_steps=1_000_000), 100))
+run(suite, "CosineAnnealingWarmRestarts (100 steps)", "n/a", sched_step(lambda o: CosineAnnealingWarmRestarts(o, T_0=10), 100))
+run(suite, "CyclicLR (100 steps)", "n/a", sched_step(lambda o: CyclicLR(o, base_lr=0.001, max_lr=0.01, step_size_up=5), 100))
+run(suite, "LambdaLR (100 steps)", "n/a", sched_step(lambda o: LambdaLR(o, lr_lambda=lambda _: 0.95), 100))
+run(suite, "PolynomialLR (100 steps)", "n/a", sched_step(lambda o: PolynomialLR(o, total_iters=100, power=2.0), 100))
 
 def sched_step_sequential(steps):
     m = make_model(10, 16)
@@ -130,7 +130,7 @@ def sched_step_sequential(steps):
             sched.step()
     return fn
 
-run(suite, "SequentialLR (100 steps)", "—", sched_step_sequential(100))
+run(suite, "SequentialLR (100 steps)", "n/a", sched_step_sequential(100))
 
 def sched_step_plateau(steps):
     m = make_model(10, 16)
@@ -141,10 +141,10 @@ def sched_step_plateau(steps):
             sched.step(1.0)
     return fn
 
-run(suite, "ReduceLROnPlateau (100 steps)", "—", sched_step_plateau(100))
+run(suite, "ReduceLROnPlateau (100 steps)", "n/a", sched_step_plateau(100))
 
 # WarmupLR: PyTorch doesn't have a built-in WarmupLR; use LinearLR as equivalent
-run(suite, "WarmupLR (100 steps)", "—", sched_step(lambda o: LinearLR(o, start_factor=0.01, total_iters=50), 100))
+run(suite, "WarmupLR (100 steps)", "n/a", sched_step(lambda o: LinearLR(o, start_factor=0.01, total_iters=50), 100))
 
 # ── State Dict ──────────────────────────────────────────
 

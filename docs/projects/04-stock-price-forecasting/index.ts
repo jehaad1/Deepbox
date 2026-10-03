@@ -1,7 +1,7 @@
 /**
  * Time Series Stock Price Forecasting
  *
- * Demonstrates time series analysis and forecasting using Deepbox.
+ * Forecasts next-day returns on synthetic prices from lagged returns and technical indicators.
  *
  * Deepbox Modules Used:
  * - deepbox/ndarray: Tensor operations
@@ -13,7 +13,6 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
 import { mae, mse, r2Score, rmse } from "deepbox/metrics";
 import { LinearRegression, Ridge } from "deepbox/ml";
@@ -30,21 +29,12 @@ const OUTPUT_DIR = "docs/projects/04-stock-price-forecasting/output";
 const NUM_DAYS = 500;
 const LOOKBACK = 20;
 
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
-
 // ============================================================================
 // Data Generation
 // ============================================================================
 
 /**
- * Generate synthetic stock price data with realistic patterns
+ * Generate synthetic stock price data: a small trend, mean reversion to 100 and random noise
  */
 function generateStockData(
   numDays: number,
@@ -199,7 +189,7 @@ function createFeatures(
   const y: number[] = [];
   const validIndices: number[] = [];
 
-  const startIdx = Math.max(lookback, 50); // Ensure all indicators are available
+  const startIdx = Math.max(lookback, 50); // Start late enough for every indicator to be defined
 
   for (let i = startIdx; i < prices.length - 1; i++) {
     // Check if all indicators are valid
@@ -241,7 +231,7 @@ function createFeatures(
 
 console.log("═".repeat(70));
 console.log("  TIME SERIES STOCK PRICE FORECASTING");
-console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
+console.log("  Built with Deepbox: TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -253,12 +243,12 @@ if (!existsSync(OUTPUT_DIR)) {
 // Step 1: Generate Data
 // ============================================================================
 
-console.log("\n📊 STEP 1: Generating Stock Price Data");
+console.log("\nSTEP 1: Generating Stock Price Data");
 console.log("─".repeat(70));
 
 const { dates, prices, returns, volume: _volume } = generateStockData(NUM_DAYS);
 
-console.log(`\n✓ Generated ${NUM_DAYS} days of synthetic stock data`);
+console.log(`\nGenerated ${NUM_DAYS} days of synthetic stock data`);
 console.log(`  Date Range: ${dates[0]} to ${dates[dates.length - 1]}`);
 console.log(`  Starting Price: $${prices[0].toFixed(2)}`);
 console.log(`  Ending Price: $${prices[prices.length - 1].toFixed(2)}`);
@@ -266,8 +256,8 @@ console.log(`  Total Return: ${((prices[prices.length - 1] / prices[0] - 1) * 10
 
 // Basic statistics
 const returnsTensor = tensor(returns);
-const meanReturn = Number(mean(returnsTensor).data[0]);
-const stdReturn = Number(std(returnsTensor).data[0]);
+const meanReturn = Number(mean(returnsTensor).item());
+const stdReturn = Number(std(returnsTensor).item());
 
 console.log(`\nReturn Statistics:`);
 console.log(`  Mean Daily Return: ${(meanReturn * 100).toFixed(4)}%`);
@@ -279,7 +269,7 @@ console.log(`  Annualized Vol:    ${(stdReturn * Math.sqrt(252) * 100).toFixed(2
 // Step 2: Calculate Technical Indicators
 // ============================================================================
 
-console.log("\n📈 STEP 2: Calculating Technical Indicators");
+console.log("\nSTEP 2: Calculating Technical Indicators");
 console.log("─".repeat(70));
 
 const indicators = calculateIndicators(prices, returns);
@@ -298,12 +288,12 @@ console.log(`  Momentum:    ${(indicators.momentum10[sampleIdx] * 100).toFixed(2
 // Step 3: Feature Engineering
 // ============================================================================
 
-console.log("\n🔧 STEP 3: Feature Engineering");
+console.log("\nSTEP 3: Feature Engineering");
 console.log("─".repeat(70));
 
 const { X, y, validIndices: _validIndices } = createFeatures(prices, returns, indicators, LOOKBACK);
 
-console.log(`\n✓ Created feature matrix`);
+console.log(`\nCreated feature matrix`);
 console.log(`  Samples: ${X.length}`);
 console.log(`  Features per sample: ${X[0].length}`);
 console.log(`  Feature breakdown:`);
@@ -314,7 +304,7 @@ console.log(`    - 5 technical indicators`);
 // Step 4: Train/Test Split
 // ============================================================================
 
-console.log("\n📦 STEP 4: Train/Test Split");
+console.log("\nSTEP 4: Train/Test Split");
 console.log("─".repeat(70));
 
 const splitIdx = Math.floor(X.length * 0.8);
@@ -323,7 +313,7 @@ const XTest = X.slice(splitIdx);
 const yTrain = y.slice(0, splitIdx);
 const yTest = y.slice(splitIdx);
 
-console.log(`\n✓ Time-based split (no shuffle to preserve temporal order)`);
+console.log(`\nTime-based split (no shuffle to preserve temporal order)`);
 console.log(`  Training: ${XTrain.length} samples`);
 console.log(`  Testing:  ${XTest.length} samples`);
 
@@ -333,13 +323,13 @@ scaler.fit(tensor(XTrain));
 const XTrainScaled = scaler.transform(tensor(XTrain));
 const XTestScaled = scaler.transform(tensor(XTest));
 
-console.log(`✓ Applied StandardScaler`);
+console.log(`Applied StandardScaler`);
 
 // ============================================================================
 // Step 5: Model Training
 // ============================================================================
 
-console.log("\n🤖 STEP 5: Model Training");
+console.log("\nSTEP 5: Model Training");
 console.log("─".repeat(70));
 
 // Linear Regression
@@ -358,13 +348,13 @@ const yPredRidge = ridge.predict(XTestScaled);
 const meanPred = yTrain.reduce((a, b) => a + b, 0) / yTrain.length;
 const yPredBaseline = tensor(Array(yTest.length).fill(meanPred));
 
-console.log("✓ Models trained");
+console.log("Both models trained");
 
 // ============================================================================
 // Step 6: Model Evaluation
 // ============================================================================
 
-console.log("\n📊 STEP 6: Model Evaluation");
+console.log("\nSTEP 6: Model Evaluation");
 console.log("─".repeat(70));
 
 const yTestTensor = tensor(yTest);
@@ -400,17 +390,17 @@ const results = [
 console.log("\nModel Comparison:\n");
 const metricsDF = new DataFrame({
   Model: results.map((r) => r.name),
-  "MSE (×10⁻⁵)": results.map((r) => (Number(r.mse) * 100000).toFixed(4)),
-  "RMSE (%)": results.map((r) => (Number(r.rmse) * 100).toFixed(4)),
-  "MAE (%)": results.map((r) => (Number(r.mae) * 100).toFixed(4)),
-  "R² Score": results.map((r) => Number(r.r2).toFixed(4)),
+  "MSE (×10⁻⁵)": results.map((r) => (r.mse * 100000).toFixed(4)),
+  "RMSE (%)": results.map((r) => (r.rmse * 100).toFixed(4)),
+  "MAE (%)": results.map((r) => (r.mae * 100).toFixed(4)),
+  "R² Score": results.map((r) => r.r2.toFixed(4)),
 });
 console.log(metricsDF.toString());
 
 // Directional accuracy
 console.log("\nDirectional Accuracy (predicting up/down):");
 for (const result of results) {
-  const predData = expectNumericTypedArray(result.pred.data);
+  const predData = result.pred.toArray() as number[];
   let correct = 0;
   for (let i = 0; i < yTest.length; i++) {
     const actualDirection = yTest[i] > 0 ? 1 : -1;
@@ -425,7 +415,7 @@ for (const result of results) {
 // Step 7: Autocorrelation Analysis
 // ============================================================================
 
-console.log("\n🔍 STEP 7: Autocorrelation Analysis");
+console.log("\nSTEP 7: Autocorrelation Analysis");
 console.log("─".repeat(70));
 
 // Calculate autocorrelation of returns
@@ -441,7 +431,7 @@ for (const lag of [1, 5, 10, 20]) {
 // Step 8: Visualizations
 // ============================================================================
 
-console.log("\n📊 STEP 8: Generating Visualizations");
+console.log("\nSTEP 8: Generating Visualizations");
 console.log("─".repeat(70));
 
 // Price chart
@@ -457,9 +447,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/price-chart.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/price-chart.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/price-chart.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate price chart: ${e}`);
+  console.log(`  Warning: could not generate price chart: ${e}`);
 }
 
 // Returns distribution
@@ -491,9 +481,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/returns-distribution.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/returns-distribution.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/returns-distribution.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate returns distribution: ${e}`);
+  console.log(`  Warning: could not generate returns distribution: ${e}`);
 }
 
 // ============================================================================
@@ -504,9 +494,9 @@ console.log(`\n${"═".repeat(70)}`);
 console.log("  FORECASTING COMPLETE - SUMMARY");
 console.log("═".repeat(70));
 
-const bestModel = results.reduce((best, r) => (Number(r.r2) > Number(best.r2) ? r : best));
+const bestModel = results.reduce((best, r) => (r.r2 > best.r2 ? r : best));
 
-console.log("\n📌 Key Findings:\n");
+console.log("\nKey Findings:\n");
 console.log("  1. Data Overview:");
 console.log(`     • ${NUM_DAYS} days of price data`);
 console.log(`     • Annualized return: ${(meanReturn * 252 * 100).toFixed(2)}%`);
@@ -514,18 +504,18 @@ console.log(`     • Annualized volatility: ${(stdReturn * Math.sqrt(252) * 100
 
 console.log("\n  2. Best Model:");
 console.log(`     • ${bestModel.name}`);
-console.log(`     • R² Score: ${Number(bestModel.r2).toFixed(4)}`);
-console.log(`     • RMSE: ${(Number(bestModel.rmse) * 100).toFixed(4)}%`);
+console.log(`     • R² Score: ${bestModel.r2.toFixed(4)}`);
+console.log(`     • RMSE: ${(bestModel.rmse * 100).toFixed(4)}%`);
 
 console.log("\n  3. Observations:");
-console.log("     • Stock returns show low autocorrelation (efficient market)");
-console.log("     • Technical indicators provide marginal improvement");
-console.log("     • Directional prediction is challenging (~50% baseline)");
+console.log("     • The synthetic returns are close to white noise, so autocorrelation is low");
+console.log("     • R² is near zero, so the models barely beat the mean baseline");
+console.log("     • Directional accuracy stays near 50%");
 
-console.log("\n📁 Output Files:");
+console.log("\nOutput Files:");
 console.log(`   • ${OUTPUT_DIR}/price-chart.svg`);
 console.log(`   • ${OUTPUT_DIR}/returns-distribution.svg`);
 
 console.log(`\n${"═".repeat(70)}`);
-console.log("  ✅ Stock Price Forecasting Complete!");
+console.log("  Stock Price Forecasting Complete!");
 console.log("═".repeat(70));

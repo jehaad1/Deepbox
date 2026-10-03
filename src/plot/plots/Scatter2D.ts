@@ -14,10 +14,13 @@ import type {
 } from "../types";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
+import { positiveMinOfPoints } from "../utils/transforms";
 import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Scatter of filled circles. `size` is the circle radius in pixels. Points with
+ * a non-finite x or y are skipped.
  * @internal
  */
 export class Scatter2D implements Drawable {
@@ -43,6 +46,10 @@ export class Scatter2D implements Drawable {
     }
     this.size = size;
     this.label = normalizeLegendLabel(options.label);
+  }
+
+  getPositiveMin(): { readonly x: number; readonly y: number } {
+    return positiveMinOfPoints(this.x, this.y);
   }
 
   getDataRange(): DataRange | null {

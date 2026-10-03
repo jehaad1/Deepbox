@@ -626,7 +626,7 @@ describe("GradientBoostingRegressor warmStart", () => {
     gbr.fit(X, y);
     const score1 = gbr.score(X, y);
 
-    // Increase nEstimators — not possible with readonly, so we test that
+    // Increase nEstimators. Not possible with readonly, so we test that
     // calling fit again reuses existing trees
     gbr.fit(X, y);
     const score2 = gbr.score(X, y);

@@ -600,7 +600,7 @@ describe("EmbeddingBag", () => {
   it("validates constructor params", () => {
     expect(() => new EmbeddingBag(0, 3)).toThrow(/numEmbeddings/);
     expect(() => new EmbeddingBag(10, 0)).toThrow(/embeddingDim/);
-    expect(() => new EmbeddingBag(10, 3, { paddingIdx: -1 })).toThrow(/paddingIdx/);
+    expect(() => new EmbeddingBag(10, 3, { paddingIdx: -11 })).toThrow(/paddingIdx/);
   });
 
   it("validates out-of-range index", () => {

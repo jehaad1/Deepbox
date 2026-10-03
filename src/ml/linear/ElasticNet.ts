@@ -1,33 +1,464 @@
 /**
+ * Elastic Net regression (combined L1 and L2 penalty) fitted by coordinate descent.
+ *
+ * This file also hosts the coordinate descent solver that {@link Lasso} reuses,
+ * since Lasso is Elastic Net with `l1Ratio = 1`.
+ *
+ * @module ml/linear/ElasticNet
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
+import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { __random } from "../../random/random";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import { __random, __randomBelow } from "../../random/random";
+import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { createTreeRng } from "../tree/DecisionTree";
+import { r2ScoreOf } from "./LinearRegression";
+
+/** Constructor options of {@link ElasticNet}. */
+export type ElasticNetOptions = {
+  /** Overall penalty strength, must be >= 0 (default: 1.0). */
+  readonly alpha?: number;
+  /** Mix between L1 and L2, in [0, 1]; 1 is pure Lasso, 0 is pure Ridge (default: 0.5). */
+  readonly l1Ratio?: number;
+  /** Fit an intercept term (default: true). */
+  readonly fitIntercept?: boolean;
+  /** Scale each (centered) column to unit L2 norm before fitting (default: false). */
+  readonly normalize?: boolean;
+  /** Maximum number of full passes over the coordinates (default: 1000). */
+  readonly maxIter?: number;
+  /** Convergence tolerance (default: 1e-4). */
+  readonly tol?: number;
+  /** Start from the coefficients of the previous `fit` call (default: false). */
+  readonly warmStart?: boolean;
+  /** Constrain the coefficients to be non-negative (default: false). */
+  readonly positive?: boolean;
+  /** Order in which coordinates are visited: `"cyclic"` or `"random"` (default: "cyclic"). */
+  readonly selection?: "cyclic" | "random";
+  /** Seed for `selection: "random"`; the global generator is used when omitted. */
+  readonly randomState?: number;
+};
+
+/** Fully resolved coordinate descent settings. @internal */
+export type CoordinateDescentConfig = {
+  readonly alpha: number;
+  readonly l1Ratio: number;
+  readonly fitIntercept: boolean;
+  readonly normalize: boolean;
+  readonly maxIter: number;
+  readonly tol: number;
+  readonly positive: boolean;
+  readonly selection: "cyclic" | "random";
+  readonly randomState: number | undefined;
+  /** Coefficients (original feature scale) to start from, or undefined for zeros. */
+  readonly warmCoef: Float64Array | undefined;
+  /** Model name used in warning messages. */
+  readonly modelName: string;
+};
+
+/** Result of {@link fitCoordinateDescent}. @internal */
+export type CoordinateDescentResult = {
+  readonly coef: Float64Array;
+  readonly intercept: number;
+  readonly nIter: number;
+  readonly dualGap: number;
+  readonly converged: boolean;
+};
+
+/**
+ * Check the numeric hyper-parameters shared by Lasso and Elastic Net.
+ *
+ * @throws {InvalidParameterError} If a value is outside its valid range
+ * @internal
+ */
+export function validateCoordinateDescentParams(
+  alpha: number,
+  l1Ratio: number,
+  maxIter: number,
+  tol: number,
+  selection: unknown
+): void {
+  if (!(alpha >= 0) || !Number.isFinite(alpha)) {
+    throw new InvalidParameterError(
+      `alpha must be >= 0 and finite; received ${alpha}`,
+      "alpha",
+      alpha
+    );
+  }
+  if (!(l1Ratio >= 0 && l1Ratio <= 1)) {
+    throw new InvalidParameterError(
+      `l1Ratio must be in [0, 1]; received ${l1Ratio}`,
+      "l1Ratio",
+      l1Ratio
+    );
+  }
+  if (!Number.isInteger(maxIter) || maxIter < 1) {
+    throw new InvalidParameterError(
+      `maxIter must be a positive integer; received ${maxIter}`,
+      "maxIter",
+      maxIter
+    );
+  }
+  if (!(tol >= 0) || !Number.isFinite(tol)) {
+    throw new InvalidParameterError(
+      `tol must be a non-negative finite number; received ${tol}`,
+      "tol",
+      tol
+    );
+  }
+  if (selection !== "cyclic" && selection !== "random") {
+    throw new InvalidParameterError(
+      `selection must be "cyclic" or "random"; received ${String(selection)}`,
+      "selection",
+      selection
+    );
+  }
+}
+
+/**
+ * Validate and normalize one hyper-parameter update for Lasso / Elastic Net.
+ *
+ * @param target - Option bag that receives the validated value
+ * @param key - Parameter name
+ * @param value - Candidate value
+ * @param allowL1Ratio - Whether `l1Ratio` is a known parameter (Elastic Net only)
+ * @throws {InvalidParameterError} If the name is unknown or the value is invalid
+ * @internal
+ */
+export function applyCoordinateDescentParam(
+  target: {
+    alpha?: number;
+    l1Ratio?: number;
+    fitIntercept?: boolean;
+    normalize?: boolean;
+    maxIter?: number;
+    tol?: number;
+    warmStart?: boolean;
+    positive?: boolean;
+    selection?: "cyclic" | "random";
+    randomState?: number;
+  },
+  key: string,
+  value: unknown,
+  allowL1Ratio: boolean
+): void {
+  const requireBoolean = (): boolean => {
+    if (typeof value !== "boolean") {
+      throw new InvalidParameterError(`${key} must be a boolean`, key, value);
+    }
+    return value;
+  };
+  switch (key) {
+    case "alpha":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError("alpha must be a finite number >= 0", "alpha", value);
+      }
+      target.alpha = value;
+      return;
+    case "l1Ratio":
+      if (!allowL1Ratio) break;
+      if (typeof value !== "number" || !(value >= 0 && value <= 1)) {
+        throw new InvalidParameterError("l1Ratio must be in [0, 1]", "l1Ratio", value);
+      }
+      target.l1Ratio = value;
+      return;
+    case "maxIter":
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+        throw new InvalidParameterError("maxIter must be a positive integer", "maxIter", value);
+      }
+      target.maxIter = value;
+      return;
+    case "tol":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError("tol must be a non-negative finite number", "tol", value);
+      }
+      target.tol = value;
+      return;
+    case "fitIntercept":
+      target.fitIntercept = requireBoolean();
+      return;
+    case "normalize":
+      target.normalize = requireBoolean();
+      return;
+    case "warmStart":
+      target.warmStart = requireBoolean();
+      return;
+    case "positive":
+      target.positive = requireBoolean();
+      return;
+    case "selection":
+      if (value !== "cyclic" && value !== "random") {
+        throw new InvalidParameterError(
+          `Invalid selection: ${String(value)}; expected "cyclic" or "random"`,
+          "selection",
+          value
+        );
+      }
+      target.selection = value;
+      return;
+    case "randomState":
+      if (value === undefined) {
+        delete target.randomState;
+        return;
+      }
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new InvalidParameterError(
+          `randomState must be a finite number; received ${String(value)}`,
+          "randomState",
+          value
+        );
+      }
+      target.randomState = value;
+      return;
+    default:
+      break;
+  }
+  throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+}
+
+/**
+ * Minimize `1/(2n) ||y - Xw||^2 + alpha * l1Ratio * ||w||_1 + alpha * (1 - l1Ratio) / 2 * ||w||^2`
+ * by cyclic or randomized coordinate descent.
+ *
+ * Follows the scikit-learn solver: the residual is updated incrementally, a pass is
+ * considered finished when the largest coefficient update is small relative to the
+ * largest coefficient, and the final decision uses the duality gap scaled by `||y||^2`.
+ *
+ * @internal
+ */
+export function fitCoordinateDescent(
+  X: Tensor,
+  y: Tensor,
+  config: CoordinateDescentConfig
+): CoordinateDescentResult {
+  const m = X.shape[0] ?? 0;
+  const n = X.shape[1] ?? 0;
+  const xRaw = toFloat64View(X);
+  const yRaw = toFloat64View(y);
+  const { fitIntercept, normalize, positive, maxIter, tol } = config;
+
+  // Means (two-pass for accuracy on data with a large offset).
+  const xMean = new Float64Array(n);
+  let yMean = 0;
+  if (fitIntercept) {
+    for (let i = 0; i < m; i++) {
+      const base = i * n;
+      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xRaw[base + j] as number);
+      yMean += yRaw[i] as number;
+    }
+    for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
+    yMean /= m;
+  }
+
+  // Column-major copy of the centered (and optionally scaled) design matrix so that every
+  // coordinate update walks a contiguous slice.
+  const xc = new Float64Array(n * m);
+  const colScale = new Float64Array(n).fill(1);
+  for (let j = 0; j < n; j++) {
+    const mu = xMean[j] as number;
+    const off = j * m;
+    let sumSq = 0;
+    for (let i = 0; i < m; i++) {
+      const v = (xRaw[i * n + j] as number) - mu;
+      xc[off + i] = v;
+      sumSq += v * v;
+    }
+    if (normalize) {
+      const s = Math.sqrt(sumSq);
+      if (s > 0) {
+        colScale[j] = s;
+        for (let i = 0; i < m; i++) xc[off + i] = (xc[off + i] as number) / s;
+      } else {
+        xc.fill(0, off, off + m);
+      }
+    }
+  }
+  const yc = new Float64Array(m);
+  for (let i = 0; i < m; i++) yc[i] = (yRaw[i] as number) - yMean;
+
+  const normCols = new Float64Array(n);
+  for (let j = 0; j < n; j++) {
+    const off = j * m;
+    let s = 0;
+    for (let i = 0; i < m; i++) s += (xc[off + i] as number) ** 2;
+    normCols[j] = s;
+  }
+
+  const l1Reg = config.alpha * config.l1Ratio * m;
+  const l2Reg = config.alpha * (1 - config.l1Ratio) * m;
+
+  // Initial point and residual R = y - Xw.
+  const w = new Float64Array(n);
+  const warm = config.warmCoef;
+  if (warm !== undefined && warm.length === n) {
+    for (let j = 0; j < n; j++)
+      w[j] = (warm[j] as number) * (normalize ? (colScale[j] as number) : 1);
+  }
+  const resid = Float64Array.from(yc);
+  for (let j = 0; j < n; j++) {
+    const wj = w[j] as number;
+    if (wj === 0) continue;
+    const off = j * m;
+    for (let i = 0; i < m; i++) {
+      resid[i] = (resid[i] as number) - wj * (xc[off + i] as number);
+    }
+  }
+
+  let yy = 0;
+  for (let i = 0; i < m; i++) yy += (yc[i] as number) ** 2;
+  const gapTol = tol * yy;
+
+  const rng: () => number =
+    config.selection === "random" ? createTreeRng(config.randomState) : __random;
+  const order = new Int32Array(n);
+  for (let j = 0; j < n; j++) order[j] = j;
+
+  let nIter = 0;
+  let dualGap = Number.POSITIVE_INFINITY;
+  let converged = false;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    nIter = iter + 1;
+    if (config.selection === "random") {
+      for (let k = n - 1; k > 0; k--) {
+        const r = __randomBelow(rng, k + 1);
+        const tmp = order[k] as number;
+        order[k] = order[r] as number;
+        order[r] = tmp;
+      }
+    }
+
+    let wMax = 0;
+    let dwMax = 0;
+    for (let idx = 0; idx < n; idx++) {
+      const j = order[idx] as number;
+      const off = j * m;
+      const wOld = w[j] as number;
+      const nc = normCols[j] as number;
+      let wNew = 0;
+      if (nc !== 0) {
+        // rho = x_j . (R + w_j x_j) without touching R first.
+        let dotXR = 0;
+        for (let i = 0; i < m; i++) dotXR += (xc[off + i] as number) * (resid[i] as number);
+        const tmp = dotXR + wOld * nc;
+        if (!(positive && tmp < 0)) {
+          if (tmp > l1Reg) wNew = (tmp - l1Reg) / (nc + l2Reg);
+          else if (tmp < -l1Reg) wNew = (tmp + l1Reg) / (nc + l2Reg);
+        }
+      }
+      const delta = wNew - wOld;
+      if (delta !== 0) {
+        for (let i = 0; i < m; i++) {
+          resid[i] = (resid[i] as number) - delta * (xc[off + i] as number);
+        }
+      }
+      w[j] = wNew;
+      const absDelta = Math.abs(delta);
+      if (absDelta > dwMax) dwMax = absDelta;
+      const absW = Math.abs(wNew);
+      if (absW > wMax) wMax = absW;
+    }
+
+    if (wMax === 0 || dwMax / wMax <= tol || iter === maxIter - 1) {
+      dualGap = elasticNetDualGap(xc, yc, w, resid, m, n, l1Reg, l2Reg, positive);
+      if (dualGap <= gapTol) {
+        converged = true;
+        break;
+      }
+    }
+  }
+
+  if (!converged) {
+    warn(
+      `Coordinate descent did not converge within ${maxIter} iterations (duality gap ${dualGap.toExponential(3)}, tolerance ${gapTol.toExponential(3)}); increase maxIter or tol`,
+      "ConvergenceWarning",
+      config.modelName
+    );
+  }
+
+  const coef = new Float64Array(n);
+  let xMeanDotW = 0;
+  for (let j = 0; j < n; j++) {
+    coef[j] = (w[j] as number) / (colScale[j] as number);
+    xMeanDotW += (xMean[j] as number) * (coef[j] as number);
+  }
+  const intercept = fitIntercept ? yMean - xMeanDotW : 0;
+  return { coef, intercept, nIter, dualGap, converged };
+}
+
+/** Duality gap of the Elastic Net problem (scikit-learn's `enet_coordinate_descent`). */
+function elasticNetDualGap(
+  xc: Float64Array,
+  yc: Float64Array,
+  w: Float64Array,
+  resid: Float64Array,
+  m: number,
+  n: number,
+  l1Reg: number,
+  l2Reg: number,
+  positive: boolean
+): number {
+  let dualNormXtA = 0;
+  for (let j = 0; j < n; j++) {
+    const off = j * m;
+    let s = 0;
+    for (let i = 0; i < m; i++) s += (xc[off + i] as number) * (resid[i] as number);
+    s -= l2Reg * (w[j] as number);
+    const v = positive ? s : Math.abs(s);
+    if (v > dualNormXtA) dualNormXtA = v;
+  }
+  let rNorm2 = 0;
+  let ry = 0;
+  for (let i = 0; i < m; i++) {
+    const r = resid[i] as number;
+    rNorm2 += r * r;
+    ry += r * (yc[i] as number);
+  }
+  let wNorm2 = 0;
+  let l1Norm = 0;
+  for (let j = 0; j < n; j++) {
+    const wj = w[j] as number;
+    wNorm2 += wj * wj;
+    l1Norm += Math.abs(wj);
+  }
+  let scale = 1;
+  let gap = rNorm2;
+  if (dualNormXtA > l1Reg) {
+    scale = l1Reg / dualNormXtA;
+    gap = 0.5 * (rNorm2 + rNorm2 * scale * scale);
+  }
+  return gap + l1Reg * l1Norm - scale * ry + 0.5 * l2Reg * (1 + scale * scale) * wNorm2;
+}
 
 /**
  * Elastic Net Regression (L1 + L2 Regularized Linear Regression).
  *
  * Elastic Net combines L1 (Lasso) and L2 (Ridge) penalties, controlled
- * by the `l1Ratio` parameter. This makes it more robust than Lasso when
- * there are correlated features, while still performing feature selection.
+ * by the `l1Ratio` parameter. It is more stable than Lasso when features are
+ * correlated, while still driving some coefficients exactly to zero.
  *
  * **Objective**: minimize (1/(2*n)) ||y - Xw||² + α * l1Ratio * ||w||₁ + α * (1-l1Ratio)/2 * ||w||²
  *
  * - `l1Ratio = 1` → pure Lasso (L1 only)
- * - `l1Ratio = 0` → pure Ridge (L2 only)
+ * - `l1Ratio = 0` → pure Ridge (L2 only, with the penalty scaled by 1/n relative to {@link Ridge})
  * - `0 < l1Ratio < 1` → mix of L1 and L2
+ *
+ * The solver and its stopping rule (coordinate updates followed by a duality gap check
+ * scaled by `||y||²`) follow scikit-learn, so results agree with `sklearn.linear_model.ElasticNet`.
+ * With `normalize: true` every centered column is divided by its L2 norm before fitting and the
+ * coefficients are mapped back to the original scale afterwards.
  *
  * @example
  * ```ts
  * import { ElasticNet } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * const X = tensor([[1, 2], [2, 1], [3, 5], [4, 3]]);
+ * const y = tensor([1, 2, 3, 5]);
  * const model = new ElasticNet({ alpha: 0.1, l1Ratio: 0.5 });
- * model.fit(X_train, y_train);
- * const predictions = model.predict(X_test);
+ * model.fit(X, y);
+ * const predictions = model.predict(X);
  * ```
  *
  * @category Linear Models
@@ -51,6 +482,7 @@ export class ElasticNet implements Regressor {
   private intercept_ = 0;
   private nFeaturesIn_?: number;
   private nIter_: number | undefined;
+  private dualGap_: number | undefined;
   private fitted = false;
 
   /**
@@ -60,27 +492,16 @@ export class ElasticNet implements Regressor {
    * @param options.alpha - Regularization strength (default: 1.0). Must be >= 0.
    * @param options.l1Ratio - Mix ratio between L1 and L2 (default: 0.5). 0 = Ridge, 1 = Lasso.
    * @param options.fitIntercept - Whether to calculate the intercept (default: true)
-   * @param options.normalize - Whether to normalize features (default: false)
-   * @param options.maxIter - Maximum iterations for coordinate descent (default: 1000)
-   * @param options.tol - Tolerance for convergence (default: 1e-4)
-   * @param options.warmStart - Reuse previous solution as init (default: false)
-   * @param options.positive - Force coefficients to be positive (default: false)
-   * @param options.selection - Coordinate selection: 'cyclic' or 'random' (default: 'cyclic')
+   * @param options.normalize - Whether to scale centered columns to unit L2 norm (default: false)
+   * @param options.maxIter - Maximum passes of coordinate descent (default: 1000)
+   * @param options.tol - Convergence tolerance (default: 1e-4)
+   * @param options.warmStart - Reuse the previous solution as initialization (default: false)
+   * @param options.positive - Force coefficients to be non-negative (default: false)
+   * @param options.selection - Coordinate order: 'cyclic' or 'random' (default: 'cyclic')
+   * @param options.randomState - Seed for the random coordinate order
+   * @throws {InvalidParameterError} If `randomState` is not a finite number
    */
-  constructor(
-    options: {
-      readonly alpha?: number;
-      readonly l1Ratio?: number;
-      readonly fitIntercept?: boolean;
-      readonly normalize?: boolean;
-      readonly maxIter?: number;
-      readonly tol?: number;
-      readonly warmStart?: boolean;
-      readonly positive?: boolean;
-      readonly selection?: "cyclic" | "random";
-      readonly randomState?: number;
-    } = {}
-  ) {
+  constructor(options: ElasticNetOptions = {}) {
     this.options = { ...options };
     if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
       throw new InvalidParameterError(
@@ -91,243 +512,66 @@ export class ElasticNet implements Regressor {
     }
   }
 
-  private createRNG(): () => number {
-    if (this.options.randomState !== undefined) {
-      let seed = this.options.randomState;
-      return () => {
-        seed = (seed * 9301 + 49297) % 233280;
-        return seed / 233280;
-      };
-    }
-    return __random;
-  }
-
   /**
-   * Fit Elastic Net model using Coordinate Descent.
+   * Fit Elastic Net model using coordinate descent.
    *
    * Solves: minimize (1/(2*n)) ||y - Xw||² + α * l1Ratio * ||w||₁ + α * (1-l1Ratio)/2 * ||w||²
+   *
+   * Emits a `ConvergenceWarning` when `maxIter` passes were not enough to reach `tol`.
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
    * @returns this - The fitted estimator
+   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {InvalidParameterError} If a hyper-parameter is out of range
    */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
-    this.nIter_ = undefined;
 
     const alpha = this.options.alpha ?? 1.0;
-    if (!(alpha >= 0)) {
-      throw new InvalidParameterError(`alpha must be >= 0; received ${alpha}`, "alpha", alpha);
-    }
-
     const l1Ratio = this.options.l1Ratio ?? 0.5;
-    if (l1Ratio < 0 || l1Ratio > 1) {
-      throw new InvalidParameterError(
-        `l1Ratio must be in [0, 1]; received ${l1Ratio}`,
-        "l1Ratio",
-        l1Ratio
-      );
-    }
-
     const maxIter = this.options.maxIter ?? 1000;
     const tol = this.options.tol ?? 1e-4;
-    const fitIntercept = this.options.fitIntercept ?? true;
-    const normalize = this.options.normalize ?? false;
-    const positive = this.options.positive ?? false;
     const selection = this.options.selection ?? "cyclic";
-    const rng = this.createRNG();
+    validateCoordinateDescentParams(alpha, l1Ratio, maxIter, tol, selection);
 
-    // Decompose alpha into L1 and L2 components
-    const l1Penalty = alpha * l1Ratio;
-    const l2Penalty = alpha * (1 - l1Ratio);
-
-    const m = X.shape[0] ?? 0;
     const n = X.shape[1] ?? 0;
+    let warmCoef: Float64Array | undefined;
+    if (this.options.warmStart && this.coef_ && this.coef_.size === n) {
+      warmCoef = Float64Array.from(toFloat64View(this.coef_));
+    }
+
+    const result = fitCoordinateDescent(X, y, {
+      alpha,
+      l1Ratio,
+      fitIntercept: this.options.fitIntercept ?? true,
+      normalize: this.options.normalize ?? false,
+      maxIter,
+      tol,
+      positive: this.options.positive ?? false,
+      selection,
+      randomState: this.options.randomState,
+      warmCoef,
+      modelName: "ElasticNet",
+    });
+
     this.nFeaturesIn_ = n;
-
-    // Compute means for centering
-    let yMean = 0;
-    const xMean = new Array<number>(n).fill(0);
-
-    if (fitIntercept) {
-      for (let i = 0; i < m; i++) {
-        yMean += Number(y.data[y.offset + i] ?? 0);
-      }
-      for (let i = 0; i < m; i++) {
-        const rowBase = X.offset + i * n;
-        for (let j = 0; j < n; j++) {
-          xMean[j] = (xMean[j] ?? 0) + Number(X.data[rowBase + j] ?? 0);
-        }
-      }
-      const invM = m === 0 ? 0 : 1 / m;
-      yMean *= invM;
-      for (let j = 0; j < n; j++) {
-        xMean[j] = (xMean[j] ?? 0) * invM;
-      }
-    }
-
-    let xScale: number[] | undefined;
-    if (normalize) {
-      xScale = new Array<number>(n).fill(0);
-      for (let i = 0; i < m; i++) {
-        const rowBase = X.offset + i * n;
-        for (let j = 0; j < n; j++) {
-          const centered = Number(X.data[rowBase + j] ?? 0) - (fitIntercept ? (xMean[j] ?? 0) : 0);
-          xScale[j] = (xScale[j] ?? 0) + centered * centered;
-        }
-      }
-      for (let j = 0; j < n; j++) {
-        xScale[j] = Math.sqrt(xScale[j] ?? 0);
-      }
-    }
-
-    const getX = (sampleIndex: number, featureIndex: number): number => {
-      const raw = Number(X.data[X.offset + sampleIndex * n + featureIndex] ?? 0);
-      const centered = raw - (fitIntercept ? (xMean[featureIndex] ?? 0) : 0);
-      if (normalize && xScale) {
-        const s = xScale[featureIndex] ?? 0;
-        return s === 0 ? 0 : centered / s;
-      }
-      return centered;
-    };
-
-    // Precompute column squared norms
-    const colNorm2 = new Array<number>(n).fill(0);
-    for (let j = 0; j < n; j++) {
-      let s = 0;
-      for (let i = 0; i < m; i++) {
-        const xij = getX(i, j);
-        s += xij * xij;
-      }
-      colNorm2[j] = m === 0 ? 0 : s / m;
-    }
-
-    // Initialize coefficients
-    const w = new Array<number>(n).fill(0);
-    if (this.options.warmStart && this.coef_ && this.coef_.ndim === 1 && this.coef_.size === n) {
-      for (let j = 0; j < n; j++) {
-        w[j] = Number(this.coef_.data[this.coef_.offset + j] ?? 0);
-      }
-    }
-
-    // Maintain current predictions
-    const yHat = new Array<number>(m).fill(0);
-    for (let i = 0; i < m; i++) {
-      let pred = 0;
-      for (let j = 0; j < n; j++) {
-        pred += getX(i, j) * (w[j] ?? 0);
-      }
-      yHat[i] = pred;
-    }
-
-    const invM = m === 0 ? 0 : 1 / m;
-
-    // Coordinate descent
-    for (let iter = 0; iter < maxIter; iter++) {
-      let maxChange = 0;
-
-      let indices: number[] | null = null;
-      if (selection === "random") {
-        indices = Array.from({ length: n }, (_, j) => j);
-        for (let k = n - 1; k > 0; k--) {
-          const r = Math.floor(rng() * (k + 1));
-          const tmp = indices[k];
-          indices[k] = indices[r] ?? 0;
-          indices[r] = tmp ?? 0;
-        }
-      }
-
-      const iterOrder = indices ?? Array.from({ length: n }, (_, j) => j);
-      for (const j of iterOrder) {
-        const denom = (colNorm2[j] ?? 0) + l2Penalty;
-
-        if (denom === 0) {
-          const prevW = w[j] ?? 0;
-          if (prevW !== 0) {
-            const delta = -prevW;
-            for (let i = 0; i < m; i++) {
-              yHat[i] = (yHat[i] ?? 0) + delta * getX(i, j);
-            }
-            maxChange = Math.max(maxChange, Math.abs(delta));
-          }
-          w[j] = 0;
-          continue;
-        }
-
-        // Compute correlation
-        let rho = 0;
-        for (let i = 0; i < m; i++) {
-          const xij = getX(i, j);
-          const yi = Number(y.data[y.offset + i] ?? 0) - (fitIntercept ? yMean : 0);
-          const r = yi - (yHat[i] ?? 0) + (w[j] ?? 0) * xij;
-          rho += xij * r;
-        }
-        rho *= invM;
-
-        // Soft threshold for L1, divide by (colNorm2 + l2Penalty) for L2
-        let newW = this.softThreshold(rho, l1Penalty) / denom;
-
-        if (positive && newW < 0) {
-          newW = 0;
-        }
-
-        const delta = newW - (w[j] ?? 0);
-
-        if (delta !== 0) {
-          for (let i = 0; i < m; i++) {
-            yHat[i] = (yHat[i] ?? 0) + delta * getX(i, j);
-          }
-        }
-
-        w[j] = newW;
-        maxChange = Math.max(maxChange, Math.abs(delta));
-      }
-
-      if (maxChange < tol) {
-        this.nIter_ = iter + 1;
-        break;
-      }
-    }
-
-    if (this.nIter_ === undefined) {
-      this.nIter_ = maxIter;
-    }
-
-    // Rescale if normalized
-    if (normalize && xScale) {
-      for (let j = 0; j < n; j++) {
-        const s = xScale[j] ?? 1;
-        w[j] = s === 0 ? 0 : (w[j] ?? 0) / s;
-      }
-    }
-
-    this.coef_ = tensor(w);
-
-    if (fitIntercept) {
-      let xMeanDotW = 0;
-      for (let j = 0; j < n; j++) {
-        xMeanDotW += (xMean[j] ?? 0) * (w[j] ?? 0);
-      }
-      this.intercept_ = yMean - xMeanDotW;
-    } else {
-      this.intercept_ = 0;
-    }
-
+    this.coef_ = tensor(result.coef, { dtype: "float64" });
+    this.intercept_ = result.intercept;
+    this.nIter_ = result.nIter;
+    this.dualGap_ = result.dualGap;
     this.fitted = true;
     return this;
   }
 
-  private softThreshold(x: number, lambda: number): number {
-    if (!Number.isFinite(x) || !Number.isFinite(lambda)) {
-      throw new DataValidationError("Non-finite value encountered during soft-thresholding");
-    }
-    if (x > lambda) return x - lambda;
-    if (x < -lambda) return x + lambda;
-    return 0;
-  }
-
   /**
    * Predict using the Elastic Net model.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Predictions of shape (n_samples,) as a float64 tensor
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X is not 2D or has the wrong number of features
    */
   predict(X: Tensor): Tensor {
     if (!this.fitted || !this.coef_) {
@@ -337,62 +581,42 @@ export class ElasticNet implements Regressor {
 
     const m = X.shape[0] ?? 0;
     const n = X.shape[1] ?? 0;
-    const pred = Array(m).fill(0);
-
+    const xv = toFloat64View(X);
+    const w = toFloat64View(this.coef_);
+    const pred = new Float64Array(m);
     for (let i = 0; i < m; i++) {
-      for (let j = 0; j < n; j++) {
-        pred[i] +=
-          Number(X.data[X.offset + i * n + j] ?? 0) *
-          Number(this.coef_.data[this.coef_.offset + j] ?? 0);
-      }
-      pred[i] += this.intercept_;
+      let s = this.intercept_;
+      const base = i * n;
+      for (let j = 0; j < n; j++) s += (xv[base + j] as number) * (w[j] as number);
+      pred[i] = s;
     }
-
-    return tensor(pred);
+    return tensor(pred, { dtype: "float64" });
   }
 
   /**
    * Return the R² score on the given test data.
+   *
+   * A constant `y` scores 1 when predicted exactly and 0 otherwise.
+   *
+   * @param X - Test samples of shape (n_samples, n_features)
+   * @param y - True target values of shape (n_samples,)
+   * @returns R² score (1 is perfect, can be negative)
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If y is not 1-D or its length differs from the number of samples
+   * @throws {DataValidationError} If y contains NaN/Inf
    */
   score(X: Tensor, y: Tensor): number {
     if (!this.fitted) {
       throw new NotFittedError("ElasticNet must be fitted before scoring");
     }
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const pred = this.predict(X);
-    if (pred.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${pred.size}, y=${y.size}`
-      );
-    }
-    let ssRes = 0,
-      ssTot = 0;
-    let yMean = 0;
-    for (let i = 0; i < y.size; i++) {
-      yMean += Number(y.data[y.offset + i] ?? 0);
-    }
-    yMean /= y.size;
-    for (let i = 0; i < y.size; i++) {
-      const yVal = Number(y.data[y.offset + i] ?? 0);
-      const predVal = Number(pred.data[pred.offset + i] ?? 0);
-      ssRes += (yVal - predVal) ** 2;
-      ssTot += (yVal - yMean) ** 2;
-    }
-    if (ssTot === 0) {
-      return ssRes === 0 ? 1.0 : 0.0;
-    }
-    return 1 - ssRes / ssTot;
+    return r2ScoreOf(y, () => this.predict(X));
   }
 
+  /**
+   * Coefficients of shape (n_features,) in the original feature scale.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get coef(): Tensor {
     if (!this.fitted || !this.coef_) {
       throw new NotFittedError("ElasticNet must be fitted to access coefficients");
@@ -400,6 +624,11 @@ export class ElasticNet implements Regressor {
     return this.coef_;
   }
 
+  /**
+   * Intercept term (0 when `fitIntercept` is false).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get intercept(): number {
     if (!this.fitted) {
       throw new NotFittedError("ElasticNet must be fitted to access intercept");
@@ -407,6 +636,11 @@ export class ElasticNet implements Regressor {
     return this.intercept_;
   }
 
+  /**
+   * Number of coordinate descent passes run by the last `fit`.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get nIter(): number | undefined {
     if (!this.fitted) {
       throw new NotFittedError("ElasticNet must be fitted to access nIter");
@@ -414,89 +648,66 @@ export class ElasticNet implements Regressor {
     return this.nIter_;
   }
 
-  getParams(): Record<string, unknown> {
-    return { ...this.options };
+  /**
+   * Duality gap at the end of the last `fit` (an upper bound on the suboptimality of the
+   * objective, in units of `n` times the objective).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get dualGap(): number | undefined {
+    if (!this.fitted) {
+      throw new NotFittedError("ElasticNet must be fitted to access dualGap");
+    }
+    return this.dualGap_;
   }
 
-  setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "alpha":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError("alpha must be a finite number", "alpha", value);
-          }
-          this.options.alpha = value;
-          break;
-        case "l1Ratio":
-          if (typeof value !== "number" || value < 0 || value > 1) {
-            throw new InvalidParameterError("l1Ratio must be in [0, 1]", "l1Ratio", value);
-          }
-          this.options.l1Ratio = value;
-          break;
-        case "maxIter":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError("maxIter must be a finite number", "maxIter", value);
-          }
-          this.options.maxIter = value;
-          break;
-        case "tol":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError("tol must be a finite number", "tol", value);
-          }
-          this.options.tol = value;
-          break;
-        case "fitIntercept":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError(
-              "fitIntercept must be a boolean",
-              "fitIntercept",
-              value
-            );
-          }
-          this.options.fitIntercept = value;
-          break;
-        case "normalize":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError("normalize must be a boolean", "normalize", value);
-          }
-          this.options.normalize = value;
-          break;
-        case "warmStart":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError("warmStart must be a boolean", "warmStart", value);
-          }
-          this.options.warmStart = value;
-          break;
-        case "positive":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError("positive must be a boolean", "positive", value);
-          }
-          this.options.positive = value;
-          break;
-        case "selection":
-          if (value !== "cyclic" && value !== "random") {
-            throw new InvalidParameterError(
-              `Invalid selection: ${String(value)}`,
-              "selection",
-              value
-            );
-          }
-          this.options.selection = value;
-          break;
-        case "randomState":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `randomState must be a finite number; received ${String(value)}`,
-              "randomState",
-              value
-            );
-          }
-          this.options.randomState = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
+  /** Number of features seen during `fit`. */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("ElasticNet must be fitted to access nFeaturesIn");
     }
+    return this.nFeaturesIn_ ?? 0;
+  }
+
+  /**
+   * Hyper-parameters of this estimator, with defaults filled in.
+   *
+   * The result can be passed back to the constructor to create an equivalent unfitted model.
+   */
+  getParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      alpha: this.options.alpha ?? 1.0,
+      l1Ratio: this.options.l1Ratio ?? 0.5,
+      fitIntercept: this.options.fitIntercept ?? true,
+      normalize: this.options.normalize ?? false,
+      maxIter: this.options.maxIter ?? 1000,
+      tol: this.options.tol ?? 1e-4,
+      warmStart: this.options.warmStart ?? false,
+      positive: this.options.positive ?? false,
+      selection: this.options.selection ?? "cyclic",
+    };
+    if (this.options.randomState !== undefined) params["randomState"] = this.options.randomState;
+    return params;
+  }
+
+  /**
+   * Set hyper-parameters. All values are validated before any of them is applied.
+   *
+   * @param params - Parameters to change
+   * @returns this
+   * @throws {InvalidParameterError} If a name is unknown or a value is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    const next = { ...this.options };
+    for (const [key, value] of Object.entries(params)) {
+      applyCoordinateDescentParam(next, key, value, true);
+    }
+    this.options = next;
     return this;
+  }
+
+  /** Create an unfitted copy with the same hyper-parameters. */
+  clone(): ElasticNet {
+    return new ElasticNet(this.getParams() as ElasticNetOptions);
   }
 }

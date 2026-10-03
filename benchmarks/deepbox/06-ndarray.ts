@@ -1,5 +1,5 @@
 /**
- * Benchmark 06 — NDArray / Tensor Operations
+ * Benchmark 06: NDArray / Tensor Operations
  * Deepbox vs NumPy
  */
 
@@ -138,7 +138,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("ndarray");
-header("Benchmark 06 — NDArray / Tensor Operations");
+header("Benchmark 06: NDArray / Tensor Operations");
 
 // ── Creation ─────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ const gradSignal = tensor(Array.from({ length: 4096 }, (_, i) => Math.sin(i / 20
 // Deepbox's `transpose`/`flatten`/`slice` return lazy strided views, so timing
 // them bare would compare a materialized copy against a pointer/stride tweak.
 // We wrap those three with `copy(...)` so BOTH sides materialize identical
-// contiguous buffers — an honest apples-to-apples measurement.
+// contiguous buffers, an honest apples-to-apples measurement.
 run(suite, "reshape", "10K→100x100", () => reshape(flat10k, [100, 100]));
 run(suite, "flatten", "100x100", () => copy(flatten(mat100)));
 run(suite, "transpose", "100x100", () => copy(transpose(mat100)));

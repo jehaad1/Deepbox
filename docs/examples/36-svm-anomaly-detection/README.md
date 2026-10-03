@@ -2,16 +2,16 @@
 
 > **View online:** https://deepbox.dev/examples/36-svm-anomaly-detection
 
-Support Vector Machines with kernel tricks and anomaly detection algorithms new in v1.0.0.
+Kernel support vector machines (`SVC`, `NuSVC`, `SVR`) and anomaly detectors (`IsolationForest`, `LocalOutlierFactor`, `OneClassSVM`). The SVMs compare kernels and values of `C` on synthetic data. The detectors look for three planted outliers in a small 2-D dataset.
 
 ## Deepbox Modules Used
 
-| Module              | Features Used                                                    |
-| ------------------- | ---------------------------------------------------------------- |
-| `deepbox/ml`        | SVC, SVR, NuSVC, OneClassSVM, IsolationForest, LocalOutlierFactor |
-| `deepbox/metrics`   | accuracy, r2Score                                                |
-| `deepbox/datasets`  | makeClassification, makeRegression                               |
-| `deepbox/preprocess`| trainTestSplit, StandardScaler                                   |
+| Module               | Features Used                                                     |
+| -------------------- | ----------------------------------------------------------------- |
+| `deepbox/ml`         | SVC, SVR, NuSVC, OneClassSVM, IsolationForest, LocalOutlierFactor |
+| `deepbox/metrics`    | accuracy, r2Score                                                 |
+| `deepbox/datasets`   | makeClassification, makeRegression                                |
+| `deepbox/preprocess` | trainTestSplit, StandardScaler                                    |
 
 ## Usage
 
@@ -19,10 +19,14 @@ Support Vector Machines with kernel tricks and anomaly detection algorithms new 
 npm run example:36
 ```
 
-## Architecture
+## Output
+
+- Console output only: test accuracy per kernel and per `C`, R² for `SVR`, and the rows each anomaly detector flags.
+
+## Files
 
 ```
 36-svm-anomaly-detection/
-├── index.ts     # Main entry point
+├── index.ts     # Example script
 └── README.md    # This file
 ```

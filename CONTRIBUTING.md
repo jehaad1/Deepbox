@@ -5,7 +5,7 @@
 > Examples: https://deepbox.dev/examples
 > Projects: https://deepbox.dev/projects
 
-Thanks for contributing. This document covers the workflow and standards used in the `v1.0.0` repository.
+Thanks for contributing. This document covers the workflow and standards for the Deepbox repository (release line 1.5).
 
 ## Code of Conduct
 
@@ -27,21 +27,25 @@ npm ci
 ## Development Commands
 
 ```bash
-npm run build
-npm run dev
-npm test
-npm run test:coverage
-npm run typecheck
-npm run lint:check
-npm run lint:fix
-npm run format
-npm run format:check
-npm run validate:all
-npm run validate:fix
-npm run all
+npm run build            # tsup bundle plus type declarations
+npm run dev              # tsup in watch mode
+npm test                 # Vitest, whole suite
+npm run test:coverage    # Vitest with coverage thresholds
+npm run format           # biome format --write
+npm run format:check     # biome format, no writes
+npm run lint:check       # biome check, no writes
+npm run lint:fix         # biome check --write
+npm run typecheck        # tsc on src
+npm run typecheck:test   # tsc on test (tsconfig.test.json)
+npm run typecheck:docs   # tsc on docs/examples and docs/projects
+npm run prose:check      # fails on em dashes in project text
+npm run validate:all     # the full CI gate
+npm run validate:fix     # same gate, but formats and fixes lint first
 ```
 
-`npm run all` is the CI/release validation alias and should stay green before a PR is merged.
+`npm run validate:all` is the CI and release gate. It runs `format:check`, `lint:check`, `typecheck`, `typecheck:test`, `typecheck:docs`, the two JSDoc checks, then a build, the tests, a benchmark smoke run, every example, every project and coverage. `npm run all` is an alias for it. Keep it green before a PR is merged. `prose:check` is not part of `validate:all`, so run it yourself before you push.
+
+For a quick loop, run one file with `npx vitest run test/<file>.test.ts` and format only what you changed with `npx biome check --write <files>`.
 
 ## Project Layout
 
@@ -60,10 +64,11 @@ npm run all
 | `src/random` | RNG, distributions, sampling |
 | `src/datasets` | Built-in datasets, generators, samplers, remote loaders |
 | `src/plot` | Figure API, plot types, renderers |
-| `test` | Vitest suite |
-| `docs/examples` | 50 numbered examples (`00`–`49`) in the current tree |
-| `docs/projects` | 9 larger end-to-end projects |
-| `benchmarks` | Deepbox and Python benchmark harnesses (`npm run bench:deepbox`, `bench:python`, `bench:all`; optional `npm run bench:tensor` writes `deepbox-tensor.json` only) |
+| `test` | Vitest suite. `test/v150` holds the regression tests for the 1.5.0 audit |
+| `docs/examples` | Numbered, runnable examples |
+| `docs/projects` | Larger end-to-end projects |
+| `benchmarks` | Deepbox and Python benchmark harnesses (`npm run bench:deepbox`, `bench:python`, `bench:all`) |
+| `scripts` | Repository checks, such as `prose:check` and the JSDoc link checks |
 
 ## API and Import Rules
 
@@ -112,18 +117,20 @@ Error messages should be specific and include the offending value, shape, dtype,
 ## Tests
 
 - Add or update tests for every user-visible behavior change.
-- Place tests in `test/` and use the `*.test.ts` naming pattern. Vitest’s `include` pattern is `test/**/*.test.ts`; other `.ts` files in `test/` (for example `*_helpers.ts` or `*.bench.ts`) are not picked up as test files.
-- Cover edge cases, invalid inputs, and regression paths when changing numerical code.
-- Do not commit focused tests.
-- If you change exports, add or update export coverage tests as needed.
+- Put tests in `test/` and name them `*.test.ts`. Vitest's `include` pattern is `test/**/*.test.ts`. Other `.ts` files in `test/` (helpers such as `*_helpers.ts`, benches such as `*.bench.ts`) are not run as tests.
+- Regression tests for bugs fixed in 1.5.0 and tests for new 1.5.0 behavior live in `test/v150`. Add new tests of that kind there and name the file after the area it covers. Tests for older, unchanged behavior stay next to their module's existing test file.
+- Cover edge cases, invalid inputs and regression paths when changing numerical code. Check expected values against NumPy, SciPy, scikit-learn, PyTorch or pandas when one applies, and say which in a comment.
+- Do not commit focused tests (`.only`).
+- If you change exports, add or update export coverage tests.
+- Coverage thresholds are set in `vitest.config.ts`. `npm run test:coverage` fails below them.
 
 ## Docs Expectations
 
-If a change affects the public surface area, update the relevant docs in the same PR:
+If a change affects the public surface, update the relevant docs in the same PR:
 
-- For new or substantially revised public APIs, prefer JSDoc with `@see https://deepbox.dev/docs/<slug>` when a matching docs page exists. Cross-links are still being expanded across the tree; add them where you touch code.
-- Run `npm run jsdoc:docs-gaps` for a repo-local list of `src/**/*.ts` files that still omit a DeepboxDocs URL (`deepbox.dev/docs`). The script fails the process when gaps exist so `validate:all` stays honest.
-- Run `npm run jsdoc:core-slugs` to ensure `src/core/**` files reference the correct docs slugs (`core-types`, `core-config`, `core-errors`, `core-utils`, or `devices-and-execution` for optional GPU/WASM backends), matching `DeepboxDocs` `core.json`.
+- For new or substantially revised public APIs, prefer JSDoc with `@see https://deepbox.dev/docs/<slug>` when a matching docs page exists. Cross-links are still being added; add them where you touch code.
+- Run `npm run jsdoc:docs-gaps` for a list of `src/**/*.ts` files that still lack a `deepbox.dev/docs` URL. The script fails when gaps exist, so `validate:all` stays honest.
+- Run `npm run jsdoc:core-slugs` to check that `src/core/**` files reference the correct docs slugs (`core-types`, `core-config`, `core-errors`, `core-utils`, or `devices-and-execution` for the optional GPU and WASM backends), matching `DeepboxDocs` `core.json`.
 - [README.md](README.md)
 - [CHANGELOG.md](CHANGELOG.md)
 - [SKILL.md](SKILL.md)
@@ -131,7 +138,17 @@ If a change affects the public surface area, update the relevant docs in the sam
 - projects under `docs/projects`
 - any related docs-site content maintained elsewhere in the monorepo
 
-Do not document APIs that are not actually exported.
+Do not document APIs that are not exported. Every code sample must run as written: run it before you commit it, and use `npm run typecheck:docs` for examples and projects.
+
+### Writing rules
+
+These apply to code comments, JSDoc, console output, Markdown and any other text in the repository. `npm run prose:check` enforces the first rule.
+
+- Do not write em dashes (U+2014). Rewrite the sentence. Use a colon between a label and its description, a comma or a period between two clauses, "vs" for comparisons and "n/a" for an empty table cell. Do not swap in an en dash or a double hyphen.
+- Write plain, specific, formal English in short sentences. Say what the code does and how to use it. Prefer concrete facts to adjectives.
+- Avoid marketing adjectives and filler phrases. State the fact instead.
+- No emoji, including in console output. No rhetorical questions. Do not bold every other phrase.
+- Use canonical camelCase API names. Mention a deprecated snake_case name only to help someone migrate.
 
 ## Pull Requests
 

@@ -1,5 +1,5 @@
 """
-Benchmark 06 — NDArray / Tensor Operations
+Benchmark 06: NDArray / Tensor Operations
 NumPy
 """
 
@@ -10,7 +10,7 @@ import numpy as np
 from utils import run, create_suite, header, footer
 
 suite = create_suite("ndarray", "NumPy")
-header("Benchmark 06 — NDArray / Tensor Operations", "NumPy")
+header("Benchmark 06: NDArray / Tensor Operations", "NumPy")
 
 rng = np.random.RandomState(42)
 

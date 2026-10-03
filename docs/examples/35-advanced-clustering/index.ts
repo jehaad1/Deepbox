@@ -1,8 +1,9 @@
 /**
  * Example 35: Advanced Clustering
  *
- * New in v1.0.0: Agglomerative, GaussianMixture, SpectralClustering,
- * OPTICS, MiniBatchKMeans, MeanShift, Birch, and AffinityPropagation.
+ * MiniBatchKMeans, AgglomerativeClustering, GaussianMixture, SpectralClustering,
+ * OPTICS, MeanShift, Birch and AffinityPropagation, scored with the silhouette
+ * score and the adjusted Rand index (ARI) on synthetic blobs and moons.
  */
 
 import { makeBlobs, makeMoons } from "deepbox/datasets";
@@ -48,14 +49,15 @@ console.log(`Moons dataset: ${XMoons.shape[0]} samples, ${XMoons.shape[1]} featu
 // ============================================================================
 // Part 1: MiniBatchKMeans
 // ============================================================================
-console.log("\n⚡ Part 1: MiniBatchKMeans");
+console.log("\nPart 1: MiniBatchKMeans");
 console.log("-".repeat(60));
 
-// MiniBatchKMeans is a faster variant of KMeans that uses mini-batches
+// MiniBatchKMeans updates the centers from small random batches instead of the full dataset
 const mbkmeans = new MiniBatchKMeans({
   nClusters: 4,
   batchSize: 50,
   maxIter: 100,
+  randomState: 42,
 });
 mbkmeans.fit(XBlobs);
 
@@ -78,10 +80,10 @@ console.log(`  KMeans Silhouette (for comparison): ${kmSil.toFixed(4)}`);
 // ============================================================================
 // Part 2: Agglomerative Clustering
 // ============================================================================
-console.log("\n🌲 Part 2: Agglomerative Clustering");
+console.log("\nPart 2: Agglomerative Clustering");
 console.log("-".repeat(60));
 
-// Agglomerative clustering builds a hierarchy by merging closest clusters
+// Agglomerative clustering starts with one cluster per sample and repeatedly merges the closest pair
 const aggWard = new AgglomerativeClustering({
   nClusters: 4,
   linkage: "ward",
@@ -101,16 +103,16 @@ for (const linkage of ["complete", "average", "single"] as const) {
   const agg = new AgglomerativeClustering({ nClusters: 4, linkage });
   agg.fit(XBlobs);
   const sil = silhouetteScore(XBlobs, agg.labels);
-  console.log(`  ${linkage.padEnd(10)} linkage — Silhouette: ${sil.toFixed(4)}`);
+  console.log(`  ${linkage.padEnd(10)} linkage, Silhouette: ${sil.toFixed(4)}`);
 }
 
 // ============================================================================
 // Part 3: Gaussian Mixture Model
 // ============================================================================
-console.log("\n📊 Part 3: Gaussian Mixture Model");
+console.log("\nPart 3: Gaussian Mixture Model");
 console.log("-".repeat(60));
 
-// GMM models data as a mixture of Gaussian distributions
+// A Gaussian mixture models the data as a weighted sum of Gaussian distributions
 const gmm = new GaussianMixture({
   nComponents: 4,
   maxIter: 100,
@@ -128,10 +130,10 @@ console.log(`  Adjusted Rand Index: ${gmmAri.toFixed(4)}`);
 // ============================================================================
 // Part 4: Spectral Clustering
 // ============================================================================
-console.log("\n🌀 Part 4: Spectral Clustering");
+console.log("\nPart 4: Spectral Clustering");
 console.log("-".repeat(60));
 
-// Spectral Clustering uses eigenvalues of similarity matrix — good for non-convex shapes
+// Spectral clustering uses the eigenvectors of a similarity matrix, which suits non-convex shapes
 const spectral = new SpectralClustering({
   nClusters: 2,
   affinity: "rbf",
@@ -150,10 +152,10 @@ console.log(`  Adjusted Rand Index: ${specAri.toFixed(4)}`);
 // ============================================================================
 // Part 5: OPTICS
 // ============================================================================
-console.log("\n🔬 Part 5: OPTICS");
+console.log("\nPart 5: OPTICS");
 console.log("-".repeat(60));
 
-// OPTICS: density-based clustering that doesn't require specifying eps
+// OPTICS is density-based and does not need a fixed neighborhood radius (eps)
 const optics = new OPTICS({
   minSamples: 5,
 });
@@ -164,15 +166,15 @@ const optAri = adjustedRandScore(yBlobs, optLabels);
 
 console.log("OPTICS (minSamples=5):");
 console.log(`  Adjusted Rand Index: ${optAri.toFixed(4)}`);
-console.log(`  Reachability values: ${optics.reachability.shape}`);
+console.log(`  Reachability values: ${optics.reachability.length}`);
 
 // ============================================================================
 // Part 6: MeanShift
 // ============================================================================
-console.log("\n🎯 Part 6: MeanShift");
+console.log("\nPart 6: MeanShift");
 console.log("-".repeat(60));
 
-// MeanShift finds clusters by seeking high-density regions
+// MeanShift moves points uphill to the modes of the density estimate. Each mode is one cluster.
 const meanshift = new MeanShift({
   bandwidth: "auto",
 });
@@ -188,10 +190,10 @@ console.log(`  Cluster centers shape: ${meanshift.clusterCenters.shape}`);
 // ============================================================================
 // Part 7: Birch
 // ============================================================================
-console.log("\n🌿 Part 7: Birch");
+console.log("\nPart 7: Birch");
 console.log("-".repeat(60));
 
-// Birch: scalable clustering using CF-tree data structure
+// Birch summarizes the data in a clustering-feature tree, so it needs one pass over the samples
 const birch = new Birch({
   nClusters: 4,
   threshold: 0.5,
@@ -210,10 +212,10 @@ console.log(`  Adjusted Rand Index: ${birchAri.toFixed(4)}`);
 // ============================================================================
 // Part 8: Affinity Propagation
 // ============================================================================
-console.log("\n💬 Part 8: Affinity Propagation");
+console.log("\nPart 8: Affinity Propagation");
 console.log("-".repeat(60));
 
-// Affinity Propagation: message-passing algorithm, auto-determines number of clusters
+// Affinity propagation passes messages between samples and chooses the number of clusters itself
 const ap = new AffinityPropagation({
   damping: 0.9,
   maxIter: 200,
@@ -230,7 +232,7 @@ console.log(`  Cluster centers shape: ${ap.clusterCenters.shape}`);
 // ============================================================================
 // Summary Comparison
 // ============================================================================
-console.log("\n📋 Clustering Comparison on Blobs Dataset");
+console.log("\nClustering Comparison on Blobs Dataset");
 console.log("-".repeat(60));
 
 console.log("┌─────────────────────────┬────────────┬──────────┐");
@@ -258,16 +260,16 @@ console.log("└─────────────────────�
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• MiniBatchKMeans: fast KMeans for large datasets using mini-batches");
-console.log("• Agglomerative: hierarchical clustering with different linkage criteria");
-console.log("• Gaussian Mixture: soft clustering with probabilistic assignments");
-console.log("• Spectral: graph-based, excels at non-convex cluster shapes");
-console.log("• OPTICS: density-based, no need to specify epsilon parameter");
-console.log("• MeanShift: auto-discovers number of clusters via density modes");
-console.log("• Birch: memory-efficient, scalable to very large datasets");
-console.log("• Affinity Propagation: auto-determines cluster count via message passing");
+console.log("• MiniBatchKMeans: KMeans on mini-batches, cheaper for large datasets");
+console.log("• Agglomerative: hierarchical clustering with a choice of linkage");
+console.log("• Gaussian Mixture: probabilistic assignments instead of hard ones");
+console.log("• Spectral: graph-based, handles non-convex shapes such as moons");
+console.log("• OPTICS: density-based, no eps to choose up front");
+console.log("• MeanShift: finds the number of clusters from the density modes");
+console.log("• Birch: one pass over the data, low memory");
+console.log("• Affinity Propagation: finds the number of clusters by message passing");
 
-console.log("\n✅ Advanced Clustering Example Complete!");
+console.log("\nAdvanced Clustering Example Complete!");
 console.log("=".repeat(60));

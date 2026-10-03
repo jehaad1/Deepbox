@@ -1,5 +1,9 @@
-// Learning rate schedulers for optimizers
-import { InvalidParameterError } from "../core";
+/**
+ * Learning rate schedulers for optimizers.
+ *
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
+ */
+import { DataValidationError, InvalidParameterError } from "../core";
 
 /**
  * Interface for optimizer-like objects that schedulers can work with.
@@ -33,6 +37,28 @@ function resolveGroupLr(group: SchedulerParamGroup, index: number) {
   return lrValue;
 }
 
+/**
+ * Remembers, per parameter group, the learning rate the first scheduler found
+ * (`initial`) and the last value a scheduler wrote (`last`). This plays the role
+ * of PyTorch's `initial_lr` group key: a scheduler built on an optimizer that an
+ * earlier scheduler has already modified still starts from the original rate.
+ */
+const lrRecords = new WeakMap<object, { initial: number; last: number }>();
+
+/**
+ * Base learning rate of a group for a new scheduler. When the current rate is the
+ * one a scheduler wrote last, the remembered initial rate is reused; when someone
+ * else changed the rate in between (for example `optimizer.setLearningRate`), the
+ * current rate becomes the new initial rate.
+ */
+function captureBaseLr(group: SchedulerParamGroup, index: number): number {
+  const current = resolveGroupLr(group, index);
+  const record = lrRecords.get(group);
+  if (record && record.last === current) return record.initial;
+  lrRecords.set(group, { initial: current, last: current });
+  return current;
+}
+
 function setGroupLr(group: SchedulerParamGroup, lr: number) {
   if (isRecord(group.options)) {
     group.options["lr"] = lr;
@@ -43,6 +69,8 @@ function setGroupLr(group: SchedulerParamGroup, lr: number) {
   if (!("lr" in group) && !isRecord(group.options)) {
     group.lr = lr;
   }
+  const record = lrRecords.get(group);
+  if (record) record.last = lr;
 }
 
 function validateLastEpoch(value: number) {
@@ -156,11 +184,72 @@ function validateMilestones(milestones: number[]) {
 }
 
 /**
+ * Serializable snapshot of a scheduler, returned by `stateDict()`.
+ */
+export type SchedulerStateDict = {
+  /** Index of the last completed epoch (`-1` before the first step). */
+  lastEpoch: number;
+  /** Base learning rate of every parameter group. */
+  baseLrs: number[];
+  /** Learning rate of every parameter group at the time of the snapshot. */
+  lastLr: number[];
+  /** Snapshots of wrapped schedulers (`WarmupLR`, `SequentialLR`). */
+  children?: SchedulerStateDict[];
+};
+
+function isScheduler(value: unknown): value is LRScheduler {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { step?: unknown; getLr?: unknown };
+  return typeof candidate.step === "function" && typeof candidate.getLr === "function";
+}
+
+function validateSchedulerState(
+  state: SchedulerStateDict,
+  groupCount: number,
+  childCount: number
+): void {
+  if (typeof state !== "object" || state === null) {
+    throw new DataValidationError("scheduler state must be an object");
+  }
+  validateLastEpoch(state.lastEpoch);
+  for (const key of ["baseLrs", "lastLr"] as const) {
+    const list: unknown = state[key];
+    if (
+      !Array.isArray(list) ||
+      list.length !== groupCount ||
+      list.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)
+    ) {
+      throw new DataValidationError(
+        `scheduler state.${key} must hold ${groupCount} finite non-negative learning rates`
+      );
+    }
+  }
+  const children = state.children;
+  if (childCount === 0) {
+    if (children !== undefined && children.length !== 0) {
+      throw new DataValidationError("scheduler state has children but this scheduler has none");
+    }
+  } else if (!Array.isArray(children) || children.length !== childCount) {
+    throw new DataValidationError(`scheduler state.children must hold ${childCount} entries`);
+  }
+}
+
+/**
  * Base class for learning rate schedulers.
  *
  * Learning rate schedulers adjust the learning rate during training according
  * to a predefined schedule. This can help improve convergence and prevent
  * overshooting optimal solutions.
+ *
+ * Constructing a scheduler performs the first step, so epoch 0 already runs at
+ * the scheduled rate (the same as PyTorch). The base learning rate of each group
+ * is the rate the optimizer was created with: a second scheduler built on the
+ * same optimizer starts from that original rate, not from the value the first
+ * scheduler left behind, unless the rate was changed by hand in between.
+ *
+ * Schedulers write the rate to `paramGroups[i].options.lr` (or `paramGroups[i].lr`).
+ * Optimizers that use the learning rate only to initialise their state (for example
+ * `Rprop`, whose step sizes start at `lr`) are not affected by later changes.
  *
  * @example
  * ```ts
@@ -175,6 +264,7 @@ function validateMilestones(milestones: number[]) {
  * }
  * ```
  *
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  * @category Optimization
  */
 export abstract class LRScheduler {
@@ -188,7 +278,7 @@ export abstract class LRScheduler {
     this.optimizer = optimizer;
 
     // Store base learning rates from all parameter groups
-    this.baseLrs = optimizer.paramGroups.map((group, index) => resolveGroupLr(group, index));
+    this.baseLrs = optimizer.paramGroups.map((group, index) => captureBaseLr(group, index));
   }
 
   protected initializeFromLastEpoch(lastEpoch: number): void {
@@ -196,7 +286,7 @@ export abstract class LRScheduler {
     this.lastEpoch = -1;
     if (validated < 0) {
       // PyTorch's _LRScheduler.__init__ performs one step() at construction,
-      // so epoch 0 runs at getLr(0) — not the optimizer's raw base LR. Omitting
+      // so epoch 0 runs at getLr(0), not the optimizer's raw base LR. Omitting
       // this shifts every scheduler by one epoch (StepLR decays one epoch late,
       // OneCycleLR/WarmupLR run the first epoch at the wrong LR entirely).
       this.step();
@@ -204,6 +294,36 @@ export abstract class LRScheduler {
     }
     for (let i = 0; i <= validated; i++) {
       this.step();
+    }
+  }
+
+  /**
+   * Move a wrapped scheduler to `epoch` and apply its learning rates. Composite
+   * schedulers use it to restart the scheduler that takes over at a milestone.
+   */
+  protected static seek(scheduler: LRScheduler, epoch: number): void {
+    scheduler.lastEpoch = epoch - 1;
+    scheduler.step();
+  }
+
+  /**
+   * Undo the step a wrapped scheduler performed when it was constructed, so that
+   * the wrapping scheduler decides when it takes its first step.
+   */
+  protected static rewind(scheduler: LRScheduler): void {
+    scheduler.lastEpoch = Math.max(-1, scheduler.lastEpoch - 1);
+  }
+
+  /**
+   * Write learning rates to the parameter groups of the optimizer.
+   */
+  protected applyLrs(lrs: readonly number[]): void {
+    for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
+      const group = this.optimizer.paramGroups[i];
+      const next = lrs[i];
+      if (group && next !== undefined) {
+        setGroupLr(group, next);
+      }
     }
   }
 
@@ -222,17 +342,7 @@ export abstract class LRScheduler {
    */
   step(): void {
     this.lastEpoch++;
-    const newLrs = this.getLr();
-
-    for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
-      const group = this.optimizer.paramGroups[i];
-      if (group) {
-        const next = newLrs[i];
-        if (next !== undefined) {
-          setGroupLr(group, next);
-        }
-      }
-    }
+    this.applyLrs(this.getLr());
   }
 
   /**
@@ -247,6 +357,46 @@ export abstract class LRScheduler {
    */
   get epoch() {
     return this.lastEpoch;
+  }
+
+  /**
+   * Snapshot of the scheduler for checkpointing: the epoch counter, the base
+   * learning rates and the current learning rates. Restore it with `loadStateDict`
+   * on a scheduler of the same type built over an optimizer with the same number
+   * of parameter groups.
+   */
+  stateDict(): SchedulerStateDict {
+    const state: SchedulerStateDict = {
+      lastEpoch: this.lastEpoch,
+      baseLrs: [...this.baseLrs],
+      lastLr: this.getLastLr(),
+    };
+    const children = this.childSchedulers();
+    if (children.length > 0) state.children = children.map((child) => child.stateDict());
+    return state;
+  }
+
+  /**
+   * Restore a snapshot produced by `stateDict()`. The epoch counter, the base
+   * learning rates and the learning rates of the optimizer are set from it.
+   *
+   * @throws {DataValidationError} If the snapshot is malformed or was taken with a
+   *   different number of parameter groups
+   */
+  loadStateDict(state: SchedulerStateDict): void {
+    validateSchedulerState(state, this.optimizer.paramGroups.length, this.childSchedulers().length);
+    this.lastEpoch = state.lastEpoch;
+    this.baseLrs = [...state.baseLrs];
+    this.childSchedulers().forEach((child, i) => {
+      const childState = state.children?.[i];
+      if (childState) child.loadStateDict(childState);
+    });
+    this.applyLrs(state.lastLr);
+  }
+
+  /** Schedulers wrapped by this one; overridden by composite schedulers. */
+  protected childSchedulers(): LRScheduler[] {
+    return [];
   }
 }
 
@@ -418,8 +568,10 @@ export class MultiStepLR extends LRScheduler {
  *
  * Linearly interpolates the learning rate multiplicative factor from startFactor
  * to endFactor over totalIters epochs. After totalIters, the factor remains at endFactor.
+ * `startFactor` must be > 0 (default 1/3); `endFactor` may be 0 to decay to zero
+ * (default 1).
  *
- * lr = baseLr * (startFactor + (endFactor - startFactor) * epoch / totalIters)
+ * lr = baseLr * (startFactor + (endFactor - startFactor) * min(epoch, totalIters) / totalIters)
  *
  * @example
  * ```ts
@@ -447,7 +599,7 @@ export class LinearLR extends LRScheduler {
     }
   ) {
     const startFactor = validatePositiveNumber(options.startFactor ?? 1 / 3, "startFactor");
-    const endFactor = validatePositiveNumber(options.endFactor ?? 1.0, "endFactor");
+    const endFactor = validateNonNegativeNumber(options.endFactor ?? 1.0, "endFactor");
     const totalIters = validatePositiveInteger(options.totalIters, "totalIters");
     const lastEpoch = validateLastEpoch(options.lastEpoch ?? -1);
     super(optimizer, -1);
@@ -469,11 +621,28 @@ export class LinearLR extends LRScheduler {
 }
 
 /**
+ * Serializable snapshot of a `ReduceLROnPlateau` scheduler.
+ */
+export type PlateauStateDict = {
+  /** Best metric value seen so far (`Infinity` / `-Infinity` before the first step). */
+  best: number;
+  /** Number of consecutive epochs without improvement. */
+  numBadEpochs: number;
+  /** Remaining cooldown epochs. */
+  cooldownCounter: number;
+  /** Learning rate of every parameter group at the time of the snapshot. */
+  lastLr: number[];
+};
+
+/**
  * Reduce learning rate on plateau.
  *
  * Reduces learning rate when a metric has stopped improving.
  * This scheduler reads a metric value and if no improvement is seen
  * for 'patience' epochs, the learning rate is reduced.
+ *
+ * A reduction is skipped when it would change the rate by no more than `eps`.
+ * `minLr` may be one number for all groups or one number per group.
  *
  * @example
  * ```ts
@@ -499,7 +668,8 @@ export class ReduceLROnPlateau {
   private threshold: number;
   private thresholdMode: "rel" | "abs";
   private cooldown: number;
-  private minLr: number;
+  private minLrs: number[];
+  private eps: number;
   private best: number;
   private numBadEpochs: number;
   private cooldownCounter: number;
@@ -513,7 +683,8 @@ export class ReduceLROnPlateau {
       threshold?: number;
       thresholdMode?: "rel" | "abs";
       cooldown?: number;
-      minLr?: number;
+      minLr?: number | readonly number[];
+      eps?: number;
     } = {}
   ) {
     this.optimizer = optimizer;
@@ -541,7 +712,23 @@ export class ReduceLROnPlateau {
     this.patience = validateNonNegativeInteger(options.patience ?? 10, "patience");
     this.threshold = validateNonNegativeNumber(options.threshold ?? 1e-4, "threshold");
     this.cooldown = validateNonNegativeInteger(options.cooldown ?? 0, "cooldown");
-    this.minLr = validateNonNegativeNumber(options.minLr ?? 0, "minLr");
+    const groupCount = optimizer.paramGroups.length;
+    const rawMinLr = options.minLr ?? 0;
+    if (typeof rawMinLr === "number") {
+      this.minLrs = new Array<number>(groupCount).fill(
+        validateNonNegativeNumber(rawMinLr, "minLr")
+      );
+    } else {
+      if (!Array.isArray(rawMinLr) || rawMinLr.length !== groupCount) {
+        throw new InvalidParameterError(
+          `minLr must be a number or an array with one value per parameter group (${groupCount})`,
+          "minLr",
+          rawMinLr
+        );
+      }
+      this.minLrs = rawMinLr.map((value) => validateNonNegativeNumber(value, "minLr"));
+    }
+    this.eps = validateNonNegativeNumber(options.eps ?? 1e-8, "eps");
     this.best = this.mode === "min" ? Infinity : -Infinity;
     this.numBadEpochs = 0;
     this.cooldownCounter = 0;
@@ -551,8 +738,11 @@ export class ReduceLROnPlateau {
    * Check if metric improved.
    */
   private isBetter(current: number): boolean {
+    // Nothing recorded yet: any finite metric is an improvement. (A relative
+    // threshold of 1 would otherwise evaluate `Infinity * 0`.)
+    if (!Number.isFinite(this.best)) return true;
     // scikit/PyTorch default threshold_mode='rel': compare against a relative
-    // margin, not an absolute one — an absolute threshold silently never fires
+    // margin, not an absolute one: an absolute threshold silently never fires
     // on metrics whose magnitude differs from ~1.
     if (this.thresholdMode === "rel") {
       if (this.mode === "min") return current < this.best * (1 - this.threshold);
@@ -566,9 +756,10 @@ export class ReduceLROnPlateau {
    * Perform a scheduler step based on the metric value.
    *
    * @param metric - Current value of the metric being monitored
+   * @throws {InvalidParameterError} If `metric` is not a finite number
    */
   step(metric: number): void {
-    if (!Number.isFinite(metric)) {
+    if (typeof metric !== "number" || !Number.isFinite(metric)) {
       throw new InvalidParameterError("metric must be finite", "metric", metric);
     }
     // Ordering matches PyTorch: evaluate improvement first, then handle
@@ -607,8 +798,10 @@ export class ReduceLROnPlateau {
         );
       }
       const currentLr = resolveGroupLr(group, i);
-      const newLr = Math.max(currentLr * this.factor, this.minLr);
-      setGroupLr(group, newLr);
+      const newLr = Math.max(currentLr * this.factor, this.minLrs[i] ?? 0);
+      if (currentLr - newLr > this.eps) {
+        setGroupLr(group, newLr);
+      }
     }
   }
 
@@ -618,19 +811,73 @@ export class ReduceLROnPlateau {
   getLastLr(): number[] {
     return this.optimizer.paramGroups.map((group, index) => resolveGroupLr(group, index));
   }
+
+  /**
+   * Snapshot of the scheduler for checkpointing: the best metric, the bad-epoch
+   * and cooldown counters and the current learning rates.
+   */
+  stateDict(): PlateauStateDict {
+    return {
+      best: this.best,
+      numBadEpochs: this.numBadEpochs,
+      cooldownCounter: this.cooldownCounter,
+      lastLr: this.getLastLr(),
+    };
+  }
+
+  /**
+   * Restore a snapshot produced by `stateDict()`.
+   *
+   * @throws {DataValidationError} If the snapshot is malformed or was taken with a
+   *   different number of parameter groups
+   */
+  loadStateDict(state: PlateauStateDict): void {
+    const groupCount = this.optimizer.paramGroups.length;
+    if (
+      typeof state !== "object" ||
+      state === null ||
+      typeof state.best !== "number" ||
+      Number.isNaN(state.best) ||
+      !Number.isInteger(state.numBadEpochs) ||
+      state.numBadEpochs < 0 ||
+      !Number.isInteger(state.cooldownCounter) ||
+      state.cooldownCounter < 0 ||
+      !Array.isArray(state.lastLr) ||
+      state.lastLr.length !== groupCount ||
+      state.lastLr.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)
+    ) {
+      throw new DataValidationError(
+        `ReduceLROnPlateau state is malformed (expected best, numBadEpochs, cooldownCounter and ${groupCount} learning rates)`
+      );
+    }
+    this.best = state.best;
+    this.numBadEpochs = state.numBadEpochs;
+    this.cooldownCounter = state.cooldownCounter;
+    this.optimizer.paramGroups.forEach((group, i) => {
+      const lr = state.lastLr[i];
+      if (lr !== undefined) setGroupLr(group, lr);
+    });
+  }
 }
 
 /**
  * Warmup scheduler that wraps another scheduler.
  *
- * Linearly increases the learning rate from 0 to the base lr over warmupEpochs,
- * then delegates to the wrapped scheduler.
+ * Linearly increases the learning rate from `baseLr / warmupEpochs` (epoch 0) to
+ * the base lr (epoch `warmupEpochs - 1`), then delegates to the wrapped scheduler,
+ * which continues from its own epoch 1 at epoch `warmupEpochs`. Without a wrapped
+ * scheduler the rate stays at the base lr after warmup.
+ *
+ * Create the wrapped scheduler first on the same optimizer; both then share the
+ * same base learning rates.
  *
  * @example
  * ```ts
  * const baseScheduler = new CosineAnnealingLR(optimizer, { T_max: 100 });
  * const scheduler = new WarmupLR(optimizer, baseScheduler, { warmupEpochs: 5 });
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  */
 export class WarmupLR extends LRScheduler {
   private warmupEpochs: number;
@@ -643,6 +890,13 @@ export class WarmupLR extends LRScheduler {
   ) {
     const warmupEpochs = validatePositiveInteger(options.warmupEpochs, "warmupEpochs");
     const lastEpoch = validateLastEpoch(options.lastEpoch ?? -1);
+    if (afterScheduler !== null && !isScheduler(afterScheduler)) {
+      throw new InvalidParameterError(
+        "afterScheduler must be an LRScheduler or null",
+        "afterScheduler",
+        afterScheduler
+      );
+    }
     super(optimizer, -1);
     this.warmupEpochs = warmupEpochs;
     this.afterScheduler = afterScheduler;
@@ -661,58 +915,34 @@ export class WarmupLR extends LRScheduler {
       return this.afterScheduler.getLr();
     }
 
-    return this.baseLrs;
+    return [...this.baseLrs];
   }
 
   override step(): void {
     this.lastEpoch++;
 
-    if (this.lastEpoch < this.warmupEpochs) {
-      const newLrs = this.getLr();
-      for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
-        const group = this.optimizer.paramGroups[i];
-        if (group) {
-          const next = newLrs[i];
-          if (next !== undefined) {
-            setGroupLr(group, next);
-          }
-        }
-      }
-      return;
-    }
-
-    if (this.afterScheduler) {
+    if (this.lastEpoch >= this.warmupEpochs && this.afterScheduler) {
       this.afterScheduler.step();
-      const newLrs = this.afterScheduler.getLr();
-      for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
-        const group = this.optimizer.paramGroups[i];
-        if (group) {
-          const next = newLrs[i];
-          if (next !== undefined) {
-            setGroupLr(group, next);
-          }
-        }
-      }
-    } else {
-      const newLrs = this.getLr();
-      for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
-        const group = this.optimizer.paramGroups[i];
-        if (group) {
-          const next = newLrs[i];
-          if (next !== undefined) {
-            setGroupLr(group, next);
-          }
-        }
-      }
     }
+    this.applyLrs(this.getLr());
+  }
+
+  protected override childSchedulers(): LRScheduler[] {
+    return this.afterScheduler ? [this.afterScheduler] : [];
   }
 }
 
 /**
  * One-cycle learning rate scheduler.
  *
- * Implements the 1cycle policy: lr starts at maxLr/divFactor, increases to maxLr
- * over pctStart of the training, then decreases to maxLr/finalDivFactor.
+ * Implements the 1cycle policy as PyTorch does: the rate starts at
+ * `maxLr / divFactor`, rises to `maxLr` at step `pctStart * totalSteps - 1`, then
+ * falls to `maxLr / (divFactor * finalDivFactor)` at step `totalSteps - 1`. Both
+ * phases use the same annealing curve (`"cos"` or `"linear"`). After the last step
+ * the rate stays at the minimum.
+ *
+ * With several parameter groups, `maxLr` applies to the first group and the other
+ * groups keep their base lr ratio to it.
  *
  * @example
  * ```ts
@@ -776,30 +1006,31 @@ export class OneCycleLR extends LRScheduler {
     this.initializeFromLastEpoch(lastEpoch);
   }
 
+  private anneal(start: number, end: number, pct: number): number {
+    if (this.annealStrategy === "cos") {
+      return end + ((start - end) / 2) * (Math.cos(Math.PI * pct) + 1);
+    }
+    return (end - start) * pct + start;
+  }
+
   getLr(): number[] {
     const stepNum = this.lastEpoch;
-    const upSteps = Math.max(1, Math.floor(this.totalSteps * this.pctStart));
-    const downSteps = Math.max(1, this.totalSteps - upSteps);
-
     const initialLr = this.maxLr / this.divFactor;
-    const minLr = this.maxLr / this.finalDivFactor;
+    const minLr = initialLr / this.finalDivFactor;
+    // Phase boundaries as in PyTorch: the peak is reached at step
+    // pctStart * totalSteps - 1 and the minimum at step totalSteps - 1.
+    const peakStep = this.pctStart * this.totalSteps - 1;
+    const lastStep = this.totalSteps - 1;
 
     let lr: number;
-
-    if (stepNum >= this.totalSteps) {
+    if (stepNum >= lastStep) {
       lr = minLr;
-    } else if (stepNum < upSteps) {
-      // Increasing phase
-      const pct = stepNum / upSteps;
-      lr = initialLr + (this.maxLr - initialLr) * pct;
+    } else if (stepNum <= peakStep) {
+      const pct = peakStep > 0 ? stepNum / peakStep : 1;
+      lr = this.anneal(initialLr, this.maxLr, pct);
     } else {
-      // Decreasing phase
-      const pct = (stepNum - upSteps) / downSteps;
-      if (this.annealStrategy === "cos") {
-        lr = minLr + ((this.maxLr - minLr) * (1 + Math.cos(Math.PI * pct))) / 2;
-      } else {
-        lr = this.maxLr - (this.maxLr - minLr) * pct;
-      }
+      const pct = (stepNum - peakStep) / (lastStep - peakStep);
+      lr = this.anneal(this.maxLr, minLr, pct);
     }
 
     // Scale for each param group based on their base lr ratio
@@ -816,11 +1047,21 @@ export class OneCycleLR extends LRScheduler {
 /**
  * Cosine annealing with warm restarts.
  *
- * The learning rate follows a cosine curve from etaMax to etaMin over T_0 epochs,
- * then restarts. After each restart the period is multiplied by T_mult.
+ * The learning rate follows a cosine curve from the base lr to etaMin over T_0 epochs,
+ * then restarts. After each restart the period is multiplied by T_mult (and rounded
+ * down to a whole number of epochs).
  *
- * lr = etaMin + 0.5 * (etaMax - etaMin) * (1 + cos(pi * T_cur / T_i))
+ * lr = etaMin + 0.5 * (baseLr - etaMin) * (1 + cos(pi * T_cur / T_i))
  *
+ * `t0` and `tMult` are accepted as aliases of `T_0` and `T_mult`.
+ *
+ * @example
+ * ```ts
+ * const scheduler = new CosineAnnealingWarmRestarts(optimizer, { T_0: 10, T_mult: 2 });
+ * // restarts at epochs 10, 30, 70, ...
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  * @category Optimization
  */
 export class CosineAnnealingWarmRestarts extends LRScheduler {
@@ -831,18 +1072,26 @@ export class CosineAnnealingWarmRestarts extends LRScheduler {
   constructor(
     optimizer: SchedulerOptimizer,
     options: {
-      T_0: number;
+      T_0?: number;
+      t0?: number;
       T_mult?: number;
+      tMult?: number;
       etaMin?: number;
       lastEpoch?: number;
     }
   ) {
-    const t0 = validatePositiveInteger(options.T_0, "T_0");
+    const rawT0 = options.T_0 ?? options.t0;
+    if (rawT0 === undefined) {
+      throw new InvalidParameterError("T_0 or t0 must be provided", "T_0");
+    }
+    const t0 = validatePositiveInteger(rawT0, "T_0");
+    const tMult = validatePositiveNumber(options.T_mult ?? options.tMult ?? 1, "T_mult");
+    const etaMin = validateNonNegativeNumber(options.etaMin ?? 0, "etaMin");
     const lastEpoch = validateLastEpoch(options.lastEpoch ?? -1);
     super(optimizer, -1);
     this.t0 = t0;
-    this.tMult = validatePositiveNumber(options.T_mult ?? 1, "T_mult");
-    this.etaMin = validateNonNegativeNumber(options.etaMin ?? 0, "etaMin");
+    this.tMult = tMult;
+    this.etaMin = etaMin;
     this.initializeFromLastEpoch(lastEpoch);
   }
 
@@ -885,9 +1134,21 @@ export class CosineAnnealingWarmRestarts extends LRScheduler {
 /**
  * Cyclic learning rate scheduler.
  *
- * Cycles the learning rate between baseLr and maxLr using a triangular or
- * triangular2 policy.
+ * Cycles the learning rate between baseLr and maxLr. Each cycle rises over
+ * `stepSizeUp` steps and falls over `stepSizeDown` steps. Modes:
+ * - `"triangular"`: constant amplitude.
+ * - `"triangular2"`: the amplitude halves every cycle.
+ * - `"exp_range"`: the amplitude is scaled by `gamma ** step`.
  *
+ * With several parameter groups, `baseLr` and `maxLr` apply to the first group and
+ * the other groups keep their base lr ratio to it.
+ *
+ * @example
+ * ```ts
+ * const scheduler = new CyclicLR(optimizer, { baseLr: 0.001, maxLr: 0.01, stepSizeUp: 100 });
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
  * @category Optimization
  */
 export class CyclicLR extends LRScheduler {
@@ -895,7 +1156,8 @@ export class CyclicLR extends LRScheduler {
   private readonly maxLr: number;
   private readonly stepSizeUp: number;
   private readonly stepSizeDown: number;
-  private readonly mode: "triangular" | "triangular2";
+  private readonly mode: "triangular" | "triangular2" | "exp_range";
+  private readonly gamma: number;
 
   constructor(
     optimizer: SchedulerOptimizer,
@@ -904,7 +1166,8 @@ export class CyclicLR extends LRScheduler {
       maxLr: number;
       stepSizeUp?: number;
       stepSizeDown?: number;
-      mode?: "triangular" | "triangular2";
+      mode?: "triangular" | "triangular2" | "exp_range";
+      gamma?: number;
       lastEpoch?: number;
     }
   ) {
@@ -918,13 +1181,14 @@ export class CyclicLR extends LRScheduler {
       "stepSizeDown"
     );
     this.mode = options.mode ?? "triangular";
-    if (this.mode !== "triangular" && this.mode !== "triangular2") {
+    if (this.mode !== "triangular" && this.mode !== "triangular2" && this.mode !== "exp_range") {
       throw new InvalidParameterError(
-        "mode must be 'triangular' or 'triangular2'",
+        "mode must be 'triangular', 'triangular2' or 'exp_range'",
         "mode",
         this.mode
       );
     }
+    this.gamma = validatePositiveNumber(options.gamma ?? 1, "gamma");
     this.initializeFromLastEpoch(lastEpoch);
   }
 
@@ -943,6 +1207,8 @@ export class CyclicLR extends LRScheduler {
     let scaleMode = 1;
     if (this.mode === "triangular2") {
       scaleMode = 1 / 2 ** cycle;
+    } else if (this.mode === "exp_range") {
+      scaleMode = this.gamma ** this.lastEpoch;
     }
 
     const lr = this.baseLr + (this.maxLr - this.baseLr) * Math.max(0, scaleFn) * scaleMode;
@@ -995,6 +1261,13 @@ export class LambdaLR extends LRScheduler {
           options.lrLambda.length
         );
       }
+      if (options.lrLambda.some((fn) => typeof fn !== "function")) {
+        throw new InvalidParameterError(
+          "lrLambda array must contain functions only",
+          "lrLambda",
+          options.lrLambda
+        );
+      }
       this.lrLambdas = [...options.lrLambda];
     } else {
       throw new InvalidParameterError(
@@ -1012,9 +1285,9 @@ export class LambdaLR extends LRScheduler {
       const lambda = this.lrLambdas[i];
       if (!lambda) return baseLr;
       const factor = lambda(this.lastEpoch);
-      if (!Number.isFinite(factor)) {
+      if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0) {
         throw new InvalidParameterError(
-          `lrLambda[${i}] returned non-finite value at epoch ${this.lastEpoch}`,
+          `lrLambda[${i}] must return a finite number >= 0, got ${String(factor)} at epoch ${this.lastEpoch}`,
           "lrLambda",
           factor
         );
@@ -1027,8 +1300,13 @@ export class LambdaLR extends LRScheduler {
 /**
  * Sequential learning rate scheduler.
  *
- * Chains multiple schedulers in sequence. Each scheduler is active for a
- * specified number of epochs defined by milestones.
+ * Chains several schedulers. Scheduler `i` is active from epoch `milestones[i - 1]`
+ * (the first one from epoch 0) up to the next milestone. When a milestone is
+ * reached, the next scheduler is restarted at its own epoch 0.
+ *
+ * Create all schedulers on the same optimizer; they share its original learning
+ * rates. The steps they performed while being constructed are undone, so the first
+ * scheduler's epoch 0 is the epoch 0 of the chain.
  *
  * @example
  * ```ts
@@ -1062,6 +1340,13 @@ export class SequentialLR extends LRScheduler {
         "schedulers must be an array of at least 2 schedulers",
         "schedulers",
         options.schedulers?.length
+      );
+    }
+    if (!options.schedulers.every(isScheduler)) {
+      throw new InvalidParameterError(
+        "schedulers must contain LRScheduler instances only",
+        "schedulers",
+        options.schedulers
       );
     }
     if (
@@ -1099,46 +1384,46 @@ export class SequentialLR extends LRScheduler {
 
     this.schedulers = [...options.schedulers];
     this.milestoneEpochs = [...options.milestones];
+    // Each scheduler stepped once while it was constructed; undo that so the
+    // chain controls when every scheduler takes its first step.
+    for (const scheduler of this.schedulers) LRScheduler.rewind(scheduler);
     this.initializeFromLastEpoch(lastEpoch);
   }
 
-  getLr(): number[] {
-    // Find which scheduler is active
+  /** Index of the scheduler that is active at `epoch`. */
+  private activeIndex(epoch: number): number {
     let idx = 0;
     for (let i = 0; i < this.milestoneEpochs.length; i++) {
-      if (this.lastEpoch >= (this.milestoneEpochs[i] ?? 0)) {
+      if (epoch >= (this.milestoneEpochs[i] ?? 0)) {
         idx = i + 1;
       }
     }
-    const scheduler = this.schedulers[idx];
-    if (!scheduler) return this.baseLrs;
+    return idx;
+  }
+
+  getLr(): number[] {
+    const scheduler = this.schedulers[this.activeIndex(this.lastEpoch)];
+    if (!scheduler) return [...this.baseLrs];
     return scheduler.getLr();
   }
 
   override step(): void {
-    // Find the active scheduler and step it
-    let idx = 0;
-    for (let i = 0; i < this.milestoneEpochs.length; i++) {
-      if (this.lastEpoch >= (this.milestoneEpochs[i] ?? 0)) {
-        idx = i + 1;
-      }
-    }
     this.lastEpoch++;
+    const idx = this.activeIndex(this.lastEpoch);
     const scheduler = this.schedulers[idx];
     if (scheduler) {
-      scheduler.step();
-    }
-
-    const newLrs = this.getLr();
-    for (let i = 0; i < this.optimizer.paramGroups.length; i++) {
-      const group = this.optimizer.paramGroups[i];
-      if (group) {
-        const next = newLrs[i];
-        if (next !== undefined) {
-          setGroupLr(group, next);
-        }
+      if (idx > 0 && this.milestoneEpochs[idx - 1] === this.lastEpoch) {
+        // A milestone: the next scheduler starts over at its own epoch 0.
+        LRScheduler.seek(scheduler, 0);
+      } else {
+        scheduler.step();
       }
     }
+    this.applyLrs(this.getLr());
+  }
+
+  protected override childSchedulers(): LRScheduler[] {
+    return this.schedulers;
   }
 }
 

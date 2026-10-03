@@ -2,13 +2,13 @@
 
 > **View online:** https://deepbox.dev/examples/33-dataframe-advanced
 
-Advanced DataFrame operations new in v1.0.0: string/datetime accessors, rolling/expanding/EWM windows, query/eval expressions, pivot tables, crosstabs, and more.
+Twelve short parts on `Series` and `DataFrame` features: string and datetime accessors, rolling, expanding and EWM windows, `query` and `eval` expressions, `assign`, pivot tables, crosstabs, `nlargest`, interpolation and gap filling.
 
 ## Deepbox Modules Used
 
-| Module              | Features Used                                                                       |
-| ------------------- | ----------------------------------------------------------------------------------- |
-| `deepbox/dataframe` | Series.str, Series.dt, rolling, expanding, ewm, query, eval, assign, pivot_table, crosstab, nlargest, nsmallest, interpolate |
+| Module              | Features Used                                                                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/dataframe` | Series.str, Series.dt, rolling, expanding, ewm, query, eval, assign, pivotTable, crosstab, nlargest, nsmallest, interpolate, ffill, bfill, fillna  |
 
 ## Usage
 
@@ -18,12 +18,15 @@ npm run example:33
 
 ## Output
 
-- Console output demonstrating string/datetime accessors, window functions, expressions, and pivot tables
+- Console output only: each part prints its input and its result.
+- `rolling` accepts `minPeriods` and `center`.
+- `ewm` defaults to `adjust: false` and `bias: true`, which differs from pandas. Pass `{ adjust: true, bias: false }` to match pandas.
+- The older names `pivot_table` and `dayofweek` still work. Use `pivotTable` and `dayOfWeek`.
 
-## Architecture
+## Files
 
 ```
 33-dataframe-advanced/
-├── index.ts     # Main entry point
+├── index.ts     # Example script
 └── README.md    # This file
 ```

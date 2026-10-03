@@ -10,6 +10,18 @@
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
  */
 
+import { IndexError, InvalidParameterError } from "../../core/errors/index";
+
+/**
+ * Resolve a TypedArray-style relative bound: truncated, negative values count
+ * from the end, and the result is clamped to `[0, length]`.
+ */
+function resolveBound(value: number, length: number): number {
+  const v = Math.trunc(value);
+  if (Number.isNaN(v)) return 0;
+  return v < 0 ? Math.max(0, length + v) : Math.min(v, length);
+}
+
 // ─── IEEE 754 Half-Precision Conversion ──────────────────────────────────────
 
 const FLOAT16_EXPONENT_BIAS = 15;
@@ -17,6 +29,15 @@ const FLOAT16_MANTISSA_BITS = 10;
 
 const float32View = new Float32Array(1);
 const int32View = new Int32Array(float32View.buffer);
+
+/** Round to nearest integer, ties to even (IEEE 754 default rounding). */
+function roundTiesToEven(x: number): number {
+  const fl = Math.floor(x);
+  const diff = x - fl;
+  if (diff > 0.5) return fl + 1;
+  if (diff < 0.5) return fl;
+  return fl % 2 === 0 ? fl : fl + 1;
+}
 
 /**
  * Convert a JavaScript number (float64) to IEEE 754 half-precision (uint16).
@@ -28,21 +49,12 @@ const int32View = new Int32Array(float32View.buffer);
  * - Overflow to Infinity
  * - Underflow to zero
  */
-/** Round to nearest integer, ties to even (IEEE 754 default rounding). */
-function roundTiesToEven(x: number): number {
-  const fl = Math.floor(x);
-  const diff = x - fl;
-  if (diff > 0.5) return fl + 1;
-  if (diff < 0.5) return fl;
-  return fl % 2 === 0 ? fl : fl + 1;
-}
-
 function float64ToFloat16Bits(value: number): number {
   if (Number.isNaN(value)) return 0x7e00; // NaN
   if (value === 0) return Object.is(value, -0) ? 0x8000 : 0;
   if (!Number.isFinite(value)) return value > 0 ? 0x7c00 : 0xfc00;
 
-  // Convert directly from float64 — rounding through a float32 intermediate
+  // Convert directly from float64, because rounding through a float32 intermediate
   // double-rounds (e.g. 65519.999 → f32 65520 → Infinity instead of 65504)
   // and drops sticky bits for denormals.
   const sign = value < 0 ? 0x8000 : 0;
@@ -121,14 +133,14 @@ function bfloat16BitsToFloat64(bits: number): number {
   return float32View[0]!;
 }
 
-// ─── Float16Array ────────────────────────────────────────────────────────────
+// ─── Float16Array ───────────────────────────────────────────────────────────────
 
 /**
  * Software IEEE 754 half-precision floating-point array.
  *
  * Stores elements in 2 bytes each (Uint16Array backing) and converts
  * to/from float64 on access. Provides the same interface as native
- * TypedArrays for seamless integration with Deepbox tensors.
+ * TypedArrays so they can be used with Deepbox tensors.
  *
  * @example
  * ```ts
@@ -141,6 +153,9 @@ function bfloat16BitsToFloat64(bits: number): number {
  * ```
  */
 export class Float16Array {
+  /** Bytes per element (always 2). */
+  static readonly BYTES_PER_ELEMENT = 2;
+
   /** Numeric index access (implemented via a Proxy in the constructor). */
   [index: number]: number;
   /** Underlying uint16 storage. */
@@ -156,12 +171,26 @@ export class Float16Array {
   /** Byte length of the storage. */
   readonly byteLength: number;
 
+  /**
+   * @param lengthOrData - Element count, an array-like of numbers (each is
+   *   rounded to float16), or an `ArrayBuffer` holding raw 16-bit patterns.
+   * @param byteOffset - Byte offset into the buffer (buffer form only).
+   * @param length - Element count to view (buffer form only).
+   * @throws {InvalidParameterError} If a numeric length is not a non-negative integer.
+   */
   constructor(
     lengthOrData: number | ArrayLike<number> | ArrayBuffer,
     byteOffset?: number,
     length?: number
   ) {
     if (typeof lengthOrData === "number") {
+      if (!Number.isInteger(lengthOrData) || lengthOrData < 0) {
+        throw new InvalidParameterError(
+          `Float16Array length must be a non-negative integer; received ${String(lengthOrData)}`,
+          "length",
+          lengthOrData
+        );
+      }
       this._storage = new Uint16Array(lengthOrData);
       this.length = lengthOrData;
     } else if (lengthOrData instanceof ArrayBuffer) {
@@ -171,7 +200,7 @@ export class Float16Array {
       this._storage = new Uint16Array(lengthOrData.length);
       this.length = lengthOrData.length;
       for (let i = 0; i < lengthOrData.length; i++) {
-        this._storage[i] = float64ToFloat16Bits(lengthOrData[i]!);
+        this._storage[i] = float64ToFloat16Bits(Number(lengthOrData[i]));
       }
     }
     this.buffer = this._storage.buffer as ArrayBuffer;
@@ -194,7 +223,7 @@ export class Float16Array {
         if (typeof prop === "string" && /^\d+$/.test(prop)) {
           const idx = Number(prop);
           if (idx >= 0 && idx < target.length) {
-            target._storage[idx] = float64ToFloat16Bits(value as number);
+            target._storage[idx] = float64ToFloat16Bits(Number(value));
             return true;
           }
           return true;
@@ -220,22 +249,32 @@ export class Float16Array {
   }
 
   /**
-   * Get the element at the given index as a number.
+   * Get the element at `index` (negative counts from the end), or
+   * `undefined` when out of range.
    */
   at(index: number): number | undefined {
-    const idx = index < 0 ? this.length + index : index;
-    if (idx < 0 || idx >= this.length) return undefined;
+    const i = Math.trunc(index) || 0;
+    const idx = i < 0 ? this.length + i : i;
+    if (!(idx >= 0 && idx < this.length)) return undefined;
     return float16BitsToFloat64(this._storage[idx]!);
   }
 
   /**
-   * Set the value at the given index.
+   * Copy numbers from `source` into this array starting at `offset`, rounding
+   * each to float16.
+   *
+   * @throws {IndexError} If the values do not fit starting at `offset`
+   *   (same condition as `TypedArray.prototype.set`).
    */
   set(source: ArrayLike<number>, offset = 0): void {
+    if (!Number.isInteger(offset) || offset < 0 || offset + source.length > this.length) {
+      throw new IndexError(
+        `cannot set ${source.length} values at offset ${String(offset)} in an array of length ${this.length}`,
+        { index: offset, validRange: [0, this.length] }
+      );
+    }
     for (let i = 0; i < source.length; i++) {
-      if (offset + i < this.length) {
-        this._storage[offset + i] = float64ToFloat16Bits(source[i]!);
-      }
+      this._storage[offset + i] = float64ToFloat16Bits(Number(source[i]));
     }
   }
 
@@ -243,27 +282,23 @@ export class Float16Array {
    * Create a copy of a portion of the array.
    */
   slice(start = 0, end = this.length): Float16Array {
-    const s = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
-    const e = end < 0 ? Math.max(0, this.length + end) : Math.min(end, this.length);
-    const len = Math.max(0, e - s);
-    const result = new Float16Array(len);
-    result._storage.set(this._storage.subarray(s, e));
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    const result = new Float16Array(Math.max(0, e - s));
+    result._storage.set(this._storage.subarray(s, Math.max(s, e)));
     return result;
   }
 
   /**
-   * Create a new array from a portion without copying.
+   * Create a view over a portion of the array that shares memory with it.
    */
   subarray(begin = 0, end = this.length): Float16Array {
     const sub = this._storage.subarray(begin, end);
-    const result = new Float16Array(0);
-    (result as { _storage: Uint16Array })._storage = sub;
-    (result as { length: number }).length = sub.length;
-    return result;
+    return new Float16Array(sub.buffer as ArrayBuffer, sub.byteOffset, sub.length);
   }
 
   /**
-   * Fill the array with a value.
+   * Fill the range `[start, end)` with a value rounded to float16.
    */
   fill(value: number, start = 0, end = this.length): this {
     const bits = float64ToFloat16Bits(value);
@@ -279,7 +314,7 @@ export class Float16Array {
     return this;
   }
 
-  /** Iterator support. */
+  /** Iterator over the element values. */
   *[Symbol.iterator](): IterableIterator<number> {
     for (let i = 0; i < this.length; i++) {
       yield float16BitsToFloat64(this._storage[i]!);
@@ -301,7 +336,7 @@ export class Float16Array {
   }
 }
 
-// ─── BFloat16Array ───────────────────────────────────────────────────────────
+// ─── BFloat16Array ───────────────────────────────────────────────────────────────
 
 /**
  * Software BFloat16 (Brain Floating Point) array.
@@ -320,6 +355,9 @@ export class Float16Array {
  * ```
  */
 export class BFloat16Array {
+  /** Bytes per element (always 2). */
+  static readonly BYTES_PER_ELEMENT = 2;
+
   /** Numeric index access (implemented via a Proxy in the constructor). */
   [index: number]: number;
   /** Underlying uint16 storage. */
@@ -335,12 +373,26 @@ export class BFloat16Array {
   /** Byte length of the storage. */
   readonly byteLength: number;
 
+  /**
+   * @param lengthOrData - Element count, an array-like of numbers (each is
+   *   rounded to bfloat16), or an `ArrayBuffer` holding raw 16-bit patterns.
+   * @param byteOffset - Byte offset into the buffer (buffer form only).
+   * @param length - Element count to view (buffer form only).
+   * @throws {InvalidParameterError} If a numeric length is not a non-negative integer.
+   */
   constructor(
     lengthOrData: number | ArrayLike<number> | ArrayBuffer,
     byteOffset?: number,
     length?: number
   ) {
     if (typeof lengthOrData === "number") {
+      if (!Number.isInteger(lengthOrData) || lengthOrData < 0) {
+        throw new InvalidParameterError(
+          `BFloat16Array length must be a non-negative integer; received ${String(lengthOrData)}`,
+          "length",
+          lengthOrData
+        );
+      }
       this._storage = new Uint16Array(lengthOrData);
       this.length = lengthOrData;
     } else if (lengthOrData instanceof ArrayBuffer) {
@@ -350,7 +402,7 @@ export class BFloat16Array {
       this._storage = new Uint16Array(lengthOrData.length);
       this.length = lengthOrData.length;
       for (let i = 0; i < lengthOrData.length; i++) {
-        this._storage[i] = float64ToBFloat16Bits(lengthOrData[i]!);
+        this._storage[i] = float64ToBFloat16Bits(Number(lengthOrData[i]));
       }
     }
     this.buffer = this._storage.buffer as ArrayBuffer;
@@ -373,7 +425,7 @@ export class BFloat16Array {
         if (typeof prop === "string" && /^\d+$/.test(prop)) {
           const idx = Number(prop);
           if (idx >= 0 && idx < target.length) {
-            target._storage[idx] = float64ToBFloat16Bits(value as number);
+            target._storage[idx] = float64ToBFloat16Bits(Number(value));
             return true;
           }
           return true;
@@ -383,67 +435,100 @@ export class BFloat16Array {
     });
   }
 
+  /**
+   * Create a BFloat16Array from an iterable of numbers.
+   */
   static from(source: ArrayLike<number> | Iterable<number>): BFloat16Array {
     const arr = Array.isArray(source) ? source : Array.from(source as Iterable<number>);
     return new BFloat16Array(arr);
   }
 
+  /**
+   * Create a BFloat16Array with the given values.
+   */
   static of(...values: number[]): BFloat16Array {
     return new BFloat16Array(values);
   }
 
+  /**
+   * Get the element at `index` (negative counts from the end), or
+   * `undefined` when out of range.
+   */
   at(index: number): number | undefined {
-    const idx = index < 0 ? this.length + index : index;
-    if (idx < 0 || idx >= this.length) return undefined;
+    const i = Math.trunc(index) || 0;
+    const idx = i < 0 ? this.length + i : i;
+    if (!(idx >= 0 && idx < this.length)) return undefined;
     return bfloat16BitsToFloat64(this._storage[idx]!);
   }
 
+  /**
+   * Copy numbers from `source` into this array starting at `offset`, rounding
+   * each to bfloat16.
+   *
+   * @throws {IndexError} If the values do not fit starting at `offset`
+   *   (same condition as `TypedArray.prototype.set`).
+   */
   set(source: ArrayLike<number>, offset = 0): void {
+    if (!Number.isInteger(offset) || offset < 0 || offset + source.length > this.length) {
+      throw new IndexError(
+        `cannot set ${source.length} values at offset ${String(offset)} in an array of length ${this.length}`,
+        { index: offset, validRange: [0, this.length] }
+      );
+    }
     for (let i = 0; i < source.length; i++) {
-      if (offset + i < this.length) {
-        this._storage[offset + i] = float64ToBFloat16Bits(source[i]!);
-      }
+      this._storage[offset + i] = float64ToBFloat16Bits(Number(source[i]));
     }
   }
 
+  /**
+   * Create a copy of a portion of the array.
+   */
   slice(start = 0, end = this.length): BFloat16Array {
-    const s = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
-    const e = end < 0 ? Math.max(0, this.length + end) : Math.min(end, this.length);
-    const len = Math.max(0, e - s);
-    const result = new BFloat16Array(len);
-    result._storage.set(this._storage.subarray(s, e));
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    const result = new BFloat16Array(Math.max(0, e - s));
+    result._storage.set(this._storage.subarray(s, Math.max(s, e)));
     return result;
   }
 
+  /**
+   * Create a view over a portion of the array that shares memory with it.
+   */
   subarray(begin = 0, end = this.length): BFloat16Array {
     const sub = this._storage.subarray(begin, end);
-    const result = new BFloat16Array(0);
-    (result as { _storage: Uint16Array })._storage = sub;
-    (result as { length: number }).length = sub.length;
-    return result;
+    return new BFloat16Array(sub.buffer as ArrayBuffer, sub.byteOffset, sub.length);
   }
 
+  /**
+   * Fill the range `[start, end)` with a value rounded to bfloat16.
+   */
   fill(value: number, start = 0, end = this.length): this {
     const bits = float64ToBFloat16Bits(value);
     this._storage.fill(bits, start, end);
     return this;
   }
 
+  /**
+   * Copy elements within the array.
+   */
   copyWithin(target: number, start: number, end?: number): this {
     this._storage.copyWithin(target, start, end);
     return this;
   }
 
+  /** Iterator over the element values. */
   *[Symbol.iterator](): IterableIterator<number> {
     for (let i = 0; i < this.length; i++) {
       yield bfloat16BitsToFloat64(this._storage[i]!);
     }
   }
 
+  /** String tag. */
   get [Symbol.toStringTag](): string {
     return "BFloat16Array";
   }
 
+  /** Convert to a regular Array. */
   toArray(): number[] {
     const result: number[] = [];
     for (let i = 0; i < this.length; i++) {
@@ -455,5 +540,29 @@ export class BFloat16Array {
 
 // ─── Conversion Utilities ────────────────────────────────────────────────────
 
-/** Convert float16 bits to float64. Useful for serialization. */
-export { bfloat16BitsToFloat64, float16BitsToFloat64, float64ToBFloat16Bits, float64ToFloat16Bits };
+/**
+ * Round a number to the nearest representable IEEE 754 binary16 value
+ * (ties to even, overflow to ±Infinity).
+ */
+function roundToFloat16(value: number): number {
+  return float16BitsToFloat64(float64ToFloat16Bits(value));
+}
+
+/** Round a number to the nearest representable bfloat16 value (ties to even). */
+function roundToBFloat16(value: number): number {
+  return bfloat16BitsToFloat64(float64ToBFloat16Bits(value));
+}
+
+/**
+ * Convert float16 bits to float64, and the reverse (`float64ToFloat16Bits`).
+ * The bfloat16 pair works the same way. Useful for serialization.
+ * `roundToFloat16` / `roundToBFloat16` snap a number onto the half-precision grid.
+ */
+export {
+  bfloat16BitsToFloat64,
+  float16BitsToFloat64,
+  float64ToBFloat16Bits,
+  float64ToFloat16Bits,
+  roundToBFloat16,
+  roundToFloat16,
+};

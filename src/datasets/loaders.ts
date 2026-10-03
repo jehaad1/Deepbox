@@ -2,13 +2,15 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
+import { InvalidParameterError } from "../core/errors";
+import type { DType } from "../core/types/dtype";
 import { reshape, type Tensor, tensor } from "../ndarray";
 import { BREAST_CANCER_DATA, BREAST_CANCER_TARGET } from "./data/breast-cancer.data";
 import { DIABETES_DATA, DIABETES_TARGET } from "./data/diabetes.data";
 import { decodeDigitsData, decodeDigitsTarget } from "./data/digits.data";
 import { IRIS_DATA, IRIS_TARGET } from "./data/iris.data";
 import { WINE_DATA, WINE_TARGET } from "./data/wine.data";
-import { createRng, normal01 } from "./utils";
+import { createRng, defaultFloatDtype, normal01 } from "./utils";
 
 /** Standard dataset structure returned by all built-in dataset loaders. */
 export type Dataset = {
@@ -20,13 +22,43 @@ export type Dataset = {
   images?: Tensor;
 };
 
+/**
+ * Options accepted by the loaders for the bundled reference datasets
+ * ({@link loadIris}, {@link loadWine}, {@link loadDigits}, {@link loadBreastCancer},
+ * {@link loadDiabetes} and {@link loadLinnerud}).
+ */
+export type DatasetLoadOptions = {
+  /**
+   * Floating-point dtype of `data` (and of `target` for regression datasets).
+   * Defaults to the global default dtype (`float32` unless changed with `setDtype`); if the global default is not a floating-point dtype, `float32` is used.
+   * Pass `"float64"` to get the exact reference values, as scikit-learn returns them.
+   * Classification targets are always `int32`.
+   */
+  readonly dtype?: "float32" | "float64";
+};
+
+function resolveFloatOptions(options: DatasetLoadOptions | undefined): {
+  dtype: DType;
+} {
+  const dtype = options?.dtype;
+  if (dtype === undefined) return { dtype: defaultFloatDtype() };
+  if (dtype !== "float32" && dtype !== "float64") {
+    throw new InvalidParameterError(
+      `dtype must be "float32" or "float64"; received ${String(dtype)}`,
+      "dtype",
+      dtype
+    );
+  }
+  return { dtype };
+}
+
 const SYNTHETIC_NOTE =
   "Synthetic (deterministic) dataset inspired by a common ML benchmark. " +
   "Values are generated, not the original reference dataset.";
 
 const REFERENCE_NOTE =
-  "Real public-domain reference dataset mirrored from the UCI Machine Learning " +
-  "Repository via scikit-learn. Values match the canonical dataset.";
+  "Real reference dataset, mirrored from the copy bundled with scikit-learn. " +
+  "Values match the canonical dataset.";
 
 // ─── Iris ────────────────────────────────────────────────────────────────────
 
@@ -34,14 +66,16 @@ const REFERENCE_NOTE =
  * Load the Iris dataset (R. A. Fisher, 1936).
  *
  * The real, canonical measurements: 150 samples, 4 features, 3 classes
- * (50 setosa, 50 versicolor, 50 virginica). Deterministic — the committed
+ * (50 setosa, 50 versicolor, 50 virginica). Deterministic: the committed
  * reference values are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[150, 4]` and `target` shape `[150]` (int32).
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadIris(): Dataset {
+export function loadIris(options?: DatasetLoadOptions): Dataset {
   return {
-    data: reshape(tensor(IRIS_DATA as number[]), [150, 4]),
+    data: reshape(tensor(IRIS_DATA as number[], resolveFloatOptions(options)), [150, 4]),
     target: tensor(IRIS_TARGET as number[], { dtype: "int32" }),
     featureNames: [
       "sepal length (cm)",
@@ -60,14 +94,16 @@ export function loadIris(): Dataset {
  * Load the Wine recognition dataset (UCI).
  *
  * The real, canonical measurements: 178 samples, 13 chemical-analysis features,
- * 3 cultivar classes (59 / 71 / 48). Deterministic — the committed reference
+ * 3 cultivar classes (59 / 71 / 48). Deterministic: the committed reference
  * values are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[178, 13]` and `target` shape `[178]` (int32).
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadWine(): Dataset {
+export function loadWine(options?: DatasetLoadOptions): Dataset {
   return {
-    data: reshape(tensor(WINE_DATA as number[]), [178, 13]),
+    data: reshape(tensor(WINE_DATA as number[], resolveFloatOptions(options)), [178, 13]),
     target: tensor(WINE_TARGET as number[], { dtype: "int32" }),
     featureNames: [
       "alcohol",
@@ -95,14 +131,16 @@ export function loadWine(): Dataset {
  * Load the Optical Recognition of Handwritten Digits dataset (UCI).
  *
  * The real, canonical data: 1797 samples, 64 features (8×8 pixels, integer
- * intensities in `[0, 16]`), 10 classes (digits 0–9). Deterministic — the
+ * intensities in `[0, 16]`), 10 classes (digits 0–9). Deterministic: the
  * committed reference values are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[1797, 64]`, `target` shape
- *   `[1797]` (int32), and `images` shape `[1797, 8, 8]`.
+ *   `[1797]` (int32), and `images` shape `[1797, 8, 8]` (a view of `data`).
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadDigits(): Dataset {
-  const dataTensor = reshape(tensor(decodeDigitsData()), [1797, 64]);
+export function loadDigits(options?: DatasetLoadOptions): Dataset {
+  const dataTensor = reshape(tensor(decodeDigitsData(), resolveFloatOptions(options)), [1797, 64]);
   return {
     data: dataTensor,
     target: tensor(decodeDigitsTarget(), { dtype: "int32" }),
@@ -119,14 +157,16 @@ export function loadDigits(): Dataset {
  * Load the Breast Cancer Wisconsin (Diagnostic) dataset (UCI).
  *
  * The real, canonical measurements: 569 samples, 30 features, 2 classes
- * (212 malignant, 357 benign). Deterministic — the committed reference values
+ * (212 malignant, 357 benign). Deterministic: the committed reference values
  * are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[569, 30]` and `target` shape `[569]` (int32).
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadBreastCancer(): Dataset {
+export function loadBreastCancer(options?: DatasetLoadOptions): Dataset {
   return {
-    data: reshape(tensor(BREAST_CANCER_DATA as number[]), [569, 30]),
+    data: reshape(tensor(BREAST_CANCER_DATA as number[], resolveFloatOptions(options)), [569, 30]),
     target: tensor(BREAST_CANCER_TARGET as number[], { dtype: "int32" }),
     featureNames: [
       "mean radius",
@@ -173,15 +213,18 @@ export function loadBreastCancer(): Dataset {
  * The real, canonical data: 442 samples, 10 baseline features (age, sex, BMI,
  * blood pressure, and six blood-serum measurements; each column mean-centered
  * and scaled to unit L2 norm), with a continuous disease-progression target
- * (real values, genuinely correlated with the features). Deterministic — the
+ * (real values, genuinely correlated with the features). Deterministic: the
  * committed reference values are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[442, 10]` and `target` shape `[442]`.
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadDiabetes(): Dataset {
+export function loadDiabetes(options?: DatasetLoadOptions): Dataset {
+  const floatOptions = resolveFloatOptions(options);
   return {
-    data: reshape(tensor(DIABETES_DATA as number[]), [442, 10]),
-    target: tensor(DIABETES_TARGET as number[]),
+    data: reshape(tensor(DIABETES_DATA as number[], floatOptions), [442, 10]),
+    target: tensor(DIABETES_TARGET as number[], floatOptions),
     featureNames: ["age", "sex", "bmi", "bp", "s1", "s2", "s3", "s4", "s5", "s6"],
     description: `${REFERENCE_NOTE} 442 samples, 10 features (regression).`,
   };
@@ -189,44 +232,74 @@ export function loadDiabetes(): Dataset {
 
 // ─── Linnerud ────────────────────────────────────────────────────────────────
 
-let __linnerud: { data: number[][]; target: number[][] } | undefined;
+// Linnerud (1977) exercise and physiological measurements of 20 middle-aged men,
+// as distributed with scikit-learn. Columns: Chins, Situps, Jumps.
+const LINNERUD_EXERCISE: readonly (readonly number[])[] = [
+  [5, 162, 60],
+  [2, 110, 60],
+  [12, 101, 101],
+  [12, 105, 37],
+  [13, 155, 58],
+  [4, 101, 42],
+  [8, 101, 38],
+  [6, 125, 40],
+  [15, 200, 40],
+  [17, 251, 250],
+  [17, 120, 38],
+  [13, 210, 115],
+  [14, 215, 105],
+  [1, 50, 50],
+  [6, 70, 31],
+  [12, 210, 120],
+  [4, 60, 25],
+  [11, 230, 80],
+  [15, 225, 73],
+  [2, 110, 43],
+];
 
-function getLinnerudData() {
-  if (__linnerud !== undefined) return __linnerud;
-  const rng = createRng(555);
-
-  const data: number[][] = [];
-  const target: number[][] = [];
-
-  for (let i = 0; i < 20; i++) {
-    data.push([
-      5 + Math.floor(rng() * 15),
-      100 + Math.floor(rng() * 100),
-      50 + Math.floor(rng() * 200),
-    ]);
-    target.push([170 + rng() * 30, 60 + rng() * 20, 50 + rng() * 20]);
-  }
-
-  __linnerud = { data, target };
-  return __linnerud;
-}
+// Columns: Weight, Waist, Pulse.
+const LINNERUD_PHYSIOLOGICAL: readonly (readonly number[])[] = [
+  [191, 36, 50],
+  [189, 37, 52],
+  [193, 38, 58],
+  [162, 35, 62],
+  [189, 35, 46],
+  [182, 36, 56],
+  [211, 38, 56],
+  [167, 34, 60],
+  [176, 31, 74],
+  [154, 33, 56],
+  [169, 34, 50],
+  [166, 33, 52],
+  [154, 34, 64],
+  [247, 46, 50],
+  [193, 36, 46],
+  [202, 37, 62],
+  [176, 37, 54],
+  [157, 32, 52],
+  [156, 33, 54],
+  [138, 33, 68],
+];
 
 /**
- * Load the synthetic Linnerud multi-output regression dataset.
+ * Load the Linnerud multi-output regression dataset (Tenenhaus, 1998).
  *
- * 20 samples, 3 exercise features, 3 physiological targets.
- * Deterministic — always returns the same data.
+ * The real, canonical data: 20 middle-aged men, 3 exercise features (chin-ups,
+ * sit-ups, jumps) and 3 physiological targets (weight, waist, pulse).
+ * Deterministic: the committed reference values are always returned unchanged.
  *
+ * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).
  * @returns A {@link Dataset} with `data` shape `[20, 3]` and `target` shape `[20, 3]`.
+ * @throws {InvalidParameterError} If `options.dtype` is not `"float32"` or `"float64"`.
  */
-export function loadLinnerud(): Dataset {
-  const { data, target } = getLinnerudData();
+export function loadLinnerud(options?: DatasetLoadOptions): Dataset {
+  const floatOptions = resolveFloatOptions(options);
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(LINNERUD_EXERCISE as number[][], floatOptions),
+    target: tensor(LINNERUD_PHYSIOLOGICAL as number[][], floatOptions),
     featureNames: ["Chins", "Situps", "Jumps"],
     targetNames: ["Weight", "Waist", "Pulse"],
-    description: `${SYNTHETIC_NOTE} 20 samples, 3 exercise features, 3 physiological targets.`,
+    description: `${REFERENCE_NOTE} 20 samples, 3 exercise features, 3 physiological targets (multi-output regression).`,
   };
 }
 
@@ -297,14 +370,14 @@ function getFlowersExtendedData() {
  * Load the synthetic Flowers Extended classification dataset.
  *
  * 180 samples, 6 features, 4 species.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[180, 6]` and `target` shape `[180]` (int32).
  */
 export function loadFlowersExtended(): Dataset {
   const { data, target } = getFlowersExtendedData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: [
       "sepal length (cm)",
@@ -408,14 +481,14 @@ function getLeafShapesData() {
  * Load the synthetic Leaf Shapes classification dataset.
  *
  * 150 samples, 8 geometric features, 5 plant species.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 8]` and `target` shape `[150]` (int32).
  */
 export function loadLeafShapes(): Dataset {
   const { data, target } = getLeafShapesData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: [
       "area (cm²)",
@@ -466,14 +539,14 @@ function getFruitQualityData() {
  * Load the synthetic Fruit Quality classification dataset.
  *
  * 150 samples, 5 features, 3 fruit classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 5]` and `target` shape `[150]` (int32).
  */
 export function loadFruitQuality(): Dataset {
   const { data, target } = getFruitQualityData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: [
       "weight (g)",
@@ -521,14 +594,14 @@ function getSeedMorphologyData() {
  * Load the synthetic Seed Morphology classification dataset.
  *
  * 150 samples, 4 features, 3 seed types.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 4]` and `target` shape `[150]` (int32).
  */
 export function loadSeedMorphology(): Dataset {
   const { data, target } = getSeedMorphologyData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["length (mm)", "width (mm)", "roundness", "density (g/cm³)"],
     targetNames: ["wheat", "rice", "sunflower"],
@@ -569,14 +642,14 @@ function getMoonsMultiData() {
  * Load the synthetic Moons-Multi classification dataset.
  *
  * 150 samples, 2D, 3 interleaving rotated moon classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 2]` and `target` shape `[150]` (int32).
  */
 export function loadMoonsMulti(): Dataset {
   const { data, target } = getMoonsMultiData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["x", "y"],
     targetNames: ["moon_0", "moon_1", "moon_2"],
@@ -614,14 +687,14 @@ function getConcentricRingsData() {
  * Load the synthetic Concentric Rings classification dataset.
  *
  * 150 samples, 2D, 3 concentric circle classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 2]` and `target` shape `[150]` (int32).
  */
 export function loadConcentricRings(): Dataset {
   const { data, target } = getConcentricRingsData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["x", "y"],
     targetNames: ["inner", "middle", "outer"],
@@ -661,14 +734,14 @@ function getSpiralArmsData() {
  * Load the synthetic Spiral Arms classification dataset.
  *
  * 150 samples, 2D, 3 spiral classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 2]` and `target` shape `[150]` (int32).
  */
 export function loadSpiralArms(): Dataset {
   const { data, target } = getSpiralArmsData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["x", "y"],
     targetNames: ["arm_0", "arm_1", "arm_2"],
@@ -714,14 +787,14 @@ function getGaussianIslandsData() {
  * Load the synthetic Gaussian Islands classification dataset.
  *
  * 200 samples, 3D, 4 separated Gaussian clusters.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 3]` and `target` shape `[200]` (int32).
  */
 export function loadGaussianIslands(): Dataset {
   const { data, target } = getGaussianIslandsData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["x", "y", "z"],
     targetNames: ["island_0", "island_1", "island_2", "island_3"],
@@ -757,15 +830,15 @@ function getPlantGrowthData() {
  * Load the synthetic Plant Growth regression dataset.
  *
  * 200 samples, 3 features (sunlight, water, soil quality), target: height (cm).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 3]` and `target` shape `[200]`.
  */
 export function loadPlantGrowth(): Dataset {
   const { data, target } = getPlantGrowthData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["sunlight (hours/day)", "water (mL/day)", "soil quality (0-10)"],
     description: `${SYNTHETIC_NOTE} 200 samples, 3 features, target: height (cm) after 30 days.`,
   };
@@ -800,15 +873,15 @@ function getHousingMiniData() {
  * Load the synthetic Housing-Mini regression dataset.
  *
  * 200 samples, 4 features (size, rooms, age, distance), target: price (thousands).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 4]` and `target` shape `[200]`.
  */
 export function loadHousingMini(): Dataset {
   const { data, target } = getHousingMiniData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["size (sqm)", "rooms", "age (years)", "distance to center (km)"],
     description: `${SYNTHETIC_NOTE} 200 samples, 4 features, target: price (thousands).`,
   };
@@ -844,15 +917,15 @@ function getEnergyEfficiencyData() {
  * Load the synthetic Energy Efficiency regression dataset.
  *
  * 200 samples, 3 features (insulation, window area, orientation), target: energy usage (kWh).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 3]` and `target` shape `[200]`.
  */
 export function loadEnergyEfficiency(): Dataset {
   const { data, target } = getEnergyEfficiencyData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["insulation (R-value)", "window area (sqm)", "orientation (degrees)"],
     description: `${SYNTHETIC_NOTE} 200 samples, 3 features, target: energy usage (kWh).`,
   };
@@ -887,15 +960,15 @@ function getCropYieldData() {
  * Load the synthetic Crop Yield regression dataset.
  *
  * 200 samples, 3 features (rainfall, fertilizer, temperature), target: yield (tons/ha).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 3]` and `target` shape `[200]`.
  */
 export function loadCropYield(): Dataset {
   const { data, target } = getCropYieldData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["rainfall (mm)", "fertilizer (kg/ha)", "temperature (°C)"],
     description: `${SYNTHETIC_NOTE} 200 samples, 3 features, target: yield (tons/ha).`,
   };
@@ -940,14 +1013,14 @@ function getCustomerSegmentsData() {
  * Load the synthetic Customer Segments clustering dataset.
  *
  * 200 samples, 3 features (age, income, spending score), 4 natural clusters.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[200, 3]` and `target` shape `[200]` (int32).
  */
 export function loadCustomerSegments(): Dataset {
   const { data, target } = getCustomerSegmentsData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["age", "income (thousands)", "spending score (0-100)"],
     targetNames: ["young_budget", "young_premium", "mature_moderate", "mature_saver"],
@@ -1010,14 +1083,14 @@ function getSensorStatesData() {
  * Load the synthetic Sensor States classification dataset.
  *
  * 180 samples, 6 sensor readings, 3 hidden operating modes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[180, 6]` and `target` shape `[180]` (int32).
  */
 export function loadSensorStates(): Dataset {
   const { data, target } = getSensorStatesData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: [
       "temperature (°C)",
@@ -1066,14 +1139,14 @@ function getStudentPerformanceData() {
  * Load the synthetic Student Performance classification dataset.
  *
  * 150 samples, 3 integer features, 3 outcome classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 3]` and `target` shape `[150]` (int32).
  */
 export function loadStudentPerformance(): Dataset {
   const { data, target } = getStudentPerformanceData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["study hours (per week)", "absences", "quiz score (0-100)"],
     targetNames: ["fail", "pass", "excellent"],
@@ -1123,14 +1196,14 @@ function getTrafficConditionsData() {
  * Load the synthetic Traffic Conditions classification dataset.
  *
  * 150 samples, 3 features, 3 traffic level classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 3]` and `target` shape `[150]` (int32).
  */
 export function loadTrafficConditions(): Dataset {
   const { data, target } = getTrafficConditionsData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["time of day (hour)", "speed (km/h)", "density (vehicles/km)"],
     targetNames: ["light", "moderate", "heavy"],
@@ -1168,15 +1241,15 @@ function getFitnessScoresData() {
  * Load the synthetic Fitness Scores multi-output regression dataset.
  *
  * 100 samples, 3 exercise features, 3 fitness targets (strength, endurance, flexibility).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[100, 3]` and `target` shape `[100, 3]`.
  */
 export function loadFitnessScores(): Dataset {
   const { data, target } = getFitnessScoresData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["exercise duration (min)", "intensity (1-10)", "frequency (times/week)"],
     targetNames: ["strength", "endurance", "flexibility"],
     description: `${SYNTHETIC_NOTE} 100 samples, 3 exercise features, 3 fitness targets (multi-output).`,
@@ -1215,15 +1288,15 @@ function getWeatherOutcomesData() {
  * Load the synthetic Weather Outcomes multi-output regression dataset.
  *
  * 150 samples, 3 features, 2 targets (rain probability, wind speed).
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[150, 3]` and `target` shape `[150, 2]`.
  */
 export function loadWeatherOutcomes(): Dataset {
   const { data, target } = getWeatherOutcomesData();
   return {
-    data: tensor(data),
-    target: tensor(target),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
+    target: tensor(target, { dtype: defaultFloatDtype() }),
     featureNames: ["humidity (%)", "pressure (hPa)", "temperature (°C)"],
     targetNames: ["rain probability", "wind speed (km/h)"],
     description: `${SYNTHETIC_NOTE} 150 samples, 3 features, 2 targets (multi-output regression).`,
@@ -1259,14 +1332,14 @@ function getPerfectlySeparableData() {
  * Load the synthetic Perfectly Separable classification dataset.
  *
  * 100 samples, 4 features, 2 linearly separable classes.
- * Deterministic — always returns the same data.
+ * Deterministic: always returns the same data.
  *
  * @returns A {@link Dataset} with `data` shape `[100, 4]` and `target` shape `[100]` (int32).
  */
 export function loadPerfectlySeparable(): Dataset {
   const { data, target } = getPerfectlySeparableData();
   return {
-    data: tensor(data),
+    data: tensor(data, { dtype: defaultFloatDtype() }),
     target: tensor(target, { dtype: "int32" }),
     featureNames: ["feature_0", "feature_1", "feature_2", "feature_3"],
     targetNames: ["class_0", "class_1"],

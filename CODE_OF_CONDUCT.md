@@ -45,10 +45,10 @@ confidentially and reviewed promptly.
 Community Moderators will investigate all reports and may take actions
 including:
 
-1. **Warning** – private written notice.
-2. **Temporary Limitations** – restricted participation for a cooldown period.
-3. **Temporary Suspension** – removal from community spaces for a set time.
-4. **Permanent Ban** – removal from all community spaces.
+1. **Warning**: private written notice.
+2. **Temporary Limitations**: restricted participation for a cooldown period.
+3. **Temporary Suspension**: removal from community spaces for a set time.
+4. **Permanent Ban**: removal from all community spaces.
 
 Enforcement decisions will prioritize community safety and well-being.
 

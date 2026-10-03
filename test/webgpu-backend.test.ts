@@ -1,5 +1,5 @@
 /**
- * WebGPU backend integration tests — run the real WGSL kernels via the
+ * WebGPU backend integration tests. They run the real WGSL kernels via the
  * `webgpu` (Dawn) dev dependency. The whole suite skips itself when Dawn
  * is not installed or no GPU adapter is available, so CI without a GPU
  * stays green while machines with one verify the kernels end to end.
@@ -227,8 +227,8 @@ describe.skipIf(!backend)("WebGPU WGSL kernels (real GPU)", () => {
   });
 
   it("softmax composes on device (max/sub/exp/sum/div) and matches the CPU result", async () => {
-    // Manual softmax over the last axis — the exact composition the autograd
-    // softmax uses — proving axis reductions + elementwise chain on device.
+    // Manual softmax over the last axis, the exact composition the autograd
+    // softmax uses, proving axis reductions + elementwise chain on device.
     const rows = [
       [1, 2, 3],
       [1, 1, 1],

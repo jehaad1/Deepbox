@@ -1,5 +1,5 @@
 /**
- * Benchmark 04 — Metrics
+ * Benchmark 04: Metrics
  * Deepbox vs scikit-learn
  */
 
@@ -51,7 +51,7 @@ import { tensor } from "deepbox/ndarray";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("metrics");
-header("Benchmark 04 — Metrics");
+header("Benchmark 04: Metrics");
 
 // ── Data generators ──────────────────────────────────────
 

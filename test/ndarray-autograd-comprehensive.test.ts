@@ -11,7 +11,7 @@ function assertGrad(gt: GradTensor): Tensor {
   return g;
 }
 
-describe("deepbox/ndarray - Autograd Comprehensive Tests", () => {
+describe("deepbox/ndarray - Autograd Tests", () => {
   describe("GradTensor creation", () => {
     it("should create GradTensor from tensor", () => {
       const t = tensor([1, 2, 3]);
@@ -361,8 +361,10 @@ describe("deepbox/ndarray - Autograd Comprehensive Tests", () => {
 
     it("should restore gradient tracking after noGrad", () => {
       noGrad(() => {
+        // A leaf keeps the flag it was created with, also inside noGrad (PyTorch semantics).
         const a = parameter(tensor([1, 2, 3]));
-        expect(a.requiresGrad).toBe(false);
+        expect(a.requiresGrad).toBe(true);
+        expect(a.mul(a).requiresGrad).toBe(false);
       });
       const a = parameter(tensor([1, 2, 3]));
       expect(a.requiresGrad).toBe(true);

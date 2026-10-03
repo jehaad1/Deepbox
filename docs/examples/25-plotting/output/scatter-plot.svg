@@ -26,19 +26,19 @@
 <line class="x-tick" x1="565.45" y1="430.00" x2="565.45" y2="435.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="565.45" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">10</text>
 <line class="y-tick" x1="50.00" y1="408.85" x2="45.00" y2="408.85" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="408.85" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">3</text>
+<text class="tick-label tick-label-y" x="43.00" y="408.85" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">2.5</text>
 <line class="y-tick" x1="50.00" y1="360.33" x2="45.00" y2="360.33" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="360.33" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">5</text>
 <line class="y-tick" x1="50.00" y1="311.81" x2="45.00" y2="311.81" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="311.81" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">8</text>
+<text class="tick-label tick-label-y" x="43.00" y="311.81" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">7.5</text>
 <line class="y-tick" x1="50.00" y1="263.29" x2="45.00" y2="263.29" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="263.29" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">10</text>
 <line class="y-tick" x1="50.00" y1="214.77" x2="45.00" y2="214.77" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="214.77" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">13</text>
+<text class="tick-label tick-label-y" x="43.00" y="214.77" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">12.5</text>
 <line class="y-tick" x1="50.00" y1="166.25" x2="45.00" y2="166.25" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="166.25" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">15</text>
 <line class="y-tick" x1="50.00" y1="117.73" x2="45.00" y2="117.73" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="117.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">18</text>
+<text class="tick-label tick-label-y" x="43.00" y="117.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">17.5</text>
 <line class="y-tick" x1="50.00" y1="69.21" x2="45.00" y2="69.21" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="69.21" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
 <text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Scatter Plot Example</text>

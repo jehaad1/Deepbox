@@ -1,9 +1,9 @@
 /**
  * Example 48: Statistical Inference Playbook
  *
- * Covers the v1.0.0 inference layer that was not represented in the earlier
- * stats examples: confidence intervals, bootstrap uncertainty, Gaussian KDE,
- * multiple-comparison correction, and power analysis.
+ * Confidence intervals, a bootstrap, a Gaussian kernel density estimate,
+ * multiple-comparison correction and power analysis, applied to a small
+ * A/B experiment on a checkout flow.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -11,16 +11,18 @@ import { tensor } from "deepbox/ndarray";
 import { axhline, figure, groupedBar, kdeplot, legend, saveFig } from "deepbox/plot";
 import {
   benjaminiHochberg,
+  benjaminiYekutieli,
   bonferroni,
   bootstrap,
   cohenD,
-  gaussian_kde,
+  gaussianKde,
+  hochberg,
   meanConfidenceInterval,
   meanConfidenceIntervalZ,
   meanDiffConfidenceInterval,
   proportionConfidenceInterval,
   tTestPower,
-  ttest_ind,
+  ttestInd,
 } from "deepbox/stats";
 
 const OUTPUT_DIR = "docs/examples/48-statistical-inference-playbook/output";
@@ -31,7 +33,7 @@ console.log("=".repeat(72));
 
 await mkdir(OUTPUT_DIR, { recursive: true });
 
-// A compact A/B rollout dataset for a checkout experiment.
+// A small A/B dataset for a checkout experiment. Each metric has one value per session or day.
 const controlRevenuePerSession = [86, 91, 88, 94, 90, 96, 84, 89, 92, 87, 95, 90];
 const treatmentRevenuePerSession = [94, 101, 99, 104, 100, 107, 92, 98, 102, 97, 105, 100];
 
@@ -48,9 +50,9 @@ const controlConversions = { successes: 158, total: 200 };
 const treatmentConversions = { successes: 186, total: 205 };
 
 // ============================================================================
-// Part 1: Mean confidence intervals and uplift intervals
+// Part 1: Mean confidence intervals and the uplift interval
 // ============================================================================
-console.log("\n📊 Part 1: Confidence Intervals");
+console.log("\nPart 1: Confidence Intervals");
 console.log("-".repeat(72));
 
 const controlRevenueCi = meanConfidenceInterval(controlRevenuePerSession, 0.95);
@@ -77,9 +79,9 @@ console.log(
 );
 
 // ============================================================================
-// Part 2: Conversion-rate intervals
+// Part 2: Conversion-rate intervals for proportions
 // ============================================================================
-console.log("\n✅ Part 2: Proportion Intervals");
+console.log("\nPart 2: Proportion Intervals");
 console.log("-".repeat(72));
 
 const controlConversionCi = proportionConfidenceInterval(
@@ -100,10 +102,21 @@ console.log(
   `Treatment conversion rate: ${(treatmentConversionCi.mean * 100).toFixed(2)}% | 95% CI [${(treatmentConversionCi.lower * 100).toFixed(2)}%, ${(treatmentConversionCi.upper * 100).toFixed(2)}%]`
 );
 
+// The default is the Wald interval. The Wilson score interval behaves better near 0% and 100%.
+const treatmentWilson = proportionConfidenceInterval(
+  treatmentConversions.successes,
+  treatmentConversions.total,
+  0.95,
+  "wilson"
+);
+console.log(
+  `Treatment, Wilson interval: ${(treatmentWilson.mean * 100).toFixed(2)}% | 95% CI [${(treatmentWilson.lower * 100).toFixed(2)}%, ${(treatmentWilson.upper * 100).toFixed(2)}%]`
+);
+
 // ============================================================================
-// Part 3: Bootstrap the mean uplift
+// Part 3: Bootstrap the mean uplift (resample, recompute, read off percentiles)
 // ============================================================================
-console.log("\n♻️  Part 3: Bootstrap Uncertainty");
+console.log("\nPart 3: Bootstrap Uncertainty");
 console.log("-".repeat(72));
 
 const upliftByMatchedCell = treatmentRevenuePerSession.map(
@@ -125,13 +138,13 @@ console.log(
 console.log(`Bootstrap resamples generated:  ${upliftBootstrap.samples.length}`);
 
 // ============================================================================
-// Part 4: Gaussian KDE and density diagnostics
+// Part 4: Gaussian KDE (a smooth density estimate)
 // ============================================================================
-console.log("\n📈 Part 4: Gaussian KDE");
+console.log("\nPart 4: Gaussian KDE");
 console.log("-".repeat(72));
 
-const controlKde = gaussian_kde(controlRevenuePerSession, { bw_method: "silverman" });
-const treatmentKde = gaussian_kde(treatmentRevenuePerSession, { bw_method: "silverman" });
+const controlKde = gaussianKde(controlRevenuePerSession, { bwMethod: "silverman" });
+const treatmentKde = gaussianKde(treatmentRevenuePerSession, { bwMethod: "silverman" });
 const probePoints = [90, 95, 100];
 const controlDensity = Array.from(controlKde.evaluate(probePoints), (value) => value.toFixed(5));
 const treatmentDensity = Array.from(treatmentKde.evaluate(probePoints), (value) =>
@@ -139,7 +152,7 @@ const treatmentDensity = Array.from(treatmentKde.evaluate(probePoints), (value) 
 );
 
 console.log(
-  `KDE bandwidths -> control=${controlKde.bandwidth.toFixed(3)}, treatment=${treatmentKde.bandwidth.toFixed(3)}`
+  `KDE bandwidths: control ${controlKde.bandwidth.toFixed(3)}, treatment ${treatmentKde.bandwidth.toFixed(3)}`
 );
 console.log(`Control KDE at [90, 95, 100]:   ${controlDensity.join(", ")}`);
 console.log(`Treatment KDE at [90, 95, 100]: ${treatmentDensity.join(", ")}`);
@@ -148,49 +161,55 @@ const densityFigure = figure({ width: 840, height: 520 });
 kdeplot(tensor(controlRevenuePerSession), {
   color: "#1d4ed8",
   label: "control revenue/session",
-  bw_method: "silverman",
+  bwMethod: "silverman",
 });
 kdeplot(tensor(treatmentRevenuePerSession), {
   color: "#059669",
   label: "treatment revenue/session",
-  bw_method: "silverman",
+  bwMethod: "silverman",
 });
 legend();
 await saveFig(`${OUTPUT_DIR}/revenue-density.svg`, { figure: densityFigure });
 console.log(`Saved revenue density plot: ${OUTPUT_DIR}/revenue-density.svg`);
 
 // ============================================================================
-// Part 5: Correct for multiple comparisons
+// Part 5: Correct p-values for multiple comparisons
 // ============================================================================
-console.log("\n🧪 Part 5: Multiple Comparisons");
+console.log("\nPart 5: Multiple Comparisons");
 console.log("-".repeat(72));
 
 const metricTests = [
   {
     metric: "revenue_per_session",
-    pvalue: ttest_ind(tensor(controlRevenuePerSession), tensor(treatmentRevenuePerSession)).pvalue,
+    pvalue: ttestInd(tensor(controlRevenuePerSession), tensor(treatmentRevenuePerSession)).pvalue,
   },
   {
     metric: "latency_ms",
-    pvalue: ttest_ind(tensor(controlLatencyMs), tensor(treatmentLatencyMs)).pvalue,
+    pvalue: ttestInd(tensor(controlLatencyMs), tensor(treatmentLatencyMs)).pvalue,
   },
   {
     metric: "csat",
-    pvalue: ttest_ind(tensor(controlCsat), tensor(treatmentCsat)).pvalue,
+    pvalue: ttestInd(tensor(controlCsat), tensor(treatmentCsat)).pvalue,
   },
   {
     metric: "resolution_rate",
-    pvalue: ttest_ind(tensor(controlResolutionRate), tensor(treatmentResolutionRate)).pvalue,
+    pvalue: ttestInd(tensor(controlResolutionRate), tensor(treatmentResolutionRate)).pvalue,
   },
 ];
 
 const rawPvalues = metricTests.map((test) => test.pvalue);
+// Bonferroni and Hochberg control the chance of any false positive.
+// Benjamini-Hochberg and Benjamini-Yekutieli control the false discovery rate.
+// Benjamini-Yekutieli is the variant that stays valid when the tests are dependent.
 const bhCorrection = benjaminiHochberg(rawPvalues, 0.05);
+const byCorrection = benjaminiYekutieli(rawPvalues, 0.05);
 const bonfCorrection = bonferroni(rawPvalues, 0.05);
+const hochbergCorrection = hochberg(rawPvalues, 0.05);
 
+const sci = (value: number | undefined): string => (value ?? Number.NaN).toExponential(2);
 for (const [index, test] of metricTests.entries()) {
   console.log(
-    `${test.metric.padEnd(20)} raw=${test.pvalue.toFixed(6)} | BH=${bhCorrection.corrected[index]?.toFixed(6)} | Bonferroni=${bonfCorrection.corrected[index]?.toFixed(6)}`
+    `${test.metric.padEnd(20)} raw=${sci(test.pvalue)} | BH=${sci(bhCorrection.corrected[index])} | BY=${sci(byCorrection.corrected[index])} | Bonferroni=${sci(bonfCorrection.corrected[index])} | Hochberg=${sci(hochbergCorrection.corrected[index])}`
   );
 }
 
@@ -205,9 +224,9 @@ await saveFig(`${OUTPUT_DIR}/multiple-comparisons.svg`, { figure: correctionFigu
 console.log(`Saved multiple-comparison plot: ${OUTPUT_DIR}/multiple-comparisons.svg`);
 
 // ============================================================================
-// Part 6: Power planning
+// Part 6: Power analysis
 // ============================================================================
-console.log("\n🎯 Part 6: Power Analysis");
+console.log("\nPart 6: Power Analysis");
 console.log("-".repeat(72));
 
 const observedEffectSize = Math.abs(cohenD(controlRevenuePerSession, treatmentRevenuePerSession));
@@ -231,26 +250,20 @@ console.log(`Per-arm sample size for 90% power:   ${requiredSample.nObs}`);
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(72));
 console.log(
-  "• Use t-based confidence intervals for sample means when the population variance is unknown."
+  "• meanConfidenceInterval uses the t distribution, for an unknown population variance."
 );
 console.log(
-  "• Use z-intervals when instrumentation or historical monitoring gives you a known noise level."
+  "• meanConfidenceIntervalZ uses the normal distribution, for a known standard deviation."
 );
+console.log("• bootstrap resamples the data, so it assumes less about the distribution.");
+console.log("• gaussianKde shows overlap, skew and several peaks that a mean hides.");
+console.log("• Correct p-values when one experiment tests several metrics.");
 console.log(
-  "• Bootstrap resampling gives a robust uncertainty estimate when you want fewer distributional assumptions."
-);
-console.log(
-  "• Gaussian KDE is useful for inspecting overlap, skew, and multi-modal behavior before rollout decisions."
-);
-console.log(
-  "• Correcting p-values matters once you inspect multiple metrics in the same experiment."
-);
-console.log(
-  "• Power analysis turns an observed effect into a concrete follow-up sample-size plan."
+  "• tTestPower turns an observed effect size into the sample size for a follow-up test."
 );
 
-console.log("\n✅ Statistical Inference Playbook Complete!");
+console.log("\nStatistical Inference Playbook Complete!");
 console.log("=".repeat(72));

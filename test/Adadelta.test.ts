@@ -7,9 +7,10 @@ describe("AdaDelta optimizer", () => {
   it("skips parameters without gradients", () => {
     const p = parameter(tensor([1, 2], { dtype: "float64" }));
     const opt = new AdaDelta([p]);
-    const _before = Array.from(getTensorData(p, "AdaDelta param"));
-    // Without gradient, step should throw NotFittedError
-    expect(() => opt.step()).toThrow();
+    const before = Array.from(getTensorData(p, "AdaDelta param"));
+    // A parameter whose grad is null is skipped (PyTorch semantics), not an error.
+    expect(() => opt.step()).not.toThrow();
+    expect(Array.from(getTensorData(p, "AdaDelta param"))).toEqual(before);
   });
 
   it("applies weight decay when configured", () => {

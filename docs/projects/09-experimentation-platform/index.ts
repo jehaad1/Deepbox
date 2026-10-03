@@ -1,9 +1,9 @@
 /**
  * Experimentation Platform
  *
- * A production-style experimentation workflow for Deepbox v1.0.0 that combines
- * DataFrame reporting, confidence intervals, bootstrap uplift analysis,
- * multiple-comparison correction, KDE diagnostics, and sample-size planning.
+ * Analyzes a synthetic three-variant checkout experiment: DataFrame scorecards,
+ * confidence intervals, pairwise t-tests with Benjamini-Hochberg correction,
+ * a bootstrap uplift estimate, KDE plots, and a sample-size calculation.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -20,7 +20,7 @@ import {
   meanDiffConfidenceInterval,
   proportionConfidenceInterval,
   tTestPower,
-  ttest_ind,
+  ttestInd,
 } from "deepbox/stats";
 
 const OUTPUT_DIR = "docs/projects/09-experimentation-platform/output";
@@ -186,7 +186,7 @@ type PairwiseInference = {
 
 console.log("═".repeat(72));
 console.log("  EXPERIMENTATION PLATFORM");
-console.log("  Deepbox v1.0.0 production example");
+console.log("  Deepbox 1.5.0 example project");
 console.log("═".repeat(72));
 
 await mkdir(OUTPUT_DIR, { recursive: true });
@@ -207,18 +207,18 @@ const experimentFrame = new DataFrame({
 // ============================================================================
 // Step 1: Operational summary
 // ============================================================================
-console.log("\n📊 STEP 1: Experiment Operations Summary");
+console.log("\nSTEP 1: Experiment Operations Summary");
 console.log("─".repeat(72));
 console.log(`Sessions generated: ${sessions.length}`);
 console.log("Variant-level numeric means:");
 console.log(experimentFrame.groupBy("variant").mean().toString());
-console.log("\nVariant × device latency means:");
+console.log("\nVariant by device means:");
 console.log(experimentFrame.groupBy(["variant", "device"]).mean().toString());
 
 // ============================================================================
 // Step 2: Variant scorecards
 // ============================================================================
-console.log("\n🧾 STEP 2: Variant Scorecards");
+console.log("\nSTEP 2: Variant Scorecards");
 console.log("─".repeat(72));
 
 const controlSessions = sessionsForVariant(sessions, "control");
@@ -240,7 +240,7 @@ for (const summary of variantSummaries) {
 // ============================================================================
 // Step 3: Pairwise inference and correction
 // ============================================================================
-console.log("\n🧪 STEP 3: Pairwise Inference");
+console.log("\nSTEP 3: Pairwise Inference");
 console.log("─".repeat(72));
 
 const pairwiseCandidates = [
@@ -259,10 +259,10 @@ const controlRevenue = numericValues(controlSessions, (session) => session.reven
 const controlLatency = numericValues(controlSessions, (session) => session.latencyMs);
 
 const rawRevenuePvalues = pairwiseCandidates.map(
-  (candidate) => ttest_ind(tensor(controlRevenue), tensor(candidate.revenue)).pvalue
+  (candidate) => ttestInd(tensor(controlRevenue), tensor(candidate.revenue)).pvalue
 );
 const rawLatencyPvalues = pairwiseCandidates.map(
-  (candidate) => ttest_ind(tensor(controlLatency), tensor(candidate.latency)).pvalue
+  (candidate) => ttestInd(tensor(controlLatency), tensor(candidate.latency)).pvalue
 );
 
 const revenueCorrection = benjaminiHochberg(rawRevenuePvalues, 0.05);
@@ -291,7 +291,7 @@ console.log(`Selected winner by revenue/session: ${winner}`);
 // ============================================================================
 // Step 4: Bootstrap uplift and power planning
 // ============================================================================
-console.log("\n🎯 STEP 4: Decision Support");
+console.log("\nSTEP 4: Decision Support");
 console.log("─".repeat(72));
 
 const winnerSessions = sessionsForVariant(sessions, winner);
@@ -343,7 +343,7 @@ console.log(`Needed per arm for 90% power: ${requiredSample.nObs}`);
 // ============================================================================
 // Step 5: Persist scorecards and plots
 // ============================================================================
-console.log("\n💾 STEP 5: Reports and Artifacts");
+console.log("\nSTEP 5: Reports and Artifacts");
 console.log("─".repeat(72));
 
 const summaryPayload = variantSummaries.map((summary) => ({
@@ -405,13 +405,13 @@ kdeplot(
   tensor(
     numericValues(controlSessions, (session) => session.orderValue).filter((value) => value > 0)
   ),
-  { color: "#1d4ed8", label: "control order values", bw_method: "silverman" }
+  { color: "#1d4ed8", label: "control order values", bwMethod: "silverman" }
 );
 kdeplot(
   tensor(
     numericValues(winnerSessions, (session) => session.orderValue).filter((value) => value > 0)
   ),
-  { color: "#f97316", label: `${winner} order values`, bw_method: "silverman" }
+  { color: "#f97316", label: `${winner} order values`, bwMethod: "silverman" }
 );
 legend();
 await saveFig(`${OUTPUT_DIR}/winner-order-value-density.svg`, {
@@ -439,4 +439,4 @@ console.log(`Saved grouped rate chart:     ${OUTPUT_DIR}/variant-rates.svg`);
 console.log(`Saved order-value density:    ${OUTPUT_DIR}/winner-order-value-density.svg`);
 console.log(`Saved significance chart:     ${OUTPUT_DIR}/revenue-significance.svg`);
 
-console.log("\n✅ Experimentation Platform Complete!");
+console.log("\nExperimentation Platform Complete!");

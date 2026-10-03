@@ -3,7 +3,7 @@ import { parameter, tensor } from "../src/ndarray";
 import { Adagrad, Adam, AdamW, RMSprop, SGD } from "../src/optim";
 import { getParamData, getParamValue, getTensorValue } from "./optim-test-helpers";
 
-describe("deepbox/optim - Comprehensive Integration Tests", () => {
+describe("deepbox/optim - Integration Tests", () => {
   describe("Optimizer Comparison", () => {
     it("should all optimizers reduce loss on quadratic", () => {
       const sgdParam = parameter(tensor([5], { dtype: "float64" }));
@@ -493,7 +493,7 @@ describe("deepbox/optim - Comprehensive Integration Tests", () => {
     });
   });
 
-  describe("Edge Cases and Robustness", () => {
+  describe("Edge Cases", () => {
     it("all optimizers should handle single-element tensors", () => {
       const sgdParam = parameter(tensor([1], { dtype: "float64" }));
       const adamParam = parameter(tensor([1], { dtype: "float64" }));

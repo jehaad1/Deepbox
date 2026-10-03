@@ -242,27 +242,38 @@ export function validateArray(arr: unknown, name: string): asserts arr is unknow
 /**
  * Check that an estimator has been fitted.
  *
- * Verifies that the given object has at least one attribute ending with `_`
- * (the sklearn convention for fitted attributes) that is not undefined,
- * or checks for specific attribute names if provided.
+ * Verifies that the given object has at least one own attribute ending with `_`
+ * (the sklearn convention for fitted attributes, ignoring names that start with
+ * `__`) whose value is not undefined, or checks for specific attribute names if
+ * provided.
  *
  * @param estimator - The estimator object to check
  * @param attributes - Optional list of attribute names to check. If not provided,
  *   checks for any attribute ending with `_`.
  * @param msgOverride - Optional custom error message
  * @throws {NotFittedError} If the estimator has not been fitted
+ * @throws {DataValidationError} If `estimator` is not an object
  *
  * @example
  * ```ts
- * check_is_fitted(model); // checks for any fitted attribute
- * check_is_fitted(model, ['coef_', 'intercept_']); // checks specific attrs
+ * checkIsFitted(model); // checks for any fitted attribute
+ * checkIsFitted(model, ['coef_', 'intercept_']); // checks specific attrs
  * ```
+ *
+ * @deprecated Prefer {@link checkIsFitted}.
  */
 export function check_is_fitted(
   estimator: Record<string, unknown>,
-  attributes?: string[],
+  attributes?: readonly string[],
   msgOverride?: string
 ): void {
+  if (estimator === null || typeof estimator !== "object") {
+    throw new DataValidationError(
+      `estimator must be an object; received ${estimator === null ? "null" : typeof estimator}`
+    );
+  }
+  const name = estimator.constructor?.name ?? "estimator";
+
   if (attributes !== undefined && attributes.length > 0) {
     const missing = attributes.filter(
       (attr) => !(attr in estimator) || estimator[attr] === undefined
@@ -270,9 +281,10 @@ export function check_is_fitted(
     if (missing.length > 0) {
       throw new NotFittedError(
         msgOverride ??
-          `This ${estimator.constructor?.name ?? "estimator"} is not fitted yet. ` +
+          `This ${name} is not fitted yet. ` +
             `Missing attributes: ${missing.join(", ")}. ` +
-            `Call 'fit' with appropriate arguments before using this estimator.`
+            `Call 'fit' with appropriate arguments before using this estimator.`,
+        name
       );
     }
     return;
@@ -280,12 +292,15 @@ export function check_is_fitted(
 
   // Check for any attribute ending with _ (sklearn convention)
   const keys = Object.keys(estimator);
-  const hasFittedAttr = keys.some((k) => k.endsWith("_") && estimator[k] !== undefined);
+  const hasFittedAttr = keys.some(
+    (k) => k.endsWith("_") && !k.startsWith("__") && estimator[k] !== undefined
+  );
   if (!hasFittedAttr) {
     throw new NotFittedError(
       msgOverride ??
-        `This ${estimator.constructor?.name ?? "estimator"} is not fitted yet. ` +
-          `Call 'fit' with appropriate arguments before using this estimator.`
+        `This ${name} is not fitted yet. ` +
+          `Call 'fit' with appropriate arguments before using this estimator.`,
+      name
     );
   }
 }
@@ -293,57 +308,73 @@ export function check_is_fitted(
 /**
  * Input validation on an array-like (Tensor).
  *
- * Checks dtype, dimensionality, and that the tensor is non-empty.
+ * Checks dtype, dimensionality, and that the tensor is non-empty (no dimension
+ * of size 0 unless `allowEmpty` is set). 0-d tensors count as non-empty.
  *
  * @param array - Input tensor to validate
  * @param options - Validation options
+ * @param options.dtype - Required dtype, or a list of accepted dtypes
+ * @param options.ensureNdim - Required number of dimensions
+ * @param options.allowEmpty - Accept tensors with a zero-sized dimension (default: false)
  * @returns The validated tensor (same reference)
  * @throws {DataValidationError} If validation fails
  *
  * @example
  * ```ts
- * const X = check_array(input, { dtype: 'float32', ensureNdim: 2 });
+ * const X = checkArray(input, { dtype: 'float32', ensureNdim: 2 });
  * ```
+ *
+ * @deprecated Prefer {@link checkArray}.
  */
-export function check_array(
-  array: unknown,
+export function check_array<T>(
+  array: T,
   options: {
-    dtype?: DType;
+    dtype?: DType | readonly DType[];
     ensureNdim?: number;
     allowEmpty?: boolean;
   } = {}
-): unknown {
+): T {
   if (array === null || array === undefined) {
     throw new DataValidationError("Input array must not be null or undefined");
   }
 
   // Check it has shape and data (duck-type Tensor)
   const t = array as {
-    shape?: number[];
-    ndim?: number;
+    shape?: readonly number[];
     dtype?: string;
-    data?: unknown;
   };
   if (!t.shape || !Array.isArray(t.shape)) {
     throw new DataValidationError("Input must be a Tensor with a valid shape");
   }
+  const shape: readonly number[] = t.shape;
 
-  if (options.ensureNdim !== undefined && t.ndim !== options.ensureNdim) {
-    throw new DataValidationError(
-      `Expected ${options.ensureNdim}D array, got ${t.ndim ?? "unknown"}D`
-    );
+  if (options.ensureNdim !== undefined && shape.length !== options.ensureNdim) {
+    throw new DataValidationError(`Expected ${options.ensureNdim}D array, got ${shape.length}D`);
   }
 
-  if (options.dtype !== undefined && t.dtype !== options.dtype) {
-    throw new DataValidationError(
-      `Expected dtype '${options.dtype}', got '${t.dtype ?? "unknown"}'`
-    );
+  if (options.dtype !== undefined) {
+    const allowed: readonly string[] =
+      typeof options.dtype === "string" ? [options.dtype] : options.dtype;
+    if (t.dtype === undefined || !allowed.includes(t.dtype)) {
+      throw new DataValidationError(
+        allowed.length === 1
+          ? `Expected dtype '${allowed[0]}', got '${t.dtype ?? "unknown"}'`
+          : `Expected dtype in [${allowed.join(", ")}], got '${t.dtype ?? "unknown"}'`
+      );
+    }
   }
 
   if (!options.allowEmpty) {
-    const nSamples = t.shape[0] ?? 0;
-    if (nSamples === 0) {
+    const zeroAxis = shape.indexOf(0);
+    if (zeroAxis === 0) {
       throw new DataValidationError("Input array must not be empty (0 samples)");
+    }
+    if (zeroAxis > 0) {
+      throw new DataValidationError(
+        zeroAxis === 1 && shape.length === 2
+          ? "Input array must not be empty (0 features)"
+          : `Input array must not be empty (axis ${zeroAxis} has size 0)`
+      );
     }
   }
 
@@ -353,42 +384,51 @@ export function check_array(
 /**
  * Input validation for standard estimators (X and y).
  *
- * Checks that X is 2D, y is 1D, and they have consistent first dimensions.
+ * Checks that X is 2D, y is 1D (1D or 2D with `multiOutput`), neither is empty,
+ * and they have the same number of samples.
  *
  * @param X - Feature matrix
  * @param y - Target vector
  * @param options - Validation options
+ * @param options.allowEmpty - Accept inputs with a zero-sized dimension (default: false)
+ * @param options.dtype - Required dtype of X
+ * @param options.multiOutput - Allow y to be a 2D matrix of targets (default: false)
  * @returns Tuple of [X, y] after validation
  * @throws {DataValidationError} If validation fails
  *
  * @example
  * ```ts
- * const [Xv, yv] = check_X_y(X, y);
+ * const [Xv, yv] = checkXY(X, y);
  * ```
+ *
+ * @deprecated Prefer {@link checkXY}.
  */
-export function check_X_y(
-  X: unknown,
-  y: unknown,
+export function check_X_y<TX, TY>(
+  X: TX,
+  y: TY,
   options: {
     allowEmpty?: boolean;
     dtype?: DType;
     multiOutput?: boolean;
   } = {}
-): [unknown, unknown] {
+): [TX, TY] {
   const xOpts: { dtype?: DType; ensureNdim?: number; allowEmpty?: boolean } = {
     ensureNdim: 2,
   };
   if (options.dtype !== undefined) xOpts.dtype = options.dtype;
   if (options.allowEmpty !== undefined) xOpts.allowEmpty = options.allowEmpty;
-  check_array(X, xOpts);
+  checkArray(X, xOpts);
 
   const yOpts: { ensureNdim?: number; allowEmpty?: boolean } = {};
   if (!options.multiOutput) yOpts.ensureNdim = 1;
   if (options.allowEmpty !== undefined) yOpts.allowEmpty = options.allowEmpty;
-  check_array(y, yOpts);
+  checkArray(y, yOpts);
 
-  const Xt = X as { shape: number[] };
-  const yt = y as { shape: number[] };
+  const Xt = X as unknown as { shape: readonly number[] };
+  const yt = y as unknown as { shape: readonly number[] };
+  if (options.multiOutput && yt.shape.length !== 1 && yt.shape.length !== 2) {
+    throw new DataValidationError(`Expected 1D or 2D y, got ${yt.shape.length}D`);
+  }
   const nSamplesX = Xt.shape[0] ?? 0;
   const nSamplesY = yt.shape[0] ?? 0;
 
@@ -423,3 +463,69 @@ export function shapesEqual(a: readonly number[], b: readonly number[]): boolean
   }
   return true;
 }
+
+/**
+ * Input validation for standard estimators (X and y).
+ *
+ * Checks that X is 2D, y is 1D (1D or 2D with `multiOutput`), neither is empty,
+ * and they have the same number of samples.
+ *
+ * @param X - Feature matrix
+ * @param y - Target vector
+ * @param options - Validation options
+ * @param options.allowEmpty - Accept inputs with a zero-sized dimension (default: false)
+ * @param options.dtype - Required dtype of X
+ * @param options.multiOutput - Allow y to be a 2D matrix of targets (default: false)
+ * @returns Tuple of [X, y] after validation
+ * @throws {DataValidationError} If validation fails
+ *
+ * @example
+ * ```ts
+ * const [Xv, yv] = checkXY(X, y);
+ * ```
+ */
+export const checkXY = check_X_y;
+
+/**
+ * Input validation on an array-like (Tensor).
+ *
+ * Checks dtype, dimensionality, and that the tensor is non-empty (no dimension
+ * of size 0 unless `allowEmpty` is set). 0-d tensors count as non-empty.
+ *
+ * @param array - Input tensor to validate
+ * @param options - Validation options
+ * @param options.dtype - Required dtype, or a list of accepted dtypes
+ * @param options.ensureNdim - Required number of dimensions
+ * @param options.allowEmpty - Accept tensors with a zero-sized dimension (default: false)
+ * @returns The validated tensor (same reference)
+ * @throws {DataValidationError} If validation fails
+ *
+ * @example
+ * ```ts
+ * const X = checkArray(input, { dtype: 'float32', ensureNdim: 2 });
+ * ```
+ */
+export const checkArray = check_array;
+
+/**
+ * Check that an estimator has been fitted.
+ *
+ * Verifies that the given object has at least one own attribute ending with `_`
+ * (the sklearn convention for fitted attributes, ignoring names that start with
+ * `__`) whose value is not undefined, or checks for specific attribute names if
+ * provided.
+ *
+ * @param estimator - The estimator object to check
+ * @param attributes - Optional list of attribute names to check. If not provided,
+ *   checks for any attribute ending with `_`.
+ * @param msgOverride - Optional custom error message
+ * @throws {NotFittedError} If the estimator has not been fitted
+ * @throws {DataValidationError} If `estimator` is not an object
+ *
+ * @example
+ * ```ts
+ * checkIsFitted(model); // checks for any fitted attribute
+ * checkIsFitted(model, ['coef_', 'intercept_']); // checks specific attrs
+ * ```
+ */
+export const checkIsFitted = check_is_fitted;

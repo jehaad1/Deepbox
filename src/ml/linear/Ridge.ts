@@ -2,19 +2,296 @@
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
-import { cholesky } from "../../linalg/decomposition/cholesky";
+import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { svd } from "../../linalg/decomposition/svd";
-import { solveTriangular } from "../../linalg/solvers/solve";
-import { dot, type Tensor, tensor, transpose } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import { type Tensor, tensor } from "../../ndarray";
+import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { r2ScoreOf } from "./LinearRegression";
+
+type RidgeSolver = "auto" | "svd" | "cholesky" | "lsqr" | "sag";
+
+const RIDGE_SOLVERS: readonly RidgeSolver[] = ["auto", "svd", "cholesky", "lsqr", "sag"];
+
+const SINGULAR_MESSAGE = "Matrix is singular or ill-conditioned";
+
+/** Relative pivot size below which `X^T X` (alpha = 0) is treated as singular. */
+const UNREGULARIZED_PIVOT_TOL = 1e-12;
+
+/**
+ * Solve the symmetric positive definite system `A x = b` with a Cholesky
+ * factorization. `A` is read, not modified.
+ *
+ * @param relativeTol - Smallest accepted pivot relative to `max(diag(A))`; at least `n * eps`.
+ * @returns The solution, or `undefined` when `A` is not numerically positive
+ * definite (a pivot falls below `max(n * eps, relativeTol) * max(diag(A))`).
+ */
+function choleskySolve(
+  A: Float64Array,
+  b: Float64Array,
+  n: number,
+  relativeTol = 0
+): Float64Array | undefined {
+  let maxDiag = 0;
+  for (let i = 0; i < n; i++) {
+    const d = A[i * n + i] as number;
+    if (d > maxDiag) maxDiag = d;
+  }
+  if (!(maxDiag > 0) || !Number.isFinite(maxDiag)) return undefined;
+  const pivotTol = Math.max(n * Number.EPSILON, relativeTol) * maxDiag;
+
+  const L = new Float64Array(n * n);
+  for (let j = 0; j < n; j++) {
+    const jRow = j * n;
+    let diag = A[jRow + j] as number;
+    for (let k = 0; k < j; k++) {
+      const v = L[jRow + k] as number;
+      diag -= v * v;
+    }
+    if (!(diag > pivotTol)) return undefined;
+    const ljj = Math.sqrt(diag);
+    L[jRow + j] = ljj;
+    for (let i = j + 1; i < n; i++) {
+      const iRow = i * n;
+      let sum = A[iRow + j] as number;
+      for (let k = 0; k < j; k++) {
+        sum -= (L[iRow + k] as number) * (L[jRow + k] as number);
+      }
+      L[iRow + j] = sum / ljj;
+    }
+  }
+
+  // Forward substitution: L z = b
+  const x = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = b[i] as number;
+    for (let k = 0; k < i; k++) sum -= (L[i * n + k] as number) * (x[k] as number);
+    x[i] = sum / (L[i * n + i] as number);
+  }
+  // Back substitution: L^T x = z
+  for (let i = n - 1; i >= 0; i--) {
+    let sum = x[i] as number;
+    for (let k = i + 1; k < n; k++) sum -= (L[k * n + i] as number) * (x[k] as number);
+    x[i] = sum / (L[i * n + i] as number);
+  }
+  return x;
+}
+
+/**
+ * Solve `A x = b` by Gaussian elimination with partial pivoting.
+ *
+ * @throws {DataValidationError} If `A` is singular to working precision
+ */
+function gaussianSolve(A: Float64Array, b: Float64Array, n: number): Float64Array {
+  const w = n + 1;
+  const aug = new Float64Array(n * w);
+  let maxAbs = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const v = A[i * n + j] as number;
+      aug[i * w + j] = v;
+      const a = Math.abs(v);
+      if (a > maxAbs) maxAbs = a;
+    }
+    aug[i * w + n] = b[i] as number;
+  }
+  if (maxAbs === 0 || !Number.isFinite(maxAbs)) {
+    throw new DataValidationError(SINGULAR_MESSAGE);
+  }
+  const tol = Number.EPSILON * n * maxAbs;
+
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    let maxVal = Math.abs(aug[col * w + col] as number);
+    for (let r = col + 1; r < n; r++) {
+      const v = Math.abs(aug[r * w + col] as number);
+      if (v > maxVal) {
+        maxVal = v;
+        maxRow = r;
+      }
+    }
+    if (maxRow !== col) {
+      for (let j = 0; j < w; j++) {
+        const tmp = aug[col * w + j] as number;
+        aug[col * w + j] = aug[maxRow * w + j] as number;
+        aug[maxRow * w + j] = tmp;
+      }
+    }
+    const pivot = aug[col * w + col] as number;
+    if (!Number.isFinite(pivot) || Math.abs(pivot) <= tol) {
+      throw new DataValidationError(SINGULAR_MESSAGE);
+    }
+    for (let r = col + 1; r < n; r++) {
+      const c = (aug[r * w + col] as number) / pivot;
+      if (c === 0) continue;
+      for (let j = col; j < w; j++) {
+        aug[r * w + j] = (aug[r * w + j] as number) - c * (aug[col * w + j] as number);
+      }
+    }
+  }
+
+  const x = new Float64Array(n);
+  for (let i = n - 1; i >= 0; i--) {
+    let sum = aug[i * w + n] as number;
+    for (let j = i + 1; j < n; j++) sum -= (aug[i * w + j] as number) * (x[j] as number);
+    x[i] = sum / (aug[i * w + i] as number);
+  }
+  return x;
+}
+
+/**
+ * Conjugate gradient for the symmetric positive definite system `A x = b`.
+ *
+ * Stops when the residual norm drops below `tol * ||b||`.
+ */
+function conjugateGradient(
+  A: Float64Array,
+  b: Float64Array,
+  n: number,
+  maxIter: number,
+  tol: number
+): { x: Float64Array; nIter: number; converged: boolean } {
+  const x = new Float64Array(n);
+  const r = Float64Array.from(b);
+  let rsOld = 0;
+  for (let i = 0; i < n; i++) rsOld += (r[i] as number) * (r[i] as number);
+  if (rsOld === 0) return { x, nIter: 0, converged: true };
+
+  const target = tol * tol * rsOld;
+  const p = Float64Array.from(r);
+  const Ap = new Float64Array(n);
+  let nIter = 0;
+  let converged = false;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    let denom = 0;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const row = i * n;
+      for (let j = 0; j < n; j++) sum += (A[row + j] as number) * (p[j] as number);
+      Ap[i] = sum;
+      denom += (p[i] as number) * sum;
+    }
+    if (!Number.isFinite(denom) || denom <= 0) {
+      throw new DataValidationError(
+        "Conjugate gradient failed: the system is not positive definite or is non-finite"
+      );
+    }
+    const step = rsOld / denom;
+    let rsNew = 0;
+    for (let i = 0; i < n; i++) {
+      x[i] = (x[i] as number) + step * (p[i] as number);
+      const ri = (r[i] as number) - step * (Ap[i] as number);
+      r[i] = ri;
+      rsNew += ri * ri;
+    }
+    nIter = iter + 1;
+    if (rsNew <= target || rsNew === 0) {
+      converged = true;
+      break;
+    }
+    const beta = rsNew / rsOld;
+    for (let i = 0; i < n; i++) p[i] = (r[i] as number) + beta * (p[i] as number);
+    rsOld = rsNew;
+  }
+  return { x, nIter, converged };
+}
+
+/**
+ * Accelerated full-batch gradient descent on the averaged ridge objective
+ * `(1/2m) ||Xw - y||^2 + (alpha/2m) ||w||^2`.
+ *
+ * The minimizer is the same as the closed-form ridge solution. The step size
+ * is `1 / L` with `L = max_i ||x_i||^2 + alpha / m`, which bounds the largest
+ * eigenvalue of the averaged Hessian, so the iteration cannot diverge.
+ * Iteration stops when the largest gradient entry falls below `tol` times the
+ * largest entry of the initial gradient.
+ */
+function accelerated(
+  Xc: Float64Array,
+  yc: Float64Array,
+  m: number,
+  n: number,
+  alpha: number,
+  maxIter: number,
+  tol: number
+): { x: Float64Array; nIter: number; converged: boolean } {
+  const w = new Float64Array(n);
+  let maxNormSq = 0;
+  for (let i = 0; i < m; i++) {
+    let normSq = 0;
+    const base = i * n;
+    for (let j = 0; j < n; j++) normSq += (Xc[base + j] as number) ** 2;
+    if (normSq > maxNormSq) maxNormSq = normSq;
+  }
+  const L = maxNormSq + alpha / m;
+  if (!(L > 0)) return { x: w, nIter: 0, converged: true };
+  const step = 1 / L;
+
+  const z = new Float64Array(n); // look-ahead point
+  const grad = new Float64Array(n);
+  let momentum = 1;
+  let nIter = 0;
+  let gradScale = 0;
+  let converged = false;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    grad.fill(0);
+    for (let i = 0; i < m; i++) {
+      const base = i * n;
+      let dot = 0;
+      for (let j = 0; j < n; j++) dot += (z[j] as number) * (Xc[base + j] as number);
+      const residual = dot - (yc[i] as number);
+      for (let j = 0; j < n; j++) {
+        grad[j] = (grad[j] as number) + residual * (Xc[base + j] as number);
+      }
+    }
+    let maxGrad = 0;
+    for (let j = 0; j < n; j++) {
+      const g = ((grad[j] as number) + alpha * (z[j] as number)) / m;
+      grad[j] = g;
+      if (Math.abs(g) > maxGrad) maxGrad = Math.abs(g);
+    }
+    if (iter === 0) gradScale = maxGrad;
+    nIter = iter + 1;
+    if (maxGrad <= tol * gradScale) {
+      // z is the current best iterate once the gradient there is small enough.
+      w.set(z);
+      converged = true;
+      break;
+    }
+
+    const nextMomentum = (1 + Math.sqrt(1 + 4 * momentum * momentum)) / 2;
+    const beta = (momentum - 1) / nextMomentum;
+    for (let j = 0; j < n; j++) {
+      const wNew = (z[j] as number) - step * (grad[j] as number);
+      z[j] = wNew + beta * (wNew - (w[j] as number));
+      w[j] = wNew;
+    }
+    momentum = nextMomentum;
+  }
+
+  for (let j = 0; j < n; j++) {
+    if (!Number.isFinite(w[j])) {
+      throw new DataValidationError(
+        "Ridge sag solver diverged to non-finite values; try scaling features or a different solver"
+      );
+    }
+  }
+  return { x: w, nIter, converged };
+}
 
 /**
  * Ridge Regression (L2 Regularized Linear Regression).
  *
- * Ridge regression addresses multicollinearity by adding a penalty term
- * (L2 regularization) to the loss function.
+ * Minimizes `||y - Xw||^2 + alpha * ||w||^2`. The intercept is never
+ * penalized: when `fitIntercept` is true, X and y are centered before solving
+ * and the intercept is recovered from the column means.
+ *
+ * The model mirrors scikit-learn's `Ridge`, with one exception: `normalize`
+ * (removed from scikit-learn 1.2) divides every centered column by its L2 norm
+ * before the penalty is applied, and the coefficients are mapped back to the
+ * original feature scale afterwards.
  *
  * @example
  * ```ts
@@ -34,13 +311,16 @@ export class Ridge implements Regressor {
     alpha?: number;
     fitIntercept?: boolean;
     normalize?: boolean;
-    solver?: "auto" | "svd" | "cholesky" | "lsqr" | "sag";
+    solver?: RidgeSolver;
     maxIter?: number;
     tol?: number;
   };
 
   /** Model coefficients (weights) after fitting - shape (n_features,) */
   private coef_?: Tensor;
+
+  /** Coefficients as a plain array, used by predict */
+  private coefArray_?: Float64Array;
 
   /** Intercept (bias) term after fitting */
   private intercept_?: number;
@@ -57,20 +337,22 @@ export class Ridge implements Regressor {
   /**
    * Create a new Ridge Regression model.
    *
+   * Option values are validated when `fit` is called.
+   *
    * @param options - Configuration options
-   * @param options.alpha - Regularization strength (default: 1.0). Must be >= 0.
+   * @param options.alpha - Regularization strength (default: 1.0). Must be a finite number >= 0.
    * @param options.fitIntercept - Whether to calculate the intercept (default: true).
-   * @param options.normalize - Whether to normalize features before regression (default: false).
+   * @param options.normalize - Whether to scale each centered feature column to unit L2 norm before regression (default: false).
    * @param options.solver - Solver to use (default: 'auto'). Options: 'auto', 'svd', 'cholesky', 'lsqr', 'sag'.
-   * @param options.maxIter - Maximum number of iterations for iterative solvers (default: 1000)
-   * @param options.tol - Tolerance for stopping criterion (default: 1e-4)
+   * @param options.maxIter - Maximum number of iterations for 'lsqr' and 'sag' (default: 1000)
+   * @param options.tol - Tolerance for 'lsqr' and 'sag' (default: 1e-4). 'lsqr' stops at a relative residual of `tol`; 'sag' stops when the gradient has shrunk by a factor of `tol`.
    */
   constructor(
     options: {
       readonly alpha?: number;
       readonly fitIntercept?: boolean;
       readonly normalize?: boolean;
-      readonly solver?: "auto" | "svd" | "cholesky" | "lsqr" | "sag";
+      readonly solver?: RidgeSolver;
       readonly maxIter?: number;
       readonly tol?: number;
     } = {}
@@ -81,14 +363,20 @@ export class Ridge implements Regressor {
   /**
    * Fit Ridge regression model.
    *
-   * Solves the regularized least squares problem:
-   * minimize ||y - Xw||² + α||w||²
+   * Solves the regularized least squares problem
+   * `minimize ||y - Xw||^2 + alpha * ||w||^2`, i.e. the normal equations
+   * `(X^T X + alpha I) w = X^T y` on the centered data.
    *
-   * Uses the closed-form solution:
-   * w = (X^T X + αI)^(-1) X^T y
+   * - `'auto'` and `'cholesky'` factor `X^T X + alpha I`. With `alpha > 0`, `'auto'` falls back
+   *   to Gaussian elimination when the matrix is not numerically positive definite. When the
+   *   system is singular or nearly so (`alpha = 0` with collinear features) both fall back to
+   *   the SVD solution, which is the minimum-norm least-squares solution, as in scikit-learn.
+   * - `'svd'` uses the singular value decomposition of the (centered) X and
+   *   returns the minimum-norm solution for rank-deficient problems.
+   * - `'lsqr'` runs conjugate gradient on the normal equations.
+   * - `'sag'` runs accelerated gradient descent that never forms `X^T X`.
    *
-   * **Time Complexity**: O(n²p + p³) where n = samples, p = features
-   * **Space Complexity**: O(p²)
+   * **Time Complexity**: O(m n^2 + n^3) for the direct solvers, where m = samples, n = features
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
@@ -97,465 +385,218 @@ export class Ridge implements Regressor {
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {DataValidationError} If X or y are empty
-   * @throws {InvalidParameterError} If alpha < 0
+   * @throws {InvalidParameterError} If alpha < 0 or another option is invalid
    */
   fit(X: Tensor, y: Tensor): this {
     // Validate inputs (dimensions, empty data, NaN/Inf)
     validateFitInputs(X, y);
-    this.nIter_ = undefined;
 
-    // Extract and validate regularization parameter
     const alpha = this.options.alpha ?? 1.0;
-    if (!(alpha >= 0)) {
-      throw new InvalidParameterError(`alpha must be >= 0; received ${alpha}`, "alpha", alpha);
+    if (typeof alpha !== "number" || !Number.isFinite(alpha) || alpha < 0) {
+      throw new InvalidParameterError(
+        `alpha must be >= 0 and finite; received ${String(alpha)}`,
+        "alpha",
+        alpha
+      );
     }
-
-    // Determine whether to fit intercept
+    const solver = this.options.solver ?? "auto";
+    if (!RIDGE_SOLVERS.includes(solver)) {
+      throw new InvalidParameterError(
+        `solver must be one of ${RIDGE_SOLVERS.map((s) => `'${s}'`).join(", ")}; received ${String(solver)}`,
+        "solver",
+        solver
+      );
+    }
+    const maxIter = this.options.maxIter ?? 1000;
+    if (!Number.isInteger(maxIter) || maxIter < 1) {
+      throw new InvalidParameterError(
+        `maxIter must be a positive integer; received ${String(maxIter)}`,
+        "maxIter",
+        maxIter
+      );
+    }
+    const tol = this.options.tol ?? 1e-4;
+    if (!Number.isFinite(tol) || tol < 0) {
+      throw new InvalidParameterError(
+        `tol must be a finite number >= 0; received ${String(tol)}`,
+        "tol",
+        tol
+      );
+    }
     const fitIntercept = this.options.fitIntercept ?? true;
+    const normalize = this.options.normalize ?? false;
 
-    // Extract dimensions: m = number of samples, n = number of features
     const m = X.shape[0] ?? 0;
     const n = X.shape[1] ?? 0;
 
-    // Store number of features for prediction validation
-    this.nFeaturesIn_ = n;
+    // Fitted state is replaced only after the solve succeeds.
+    const xRaw = toFloat64View(X);
+    const yRaw = toFloat64View(y);
 
-    // Compute means for centering (if fitIntercept is true)
-    // Centering improves numerical stability and allows intercept calculation
-    // Note: By centering X and y, we ensure the intercept is not regularized.
-    // The regularization penalty α||w||² only applies to the coefficients,
-    // not the intercept term. This is the standard Ridge regression behavior.
+    // Center X and y. The intercept is not penalized, so centering reduces the
+    // problem to a penalized fit through the origin.
+    const xMean = new Float64Array(n);
     let yMean = 0;
-    const xMean = new Array<number>(n).fill(0);
-
     if (fitIntercept) {
-      // Compute sum of y values
       for (let i = 0; i < m; i++) {
-        yMean += Number(y.data[y.offset + i] ?? 0);
+        const base = i * n;
+        for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xRaw[base + j] as number);
+        yMean += yRaw[i] as number;
       }
-
-      // Compute sum of each feature column
-      for (let i = 0; i < m; i++) {
-        const rowBase = X.offset + i * n;
-        for (let j = 0; j < n; j++) {
-          xMean[j] = (xMean[j] ?? 0) + Number(X.data[rowBase + j] ?? 0);
-        }
-      }
-
-      // Convert sums to means by dividing by number of samples
-      const invM = m === 0 ? 0 : 1 / m;
-      yMean *= invM;
-      for (let j = 0; j < n; j++) {
-        xMean[j] = (xMean[j] ?? 0) * invM;
-      }
+      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
+      yMean /= m;
     }
 
-    const normalize = this.options.normalize ?? false;
-    const maxIter = this.options.maxIter ?? 1000;
-    const tol = this.options.tol ?? 1e-4;
+    const Xc = new Float64Array(m * n);
+    const yc = new Float64Array(m);
+    for (let i = 0; i < m; i++) {
+      const base = i * n;
+      for (let j = 0; j < n; j++) {
+        Xc[base + j] = (xRaw[base + j] as number) - (xMean[j] as number);
+      }
+      yc[i] = (yRaw[i] as number) - yMean;
+    }
 
-    let xScale: number[] | undefined;
+    let xScale: Float64Array | undefined;
     if (normalize) {
-      xScale = new Array<number>(n).fill(0);
+      xScale = new Float64Array(n);
       for (let i = 0; i < m; i++) {
-        const rowBase = X.offset + i * n;
+        const base = i * n;
         for (let j = 0; j < n; j++) {
-          const centered = Number(X.data[rowBase + j] ?? 0) - (fitIntercept ? (xMean[j] ?? 0) : 0);
-          xScale[j] = (xScale[j] ?? 0) + centered * centered;
+          xScale[j] = (xScale[j] as number) + (Xc[base + j] as number) ** 2;
         }
       }
-      for (let j = 0; j < n; j++) {
-        xScale[j] = Math.sqrt(xScale[j] ?? 0);
+      for (let j = 0; j < n; j++) xScale[j] = Math.sqrt(xScale[j] as number);
+      for (let i = 0; i < m; i++) {
+        const base = i * n;
+        for (let j = 0; j < n; j++) {
+          const s = xScale[j] as number;
+          Xc[base + j] = s === 0 ? 0 : (Xc[base + j] as number) / s;
+        }
       }
     }
 
-    const getX = (sampleIndex: number, featureIndex: number): number => {
-      const raw = Number(X.data[X.offset + sampleIndex * n + featureIndex] ?? 0);
-      const centered = raw - (fitIntercept ? (xMean[featureIndex] ?? 0) : 0);
-      if (normalize && xScale) {
-        const s = xScale[featureIndex] ?? 0;
-        return s === 0 ? 0 : centered / s;
-      }
-      return centered;
-    };
-
-    const getY = (sampleIndex: number): number => {
-      const raw = Number(y.data[y.offset + sampleIndex] ?? 0);
-      return fitIntercept ? raw - yMean : raw;
-    };
-
-    // Solve the linear system (X^T X + αI) w = X^T y
-    // This gives us the optimal coefficients w
-    let coefTensor: Tensor;
-    const solver = this.options.solver ?? "auto";
+    let coef: Float64Array;
+    let nIter: number | undefined;
+    let converged = true;
 
     if (solver === "sag") {
-      const res = this.solveSag(getX, getY, m, n, alpha, maxIter, tol);
-      coefTensor = tensor(res.x);
-      this.nIter_ = res.nIter;
+      const res = accelerated(Xc, yc, m, n, alpha, maxIter, tol);
+      coef = res.x;
+      nIter = res.nIter;
+      converged = res.converged;
+    } else if (solver === "svd") {
+      coef = this.solveSvd(Xc, yc, m, n, alpha);
     } else {
-      // Compute X^T X + αI (Gram matrix with regularization)
-      // This is the core of the Ridge regression solution
-      // Time complexity: O(n²m) for computing X^T X
-      const XTX = Array(n)
-        .fill(0)
-        .map(() => Array(n).fill(0));
-
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-          let sum = 0;
-
-          // Compute (X^T X)[i,j] = Σ_k X[k,i] * X[k,j]
-          for (let k = 0; k < m; k++) {
-            const xi = getX(k, i);
-            const xj = getX(k, j);
-            sum += xi * xj;
+      // Normal equations: gram = X^T X + alpha I, rhs = X^T y.
+      const gram = new Float64Array(n * n);
+      const rhs = new Float64Array(n);
+      for (let r = 0; r < m; r++) {
+        const base = r * n;
+        const yr = yc[r] as number;
+        for (let i = 0; i < n; i++) {
+          const xi = Xc[base + i] as number;
+          if (xi === 0) continue;
+          rhs[i] = (rhs[i] as number) + xi * yr;
+          const gRow = i * n;
+          for (let j = i; j < n; j++) {
+            gram[gRow + j] = (gram[gRow + j] as number) + xi * (Xc[base + j] as number);
           }
-
-          // Add regularization term αI to diagonal
-          // This ensures the matrix is positive definite and invertible
-          const xtxRow = XTX[i];
-          if (xtxRow) xtxRow[j] = sum + (i === j ? alpha : 0);
         }
       }
-
-      // Compute X^T y (feature-target correlation vector)
-      // Time complexity: O(nm)
-      const XTy = new Array<number>(n).fill(0);
-
       for (let i = 0; i < n; i++) {
-        let sum = 0;
-
-        // Compute (X^T y)[i] = Σ_j X[j,i] * y[j]
-        for (let j = 0; j < m; j++) {
-          const yVal = getY(j);
-          const xVal = getX(j, i);
-          sum += xVal * yVal;
-        }
-        XTy[i] = sum;
+        for (let j = 0; j < i; j++) gram[i * n + j] = gram[j * n + i] as number;
+        gram[i * n + i] = (gram[i * n + i] as number) + alpha;
       }
 
       if (solver === "lsqr") {
-        const res = this.solveConjugateGradient(XTX, XTy, maxIter, tol);
-        coefTensor = tensor(res.x);
-        this.nIter_ = res.nIter;
-      } else if (solver === "cholesky" || solver === "auto") {
-        try {
-          const xtxTensor = tensor(XTX);
-          const xtyTensor = tensor(XTy);
-          const L = cholesky(xtxTensor);
-          const y_ = solveTriangular(L, xtyTensor, true);
-          coefTensor = solveTriangular(transpose(L), y_, false);
-        } catch (e) {
-          if (solver === "auto") {
-            // Fallback to Gaussian elimination
-            const res = this.solveLinearSystem(XTX, XTy);
-            coefTensor = tensor(res);
-          } else {
-            throw e;
+        const res = conjugateGradient(gram, rhs, n, maxIter, tol);
+        coef = res.x;
+        nIter = res.nIter;
+        converged = res.converged;
+      } else {
+        // A singular system (alpha = 0 with collinear columns) falls back to the minimum-norm
+        // least-squares solution, as scikit-learn does. Without regularization X^T X is only
+        // positive semi-definite, so a pivot that is tiny next to the largest diagonal entry
+        // (rounding noise of a rank-deficient matrix, condition number above 1e12) also sends
+        // the fit to the SVD, which stays accurate where the normal equations do not.
+        let direct: Float64Array | undefined = choleskySolve(
+          gram,
+          rhs,
+          n,
+          alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
+        );
+        if (direct === undefined && solver === "auto" && alpha > 0) {
+          try {
+            direct = gaussianSolve(gram, rhs, n);
+          } catch (error) {
+            if (!(error instanceof DataValidationError)) throw error;
           }
         }
-      } else if (solver === "svd") {
-        const xtxTensor = tensor(XTX);
-        const xtyTensor = tensor(XTy);
-        const [U, s, Vt] = svd(xtxTensor);
-
-        // w = V * S^-1 * U^T * y
-        const Ut = transpose(U);
-        const Uty = dot(Ut, xtyTensor);
-
-        const sData = s.data;
-        if (!(sData instanceof Float64Array)) {
-          throw new DataValidationError("svd returned non-float64 singular values");
-        }
-        const scaledData = new Float64Array(Uty.size);
-        for (let i = 0; i < Uty.size; i++) {
-          const val = Number(Uty.data[Uty.offset + i]);
-          const sigma = sData[i] ?? 0;
-          scaledData[i] = Math.abs(sigma) > 1e-15 ? val / sigma : 0;
-        }
-        const scaled = tensor(scaledData);
-
-        const V = transpose(Vt);
-        coefTensor = dot(V, scaled);
-      } else {
-        const res = this.solveLinearSystem(XTX, XTy);
-        coefTensor = tensor(res);
+        coef = direct ?? this.solveSvd(Xc, yc, m, n, alpha);
       }
     }
 
-    if (normalize && xScale) {
-      coefTensor = this.rescaleCoefs(coefTensor, xScale);
+    if (!converged) {
+      warn(
+        `Solver '${solver}' did not converge within maxIter=${maxIter} iterations; ` +
+          "increase maxIter, loosen tol, or scale the features",
+        "ConvergenceWarning",
+        "Ridge"
+      );
     }
 
-    this.coef_ = coefTensor;
+    if (xScale) {
+      for (let j = 0; j < n; j++) {
+        const s = xScale[j] as number;
+        coef[j] = s === 0 ? 0 : (coef[j] as number) / s;
+      }
+    }
 
-    // Compute intercept if needed
-    // intercept = mean(y) - mean(X) @ coef
-    // This accounts for the centering we did earlier
+    let intercept = 0;
     if (fitIntercept) {
       let xMeanDotW = 0;
-      for (let j = 0; j < n; j++) {
-        const wj = Number(coefTensor.data[coefTensor.offset + j] ?? 0);
-        xMeanDotW += (xMean[j] ?? 0) * wj;
-      }
-      this.intercept_ = yMean - xMeanDotW;
-    } else {
-      this.intercept_ = 0;
+      for (let j = 0; j < n; j++) xMeanDotW += (xMean[j] as number) * (coef[j] as number);
+      intercept = yMean - xMeanDotW;
     }
 
-    // Mark model as fitted
+    this.nFeaturesIn_ = n;
+    this.coefArray_ = coef;
+    this.coef_ = tensor(coef, { dtype: "float64" });
+    this.intercept_ = intercept;
+    this.nIter_ = nIter;
     this.fitted = true;
     return this;
   }
 
   /**
-   * Solve linear system Ax = b using Gaussian elimination with partial pivoting.
-   *
-   * This is a numerically stable method for solving dense linear systems.
-   * For Ridge regression, A = X^T X + αI is symmetric positive definite,
-   * so Cholesky decomposition would be more efficient, but Gaussian elimination
-   * is more general and still provides good numerical stability.
-   *
-   * **Algorithm**:
-   * 1. Forward elimination: Convert A to upper triangular form
-   * 2. Partial pivoting: Swap rows to avoid division by small numbers
-   * 3. Back substitution: Solve for x from bottom to top
-   *
-   * **Time Complexity**: O(n³)
-   * **Space Complexity**: O(n²)
-   *
-   * @param A - Coefficient matrix (n × n)
-   * @param b - Right-hand side vector (n × 1)
-   * @returns Solution vector x such that Ax = b
+   * Ridge solution from the SVD of the centered design matrix:
+   * `w = V diag(s / (s^2 + alpha)) U^T y`.
    */
-  private solveLinearSystem(A: number[][], b: number[]): number[] {
-    const n = A.length;
+  private solveSvd(Xc: Float64Array, yc: Float64Array, m: number, n: number, alpha: number) {
+    const design = tensor(Xc, { dtype: "float64" }).reshape([m, n]);
+    const [U, s, Vt] = svd(design, false);
+    const uData = toFloat64View(U);
+    const sData = toFloat64View(s);
+    const vtData = toFloat64View(Vt);
+    const k = sData.length;
+    const sMax = k > 0 ? (sData[0] as number) : 0;
+    // Without regularization, drop directions below numerical rank so the
+    // result is the minimum-norm least squares solution.
+    const cutoff = alpha === 0 ? Number.EPSILON * Math.max(m, n) * sMax : 0;
 
-    // Create augmented matrix [A | b]
-    // This allows us to perform row operations on both A and b simultaneously
-    const aug = A.map((row, i) => [...row, b[i] ?? 0]);
-    let maxAbs = 0;
-    for (let i = 0; i < n; i++) {
-      const row = aug[i];
-      if (!row) continue;
+    const coef = new Float64Array(n);
+    for (let c = 0; c < k; c++) {
+      const sigma = sData[c] as number;
+      if (!(sigma > cutoff)) continue;
+      let uty = 0;
+      for (let i = 0; i < m; i++) uty += (uData[i * k + c] as number) * (yc[i] as number);
+      const factor = (sigma / (sigma * sigma + alpha)) * uty;
       for (let j = 0; j < n; j++) {
-        const v = Math.abs(row[j] ?? 0);
-        if (v > maxAbs) maxAbs = v;
+        coef[j] = (coef[j] as number) + factor * (vtData[c * n + j] as number);
       }
     }
-    if (maxAbs === 0 || !Number.isFinite(maxAbs)) {
-      throw new DataValidationError("Matrix is singular or ill-conditioned");
-    }
-    const tol = Number.EPSILON * n * maxAbs;
-
-    // Forward elimination with partial pivoting
-    for (let i = 0; i < n; i++) {
-      // Find pivot: row with largest absolute value in column i
-      // This improves numerical stability by avoiding division by small numbers
-      let maxRow = i;
-      for (let k = i + 1; k < n; k++) {
-        if (Math.abs(aug[k]?.[i] ?? 0) > Math.abs(aug[maxRow]?.[i] ?? 0)) {
-          maxRow = k;
-        }
-      }
-
-      // Swap rows i and maxRow
-      const augI = aug[i] ?? [];
-      const augMax = aug[maxRow] ?? [];
-      aug[i] = augMax;
-      aug[maxRow] = augI;
-
-      const pivot = aug[i]?.[i] ?? 0;
-      if (!Number.isFinite(pivot) || Math.abs(pivot) <= tol) {
-        throw new DataValidationError("Matrix is singular or ill-conditioned");
-      }
-
-      // Eliminate column i in rows below i
-      for (let k = i + 1; k < n; k++) {
-        // Compute multiplier: c = A[k,i] / A[i,i]
-        const c = (aug[k]?.[i] ?? 0) / pivot;
-        const augK = aug[k];
-
-        if (augK) {
-          // Subtract c * row_i from row_k
-          for (let j = i; j <= n; j++) {
-            augK[j] = (augK[j] ?? 0) - c * (aug[i]?.[j] ?? 0);
-          }
-        }
-      }
-    }
-
-    // Back substitution: solve upper triangular system
-    const x = Array(n).fill(0);
-    for (let i = n - 1; i >= 0; i--) {
-      // Start with b[i]
-      x[i] = aug[i]?.[n] ?? 0;
-
-      // Subtract contributions from already-solved variables
-      for (let j = i + 1; j < n; j++) {
-        x[i] = (x[i] ?? 0) - (aug[i]?.[j] ?? 0) * (x[j] ?? 0);
-      }
-
-      // Divide by diagonal element
-      const diag = aug[i]?.[i] ?? 0;
-      if (!Number.isFinite(diag) || Math.abs(diag) <= tol) {
-        throw new DataValidationError("Matrix is singular or ill-conditioned");
-      }
-      x[i] = (x[i] ?? 0) / diag;
-    }
-
-    return x;
-  }
-
-  private solveConjugateGradient(
-    A: number[][],
-    b: number[],
-    maxIter: number,
-    tol: number
-  ): { x: number[]; nIter: number } {
-    const n = A.length;
-    const x = new Array<number>(n).fill(0);
-    const r = new Array<number>(n).fill(0);
-
-    let rsOld = 0;
-    for (let i = 0; i < n; i++) {
-      const bi = b[i] ?? 0;
-      r[i] = bi;
-      rsOld += bi * bi;
-    }
-
-    if (rsOld === 0) {
-      return { x, nIter: 0 };
-    }
-
-    const p = r.slice();
-    const tolSq = tol * tol;
-    let nIter = 0;
-
-    for (let iter = 0; iter < maxIter; iter++) {
-      const Ap = new Array<number>(n).fill(0);
-      for (let i = 0; i < n; i++) {
-        let sum = 0;
-        const row = A[i];
-        if (!row) continue;
-        for (let j = 0; j < n; j++) {
-          sum += (row[j] ?? 0) * (p[j] ?? 0);
-        }
-        Ap[i] = sum;
-      }
-
-      let denom = 0;
-      for (let i = 0; i < n; i++) {
-        denom += (p[i] ?? 0) * (Ap[i] ?? 0);
-      }
-      if (!Number.isFinite(denom) || denom === 0) {
-        throw new DataValidationError(
-          "Conjugate gradient failed: denominator is zero or non-finite"
-        );
-      }
-
-      const alpha = rsOld / denom;
-      for (let i = 0; i < n; i++) {
-        x[i] = (x[i] ?? 0) + alpha * (p[i] ?? 0);
-        r[i] = (r[i] ?? 0) - alpha * (Ap[i] ?? 0);
-      }
-
-      let rsNew = 0;
-      for (let i = 0; i < n; i++) {
-        const ri = r[i] ?? 0;
-        rsNew += ri * ri;
-      }
-      nIter = iter + 1;
-      if (rsNew < tolSq) {
-        break;
-      }
-
-      const beta = rsNew / rsOld;
-      for (let i = 0; i < n; i++) {
-        p[i] = (r[i] ?? 0) + beta * (p[i] ?? 0);
-      }
-      rsOld = rsNew;
-    }
-
-    return { x, nIter };
-  }
-
-  private solveSag(
-    getX: (sampleIndex: number, featureIndex: number) => number,
-    getY: (sampleIndex: number) => number,
-    nSamples: number,
-    nFeatures: number,
-    alpha: number,
-    maxIter: number,
-    tol: number
-  ): { x: number[]; nIter: number } {
-    // Full-batch gradient descent on the averaged ridge objective
-    //   (1/2n)·||Xw - y||² + (alpha/2n)·||w||²
-    // whose minimizer is identical to the closed-form (XᵀX + αI)w = Xᵀy.
-    // One update per epoch with step 1/L (L = max‖x_i‖² + alpha/n bounds the
-    // averaged Hessian) is unconditionally stable — unlike the previous
-    // per-sample scheme, which took n oversized steps per epoch and diverged
-    // to ±Infinity on ordinary data.
-    const n = nSamples === 0 ? 1 : nSamples;
-    const w = new Array<number>(nFeatures).fill(0);
-
-    let maxNormSq = 0;
-    for (let i = 0; i < nSamples; i++) {
-      let normSq = 0;
-      for (let j = 0; j < nFeatures; j++) {
-        const xij = getX(i, j);
-        normSq += xij * xij;
-      }
-      if (normSq > maxNormSq) maxNormSq = normSq;
-    }
-
-    const L = maxNormSq + alpha / n;
-    const step = L > 0 ? 1 / L : 1;
-
-    let nIter = 0;
-    for (let iter = 0; iter < maxIter; iter++) {
-      // Full averaged gradient: (1/n) Xᵀ(Xw - y) + (alpha/n) w
-      const grad = new Array<number>(nFeatures).fill(0);
-      for (let i = 0; i < nSamples; i++) {
-        let dotProd = 0;
-        for (let j = 0; j < nFeatures; j++) dotProd += (w[j] ?? 0) * getX(i, j);
-        const residual = dotProd - getY(i);
-        for (let j = 0; j < nFeatures; j++) {
-          grad[j] = (grad[j] ?? 0) + residual * getX(i, j);
-        }
-      }
-
-      let maxUpdate = 0;
-      for (let j = 0; j < nFeatures; j++) {
-        const g = (grad[j] ?? 0) / n + (alpha / n) * (w[j] ?? 0);
-        const update = step * g;
-        w[j] = (w[j] ?? 0) - update;
-        if (Math.abs(update) > maxUpdate) maxUpdate = Math.abs(update);
-      }
-
-      nIter = iter + 1;
-      if (maxUpdate < tol) break;
-    }
-
-    if (w.some((v) => !Number.isFinite(v))) {
-      throw new DataValidationError(
-        "Ridge sag solver diverged to non-finite values; try scaling features or a different solver"
-      );
-    }
-
-    return { x: w, nIter };
-  }
-
-  private rescaleCoefs(coef: Tensor, scale: number[]): Tensor {
-    const nFeatures = coef.shape[0] ?? 0;
-    const result: number[] = [];
-    for (let j = 0; j < nFeatures; j++) {
-      const c = Number(coef.data[coef.offset + j] ?? 0);
-      const s = scale[j] ?? 1;
-      result.push(s === 0 ? 0 : c / s);
-    }
-    return tensor(result);
+    return coef;
   }
 
   /**
@@ -567,54 +608,40 @@ export class Ridge implements Regressor {
    * **Space Complexity**: O(n)
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted values of shape (n_samples,)
+   * @returns Predicted values of shape (n_samples,), dtype float64
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    // Check if model has been fitted
-    if (!this.fitted || !this.coef_) {
+    const coef = this.coefArray_;
+    if (!this.fitted || !coef) {
       throw new NotFittedError("Ridge must be fitted before prediction");
     }
 
-    // Validate input
     validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "Ridge");
 
-    const m = X.shape[0] ?? 0; // Number of samples to predict
-    const n = X.shape[1] ?? 0; // Number of features
-    const pred = Array(m).fill(0);
+    const m = X.shape[0] ?? 0;
+    const n = X.shape[1] ?? 0;
+    const xData = toFloat64View(X);
+    const intercept = this.intercept_ ?? 0;
+    const pred = new Float64Array(m);
 
-    // Compute predictions: ŷ[i] = Σ_j X[i,j] * coef[j] + intercept
     for (let i = 0; i < m; i++) {
-      let sum = this.intercept_ ?? 0; // Start with intercept
-
-      // Add weighted sum of features
-      for (let j = 0; j < n; j++) {
-        sum +=
-          Number(X.data[X.offset + i * n + j] ?? 0) *
-          Number(this.coef_.data[this.coef_.offset + j] ?? 0);
-      }
+      let sum = intercept;
+      const base = i * n;
+      for (let j = 0; j < n; j++) sum += (xData[base + j] as number) * (coef[j] as number);
       pred[i] = sum;
     }
 
-    return tensor(pred);
+    return tensor(pred, { dtype: "float64" });
   }
 
   /**
    * Return the coefficient of determination R² of the prediction.
    *
-   * R² (R-squared) measures the proportion of variance in y explained by the model.
-   * Formula: R² = 1 - (SS_res / SS_tot)
-   *
-   * Where:
-   * - SS_res = Σ(y_true - y_pred)² (residual sum of squares)
-   * - SS_tot = Σ(y_true - y_mean)² (total sum of squares)
-   *
-   * **Interpretation**:
-   * - R² = 1: Perfect predictions
-   * - R² = 0: Model performs as well as predicting the mean
-   * - R² < 0: Model performs worse than predicting the mean
+   * R² = 1 - SS_res / SS_tot, where SS_res = Σ(y - ŷ)² and SS_tot = Σ(y - mean(y))².
+   * A constant y gives 1 when the predictions are exact and 0 otherwise.
    *
    * **Time Complexity**: O(n) where n = number of samples
    *
@@ -622,88 +649,45 @@ export class Ridge implements Regressor {
    * @param y - True values of shape (n_samples,)
    * @returns R² score (best possible score is 1.0, can be negative)
    * @throws {NotFittedError} If the model has not been fitted
-   * @throws {ShapeError} If y is not 1-dimensional
+   * @throws {ShapeError} If y is not 1-dimensional or its length differs from the number of samples in X
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf
    */
   score(X: Tensor, y: Tensor): number {
-    // Check if model has been fitted
     if (!this.fitted) {
       throw new NotFittedError("Ridge must be fitted before scoring");
     }
 
-    // Validate y dimensions
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-
-    // Get predictions
-    const pred = this.predict(X);
-    if (pred.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${pred.size}, y=${y.size}`
-      );
-    }
-
-    let ssRes = 0; // Residual sum of squares
-    let ssTot = 0; // Total sum of squares
-    let yMean = 0; // Mean of y
-
-    // Compute mean of y
-    for (let i = 0; i < y.size; i++) {
-      yMean += Number(y.data[y.offset + i] ?? 0);
-    }
-    yMean /= y.size;
-
-    // Compute SS_res and SS_tot
-    for (let i = 0; i < y.size; i++) {
-      const yVal = Number(y.data[y.offset + i] ?? 0);
-      const predVal = Number(pred.data[pred.offset + i] ?? 0);
-
-      // Residual sum of squares: measures prediction error
-      ssRes += (yVal - predVal) ** 2;
-
-      // Total sum of squares: measures total variance in y
-      ssTot += (yVal - yMean) ** 2;
-    }
-
-    // Handle edge case: constant y (zero variance)
-    // If y is constant and predictions match, R² = 1
-    // If y is constant but predictions don't match, R² = 0
-    if (ssTot === 0) {
-      return ssRes === 0 ? 1.0 : 0.0;
-    }
-
-    // Compute R² = 1 - (SS_res / SS_tot)
-    return 1 - ssRes / ssTot;
+    return r2ScoreOf(y, () => this.predict(X));
   }
 
   /**
    * Get parameters for this estimator.
    *
-   * Returns a copy of all hyperparameters set during construction or via setParams.
+   * Returns every hyperparameter with its effective value, so the result can
+   * be passed back to the constructor.
    *
    * @returns Object containing all parameters with their current values
    */
   getParams(): Record<string, unknown> {
-    return { ...this.options };
+    return {
+      alpha: this.options.alpha ?? 1.0,
+      fitIntercept: this.options.fitIntercept ?? true,
+      normalize: this.options.normalize ?? false,
+      solver: this.options.solver ?? "auto",
+      maxIter: this.options.maxIter ?? 1000,
+      tol: this.options.tol ?? 1e-4,
+    };
   }
 
   /**
    * Set the parameters of this estimator.
    *
-   * Allows modifying hyperparameters after construction.
-   * Note: Changing parameters requires refitting the model.
+   * Changing parameters does not alter a fitted model; call `fit` again.
+   * Range checks (for example `alpha >= 0`) run at `fit`.
    *
    * @param params - Dictionary of parameters to set
    * @returns this - The estimator for method chaining
-   * @throws {TypeError} If parameter value has wrong type
-   * @throws {Error} If parameter name is unknown or value is invalid
+   * @throws {InvalidParameterError} If a parameter name is unknown or its value has the wrong type
    */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
@@ -764,16 +748,10 @@ export class Ridge implements Regressor {
           break;
 
         case "solver":
-          if (
-            value !== "auto" &&
-            value !== "svd" &&
-            value !== "cholesky" &&
-            value !== "lsqr" &&
-            value !== "sag"
-          ) {
+          if (typeof value !== "string" || !RIDGE_SOLVERS.includes(value as RidgeSolver)) {
             throw new InvalidParameterError(`Invalid solver: ${String(value)}`, "solver", value);
           }
-          this.options.solver = value;
+          this.options.solver = value as RidgeSolver;
           break;
 
         default:
@@ -783,13 +761,18 @@ export class Ridge implements Regressor {
     return this;
   }
 
+  /**
+   * Create an unfitted copy of this estimator with the same parameters.
+   *
+   * @returns A new Ridge instance
+   */
   clone(): Ridge {
     return new Ridge(
       this.getParams() as {
         alpha?: number;
         fitIntercept?: boolean;
         normalize?: boolean;
-        solver?: "auto" | "svd" | "cholesky" | "lsqr" | "sag";
+        solver?: RidgeSolver;
         maxIter?: number;
         tol?: number;
       }
@@ -799,7 +782,7 @@ export class Ridge implements Regressor {
   /**
    * Get the model coefficients (weights).
    *
-   * @returns Coefficient tensor of shape (n_features,)
+   * @returns Coefficient tensor of shape (n_features,), dtype float64
    * @throws {NotFittedError} If the model has not been fitted
    */
   get coef(): Tensor {
@@ -812,7 +795,7 @@ export class Ridge implements Regressor {
   /**
    * Get the intercept (bias term).
    *
-   * @returns Intercept value
+   * @returns Intercept value (0 when `fitIntercept` is false)
    * @throws {NotFittedError} If the model has not been fitted
    */
   get intercept(): number {

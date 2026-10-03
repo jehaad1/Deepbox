@@ -1,5 +1,5 @@
 """
-Benchmark 07 — Neural Networks
+Benchmark 07: Neural Networks
 PyTorch
 """
 
@@ -11,13 +11,13 @@ try:
     import torch.nn as nn
     import torch.optim as optim
 except ImportError:
-    print("⚠ PyTorch not installed. Run: pip3 install torch")
+    print("PyTorch not installed. Run: pip3 install torch")
     sys.exit(0)
 
 from utils import run, create_suite, header, footer
 
 suite = create_suite("nn", "PyTorch")
-header("Benchmark 07 — Neural Networks", "PyTorch")
+header("Benchmark 07: Neural Networks", "PyTorch")
 
 # ── Layer Creation ──────────────────────────────────────
 
@@ -163,7 +163,7 @@ run(suite, "inference (noGrad)", "batch=32", infer32)
 
 run(suite, "parameters()", "3-layer", lambda: list(model1.parameters()))
 run(suite, "stateDict()", "3-layer", lambda: model1.state_dict())
-run(suite, "train/eval toggle", "—", lambda: (model1.train(), model1.eval()))
+run(suite, "train/eval toggle", "n/a", lambda: (model1.train(), model1.eval()))
 
 # ── Additional v1.0.0 neural network coverage ───────────
 

@@ -1,8 +1,8 @@
 /**
  * Example 03: Data Analysis & Visualization
  *
- * Comprehensive data analysis workflow using DataFrames, statistics, and plotting.
- * Learn to explore, analyze, and visualize employee data.
+ * An exploratory workflow on a small employee table: summarize it with a
+ * DataFrame, compute statistics, group and filter rows, and draw four charts.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -86,17 +86,17 @@ const employeeData = new DataFrame({
 });
 
 // Display dataset overview
-console.log("\n📊 Dataset Overview");
+console.log("\nDataset Overview");
 console.log("-".repeat(60));
 console.log(`Total Employees: ${employeeData.shape[0]}`);
 console.log(`Columns: ${employeeData.columns.join(", ")}`);
 
 // Show first few rows
-console.log("\n📋 First 5 Rows:");
+console.log("\nFirst 5 Rows:");
 console.log(employeeData.head(5).toString());
 
 // Calculate descriptive statistics
-console.log("\n📈 Statistical Summary");
+console.log("\nStatistical Summary");
 console.log("-".repeat(60));
 
 // Extract columns as arrays for analysis
@@ -109,8 +109,8 @@ const salaryTensor = tensor(salaries);
 const expTensor = tensor(experiences);
 
 // Calculate salary statistics
-const salaryMean = Number(mean(salaryTensor).data[0]);
-const salarySd = Number(std(salaryTensor).data[0]);
+const salaryMean = Number(mean(salaryTensor).item());
+const salarySd = Number(std(salaryTensor).item());
 
 console.log(`Salary Statistics:`);
 console.log(`  Mean: $${salaryMean.toFixed(2)}`);
@@ -119,15 +119,15 @@ console.log(`  Min: $${Math.min(...salaries)}`);
 console.log(`  Max: $${Math.max(...salaries)}`);
 
 // Calculate experience statistics
-const expMean = Number(mean(expTensor).data[0]);
-const expSd = Number(std(expTensor).data[0]);
+const expMean = Number(mean(expTensor).item());
+const expSd = Number(std(expTensor).item());
 
 console.log(`\nExperience Statistics:`);
 console.log(`  Mean: ${expMean.toFixed(1)} years`);
 console.log(`  Std Dev: ${expSd.toFixed(1)} years`);
 
 // Group by department and calculate averages
-console.log("\n🏢 Department Analysis");
+console.log("\nDepartment Analysis");
 console.log("-".repeat(60));
 
 // GroupBy operation to aggregate by department
@@ -141,7 +141,7 @@ console.log("Average Salary by Department:");
 console.log(deptStats.toString());
 
 // Filter data based on conditions
-console.log("\n🔍 Filtering Examples");
+console.log("\nFiltering Examples");
 console.log("-".repeat(60));
 
 // Find employees earning over $100k
@@ -154,7 +154,7 @@ const engineeringDept = employeeData.filter((row) => row.department === "Enginee
 console.log(`\nEngineering Department: ${engineeringDept.shape[0]} employees`);
 
 // Analyze correlations between variables
-console.log("\n📊 Correlation Analysis");
+console.log("\nCorrelation Analysis");
 console.log("-".repeat(60));
 
 // corrcoef expects rows=observations and columns=variables.
@@ -167,7 +167,7 @@ console.log("Correlation Matrix (Salary, Experience, Age):");
 console.log(correlationMatrix.toString());
 
 // Generate visualizations
-console.log("\n🎨 Creating Visualizations");
+console.log("\nCreating Visualizations");
 console.log("-".repeat(60));
 
 // 1. Scatter plot showing relationship between experience and salary
@@ -180,7 +180,7 @@ ax1.setXLabel("Years of Experience");
 ax1.setYLabel("Salary ($)");
 const svg1 = fig1.renderSVG();
 writeFileSync("docs/examples/03-data-analysis/output/salary-vs-experience.svg", svg1.svg);
-console.log("   ✓ Saved: output/salary-vs-experience.svg");
+console.log("   Saved: output/salary-vs-experience.svg");
 
 // 2. Histogram showing salary distribution
 console.log("2. Histogram: Salary Distribution");
@@ -192,7 +192,7 @@ ax2.setXLabel("Salary ($)");
 ax2.setYLabel("Frequency");
 const svg2 = fig2.renderSVG();
 writeFileSync("docs/examples/03-data-analysis/output/salary-distribution.svg", svg2.svg);
-console.log("   ✓ Saved: output/salary-distribution.svg");
+console.log("   Saved: output/salary-distribution.svg");
 
 // 3. Bar chart comparing departments
 console.log("3. Bar Chart: Average Salary by Department");
@@ -201,7 +201,7 @@ const depts = ["Engineering", "Sales", "Marketing", "HR"];
 const avgSalaries = depts.map((dept) => {
   const deptData = employeeData.filter((row) => row.department === dept);
   const deptSalaries = expectNumberArray(deptData.get("salary").toArray());
-  return Number(mean(tensor(deptSalaries)).data[0]);
+  return Number(mean(tensor(deptSalaries)).item());
 });
 
 const fig3 = new Figure();
@@ -215,7 +215,7 @@ ax3.setXLabel("Department");
 ax3.setYLabel("Average Salary ($)");
 const svg3 = fig3.renderSVG();
 writeFileSync("docs/examples/03-data-analysis/output/dept-salaries.svg", svg3.svg);
-console.log("   ✓ Saved: output/dept-salaries.svg");
+console.log("   Saved: output/dept-salaries.svg");
 
 // 4. Heatmap visualizing correlations
 console.log("4. Heatmap: Correlation Matrix");
@@ -225,15 +225,17 @@ ax4.heatmap(correlationMatrix, { vmin: -1, vmax: 1 });
 ax4.setTitle("Correlation Matrix");
 const svg4 = fig4.renderSVG();
 writeFileSync("docs/examples/03-data-analysis/output/correlation-heatmap.svg", svg4.svg);
-console.log("   ✓ Saved: output/correlation-heatmap.svg");
+console.log("   Saved: output/correlation-heatmap.svg");
 
-// Summary of findings
-console.log("\n💡 Key Insights");
+// Summary of findings, computed from the data above
+console.log("\nFindings");
 console.log("-".repeat(60));
-console.log("• Engineering has the highest average salary");
-console.log("• Strong positive correlation between experience and salary");
-console.log("• Age shows moderate correlation with both salary and experience");
-console.log("• Salary distribution shows clustering around $70k and $105k");
+const bestIndex = avgSalaries.indexOf(Math.max(...avgSalaries));
+console.log(`- ${depts[bestIndex]} has the highest average salary`);
+const salaryExperienceR = correlationMatrix.at(0, 1);
+const salaryAgeR = correlationMatrix.at(0, 2);
+console.log(`- Salary vs experience correlation: ${Number(salaryExperienceR).toFixed(2)}`);
+console.log(`- Salary vs age correlation: ${Number(salaryAgeR).toFixed(2)}`);
 
-console.log("\n✅ Analysis Complete!");
+console.log("\nAnalysis complete.");
 console.log("=".repeat(60));

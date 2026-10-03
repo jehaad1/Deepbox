@@ -12,7 +12,7 @@ import {
 } from "../src/metrics";
 import { tensor } from "../src/ndarray";
 
-describe("Regression Metrics - Comprehensive Tests", () => {
+describe("Regression Metrics tests", () => {
   describe("mse (Mean Squared Error)", () => {
     it("should calculate MSE correctly", () => {
       const yTrue = tensor([3, -0.5, 2, 7]);
@@ -298,7 +298,7 @@ describe("Regression Metrics - Comprehensive Tests", () => {
       expect(medianAbsoluteError(yTrue, yPred)).toBe(0);
     });
 
-    it("should be robust to outliers", () => {
+    it("should be less sensitive to outliers", () => {
       const yTrue = tensor([1, 2, 3, 4, 100]);
       const yPred = tensor([1, 2, 3, 4, 5]);
       const medianErr = medianAbsoluteError(yTrue, yPred);

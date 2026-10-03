@@ -36,7 +36,7 @@ import { dirichlet, multinomial, multivariate_normal, setSeed } from "../src/ran
 
 // ── nn.init tests ──
 
-describe("nn.init — weight initialization", () => {
+describe("nn.init: weight initialization", () => {
   it("uniform_ fills tensor within bounds", () => {
     const t = zeros([10, 10]);
     uniform_(t, -2, 2);

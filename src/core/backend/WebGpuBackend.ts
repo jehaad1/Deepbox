@@ -1,11 +1,12 @@
 /**
- * WebGPU Backend — GPU execution backend for Deepbox tensors.
+ * WebGPU Backend: GPU execution backend for Deepbox tensors.
  *
  * Implements the {@link KernelBackend} contract with WGSL compute kernels:
- * stride/broadcast-aware element-wise ops, tiled matrix multiplication and
- * multi-pass reductions over float32 device buffers. Once registered
+ * stride/broadcast-aware element-wise ops, tiled matrix multiplication,
+ * multi-pass reductions, and convolution/pooling kernels over float32
+ * device buffers (float16 and bfloat16 are also supported). Once registered
  * (`registerBackend('webgpu', backend)` after `await backend.init()`),
- * built-in ndarray ops on `webgpu` tensors dispatch here automatically —
+ * built-in ndarray ops on `webgpu` tensors dispatch here automatically;
  * see Devices & execution on DeepboxDocs for the accelerated op set.
  *
  * Kernels enqueue GPU work synchronously; reading results back
@@ -20,10 +21,9 @@
  */
 
 import {
-  bfloat16BitsToFloat64,
   float16BitsToFloat64,
-  float64ToBFloat16Bits,
   float64ToFloat16Bits,
+  roundToBFloat16,
 } from "../../ndarray/tensor/float16";
 import { DeviceError } from "../errors/index";
 import type { BackendCapability, BackendInfo } from "./Backend";
@@ -39,12 +39,43 @@ import type {
   TernaryKernelOp,
   UnaryKernelOp,
 } from "./kernels";
+import {
+  GPU_BUFFER_USAGE,
+  GPU_MAP_MODE,
+  type GpuAdapter,
+  type GpuBindGroupEntry,
+  type GpuBuffer,
+  type GpuComputePipeline,
+  type GpuDevice,
+  type GpuDeviceDescriptor,
+  type GpuDeviceLostInfo,
+  type GpuLike,
+} from "./webgpu_types";
 
 /** Maximum tensor rank supported by the WGSL kernels. */
 const MAX_RANK = 8;
 const WORKGROUP_SIZE = 256;
 /** Bytes kept alive in the free-buffer pool before excess buffers are destroyed. */
 const POOL_CAP_BYTES = 256 * 1024 * 1024;
+/**
+ * `maxComputeWorkgroupsPerDimension` guaranteed by every WebGPU device. The
+ * backend never asks for more, so launches wider than this are folded into a
+ * 2-D grid (1-D kernels) or rejected with a `DeviceError` (matmul).
+ */
+const MAX_GROUPS_PER_DIM = 65535;
+/** `maxStorageBufferBindingSize` / `maxBufferSize` assumed when the device does not report them. */
+const DEFAULT_MAX_BUFFER_BYTES = 134217728;
+
+/**
+ * Linear thread index of a 1-D kernel. Launches of more than
+ * {@link MAX_GROUPS_PER_DIM} workgroups are folded into a 2-D grid, so the
+ * index is rebuilt from both grid axes (it equals `gid.x` on a 1-D launch).
+ */
+const MAIN_1D = /* wgsl */ `fn main(
+  @builtin(global_invocation_id) gid: vec3<u32>,
+  @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+  let i = gid.y * (nwg.x * ${WORKGROUP_SIZE}u) + gid.x;`;
 
 // ─── WGSL kernel sources ─────────────────────────────────────────────────────
 
@@ -72,6 +103,22 @@ struct Meta {
 };
 `;
 
+/**
+ * Layout metadata of the full-reduction passes. `divisor` divides each
+ * workgroup partial (the element count for `mean`, 1 otherwise), so a mean
+ * accumulates already-scaled partials and half-precision sums cannot overflow.
+ */
+const REDUCE_META = /* wgsl */ `
+struct Meta {
+  size: u32,
+  ndim: u32,
+  offset: u32,
+  divisor: f32,
+  shape: array<vec4<u32>, 2>,
+  strides: array<vec4<u32>, 2>,
+};
+`;
+
 /** Expressions for each binary op; `x`/`y` are the operand values. */
 const BINARY_EXPR: Record<BinaryKernelOp, string> = {
   add: "x + y",
@@ -79,11 +126,18 @@ const BINARY_EXPR: Record<BinaryKernelOp, string> = {
   mul: "x * y",
   div: "x / y",
   pow: "pow_impl(x, y)",
-  maximum: "select(max(x, y), x + y, x != x || y != y)",
-  minimum: "select(min(x, y), x + y, x != x || y != y)",
+  maximum: "select(max(x, y), x + y, is_nan(x) || is_nan(y))",
+  minimum: "select(min(x, y), x + y, is_nan(x) || is_nan(y))",
 };
 
-/** Expressions for each unary op; `x` is the operand value. */
+/**
+ * Expressions for each unary op; `x` is the operand value. Ops that call a
+ * `*_impl` function get its WGSL source from {@link UNARY_HELPERS}.
+ *
+ * `exp(x) - 1`, `log(1 + x)`, the common 5-term erf fits and the built-in
+ * `tanh` lose most of their digits for small arguments, and the built-in
+ * `tanh` returns NaN for large ones, so those ops use the helpers below.
+ */
 const UNARY_EXPR: Record<UnaryKernelOp, string> = {
   copy: "x",
   step: "select(0.0, 1.0, x > 0.0)",
@@ -93,53 +147,174 @@ const UNARY_EXPR: Record<UnaryKernelOp, string> = {
   log: "log(x)",
   sqrt: "sqrt(x)",
   square: "x * x",
-  relu: "max(x, 0.0)",
+  // NaN-propagating, like the CPU `Math.max(0, x)`.
+  relu: "select(max(x, 0.0), x, is_nan(x))",
   sigmoid: "1.0 / (1.0 + exp(-x))",
-  tanh: "tanh(x)",
-  // Tanh-approximation GELU, matching the CPU `gelu` op exactly:
-  // 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))). sqrt(2/pi)=0.7978845608028654.
-  gelu: "0.5 * x * (1.0 + tanh(0.7978845608028654 * (x + 0.044715 * x * x * x)))",
+  tanh: "tanh_impl(x)",
+  // Tanh-approximation GELU, the same function as the CPU `gelu` op:
+  // 0.5 x (1 + tanh(u)) with u = sqrt(2/pi) (x + 0.044715 x^3). Since
+  // 1 + tanh(u) = 2 / (1 + exp(-2u)), it is evaluated as x / (1 + exp(-2u)),
+  // which keeps full precision for negative x (no 1 + tanh(-large)
+  // cancellation) and stays finite where tanh would overflow.
+  // 2 sqrt(2/pi) = 1.5957691216057308.
+  gelu: "x / (1.0 + exp(-1.5957691216057308 * (x + 0.044715 * x * x * x)))",
   erf: "erf_impl(x)",
   rsqrt: "inverseSqrt(x)",
   reciprocal: "1.0 / x",
-  sign: "select(sign(x), x, x != x)",
-  expm1: "exp(x) - 1.0",
-  log1p: "log(1.0 + x)",
-  // Numerically stable softplus: for large x, log(1+e^x) -> x.
-  softplus: "select(log(1.0 + exp(x)), x, x > 20.0)",
+  sign: "select(sign(x), x, is_nan(x))",
+  expm1: "expm1_impl(x)",
+  log1p: "log1p_impl(x)",
+  // Numerically stable softplus: max(x, 0) + log1p(exp(-|x|)). Unlike
+  // log(1 + exp(x)) it keeps the tail for very negative x.
+  softplus: "max(x, 0.0) + log1p_impl(exp(-abs(x)))",
 };
 
 /**
- * Abramowitz & Stegun 7.1.26 rational approximation of the error function
- * (max abs error ~1.5e-7, well within float32 precision). erf is odd, so the
- * magnitude is computed on |x| and the sign reapplied.
+ * `tanh` that is accurate for small |x| (Taylor series up to |x| < 0.5, where
+ * the built-in loses up to ~1e-5 relative accuracy) and finite for large |x|
+ * (the built-in returns NaN past |x| ~ 44; tanh(20) is already exactly 1 in
+ * float32). NaN propagates.
  */
-const ERF_IMPL = /* wgsl */ `
-fn erf_impl(x: f32) -> f32 {
-  let t = 1.0 / (1.0 + 0.3275911 * abs(x));
-  let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
-  return select(y, -y, x < 0.0);
+const TANH_IMPL = /* wgsl */ `
+fn tanh_impl(x: f32) -> f32 {
+  if (is_nan(x)) { return x; }
+  if (abs(x) < 0.5) {
+    let x2 = x * x;
+    return x * (1.0 + x2 * (-0.33333334 + x2 * (0.13333334 + x2 * (-0.053968254
+      + x2 * (0.021869489 + x2 * (-0.008863236 + x2 * (0.003592128 + x2 * -0.0014558344)))))));
+  }
+  return tanh(clamp(x, -20.0, 20.0));
 }
 `;
 
-/** Unary ops that need a helper function injected into their shader. */
+/**
+ * `exp(x) - 1` without cancellation: a Taylor series for |x| < 0.5 (error
+ * below 1e-10 relative), the direct difference elsewhere, where it loses at
+ * most one bit.
+ */
+const EXPM1_IMPL = /* wgsl */ `
+fn expm1_impl(x: f32) -> f32 {
+  if (abs(x) < 0.5) {
+    return x * (1.0 + x * (0.5 + x * (0.16666667 + x * (0.041666668 + x * (0.008333334
+      + x * (0.0013888889 + x * (0.00019841270 + x * (0.000024801587 + x * (0.0000027557319
+      + x * 0.00000027557319)))))))));
+  }
+  return exp(x) - 1.0;
+}
+`;
+
+/**
+ * `log(1 + x)` without cancellation: for |x| < 0.5 it uses
+ * `2 atanh(s)` with `s = x / (2 + x)` as an odd series in `s` (|s| <= 1/3,
+ * error below 1e-8 relative), and the direct form elsewhere.
+ */
+const LOG1P_IMPL = /* wgsl */ `
+fn log1p_impl(x: f32) -> f32 {
+  if (abs(x) < 0.5) {
+    let s = x / (2.0 + x);
+    let s2 = s * s;
+    return 2.0 * s * (1.0 + s2 * (0.33333334 + s2 * (0.2 + s2 * (0.14285715 + s2 * (0.11111111
+      + s2 * (0.09090909 + s2 * (0.07692308 + s2 * 0.06666667)))))));
+  }
+  return log(1.0 + x);
+}
+`;
+
+/**
+ * Error function accurate to a few float32 ulps over the whole range:
+ *  - |x| < 1: Maclaurin series 2/sqrt(pi) * x * sum((-x^2)^n / (n! (2n+1)));
+ *  - 1 <= |x| < 4: erf = 1 - erfc with W. J. Cody's rational approximation of
+ *    erfc (CALERF, 1969);
+ *  - |x| >= 4: +-1 (erfc(4) = 1.5e-8 is below half an ulp of 1).
+ * The 5-term Abramowitz & Stegun 7.1.26 fit is only good to 1.5e-7 absolute,
+ * which is a large relative error for small x, where erf(x) ~ 1.13 x.
+ */
+const ERF_IMPL = /* wgsl */ `
+fn erf_impl(x: f32) -> f32 {
+  if (is_nan(x)) { return x; }
+  let ax = abs(x);
+  if (ax < 1.0) {
+    let y = -(ax * ax);
+    var s = 1.089222104e-09;
+    s = s * y + 1.3122533e-08;
+    s = s * y + 1.4503852e-07;
+    s = s * y + 1.4589169e-06;
+    s = s * y + 1.32275132e-05;
+    s = s * y + 1.0683761e-04;
+    s = s * y + 7.5757576e-04;
+    s = s * y + 4.6296296e-03;
+    s = s * y + 2.3809524e-02;
+    s = s * y + 1.0e-01;
+    s = s * y + 3.3333333e-01;
+    s = s * y + 1.0e+00;
+    return 1.1283792 * x * s;
+  }
+  if (ax >= 4.0) { return select(1.0, -1.0, x < 0.0); }
+  var xnum = 2.1531154e-8 * ax;
+  var xden = ax;
+  xnum = (xnum + 0.5641885) * ax;     xden = (xden + 15.744926) * ax;
+  xnum = (xnum + 8.8831498) * ax;     xden = (xden + 117.69395) * ax;
+  xnum = (xnum + 66.119191) * ax;     xden = (xden + 537.1811) * ax;
+  xnum = (xnum + 298.63514) * ax;     xden = (xden + 1621.3896) * ax;
+  xnum = (xnum + 881.95222) * ax;     xden = (xden + 3290.7992) * ax;
+  xnum = (xnum + 1712.0476) * ax;     xden = (xden + 4362.6191) * ax;
+  xnum = (xnum + 2051.0784) * ax;     xden = (xden + 3439.3677) * ax;
+  let erfc = exp(-(ax * ax)) * ((xnum + 1230.3394) / (xden + 1230.3394));
+  let r = 1.0 - erfc;
+  return select(r, -r, x < 0.0);
+}
+`;
+
+/** Unary ops that need helper functions injected into their shader. */
 const UNARY_HELPERS: Partial<Record<UnaryKernelOp, string>> = {
+  tanh: TANH_IMPL,
   erf: ERF_IMPL,
+  expm1: EXPM1_IMPL,
+  log1p: LOG1P_IMPL,
+  softplus: LOG1P_IMPL,
 };
 
 /**
- * IEEE-style pow handling negative bases with integral exponents, which
- * WGSL's exp2/log2-based `pow` leaves undefined.
+ * `pow` with IEEE/NumPy special cases. WGSL's `pow` (exp2/log2 based) is
+ * undefined for a negative base and for a zero base with a non-positive
+ * exponent, and it is only accurate to a few 1e-6 for large results.
+ *  - `y == 0` gives 1 for every `x` (including NaN), as in `Math.pow`;
+ *  - a NaN exponent gives NaN (a zero base must not turn it into 0);
+ *  - a zero base gives 0 or +-infinity (sign kept for odd integer `y`);
+ *  - integer exponents up to 16 use repeated squaring, which is exact to a
+ *    few ulps (the common `x ** 2` and `x ** 3`);
+ *  - other negative bases give NaN, or the signed result for integral `y`.
+ * Float32 integers of magnitude >= 2^24 are always even, so they are never odd.
  */
 const POW_IMPL = /* wgsl */ `
 fn pow_impl(x: f32, y: f32) -> f32 {
-  if (x >= 0.0) {
+  if (y == 0.0) { return 1.0; }
+  if (is_nan(x)) { return x; }
+  if (is_nan(y)) { return y; }
+  let y_int = y == floor(y);
+  let y_odd = y_int && abs(y) < 16777216.0 && (i32(y) & 1) != 0;
+  if (x == 0.0) {
+    if (y < 0.0) {
+      let r = 1.0 / x;
+      return select(abs(r), r, y_odd);
+    }
+    return select(0.0, x, y_odd);
+  }
+  if (y_int && abs(y) <= 16.0) {
+    var acc = 1.0;
+    var base = x;
+    for (var e = u32(abs(y)); e > 0u; e = e >> 1u) {
+      if ((e & 1u) != 0u) { acc = acc * base; }
+      base = base * base;
+    }
+    return select(acc, 1.0 / acc, y < 0.0);
+  }
+  if (x > 0.0) {
     return pow(x, y);
   }
-  if (y == floor(y)) {
+  if (y_int) {
     let mag = pow(-x, y);
-    let odd = (i32(y) & 1) != 0;
-    return select(mag, -mag, odd);
+    return select(mag, -mag, y_odd);
   }
   // Negative base, non-integral exponent: NaN. Routed through a runtime
   // var because WGSL const-expressions must not evaluate to NaN.
@@ -155,10 +330,10 @@ ${BINARY_META}
 @group(0) @binding(1) var<storage, read> b: array<f32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
 @group(0) @binding(3) var<uniform> um: Meta;
+${NAN_HELPER}
 ${op === "pow" ? POW_IMPL : ""}
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   var rem = i;
   var a_idx = um.a_offset;
@@ -183,10 +358,10 @@ ${UNARY_META}
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<uniform> um: Meta;
+${NAN_HELPER}
 ${UNARY_HELPERS[op] ?? ""}
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   var rem = i;
   var idx = um.offset;
@@ -268,11 +443,22 @@ fn main(
   }
 }`;
 
+/**
+ * NaN test on the bit pattern. Shader compilers (notably Metal with fast
+ * math) assume operands are never NaN and fold `x != x` to `false`, which
+ * would silently drop NaN propagation, so the integer encoding is inspected.
+ */
+const NAN_HELPER = /* wgsl */ `
+fn is_nan(x: f32) -> bool {
+  return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u;
+}
+`;
+
 /** Reduction combine functions (NaN-propagating for min/max, like NumPy). */
 const REDUCE_COMBINE: Record<"sum" | "max" | "min", string> = {
   sum: "return x + y;",
-  max: "if (x != x) { return x; } if (y != y) { return y; } return max(x, y);",
-  min: "if (x != x) { return x; } if (y != y) { return y; } return min(x, y);",
+  max: "if (is_nan(x)) { return x; } if (is_nan(y)) { return y; } return max(x, y);",
+  min: "if (is_nan(x)) { return x; } if (is_nan(y)) { return y; } return min(x, y);",
 };
 
 // Identity elements as runtime expressions: WGSL const-expressions must not
@@ -296,24 +482,26 @@ fn pos_inf() -> f32 {
 
 function reduceShader(op: "sum" | "max" | "min"): string {
   return /* wgsl */ `
-${UNARY_META}
+${REDUCE_META}
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<uniform> um: Meta;
 
 var<workgroup> partials: array<f32, ${WORKGROUP_SIZE}>;
 ${INF_HELPERS}
+${NAN_HELPER}
 fn combine(x: f32, y: f32) -> f32 {
   ${REDUCE_COMBINE[op]}
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(
-  @builtin(global_invocation_id) gid: vec3<u32>,
   @builtin(local_invocation_id) lid: vec3<u32>,
   @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-  let i = gid.x;
+  let group = wid.y * nwg.x + wid.x;
+  let i = group * ${WORKGROUP_SIZE}u + lid.x;
   if (i < um.size) {
     var rem = i;
     var idx = um.offset;
@@ -337,17 +525,19 @@ fn main(
     workgroupBarrier();
   }
 
-  if (lid.x == 0u) {
-    out[wid.x] = partials[0];
+  // Workgroups past the last real partial (possible on a folded grid) must not write.
+  if (lid.x == 0u && i < um.size) {
+    out[group] = partials[0] / um.divisor;
   }
 }`;
 }
 
 /**
  * Reduction along one axis. Each thread owns one output element and reduces
- * the `axisDim` input elements along the reduced axis. `scale` is `1/axisDim`
- * for mean and `1.0` otherwise, applied once at the end. `outToInStride[j]` is
- * the input stride of the input dimension that output dimension `j` maps to.
+ * the `axisDim` input elements along the reduced axis, accumulating in f32.
+ * `divisor` is `axisDim` for mean and `1.0` otherwise, applied once at the
+ * end. `outToInStride[j]` is the input stride of the input dimension that
+ * output dimension `j` maps to.
  */
 function axisReduceShader(op: "sum" | "max" | "min"): string {
   return /* wgsl */ `
@@ -357,7 +547,7 @@ struct Meta {
   outNdim: u32,
   inOffset: u32,
   axisStride: u32,
-  scale: f32,
+  divisor: f32,
   _pad0: u32,
   _pad1: u32,
   outShape: array<vec4<u32>, 2>,
@@ -367,12 +557,12 @@ struct Meta {
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<uniform> um: Meta;
 ${INF_HELPERS}
+${NAN_HELPER}
 fn combine(x: f32, y: f32) -> f32 {
   ${REDUCE_COMBINE[op]}
 }
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.outSize) { return; }
   var rem = i;
   var base = um.inOffset;
@@ -387,7 +577,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var j = 0u; j < um.axisDim; j = j + 1u) {
     acc = combine(acc, input[base + j * um.axisStride]);
   }
-  out[i] = acc * um.scale;
+  out[i] = acc / um.divisor;
 }`;
 }
 
@@ -473,8 +663,7 @@ ${TERNARY_META}
 @group(0) @binding(4) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   var rem = i;
   var c_idx = um.c_offset;
@@ -529,8 +718,7 @@ ${CONV_META}
 @group(0) @binding(2) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   let colSize = um.channels * um.kH * um.kW;
   let outPixels = um.outH * um.outW;
@@ -557,7 +745,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 /**
  * col2im: one thread per output image element. Sums the contributions of
- * every sliding window that covered this pixel (gather form — no atomics).
+ * every sliding window that covered this pixel (gather form, no atomics).
  * Input columns are contiguous `[batch, outH*outW, channels*kH*kW]`.
  */
 const COL2IM_SHADER = /* wgsl */ `
@@ -567,8 +755,7 @@ ${CONV_META}
 @group(0) @binding(2) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   let colSize = um.channels * um.kH * um.kW;
   let outPixels = um.outH * um.outW;
@@ -605,13 +792,13 @@ function pool2dShader(op: "max" | "avg"): string {
   return /* wgsl */ `
 ${CONV_META}
 ${INF_HELPERS}
+${NAN_HELPER}
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   // Output is contiguous [batch, channels, outH, outW].
   let b = i / (um.channels * um.outH * um.outW);
@@ -630,7 +817,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let v = input[um.inOffset + b * um.iS0 + channel * um.iS1 + u32(ih) * um.iS2 + u32(iw) * um.iS3];
       ${
         op === "max"
-          ? "if (v != v) { acc = v; } else if (acc == acc) { acc = max(acc, v); }"
+          ? "if (is_nan(v)) { acc = v; } else if (!is_nan(acc)) { acc = max(acc, v); }"
           : "acc = acc + v;\n      count = count + 1.0;"
       }
     }
@@ -656,9 +843,11 @@ ${CONV_META}
 @group(0) @binding(3) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
+  // The avg variant never reads the input; touching it keeps binding 0 in the
+  // auto-generated bind group layout (unused bindings are dropped from it).
+  _ = arrayLength(&input);
   // Decode this input element (contiguous NCHW).
   let b = i / (um.channels * um.height * um.width);
   var rem = i % (um.channels * um.height * um.width);
@@ -697,7 +886,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       if (count > 0.0) { acc = acc + gv / count; }`
           : `
       // Recompute the window's first-argmax (strict >, row-major scan).
-      var best: f32 = grad_out[0] * 0.0; // placeholder, set on first valid tap
+      var best: f32 = 0.0; // overwritten by the first in-range tap
       var bestLocal: i32 = -1;
       var seen: bool = false;
       for (var a: u32 = 0u; a < um.kH; a = a + 1u) {
@@ -733,9 +922,9 @@ struct Meta {
 @group(0) @binding(1) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x < um.size) {
-    out[gid.x] = um.value;
+${MAIN_1D}
+  if (i < um.size) {
+    out[i] = um.value;
   }
 }`;
 
@@ -747,7 +936,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // (`f32(a[i])`), the arithmetic runs in f32 exactly as in the f32 kernels
 // (so activations/erf/pow stay accurate), and the result is narrowed back to
 // f16 at store (`f16(x)`). Workgroup reduction accumulators stay f32 for
-// accuracy — only the storage is half-precision, which is where the
+// accuracy: only the storage is half-precision, which is where the
 // bandwidth/footprint win comes from.
 //
 // bfloat16 has NO native WGSL type. Rather than an error-prone manual u32
@@ -767,10 +956,10 @@ ${BINARY_META}
 @group(0) @binding(1) var<storage, read> b: array<f16>;
 @group(0) @binding(2) var<storage, read_write> out: array<f16>;
 @group(0) @binding(3) var<uniform> um: Meta;
+${NAN_HELPER}
 ${op === "pow" ? POW_IMPL : ""}
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   var rem = i;
   var a_idx = um.a_offset;
@@ -795,10 +984,10 @@ ${UNARY_META}
 @group(0) @binding(0) var<storage, read> input: array<f16>;
 @group(0) @binding(1) var<storage, read_write> out: array<f16>;
 @group(0) @binding(2) var<uniform> um: Meta;
+${NAN_HELPER}
 ${UNARY_HELPERS[op] ?? ""}
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.size) { return; }
   var rem = i;
   var idx = um.offset;
@@ -931,24 +1120,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 function reduceShaderF16(op: "sum" | "max" | "min"): string {
   return /* wgsl */ `${F16_ENABLE}
-${UNARY_META}
+${REDUCE_META}
 @group(0) @binding(0) var<storage, read> input: array<f16>;
 @group(0) @binding(1) var<storage, read_write> out: array<f16>;
 @group(0) @binding(2) var<uniform> um: Meta;
 
 var<workgroup> partials: array<f32, ${WORKGROUP_SIZE}>;
 ${INF_HELPERS}
+${NAN_HELPER}
 fn combine(x: f32, y: f32) -> f32 {
   ${REDUCE_COMBINE[op]}
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(
-  @builtin(global_invocation_id) gid: vec3<u32>,
   @builtin(local_invocation_id) lid: vec3<u32>,
   @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-  let i = gid.x;
+  let group = wid.y * nwg.x + wid.x;
+  let i = group * ${WORKGROUP_SIZE}u + lid.x;
   if (i < um.size) {
     var rem = i;
     var idx = um.offset;
@@ -972,8 +1163,8 @@ fn main(
     workgroupBarrier();
   }
 
-  if (lid.x == 0u) {
-    out[wid.x] = f16(partials[0]);
+  if (lid.x == 0u && i < um.size) {
+    out[group] = f16(partials[0] / um.divisor);
   }
 }`;
 }
@@ -986,7 +1177,7 @@ struct Meta {
   outNdim: u32,
   inOffset: u32,
   axisStride: u32,
-  scale: f32,
+  divisor: f32,
   _pad0: u32,
   _pad1: u32,
   outShape: array<vec4<u32>, 2>,
@@ -996,12 +1187,12 @@ struct Meta {
 @group(0) @binding(1) var<storage, read_write> out: array<f16>;
 @group(0) @binding(2) var<uniform> um: Meta;
 ${INF_HELPERS}
+${NAN_HELPER}
 fn combine(x: f32, y: f32) -> f32 {
   ${REDUCE_COMBINE[op]}
 }
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+${MAIN_1D}
   if (i >= um.outSize) { return; }
   var rem = i;
   var base = um.inOffset;
@@ -1016,7 +1207,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var j = 0u; j < um.axisDim; j = j + 1u) {
     acc = combine(acc, f32(input[base + j * um.axisStride]));
   }
-  out[i] = f16(acc * um.scale);
+  out[i] = f16(acc / um.divisor);
 }`;
 }
 
@@ -1035,9 +1226,9 @@ struct Meta {
 @group(0) @binding(1) var<uniform> um: Meta;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x < um.size) {
-    out[gid.x] = f16(um.value);
+${MAIN_1D}
+  if (i < um.size) {
+    out[i] = f16(um.value);
   }
 }`;
 
@@ -1091,7 +1282,7 @@ export const WGSL_SHADERS: Record<string, string> = (() => {
 /**
  * Bytes per element of on-device storage for a {@link DeviceDType}. float16 is
  * a true 2-byte half; bfloat16 is stored as float32 on-device (host-rounded),
- * so it — like float32 — is 4 bytes.
+ * so it, like float32, is 4 bytes.
  */
 function deviceBytesPerElement(dtype: DeviceDType | undefined): number {
   return dtype === "float16" ? 2 : 4;
@@ -1126,7 +1317,7 @@ export type GpuPipelineInfo = {
 
 /** Device buffer handle owned by the WebGPU backend. */
 type GpuDeviceBuffer = DeviceBuffer & {
-  gpuBuffer: GPUBuffer;
+  gpuBuffer: GpuBuffer;
   freed: boolean;
 };
 
@@ -1157,6 +1348,53 @@ function validateRank(layout: KernelLayout, op: string): void {
   }
 }
 
+/** Reject layouts whose shape and stride lists disagree (they would be mis-aligned on the device). */
+function validateLayout(layout: KernelLayout, op: string): void {
+  validateRank(layout, op);
+  if (layout.strides.length !== layout.shape.length) {
+    throw new DeviceError(
+      `webgpu ${op}: layout has ${layout.shape.length} dimensions but ${layout.strides.length} strides`
+    );
+  }
+}
+
+/** Reject an operand layout that was not broadcast to `outShape` (same rank, one stride per dim). */
+function validateOperandLayout(
+  layout: KernelLayout,
+  outShape: readonly number[],
+  op: string
+): void {
+  if (layout.strides.length !== outShape.length) {
+    throw new DeviceError(
+      `webgpu ${op}: operand layout has ${layout.strides.length} strides but the output has ` +
+        `${outShape.length} dimensions; broadcast operands to the output shape first`
+    );
+  }
+}
+
+/**
+ * Reject a launch whose grid exceeds the per-dimension workgroup limit. Only
+ * the 2-D/3-D matmul grids can hit it (more than 1,048,560 rows, columns or
+ * batch entries); 1-D kernels fold into a 2-D grid instead.
+ */
+function assertGrid(op: string, x: number, y: number, z: number): void {
+  if (x > MAX_GROUPS_PER_DIM || y > MAX_GROUPS_PER_DIM || z > MAX_GROUPS_PER_DIM) {
+    throw new DeviceError(
+      `webgpu ${op}: workgroup grid ${x}x${y}x${z} exceeds the device limit of ` +
+        `${MAX_GROUPS_PER_DIM} per dimension; split the operands into smaller blocks`
+    );
+  }
+}
+
+/** Validate an element count argument (`fill` size). */
+function validateCount(value: number, name: string, op: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new DeviceError(
+      `webgpu ${op}: ${name} must be a non-negative integer; received ${value}`
+    );
+  }
+}
+
 /**
  * WebGPU execution backend.
  *
@@ -1168,33 +1406,35 @@ function validateRank(layout: KernelLayout, op: string): void {
  * @example
  * ```ts
  * import { WebGpuBackend, registerBackend } from 'deepbox/core';
- * import { tensor } from 'deepbox/ndarray';
+ * import { dot, tensor } from 'deepbox/ndarray';
  *
  * const gpu = new WebGpuBackend();
  * await gpu.init();
  * if (gpu.info().available) {
  *   registerBackend('webgpu', gpu);
  *   const a = tensor([[1, 2], [3, 4]], { device: 'webgpu' });
- *   const b = matmul(a, a);        // executes on the GPU
+ *   const b = dot(a, a);           // executes on the GPU
  *   const host = await b.cpu();    // read the result back
  * }
  * ```
  */
 export class WebGpuBackend implements KernelBackend {
-  private adapter: GPUAdapter | null = null;
-  private device: GPUDevice | null = null;
-  private pipelines = new Map<string, GPUComputePipeline>();
-  private pool = new Map<number, GPUBuffer[]>();
-  private uniformPool = new Map<number, GPUBuffer[]>();
+  private device: GpuDevice | null = null;
+  /** Largest single buffer (and storage binding) this device accepts, in bytes. */
+  private maxBufferBytes = DEFAULT_MAX_BUFFER_BYTES;
+  private pipelines = new Map<string, GpuComputePipeline>();
+  private pool = new Map<number, GpuBuffer[]>();
+  private uniformPool = new Map<number, GpuBuffer[]>();
   private pooledBytes = 0;
   private disposed = false;
   private initPromise: Promise<void> | null = null;
-  private readonly gpuProvider: GPU | null;
+  private readonly gpuProvider: GpuLike | null;
   /** Whether the requested device enabled the `shader-f16` feature. */
   private f16Supported = false;
 
   private static readonly CAPABILITIES: readonly BackendCapability[] = [
     "matmul",
+    "conv2d",
     "reduction",
     "elementwise",
   ];
@@ -1203,7 +1443,7 @@ export class WebGpuBackend implements KernelBackend {
    * @param options.gpu - Explicit WebGPU entry point for runtimes without
    *   `navigator.gpu` (e.g. Node.js with a Dawn binding).
    */
-  constructor(options: { readonly gpu?: GPU } = {}) {
+  constructor(options: { readonly gpu?: GpuLike } = {}) {
     this.gpuProvider = options.gpu ?? null;
   }
 
@@ -1228,7 +1468,13 @@ export class WebGpuBackend implements KernelBackend {
    *
    * Requests a GPU adapter and device. If WebGPU is not available,
    * this method completes without error but the backend reports
-   * `available: false`.
+   * `available: false`. Calling `init()` again returns the same result; a
+   * disposed backend cannot be initialized again.
+   *
+   * The device is requested with the adapter's maximum buffer size and
+   * storage-binding size so tensors larger than the 128 MiB default limit
+   * work. If the device is lost later (driver reset, GPU removed), the
+   * backend reports `available: false`.
    */
   async init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -1238,24 +1484,87 @@ export class WebGpuBackend implements KernelBackend {
 
   private async doInit(): Promise<void> {
     const gpu = this.resolveGpu();
-    if (!gpu) return;
+    if (!gpu || this.disposed) return;
 
     try {
-      this.adapter = await gpu.requestAdapter();
-      if (!this.adapter) return;
+      const raw = await gpu.requestAdapter();
+      if (!raw) return;
+      // The real adapter type is nominal, so it is narrowed to the structural
+      // subset used here at this single boundary.
+      const adapter = raw as GpuAdapter;
       // Enable true on-device half precision when the adapter advertises it.
       // Guarded so backends on GPUs without the feature still initialize (f16
       // tensors then throw a clear DeviceError at upload time).
-      const wantsF16 = this.adapter.features.has("shader-f16");
-      this.device = await this.adapter.requestDevice(
-        wantsF16 ? { requiredFeatures: ["shader-f16"] } : undefined
-      );
-      this.f16Supported = wantsF16;
+      const f16 = adapter.features.has("shader-f16");
+      const base: GpuDeviceDescriptor = f16 ? { requiredFeatures: ["shader-f16"] } : {};
+      const large = this.largeBufferLimits(adapter);
+
+      let device: GpuDevice;
+      let maxBytes = DEFAULT_MAX_BUFFER_BYTES;
+      if (large) {
+        try {
+          device = await adapter.requestDevice({ ...base, requiredLimits: large });
+          maxBytes = Math.min(large.maxBufferSize, large.maxStorageBufferBindingSize);
+        } catch {
+          // The raised limits were refused; fall back to the defaults.
+          device = await adapter.requestDevice(base);
+        }
+      } else {
+        device = await adapter.requestDevice(base);
+      }
+      this.finishInit(device, f16, maxBytes);
     } catch {
-      this.adapter = null;
       this.device = null;
       this.f16Supported = false;
     }
+  }
+
+  /** The adapter's maximum buffer limits when they exceed the defaults, else `null`. */
+  private largeBufferLimits(
+    adapter: GpuAdapter
+  ): { maxBufferSize: number; maxStorageBufferBindingSize: number } | null {
+    const limits = adapter.limits;
+    const maxBufferSize = limits["maxBufferSize"];
+    const maxStorageBufferBindingSize = limits["maxStorageBufferBindingSize"];
+    if (
+      typeof maxBufferSize !== "number" ||
+      typeof maxStorageBufferBindingSize !== "number" ||
+      Math.min(maxBufferSize, maxStorageBufferBindingSize) <= DEFAULT_MAX_BUFFER_BYTES
+    ) {
+      return null;
+    }
+    return { maxBufferSize, maxStorageBufferBindingSize };
+  }
+
+  /** Publish a freshly acquired device unless the backend was disposed in the meantime. */
+  private finishInit(device: GpuDevice, f16: boolean, maxBytes: number): void {
+    if (this.disposed) {
+      device.destroy();
+      return;
+    }
+    this.device = device;
+    this.f16Supported = f16;
+    // Buffers are addressed with u32 element indices in the kernels.
+    this.maxBufferBytes = Math.min(Math.floor(maxBytes / 4) * 4, 0xfffffffc);
+    // Some Node bindings omit `lost`, so check it at runtime despite the typing.
+    const lost: Promise<GpuDeviceLostInfo> | undefined = device.lost;
+    if (lost && typeof lost.then === "function") {
+      lost.then(
+        () => this.onDeviceLost(device),
+        () => this.onDeviceLost(device)
+      );
+    }
+  }
+
+  /** Drop all state tied to a device that was lost (or destroyed). */
+  private onDeviceLost(device: GpuDevice): void {
+    if (this.device !== device) return;
+    this.device = null;
+    this.f16Supported = false;
+    this.pool.clear();
+    this.uniformPool.clear();
+    this.pipelines.clear();
+    this.pooledBytes = 0;
   }
 
   /** Whether this backend can execute true on-device float16 kernels. */
@@ -1265,6 +1574,12 @@ export class WebGpuBackend implements KernelBackend {
 
   /** Ensure the requested dtype can be created on this device. */
   private assertDTypeSupported(dtype: DeviceDType, op: string): void {
+    if (dtype !== "float32" && dtype !== "float16" && dtype !== "bfloat16") {
+      throw new DeviceError(
+        `webgpu ${op}: unsupported device dtype "${String(dtype)}"; ` +
+          "use float32, float16 or bfloat16"
+      );
+    }
     if (dtype === "float16" && !this.f16Supported) {
       throw new DeviceError(
         `webgpu ${op}: float16 tensors require the WebGPU 'shader-f16' feature, ` +
@@ -1276,7 +1591,7 @@ export class WebGpuBackend implements KernelBackend {
 
   /**
    * Resolve the shared dtype of binary/ternary operands, rejecting mixed
-   * dtypes (no silent upcast — the caller must cast explicitly).
+   * dtypes (no silent upcast: the caller must cast explicitly).
    */
   private resolveDType(op: string, buffers: readonly DeviceBuffer[]): DeviceDType {
     const dtype = buffers[0]?.dtype ?? "float32";
@@ -1305,16 +1620,16 @@ export class WebGpuBackend implements KernelBackend {
     }
   }
 
-  private resolveGpu(): GPU | null {
+  private resolveGpu(): GpuLike | null {
     if (this.gpuProvider) return this.gpuProvider;
     if (typeof navigator !== "undefined" && "gpu" in navigator) {
-      const gpu = (navigator as unknown as { gpu?: GPU }).gpu;
+      const gpu = (navigator as unknown as { gpu?: GpuLike }).gpu;
       if (gpu && typeof gpu === "object") return gpu;
     }
     return null;
   }
 
-  private requireDevice(op: string): GPUDevice {
+  private requireDevice(op: string): GpuDevice {
     if (this.disposed) {
       throw new DeviceError(`webgpu ${op}: backend has been disposed`);
     }
@@ -1351,9 +1666,17 @@ export class WebGpuBackend implements KernelBackend {
       // re-rounds), giving correct bf16 numerics without a native bf16 type.
       const rounded = new Float32Array(data.length);
       for (let i = 0; i < data.length; i++) {
-        rounded[i] = bfloat16BitsToFloat64(float64ToBFloat16Bits(data[i] ?? 0));
+        rounded[i] = roundToBFloat16(data[i] ?? 0);
       }
       payload = rounded.buffer as ArrayBuffer;
+    } else if (
+      data.byteOffset === 0 &&
+      data.buffer instanceof ArrayBuffer &&
+      data.byteLength === data.buffer.byteLength
+    ) {
+      // `writeBuffer` copies at call time, so the array's own buffer can be
+      // passed without duplicating it.
+      payload = data.buffer;
     } else {
       payload = data.buffer.slice(
         data.byteOffset,
@@ -1369,39 +1692,43 @@ export class WebGpuBackend implements KernelBackend {
     const device = this.requireDevice("download");
     const gpuBuf = this.unwrap(buffer, "download");
     const dtype = (buffer.dtype ?? "float32") as DeviceDType;
+    if (buffer.size === 0) return new Float32Array(0);
     const dataBytes = buffer.size * deviceBytesPerElement(dtype);
     // Copy/staging sizes must be multiples of 4.
     const byteLength = Math.ceil(dataBytes / 4) * 4;
 
     const staging = device.createBuffer({
       size: byteLength,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      usage: GPU_BUFFER_USAGE.MAP_READ | GPU_BUFFER_USAGE.COPY_DST,
     });
-    const encoder = device.createCommandEncoder();
-    encoder.copyBufferToBuffer(gpuBuf, 0, staging, 0, byteLength);
-    device.queue.submit([encoder.finish()]);
+    try {
+      const encoder = device.createCommandEncoder();
+      encoder.copyBufferToBuffer(gpuBuf, 0, staging, 0, byteLength);
+      device.queue.submit([encoder.finish()]);
 
-    await staging.mapAsync(GPUMapMode.READ);
-    const mapped = staging.getMappedRange();
-    let result: Float32Array;
-    if (dtype === "float16") {
-      const bits = new Uint16Array(mapped, 0, buffer.size);
-      result = new Float32Array(buffer.size);
-      for (let i = 0; i < buffer.size; i++) result[i] = float16BitsToFloat64(bits[i] ?? 0);
-    } else if (dtype === "bfloat16") {
-      // Storage is float32; re-round each value to bfloat16 so chained
-      // on-device f32 arithmetic still reads back as bf16 to the user.
-      const vals = new Float32Array(mapped, 0, buffer.size);
-      result = new Float32Array(buffer.size);
-      for (let i = 0; i < buffer.size; i++) {
-        result[i] = bfloat16BitsToFloat64(float64ToBFloat16Bits(vals[i] ?? 0));
+      await staging.mapAsync(GPU_MAP_MODE.READ);
+      const mapped = staging.getMappedRange();
+      let result: Float32Array;
+      if (dtype === "float16") {
+        const bits = new Uint16Array(mapped, 0, buffer.size);
+        result = new Float32Array(buffer.size);
+        for (let i = 0; i < buffer.size; i++) result[i] = float16BitsToFloat64(bits[i] ?? 0);
+      } else if (dtype === "bfloat16") {
+        // Storage is float32; re-round each value to bfloat16 so chained
+        // on-device f32 arithmetic still reads back as bf16 to the user.
+        const vals = new Float32Array(mapped, 0, buffer.size);
+        result = new Float32Array(buffer.size);
+        for (let i = 0; i < buffer.size; i++) {
+          result[i] = roundToBFloat16(vals[i] ?? 0);
+        }
+      } else {
+        result = new Float32Array(mapped.slice(0, buffer.size * 4));
       }
-    } else {
-      result = new Float32Array(mapped.slice(0, buffer.size * 4));
+      staging.unmap();
+      return result;
+    } finally {
+      staging.destroy();
     }
-    staging.unmap();
-    staging.destroy();
-    return result;
   }
 
   free(buffer: DeviceBuffer): void {
@@ -1412,6 +1739,7 @@ export class WebGpuBackend implements KernelBackend {
 
   fill(value: number, size: number, dtype: DeviceDType = "float32"): DeviceBuffer {
     const device = this.requireDevice("fill");
+    validateCount(size, "size", "fill");
     this.assertDTypeSupported(dtype, "fill");
     const out = this.acquireBuffer(device, Math.max(size, 1), deviceBytesPerElement(dtype));
     const meta = new ArrayBuffer(32);
@@ -1434,6 +1762,8 @@ export class WebGpuBackend implements KernelBackend {
   ): DeviceBuffer {
     const device = this.requireDevice(op);
     validateRank({ shape: outShape, strides: [], offset: 0 }, op);
+    validateOperandLayout(aLayout, outShape, op);
+    validateOperandLayout(bLayout, outShape, op);
     const dtype = this.resolveDType(op, [a, b]);
     const size = sizeOf(outShape);
     const aBuf = this.unwrap(a, op);
@@ -1462,7 +1792,7 @@ export class WebGpuBackend implements KernelBackend {
 
   unary(op: UnaryKernelOp, x: DeviceBuffer, layout: KernelLayout): DeviceBuffer {
     const device = this.requireDevice(op);
-    validateRank(layout, op);
+    validateLayout(layout, op);
     const dtype = (x.dtype ?? "float32") as DeviceDType;
     const size = sizeOf(layout.shape);
     const xBuf = this.unwrap(x, op);
@@ -1487,12 +1817,21 @@ export class WebGpuBackend implements KernelBackend {
     if (aLayout.shape.length !== 2 || bLayout.shape.length !== 2) {
       throw new DeviceError("webgpu matmul requires rank-2 layouts");
     }
+    validateLayout(aLayout, "matmul");
+    validateLayout(bLayout, "matmul");
     const dtype = this.resolveDType("matmul", [a, b]);
     const m = aLayout.shape[0] ?? 0;
     const k = aLayout.shape[1] ?? 0;
     const n = bLayout.shape[1] ?? 0;
+    if ((bLayout.shape[0] ?? 0) !== k) {
+      throw new DeviceError(
+        `webgpu matmul: inner dimensions do not match ([${aLayout.shape.join(", ")}] @ ` +
+          `[${bLayout.shape.join(", ")}])`
+      );
+    }
     const aBuf = this.unwrap(a, "matmul");
     const bBuf = this.unwrap(b, "matmul");
+    assertGrid("matmul", Math.ceil(n / 16), Math.ceil(m / 16), 1);
     const out = this.acquireBuffer(device, Math.max(m * n, 1), deviceBytesPerElement(dtype));
 
     const meta = new ArrayBuffer(48);
@@ -1519,7 +1858,7 @@ export class WebGpuBackend implements KernelBackend {
 
   reduce(op: ReduceKernelOp, x: DeviceBuffer, layout: KernelLayout): DeviceBuffer {
     this.requireDevice(op);
-    validateRank(layout, op);
+    validateLayout(layout, op);
     const dtype = (x.dtype ?? "float32") as DeviceDType;
     const size = sizeOf(layout.shape);
     if (size === 0) {
@@ -1531,13 +1870,15 @@ export class WebGpuBackend implements KernelBackend {
       baseOp === "sum" ? "reduceSum" : baseOp === "max" ? "reduceMax" : "reduceMin",
       dtype
     );
+    const xBuf = this.unwrap(x, op);
 
-    // Pass 1: strided load + workgroup-tree reduce.
+    // Pass 1: strided load + workgroup-tree reduce. For `mean` every partial
+    // is divided by the element count here, so later passes only add.
     let currentSize = size;
     let current = this.reducePass(
       shaderName,
-      this.unwrap(x, op),
-      this.unaryMeta(size, layout),
+      xBuf,
+      this.reduceMeta(size, layout, op === "mean" ? size : 1),
       currentSize,
       dtype
     );
@@ -1549,23 +1890,13 @@ export class WebGpuBackend implements KernelBackend {
       const next = this.reducePass(
         shaderName,
         current,
-        this.unaryMeta(currentSize, layout1d),
+        this.reduceMeta(currentSize, layout1d, 1),
         currentSize,
         dtype
       );
       this.releaseBuffer(current);
       current = next;
       currentSize = Math.ceil(currentSize / WORKGROUP_SIZE);
-    }
-
-    if (op === "mean") {
-      const result = this.wrap(current, 1, dtype);
-      const divisor = this.fill(size, 1, dtype);
-      const scalarLayout: KernelLayout = { shape: [], strides: [], offset: 0 };
-      const meanBuf = this.binary("div", result, scalarLayout, divisor, scalarLayout, []);
-      this.free(result);
-      this.free(divisor);
-      return meanBuf;
     }
 
     return this.wrap(current, 1, dtype);
@@ -1578,9 +1909,9 @@ export class WebGpuBackend implements KernelBackend {
     axis: number
   ): DeviceBuffer {
     const device = this.requireDevice(op);
-    validateRank(layout, op);
+    validateLayout(layout, op);
     const ndim = layout.shape.length;
-    if (axis < 0 || axis >= ndim) {
+    if (!Number.isInteger(axis) || axis < 0 || axis >= ndim) {
       throw new DeviceError(`webgpu ${op}: axis ${axis} out of range for rank ${ndim}`);
     }
     const axisDim = layout.shape[axis] ?? 0;
@@ -1603,9 +1934,10 @@ export class WebGpuBackend implements KernelBackend {
       baseOp === "sum" ? "axisReduceSum" : baseOp === "max" ? "axisReduceMax" : "axisReduceMin",
       dtype
     );
+    const xBuf = this.unwrap(x, op);
 
     const out = this.acquireBuffer(device, Math.max(outSize, 1), deviceBytesPerElement(dtype));
-    // Meta: outSize,axisDim,outNdim,inOffset,axisStride,scale,pad,pad, outShape[8], outToInStride[8]
+    // Meta: outSize,axisDim,outNdim,inOffset,axisStride,divisor,pad,pad, outShape[8], outToInStride[8]
     const meta = new ArrayBuffer(32 + 2 * 32);
     const u32 = new Uint32Array(meta);
     const f32 = new Float32Array(meta);
@@ -1614,16 +1946,11 @@ export class WebGpuBackend implements KernelBackend {
     u32[2] = outShape.length;
     u32[3] = layout.offset;
     u32[4] = layout.strides[axis] ?? 0;
-    f32[5] = op === "mean" ? 1 / axisDim : 1;
+    f32[5] = op === "mean" ? axisDim : 1;
     u32.set(packDims(outShape), 8);
     u32.set(packDims(outToInStride), 16);
 
-    this.dispatch(
-      shaderName,
-      [this.unwrap(x, op), out],
-      meta,
-      Math.ceil(Math.max(outSize, 1) / WORKGROUP_SIZE)
-    );
+    this.dispatch(shaderName, [xBuf, out], meta, Math.ceil(Math.max(outSize, 1) / WORKGROUP_SIZE));
     return this.wrap(out, outSize, dtype);
   }
 
@@ -1638,10 +1965,30 @@ export class WebGpuBackend implements KernelBackend {
     n: number
   ): DeviceBuffer {
     const device = this.requireDevice("matmulBatched");
-    validateRank(aLayout, "matmulBatched");
-    validateRank(bLayout, "matmulBatched");
-    const batchNdim = aLayout.shape.length - 2;
+    validateLayout(aLayout, "matmulBatched");
+    validateLayout(bLayout, "matmulBatched");
+    const rank = aLayout.shape.length;
+    if (rank < 2 || bLayout.shape.length !== rank) {
+      throw new DeviceError(
+        "webgpu matmulBatched requires both layouts to have the same rank, at least 2"
+      );
+    }
+    const batchNdim = rank - 2;
     const batchShape = aLayout.shape.slice(0, batchNdim);
+    const bBatchShape = bLayout.shape.slice(0, batchNdim);
+    if (
+      sizeOf(batchShape) !== batch ||
+      batchShape.some((d, i) => d !== bBatchShape[i]) ||
+      aLayout.shape[batchNdim] !== m ||
+      aLayout.shape[batchNdim + 1] !== k ||
+      bLayout.shape[batchNdim] !== k ||
+      bLayout.shape[batchNdim + 1] !== n
+    ) {
+      throw new DeviceError(
+        `webgpu matmulBatched: layouts [${aLayout.shape.join(", ")}] and [${bLayout.shape.join(", ")}] ` +
+          `do not match batch=${batch}, m=${m}, k=${k}, n=${n}`
+      );
+    }
     // Inner 2-D strides are the last two of each operand.
     const aS0 = aLayout.strides[batchNdim] ?? 0;
     const aS1 = aLayout.strides[batchNdim + 1] ?? 0;
@@ -1650,6 +1997,9 @@ export class WebGpuBackend implements KernelBackend {
     const aBatchStrides = aLayout.strides.slice(0, batchNdim);
     const bBatchStrides = bLayout.strides.slice(0, batchNdim);
     const dtype = this.resolveDType("matmulBatched", [a, b]);
+    const aBuf = this.unwrap(a, "matmulBatched");
+    const bBuf = this.unwrap(b, "matmulBatched");
+    assertGrid("matmulBatched", Math.ceil(n / 16), Math.ceil(m / 16), batch);
 
     const out = this.acquireBuffer(
       device,
@@ -1676,7 +2026,7 @@ export class WebGpuBackend implements KernelBackend {
 
     this.dispatchGrid(
       variantName("matmulBatched", dtype),
-      [this.unwrap(a, "matmulBatched"), this.unwrap(b, "matmulBatched"), out],
+      [aBuf, bBuf, out],
       meta,
       Math.ceil(n / 16),
       Math.ceil(m / 16),
@@ -1697,8 +2047,18 @@ export class WebGpuBackend implements KernelBackend {
   ): DeviceBuffer {
     const device = this.requireDevice(op);
     validateRank({ shape: outShape, strides: [], offset: 0 }, op);
+    validateOperandLayout(condLayout, outShape, op);
+    validateOperandLayout(aLayout, outShape, op);
+    validateOperandLayout(bLayout, outShape, op);
     this.assertNotF16(op, [cond, a, b]);
+    // The selected values keep their dtype; a bfloat16/float32 mix computes
+    // in float32 (both are float32 on the device).
+    const dtype: DeviceDType =
+      (a.dtype ?? "float32") === (b.dtype ?? "float32") ? (a.dtype ?? "float32") : "float32";
     const size = sizeOf(outShape);
+    const condBuf = this.unwrap(cond, op);
+    const aBuf = this.unwrap(a, op);
+    const bBuf = this.unwrap(b, op);
     const out = this.acquireBuffer(device, Math.max(size, 1));
     // Meta: size,ndim,cOff,aOff,bOff,pad,pad,pad, shape[8], cStrides[8], aStrides[8], bStrides[8]
     const meta = new ArrayBuffer(32 + 4 * 32);
@@ -1713,13 +2073,55 @@ export class WebGpuBackend implements KernelBackend {
     u32.set(packDims(aLayout.strides), 24);
     u32.set(packDims(bLayout.strides), 32);
 
-    this.dispatch(
-      op,
-      [this.unwrap(cond, op), this.unwrap(a, op), this.unwrap(b, op), out],
-      meta,
-      Math.ceil(size / WORKGROUP_SIZE)
-    );
-    return this.wrap(out, size);
+    this.dispatch(op, [condBuf, aBuf, bBuf, out], meta, Math.ceil(size / WORKGROUP_SIZE));
+    return this.wrap(out, size, dtype);
+  }
+
+  /**
+   * Check convolution/pooling geometry before it reaches a shader, where a
+   * zero stride would divide by zero and inconsistent sizes would read out of
+   * bounds.
+   */
+  private validateConvParams(params: Im2ColParams, op: string): void {
+    const { batch, channels, height, width, outH, outW, kH, kW } = params;
+    const { strideH, strideW, padH, padW } = params;
+    const positive = [height, width, kH, kW, strideH, strideW];
+    const nonNegative = [batch, channels, padH, padW, outH, outW];
+    if (
+      positive.some((v) => !Number.isInteger(v) || v < 1) ||
+      nonNegative.some((v) => !Number.isInteger(v) || v < 0)
+    ) {
+      throw new DeviceError(
+        `webgpu ${op}: invalid window geometry (sizes, kernel and stride must be positive ` +
+          `integers; batch, channels and padding non-negative integers)`
+      );
+    }
+    const expectH = Math.floor((height + 2 * padH - kH) / strideH) + 1;
+    const expectW = Math.floor((width + 2 * padW - kW) / strideW) + 1;
+    if (outH !== Math.max(expectH, 0) || outW !== Math.max(expectW, 0)) {
+      throw new DeviceError(
+        `webgpu ${op}: output size ${outH}x${outW} does not match the window geometry ` +
+          `(expected ${Math.max(expectH, 0)}x${Math.max(expectW, 0)})`
+      );
+    }
+  }
+
+  /** Check that an NCHW input layout matches the window geometry. */
+  private validateConvInput(layout: KernelLayout, params: Im2ColParams, op: string): void {
+    const s = layout.shape;
+    if (
+      layout.strides.length !== 4 ||
+      s.length !== 4 ||
+      s[0] !== params.batch ||
+      s[1] !== params.channels ||
+      s[2] !== params.height ||
+      s[3] !== params.width
+    ) {
+      throw new DeviceError(
+        `webgpu ${op}: input layout [${s.join(", ")}] does not match ` +
+          `[${params.batch}, ${params.channels}, ${params.height}, ${params.width}]`
+      );
+    }
   }
 
   private convMeta(p: Im2ColParams, layout: KernelLayout, size: number): ArrayBuffer {
@@ -1751,33 +2153,47 @@ export class WebGpuBackend implements KernelBackend {
   im2col(x: DeviceBuffer, layout: KernelLayout, params: Im2ColParams): DeviceBuffer {
     const device = this.requireDevice("im2col");
     this.assertNotF16("im2col", [x]);
+    this.validateConvParams(params, "im2col");
+    this.validateConvInput(layout, params, "im2col");
+    const dtype = (x.dtype ?? "float32") as DeviceDType;
     const colSize = params.channels * params.kH * params.kW;
     const size = params.batch * params.outH * params.outW * colSize;
+    const xBuf = this.unwrap(x, "im2col");
     const out = this.acquireBuffer(device, Math.max(size, 1));
     this.dispatch(
       "im2col",
-      [this.unwrap(x, "im2col"), out],
+      [xBuf, out],
       this.convMeta(params, layout, size),
       Math.ceil(Math.max(size, 1) / WORKGROUP_SIZE)
     );
-    return this.wrap(out, size);
+    return this.wrap(out, size, dtype);
   }
 
   col2im(cols: DeviceBuffer, params: Im2ColParams): DeviceBuffer {
     const device = this.requireDevice("col2im");
     this.assertNotF16("col2im", [cols]);
+    this.validateConvParams(params, "col2im");
+    const dtype = (cols.dtype ?? "float32") as DeviceDType;
+    const colCount =
+      params.batch * params.outH * params.outW * params.channels * params.kH * params.kW;
+    if (cols.size < colCount) {
+      throw new DeviceError(
+        `webgpu col2im: column buffer holds ${cols.size} elements but the geometry needs ${colCount}`
+      );
+    }
     const size = params.batch * params.channels * params.height * params.width;
+    const colsBuf = this.unwrap(cols, "col2im");
     const out = this.acquireBuffer(device, Math.max(size, 1));
     // col2im reads contiguous columns; layout offset/strides are unused by the
     // shader (it decodes the contiguous NCHW output), so pass a zero layout.
     const zeroLayout: KernelLayout = { shape: [], strides: [], offset: 0 };
     this.dispatch(
       "col2im",
-      [this.unwrap(cols, "col2im"), out],
+      [colsBuf, out],
       this.convMeta(params, zeroLayout, size),
       Math.ceil(Math.max(size, 1) / WORKGROUP_SIZE)
     );
-    return this.wrap(out, size);
+    return this.wrap(out, size, dtype);
   }
 
   pool2d(
@@ -1788,15 +2204,19 @@ export class WebGpuBackend implements KernelBackend {
   ): DeviceBuffer {
     const device = this.requireDevice("pool2d");
     this.assertNotF16("pool2d", [x]);
+    this.validateConvParams(params, "pool2d");
+    this.validateConvInput(layout, params, "pool2d");
+    const dtype = (x.dtype ?? "float32") as DeviceDType;
     const size = params.batch * params.channels * params.outH * params.outW;
+    const xBuf = this.unwrap(x, "pool2d");
     const out = this.acquireBuffer(device, Math.max(size, 1));
     this.dispatch(
       op === "max" ? "pool2dMax" : "pool2dAvg",
-      [this.unwrap(x, "pool2d"), out],
+      [xBuf, out],
       this.convMeta(params, layout, size),
       Math.ceil(Math.max(size, 1) / WORKGROUP_SIZE)
     );
-    return this.wrap(out, size);
+    return this.wrap(out, size, dtype);
   }
 
   pool2dBackward(
@@ -1808,24 +2228,35 @@ export class WebGpuBackend implements KernelBackend {
   ): DeviceBuffer {
     const device = this.requireDevice("pool2dBackward");
     this.assertNotF16("pool2dBackward", [x, gradOut]);
+    this.validateConvParams(params, "pool2dBackward");
+    this.validateConvInput(xLayout, params, "pool2dBackward");
+    const dtype = (x.dtype ?? "float32") as DeviceDType;
+    const gradCount = params.batch * params.channels * params.outH * params.outW;
+    if (gradOut.size < gradCount) {
+      throw new DeviceError(
+        `webgpu pool2dBackward: gradient buffer holds ${gradOut.size} elements but the geometry needs ${gradCount}`
+      );
+    }
     const size = params.batch * params.channels * params.height * params.width;
+    const xBuf = this.unwrap(x, "pool2dBackward");
+    const gradBuf = this.unwrap(gradOut, "pool2dBackward");
     const out = this.acquireBuffer(device, Math.max(size, 1));
     this.dispatch(
       op === "max" ? "pool2dBackwardMax" : "pool2dBackwardAvg",
-      [this.unwrap(x, "pool2dBackward"), this.unwrap(gradOut, "pool2dBackward"), out],
+      [xBuf, gradBuf, out],
       this.convMeta(params, xLayout, size),
       Math.ceil(Math.max(size, 1) / WORKGROUP_SIZE)
     );
-    return this.wrap(out, size);
+    return this.wrap(out, size, dtype);
   }
 
   private reducePass(
     shaderName: string,
-    input: GPUBuffer,
+    input: GpuBuffer,
     meta: ArrayBuffer,
     inputSize: number,
     dtype: DeviceDType = "float32"
-  ): GPUBuffer {
+  ): GpuBuffer {
     const device = this.requireDevice(shaderName);
     const numGroups = Math.max(1, Math.ceil(inputSize / WORKGROUP_SIZE));
     const out = this.acquireBuffer(device, numGroups, deviceBytesPerElement(dtype));
@@ -1845,6 +2276,13 @@ export class WebGpuBackend implements KernelBackend {
     return meta;
   }
 
+  /** Meta of a full-reduction pass: the unary layout plus the f32 `divisor` in slot 3. */
+  private reduceMeta(size: number, layout: KernelLayout, divisor: number): ArrayBuffer {
+    const meta = this.unaryMeta(size, layout);
+    new Float32Array(meta)[3] = divisor;
+    return meta;
+  }
+
   // ─── Pipeline + dispatch plumbing ─────────────────────────────────────────
 
   /**
@@ -1853,7 +2291,7 @@ export class WebGpuBackend implements KernelBackend {
    * @param name - Shader name from WGSL_SHADERS
    * @returns The compiled compute pipeline, or null if unavailable
    */
-  getPipeline(name: ShaderName): GPUComputePipeline | null {
+  getPipeline(name: ShaderName): GpuComputePipeline | null {
     if (!this.device) return null;
     const existing = this.pipelines.get(name);
     if (existing) return existing;
@@ -1869,24 +2307,41 @@ export class WebGpuBackend implements KernelBackend {
     return pipeline;
   }
 
+  /**
+   * Launch a 1-D kernel over `workgroups` workgroups. Counts above the
+   * per-dimension limit are folded into a 2-D grid; the shaders rebuild the
+   * linear index from `num_workgroups` (see `MAIN_1D`).
+   */
   private dispatch(
     name: string,
-    buffers: GPUBuffer[],
+    buffers: GpuBuffer[],
     meta: ArrayBuffer,
     workgroups: number
   ): void {
-    this.dispatchGrid(name, buffers, meta, Math.max(1, workgroups), 1);
+    const groups = Math.max(1, workgroups);
+    if (groups <= MAX_GROUPS_PER_DIM) {
+      this.dispatchGrid(name, buffers, meta, groups, 1);
+    } else {
+      this.dispatchGrid(
+        name,
+        buffers,
+        meta,
+        MAX_GROUPS_PER_DIM,
+        Math.ceil(groups / MAX_GROUPS_PER_DIM)
+      );
+    }
   }
 
   private dispatchGrid(
     name: string,
-    buffers: GPUBuffer[],
+    buffers: GpuBuffer[],
     meta: ArrayBuffer,
     groupsX: number,
     groupsY: number,
     groupsZ = 1
   ): void {
     const device = this.requireDevice(name);
+    assertGrid(name, groupsX, groupsY, groupsZ);
     const pipeline = this.getPipeline(name);
     if (!pipeline) {
       throw new DeviceError(`webgpu: no kernel named "${name}"`);
@@ -1896,11 +2351,11 @@ export class WebGpuBackend implements KernelBackend {
     // per dispatch. WebGPU queue operations are serialized on a single
     // timeline: this dispatch's `writeBuffer` + `submit` complete before the
     // next reuse of the same buffer writes new data, so a returned buffer is
-    // safe to hand out again immediately — no per-op allocation churn.
+    // safe to hand out again immediately, with no per-op allocation churn.
     const metaBuffer = this.acquireUniform(device, meta.byteLength);
     device.queue.writeBuffer(metaBuffer, 0, meta);
 
-    const entries: GPUBindGroupEntry[] = buffers.map((buffer, i) => ({
+    const entries: GpuBindGroupEntry[] = buffers.map((buffer, i) => ({
       binding: i,
       resource: { buffer },
     }));
@@ -1923,7 +2378,7 @@ export class WebGpuBackend implements KernelBackend {
   }
 
   /** Acquire a uniform buffer of at least `byteLength` bytes from the pool. */
-  private acquireUniform(device: GPUDevice, byteLength: number): GPUBuffer {
+  private acquireUniform(device: GpuDevice, byteLength: number): GpuBuffer {
     // Uniform buffers must be 16-byte aligned; our metas already are.
     const size = Math.max(16, byteLength);
     const list = this.uniformPool.get(size);
@@ -1931,13 +2386,13 @@ export class WebGpuBackend implements KernelBackend {
     if (pooled) return pooled;
     return device.createBuffer({
       size,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      usage: GPU_BUFFER_USAGE.UNIFORM | GPU_BUFFER_USAGE.COPY_DST,
     });
   }
 
   /** Return a uniform buffer to the pool for reuse. */
-  private releaseUniform(size: number, buffer: GPUBuffer): void {
-    if (this.disposed) {
+  private releaseUniform(size: number, buffer: GpuBuffer): void {
+    if (this.disposed || !this.device) {
       buffer.destroy();
       return;
     }
@@ -1957,13 +2412,22 @@ export class WebGpuBackend implements KernelBackend {
     // Round byte size up to the next power of two (min 256 B) so freed
     // buffers are reusable across similar-size allocations. Bucketing on BYTES
     // (not element count) keeps 2-byte f16 and 4-byte f32 buffers from
-    // colliding in the pool.
-    const bytes = Math.max(256, byteLength);
-    return 2 ** Math.ceil(Math.log2(bytes));
+    // colliding in the pool. Buffers near the device limit use the limit
+    // itself as their bucket, since the next power of two would not fit.
+    let bucket = 256;
+    while (bucket < byteLength) bucket *= 2;
+    return Math.min(bucket, this.maxBufferBytes);
   }
 
-  private acquireBuffer(device: GPUDevice, elements: number, bytesPerElement = 4): GPUBuffer {
-    const bucket = this.bucketFor(elements * bytesPerElement);
+  private acquireBuffer(device: GpuDevice, elements: number, bytesPerElement = 4): GpuBuffer {
+    const bytes = elements * bytesPerElement;
+    if (bytes > this.maxBufferBytes) {
+      throw new DeviceError(
+        `webgpu: a buffer of ${elements} elements (${bytes} bytes) exceeds the device limit of ` +
+          `${this.maxBufferBytes} bytes. Split the tensor or process it in blocks.`
+      );
+    }
+    const bucket = this.bucketFor(bytes);
     const list = this.pool.get(bucket);
     const pooled = list?.pop();
     if (pooled) {
@@ -1972,13 +2436,13 @@ export class WebGpuBackend implements KernelBackend {
     }
     return device.createBuffer({
       size: bucket,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      usage: GPU_BUFFER_USAGE.STORAGE | GPU_BUFFER_USAGE.COPY_SRC | GPU_BUFFER_USAGE.COPY_DST,
     });
   }
 
-  private releaseBuffer(buffer: GPUBuffer): void {
+  private releaseBuffer(buffer: GpuBuffer): void {
     const bucket = buffer.size;
-    if (this.disposed || this.pooledBytes + bucket > POOL_CAP_BYTES) {
+    if (this.disposed || !this.device || this.pooledBytes + bucket > POOL_CAP_BYTES) {
       buffer.destroy();
       return;
     }
@@ -1989,7 +2453,7 @@ export class WebGpuBackend implements KernelBackend {
   }
 
   private wrap(
-    buffer: GPUBuffer,
+    buffer: GpuBuffer,
     elements: number,
     dtype: DeviceDType = "float32"
   ): GpuDeviceBuffer {
@@ -2003,7 +2467,7 @@ export class WebGpuBackend implements KernelBackend {
     };
   }
 
-  private unwrap(buffer: DeviceBuffer, op: string): GPUBuffer {
+  private unwrap(buffer: DeviceBuffer, op: string): GpuBuffer {
     if (!isGpuDeviceBuffer(buffer)) {
       throw new DeviceError(`webgpu ${op}: buffer does not belong to the WebGPU backend`);
     }
@@ -2018,15 +2482,18 @@ export class WebGpuBackend implements KernelBackend {
   /**
    * Create a GPU buffer from a Float32Array (advanced usage).
    *
+   * The buffer is not tracked by the backend's pool: release it with
+   * `buffer.destroy()` when done.
+   *
    * @param data - Source data
    * @param usage - Buffer usage flags
    * @returns GPU buffer, or null if device unavailable
    */
-  createBuffer(data: Float32Array, usage: GPUBufferUsageFlags): GPUBuffer | null {
+  createBuffer(data: Float32Array, usage: number): GpuBuffer | null {
     if (!this.device) return null;
     const buffer = this.device.createBuffer({
       size: data.byteLength,
-      usage: usage | GPUBufferUsage.COPY_SRC,
+      usage: usage | GPU_BUFFER_USAGE.COPY_SRC,
       mappedAtCreation: true,
     });
     new Float32Array(buffer.getMappedRange()).set(data);
@@ -2038,30 +2505,45 @@ export class WebGpuBackend implements KernelBackend {
    * Read data back from a GPU buffer (advanced usage).
    *
    * @param buffer - Source GPU buffer
-   * @param size - Size in bytes to read
-   * @returns Float32Array with the data
+   * @param size - Size in bytes to read; must be a multiple of 4
+   * @returns Float32Array with the data (empty when the backend has no device)
+   * @throws {DeviceError} If `size` is not a non-negative multiple of 4
    */
-  async readBuffer(buffer: GPUBuffer, size: number): Promise<Float32Array> {
+  async readBuffer(buffer: GpuBuffer, size: number): Promise<Float32Array> {
     if (!this.device) return new Float32Array(0);
-    const staging = this.device.createBuffer({
+    if (!Number.isInteger(size) || size < 0 || size % 4 !== 0) {
+      throw new DeviceError(
+        `webgpu readBuffer: size must be a non-negative multiple of 4 bytes; received ${size}`
+      );
+    }
+    if (size === 0) return new Float32Array(0);
+    const device = this.device;
+    const staging = device.createBuffer({
       size,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      usage: GPU_BUFFER_USAGE.MAP_READ | GPU_BUFFER_USAGE.COPY_DST,
     });
-    const encoder = this.device.createCommandEncoder();
-    encoder.copyBufferToBuffer(buffer, 0, staging, 0, size);
-    this.device.queue.submit([encoder.finish()]);
+    try {
+      const encoder = device.createCommandEncoder();
+      encoder.copyBufferToBuffer(buffer, 0, staging, 0, size);
+      device.queue.submit([encoder.finish()]);
 
-    await staging.mapAsync(GPUMapMode.READ);
-    const result = new Float32Array(staging.getMappedRange().slice(0));
-    staging.unmap();
-    staging.destroy();
-    return result;
+      await staging.mapAsync(GPU_MAP_MODE.READ);
+      const result = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      return result;
+    } finally {
+      staging.destroy();
+    }
   }
 
   /**
    * Get the underlying GPU device (for advanced usage).
+   *
+   * The result is typed as the structural {@link GpuDevice} subset the backend
+   * uses. Cast it to `GPUDevice` (from `@webgpu/types`) to reach the rest of
+   * the WebGPU API.
    */
-  getDevice(): GPUDevice | null {
+  getDevice(): GpuDevice | null {
     return this.device;
   }
 
@@ -2082,6 +2564,11 @@ export class WebGpuBackend implements KernelBackend {
     return Object.keys(WGSL_SHADERS) as ShaderName[];
   }
 
+  /**
+   * Destroy the pooled buffers and the GPU device. Tensors still holding
+   * device buffers become unusable. Safe to call more than once; a disposed
+   * backend cannot be initialized again.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -2097,9 +2584,9 @@ export class WebGpuBackend implements KernelBackend {
     this.pipelines.clear();
     this.device?.destroy();
     this.device = null;
-    this.adapter = null;
   }
 
+  /** Whether {@link WebGpuBackend.dispose} has been called. */
   get isDisposed(): boolean {
     return this.disposed;
   }

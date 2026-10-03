@@ -1,8 +1,8 @@
 /**
  * Example 25: Data Visualization
  *
- * Create various types of plots to visualize data and results.
- * Deepbox supports SVG and PNG output for publication-quality figures.
+ * Create line, scatter, bar, histogram and heatmap plots and save each one as an SVG file.
+ * Figure.renderSVG() returns the SVG text. Figure.renderPNG() writes PNG in Node.js.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -29,23 +29,23 @@ ax1.setYLabel("y");
 
 const svg1 = fig1.renderSVG();
 writeFileSync("docs/examples/25-plotting/output/line-plot.svg", svg1.svg);
-console.log("   ✓ Saved: output/line-plot.svg\n");
+console.log("  Saved: output/line-plot.svg\n");
 
 // 2. Scatter Plot
 console.log("2. Creating scatter plot...");
-const x_scatter = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-const y_scatter = tensor([2.3, 4.1, 5.9, 7.8, 10.2, 11.8, 14.3, 16.1, 17.9, 20.1]);
+const xScatter = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+const yScatter = tensor([2.3, 4.1, 5.9, 7.8, 10.2, 11.8, 14.3, 16.1, 17.9, 20.1]);
 
 const fig2 = new Figure();
 const ax2 = fig2.addAxes();
-ax2.scatter(x_scatter, y_scatter, { color: "#2ca02c", size: 8 });
+ax2.scatter(xScatter, yScatter, { color: "#2ca02c", size: 8 });
 ax2.setTitle("Scatter Plot Example");
 ax2.setXLabel("X values");
 ax2.setYLabel("Y values");
 
 const svg2 = fig2.renderSVG();
 writeFileSync("docs/examples/25-plotting/output/scatter-plot.svg", svg2.svg);
-console.log("   ✓ Saved: output/scatter-plot.svg\n");
+console.log("  Saved: output/scatter-plot.svg\n");
 
 // 3. Bar Chart
 console.log("3. Creating bar chart...");
@@ -61,7 +61,7 @@ ax3.setYLabel("Values");
 
 const svg3 = fig3.renderSVG();
 writeFileSync("docs/examples/25-plotting/output/bar-chart.svg", svg3.svg);
-console.log("   ✓ Saved: output/bar-chart.svg\n");
+console.log("  Saved: output/bar-chart.svg\n");
 
 // 4. Histogram
 console.log("4. Creating histogram...");
@@ -76,11 +76,11 @@ ax4.setYLabel("Frequency");
 
 const svg4 = fig4.renderSVG();
 writeFileSync("docs/examples/25-plotting/output/histogram.svg", svg4.svg);
-console.log("   ✓ Saved: output/histogram.svg\n");
+console.log("  Saved: output/histogram.svg\n");
 
 // 5. Heatmap
 console.log("5. Creating heatmap...");
-const heatmap_data = tensor([
+const heatmapData = tensor([
   [1, 2, 3, 4],
   [5, 6, 7, 8],
   [9, 10, 11, 12],
@@ -88,18 +88,18 @@ const heatmap_data = tensor([
 
 const fig5 = new Figure();
 const ax5 = fig5.addAxes();
-ax5.heatmap(heatmap_data, { vmin: 1, vmax: 12 });
+ax5.heatmap(heatmapData, { vmin: 1, vmax: 12 });
 ax5.setTitle("Heatmap Example");
 
 const svg5 = fig5.renderSVG();
 writeFileSync("docs/examples/25-plotting/output/heatmap.svg", svg5.svg);
-console.log("   ✓ Saved: output/heatmap.svg\n");
+console.log("  Saved: output/heatmap.svg\n");
 
-console.log("Visualization Tips:");
-console.log("• Use line plots for continuous data");
-console.log("• Use scatter plots to show relationships");
-console.log("• Use bar charts for categorical comparisons");
-console.log("• Use histograms for distributions");
-console.log("• Use heatmaps for matrix data");
+console.log("Which plot to use:");
+console.log("• Line plot: a continuous series");
+console.log("• Scatter plot: the relationship between two variables");
+console.log("• Bar chart: values per category");
+console.log("• Histogram: the distribution of one variable");
+console.log("• Heatmap: the values of a matrix");
 
-console.log("\n✓ Plotting complete!");
+console.log("\nPlotting complete.");

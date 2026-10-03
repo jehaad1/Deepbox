@@ -1,8 +1,8 @@
 /**
  * Example 34: Ensemble & Advanced ML Models
  *
- * New in v1.0.0: AdaBoost, Bagging, Voting, Stacking, ExtraTrees,
- * Gaussian Processes, Discriminant Analysis, and Semi-supervised Learning.
+ * AdaBoost, Bagging, Voting, Stacking, ExtraTrees, a Gaussian Process regressor
+ * and Linear Discriminant Analysis, compared on one classification dataset.
  */
 
 import { makeClassification, makeRegression } from "deepbox/datasets";
@@ -46,7 +46,7 @@ const [XTrain, XTest, yTrain, yTest] = trainTestSplit(XClass, yClass, {
 const [XReg, yReg] = makeRegression({
   nSamples: 100,
   nFeatures: 5,
-  noise: 10,
+  noise: 0.5,
   randomState: 42,
 });
 
@@ -58,13 +58,14 @@ const [XTrainReg, XTestReg, yTrainReg, yTestReg] = trainTestSplit(XReg, yReg, {
 // ============================================================================
 // Part 1: AdaBoost Classifier
 // ============================================================================
-console.log("\n🚀 Part 1: AdaBoost Classifier");
+console.log("\nPart 1: AdaBoost Classifier");
 console.log("-".repeat(60));
 
-// AdaBoost builds an ensemble of weak learners, focusing on misclassified samples
+// AdaBoost fits weak learners one after another and gives more weight to the samples the earlier ones got wrong
 const adaboost = new AdaBoostClassifier({
   nEstimators: 50,
   learningRate: 1.0,
+  randomState: 42,
 });
 adaboost.fit(XTrain, yTrain);
 
@@ -79,10 +80,10 @@ console.log(`  F1 Score: ${Number(adaF1).toFixed(4)}`);
 // ============================================================================
 // Part 2: Bagging Classifier
 // ============================================================================
-console.log("\n🎒 Part 2: Bagging Classifier");
+console.log("\nPart 2: Bagging Classifier");
 console.log("-".repeat(60));
 
-// Bagging trains multiple models on random subsets of the data (bootstrap)
+// Bagging trains each model on a random bootstrap subset of the samples and features
 const bagging = new BaggingClassifier({
   nEstimators: 20,
   maxSamples: 0.8,
@@ -102,10 +103,10 @@ console.log(`  F1 Score: ${Number(bagF1).toFixed(4)}`);
 // ============================================================================
 // Part 3: Voting Classifier
 // ============================================================================
-console.log("\n🗳️  Part 3: Voting Classifier");
+console.log("\nPart 3: Voting Classifier");
 console.log("-".repeat(60));
 
-// Voting combines multiple diverse classifiers for better predictions
+// Voting combines different classifiers: majority vote (hard) or averaged probabilities (soft)
 const voting = new VotingClassifier({
   estimators: [
     new LogisticRegression({ maxIter: 200 }),
@@ -127,10 +128,10 @@ console.log(`  F1 Score: ${Number(voteF1).toFixed(4)}`);
 // ============================================================================
 // Part 4: Stacking Classifier
 // ============================================================================
-console.log("\n📚 Part 4: Stacking Classifier");
+console.log("\nPart 4: Stacking Classifier");
 console.log("-".repeat(60));
 
-// Stacking uses a meta-learner to combine base estimator predictions
+// Stacking trains a final estimator on the predictions of the base estimators
 const stacking = new StackingClassifier({
   estimators: [
     new DecisionTreeClassifier({ maxDepth: 5 }),
@@ -144,17 +145,17 @@ const stackPred = stacking.predict(XTest);
 const stackAcc = accuracy(yTest, stackPred);
 const stackF1 = f1Score(yTest, stackPred);
 
-console.log("Stacking Classifier (DecisionTree + KNN → LogReg meta-learner):");
+console.log("Stacking Classifier (DecisionTree + KNN, LogReg meta-learner):");
 console.log(`  Accuracy: ${(Number(stackAcc) * 100).toFixed(2)}%`);
 console.log(`  F1 Score: ${Number(stackF1).toFixed(4)}`);
 
 // ============================================================================
 // Part 5: ExtraTrees Classifier
 // ============================================================================
-console.log("\n🌳 Part 5: ExtraTrees Classifier");
+console.log("\nPart 5: ExtraTrees Classifier");
 console.log("-".repeat(60));
 
-// ExtraTrees: like Random Forest but with random split thresholds (more randomized)
+// ExtraTrees is like a random forest, but picks split thresholds at random
 const extraTrees = new ExtraTreesClassifier({
   nEstimators: 50,
   maxDepth: 10,
@@ -174,15 +175,39 @@ console.log(`  F1 Score: ${Number(etF1).toFixed(4)}`);
 const importances = extraTrees.featureImportances;
 console.log("  Feature importances:", importances.toString());
 
+// Class weights and sample weights change how much each sample counts in a split.
+// classWeight: "balanced" weights classes inversely to their frequency.
+const weighted = new ExtraTreesClassifier({
+  nEstimators: 50,
+  maxDepth: 10,
+  classWeight: "balanced",
+  randomState: 42,
+});
+weighted.fit(XTrain, yTrain);
+console.log(
+  `  With classWeight "balanced": accuracy ${(Number(accuracy(yTest, weighted.predict(XTest))) * 100).toFixed(2)}%`
+);
+
+// clone() returns an unfitted copy with the same hyperparameters
+const fresh = extraTrees.clone();
+fresh.fit(XTrain, yTrain);
+console.log(
+  `  clone() refit: accuracy ${(Number(accuracy(yTest, fresh.predict(XTest))) * 100).toFixed(2)}%`
+);
+
 // ============================================================================
 // Part 6: Gaussian Process Regressor
 // ============================================================================
-console.log("\n📐 Part 6: Gaussian Process Regressor");
+console.log("\nPart 6: Gaussian Process Regressor");
 console.log("-".repeat(60));
 
-// Gaussian Processes provide probabilistic predictions with uncertainty estimates
+// A Gaussian process regressor predicts a mean for each sample and can also report its uncertainty
+// alpha is the noise variance, lengthScale the RBF kernel width. The kernel has a zero
+// prior mean, so normalizeY centers and scales the targets before fitting.
 const gpr = new GaussianProcessRegressor({
-  alpha: 1e-2,
+  alpha: 0.1,
+  lengthScale: 10,
+  normalizeY: true,
 });
 gpr.fit(XTrainReg, yTrainReg);
 
@@ -191,32 +216,40 @@ const gprR2 = r2Score(yTestReg, gprPred);
 
 console.log("Gaussian Process Regressor:");
 console.log(`  R² Score: ${Number(gprR2).toFixed(4)}`);
-console.log(`  Predictions shape: ${gprPred.shape}`);
+
+// predictWithStd also returns the standard deviation of each prediction
+const { std } = gpr.predictWithStd(XTestReg);
+console.log(`  Mean predictive std: ${Number(std.mean().item()).toFixed(4)}`);
+console.log(`  Predictions shape: [${gprPred.shape.join(", ")}]`);
 
 // ============================================================================
 // Part 7: Linear Discriminant Analysis
 // ============================================================================
-console.log("\n📏 Part 7: Linear Discriminant Analysis");
+console.log("\nPart 7: Linear Discriminant Analysis");
 console.log("-".repeat(60));
 
-// LDA finds linear combinations of features that best separate classes
+// LDA finds linear combinations of the features that best separate the classes
 const lda = new LinearDiscriminantAnalysis();
 lda.fit(XTrain, yTrain);
 
 const ldaPred = lda.predict(XTest);
 const ldaAcc = accuracy(yTest, ldaPred);
+const ldaF1 = f1Score(yTest, ldaPred);
 
 console.log("Linear Discriminant Analysis:");
 console.log(`  Accuracy: ${(Number(ldaAcc) * 100).toFixed(2)}%`);
+console.log(`  F1 Score: ${Number(ldaF1).toFixed(4)}`);
 
-// LDA can also transform data for dimensionality reduction
+// LDA can also project the data onto those combinations, which reduces the dimension
 const ldaTransformed = lda.transform(XTest);
-console.log(`  Transformed shape: ${XTest.shape} → ${ldaTransformed.shape}`);
+console.log(
+  `  Transformed shape: [${XTest.shape.join(", ")}] to [${ldaTransformed.shape.join(", ")}]`
+);
 
 // ============================================================================
 // Part 8: Model Comparison Summary
 // ============================================================================
-console.log("\n📊 Part 8: Model Comparison");
+console.log("\nPart 8: Model Comparison");
 console.log("-".repeat(60));
 
 const results = [
@@ -225,7 +258,7 @@ const results = [
   { name: "Voting", acc: Number(voteAcc), f1: Number(voteF1) },
   { name: "Stacking", acc: Number(stackAcc), f1: Number(stackF1) },
   { name: "ExtraTrees", acc: Number(etAcc), f1: Number(etF1) },
-  { name: "LDA", acc: Number(ldaAcc), f1: 0 },
+  { name: "LDA", acc: Number(ldaAcc), f1: Number(ldaF1) },
 ];
 
 console.log("\nClassification Model Comparison:");
@@ -235,7 +268,7 @@ console.log("├─────────────┼───────�
 for (const r of results) {
   const name = r.name.padEnd(11);
   const acc = `${(r.acc * 100).toFixed(2).padStart(6)}%`;
-  const f1 = r.f1 > 0 ? r.f1.toFixed(4).padStart(8) : "     N/A";
+  const f1 = r.f1.toFixed(4).padStart(8);
   console.log(`│ ${name} │ ${acc}  │ ${f1} │`);
 }
 console.log("└─────────────┴──────────┴──────────┘");
@@ -243,16 +276,16 @@ console.log("└─────────────┴───────�
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• AdaBoost: boosting weak learners sequentially, focuses on hard examples");
-console.log("• Bagging: reduces variance by training on random data subsets");
-console.log("• Voting: combines diverse models via majority vote or probability averaging");
-console.log("• Stacking: uses a meta-learner to combine base model predictions");
-console.log("• ExtraTrees: extremely randomized trees for faster training");
-console.log("• Gaussian Processes: probabilistic regression with uncertainty estimates");
-console.log("• LDA: simultaneous classification and dimensionality reduction");
-console.log("• All models follow the unified fit/predict/score API");
+console.log("• AdaBoost: weak learners in sequence, each focused on the previous mistakes");
+console.log("• Bagging: averages models trained on bootstrap subsets, which lowers variance");
+console.log("• Voting: majority vote or averaged probabilities of different models");
+console.log("• Stacking: a final estimator learns from the base models' predictions");
+console.log("• ExtraTrees: random split thresholds, so each tree trains faster");
+console.log("• Gaussian process: regression with a built-in uncertainty estimate");
+console.log("• LDA: a classifier that can also reduce the dimension");
+console.log("• Every model uses the same fit/predict API, and clone() gives an unfitted copy");
 
-console.log("\n✅ Ensemble & Advanced ML Example Complete!");
+console.log("\nEnsemble & Advanced ML Example Complete!");
 console.log("=".repeat(60));

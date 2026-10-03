@@ -2,6 +2,13 @@
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox documentation}
  */
 
+export type { SampleWeightInput, WeightedMetricOptions } from "./_internal";
+export type {
+  AveragedMetricOptions,
+  ConfusionMatrixOptions,
+  LogLossOptions,
+  RocAucOptions,
+} from "./classification";
 export {
   accuracy,
   averagePrecisionScore,
@@ -21,6 +28,7 @@ export {
   rocAucScore,
   rocCurve,
 } from "./classification";
+export type { AverageMethod, SilhouetteMetric, SilhouetteScoreOptions } from "./clustering";
 export {
   adjustedMutualInfoScore,
   adjustedRandScore,
@@ -29,11 +37,14 @@ export {
   daviesBouldinScore,
   fowlkesMallowsScore,
   homogeneityScore,
+  mutualInfoScore,
   normalizedMutualInfoScore,
+  randScore,
   silhouetteSamples,
   silhouetteScore,
   vMeasureScore,
 } from "./clustering";
+export type { DetCurveResult, MultilabelConfusionMatrixEntry } from "./extra";
 export {
   brierScoreLoss,
   coverageError,
@@ -63,8 +74,12 @@ export {
   mae,
   mape,
   maxError,
+  meanAbsoluteError,
+  meanAbsolutePercentageError,
+  meanSquaredError,
   medianAbsoluteError,
   mse,
   r2Score,
   rmse,
+  rootMeanSquaredError,
 } from "./regression";

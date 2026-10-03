@@ -1,8 +1,11 @@
 /**
+ * Statistics: descriptive measures, correlation, confidence intervals, probability
+ * distributions, hypothesis tests, kernel density estimation, multiple comparison
+ * corrections and power analysis.
+ *
+ * @module stats
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox documentation}
  */
-
-// Correlation
 
 // Confidence Intervals
 export type { ConfidenceInterval } from "./confidence";
@@ -12,6 +15,7 @@ export {
   meanDiffConfidenceInterval,
   proportionConfidenceInterval,
 } from "./confidence";
+// Correlation
 export {
   corrcoef,
   cov,
@@ -75,17 +79,37 @@ export {
 } from "./distributions";
 // Kernel Density Estimation
 export type { BandwidthMethod, GaussianKDEOptions } from "./kde";
-export { GaussianKDE, gaussian_kde } from "./kde";
+export { GaussianKDE, gaussian_kde, gaussianKde } from "./kde";
 
 // Multiple Comparison Corrections
 export type { MultipleComparisonResult } from "./multiple";
-export { benjaminiHochberg, bonferroni, holm, sidak } from "./multiple";
+export {
+  benjaminiHochberg,
+  benjaminiYekutieli,
+  bonferroni,
+  hochberg,
+  holm,
+  sidak,
+} from "./multiple";
 
 // Power Analysis
 export type { PowerAnalysisResult, TTestPowerOptions } from "./power";
 export { tTestPower } from "./power";
 // Tests
-export type { ContingencyResult, TestResult, TwoWayAnovaResult } from "./tests";
+export type {
+  AndersonResult,
+  ContingencyResult,
+  KsTestOptions,
+  MedianTestOptions,
+  RankTestOptions,
+  TestAlternative,
+  TestResult,
+  TTestIndOptions,
+  TwoWayAnovaResult,
+  VarianceTestCenter,
+  VarianceTestOptions,
+  WilcoxonOptions,
+} from "./tests";
 export {
   anderson,
   bartlett,
@@ -99,6 +123,7 @@ export {
   fligner,
   fOneway,
   friedmanchisquare,
+  fTwoway,
   kruskal,
   ks_2samp,
   ks2samp,
@@ -107,12 +132,15 @@ export {
   lilliefors,
   mannwhitneyu,
   median_test,
+  medianTest,
   normaltest,
   runs_test,
+  runsTest,
   shapiro,
   ttest_1samp,
   ttest_ind,
   ttest_rel,
+  ttest1samp,
   ttestInd,
   ttestRel,
   wilcoxon,

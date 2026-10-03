@@ -10,8 +10,11 @@
  *   with `await t.cpu()`.
  * - `wasm`: WASM SIMD host accelerator. Register `WasmBackend`; tensors on
  *   this device keep zero-copy host storage, and eligible ops (contiguous
- *   float32 arithmetic) run through embedded SIMD kernels with bit-identical
- *   results, falling back to the CPU implementation otherwise.
+ *   float32 add, sub, mul and div) run through embedded SIMD kernels with
+ *   bit-identical results, falling back to the CPU implementation otherwise.
+ *   The `dotContiguous` and `sumContiguous` helpers of `WasmBackend` accumulate
+ *   in four float32 lanes, so they can differ from the sequential CPU result
+ *   in the last bits.
  *
  * @example
  * ```ts

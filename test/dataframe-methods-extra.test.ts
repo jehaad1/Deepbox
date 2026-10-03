@@ -79,9 +79,9 @@ describe("DataFrame.interpolate()", () => {
     const df = new DataFrame({ a: [10, null, null, 40] });
     const result = df.interpolate("nearest");
     const data = result.get("a").data;
-    // Index 1 is closer to index 0 (10), index 2 ties -> picks left (10)
+    // Index 1 is closer to index 0 (10); index 2 is closer to index 3 (40)
     expect(data[1]).toBe(10);
-    expect(data[2]).toBe(10);
+    expect(data[2]).toBe(40);
   });
 });
 

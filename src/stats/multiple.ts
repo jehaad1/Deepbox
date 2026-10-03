@@ -1,3 +1,13 @@
+/**
+ * Corrections for multiple comparisons.
+ *
+ * Each function takes a list of p-values and returns the adjusted p-values and the decision
+ * for every hypothesis at a given level.
+ *
+ * @module stats/multiple
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox documentation}
+ */
+
 import { InvalidParameterError } from "../core";
 
 /**
@@ -21,7 +31,8 @@ export interface MultipleComparisonResult {
  * @param pvalues - Array of p-values from individual tests
  * @param alpha - Significance level (default: 0.05)
  * @returns Corrected p-values and rejection decisions
- * @throws {InvalidParameterError} If pvalues is empty or alpha is not in (0, 1)
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
  *
  * @example
  * ```ts
@@ -50,11 +61,13 @@ export function bonferroni(pvalues: readonly number[], alpha = 0.05): MultipleCo
  * @param pvalues - Array of p-values from individual tests
  * @param alpha - Significance level (default: 0.05)
  * @returns Corrected p-values and rejection decisions
- * @throws {InvalidParameterError} If pvalues is empty or alpha is not in (0, 1)
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
  *
  * @example
  * ```ts
  * const result = holm([0.01, 0.04, 0.03, 0.005], 0.05);
+ * result.corrected;  // [0.03, 0.06, 0.06, 0.02]
  * ```
  *
  * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Multiple Comparisons}
@@ -62,17 +75,53 @@ export function bonferroni(pvalues: readonly number[], alpha = 0.05): MultipleCo
 export function holm(pvalues: readonly number[], alpha = 0.05): MultipleComparisonResult {
   validateInputs(pvalues, alpha, "holm");
   const m = pvalues.length;
-  const indices = Array.from({ length: m }, (_, i) => i);
-  indices.sort((a, b) => (pvalues[a] ?? 0) - (pvalues[b] ?? 0));
+  const indices = sortedOrder(pvalues);
 
   const corrected = new Array<number>(m);
   let cMax = 0;
   for (let i = 0; i < m; i++) {
-    const idx = indices[i];
-    if (idx === undefined) continue;
+    const idx = indices[i] as number;
     const adjusted = Math.min((pvalues[idx] ?? 0) * (m - i), 1);
     cMax = Math.max(cMax, adjusted);
     corrected[idx] = cMax;
+  }
+
+  const rejected = corrected.map((p) => p <= alpha);
+  return { pvalues, corrected, rejected };
+}
+
+/**
+ * Hochberg step-up correction for multiple comparisons.
+ *
+ * Controls the FWER under independence (or positive dependence of the tests) and is more
+ * powerful than Holm's method. The adjusted p-value of the i-th smallest p-value is
+ * `min over j >= i of (m - j + 1) * p_(j)`.
+ *
+ * @param pvalues - Array of p-values from individual tests
+ * @param alpha - Significance level (default: 0.05)
+ * @returns Corrected p-values and rejection decisions
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
+ *
+ * @example
+ * ```ts
+ * const result = hochberg([0.01, 0.04, 0.03, 0.005], 0.05);
+ * result.corrected;  // [0.03, 0.04, 0.04, 0.02]
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Multiple Comparisons}
+ */
+export function hochberg(pvalues: readonly number[], alpha = 0.05): MultipleComparisonResult {
+  validateInputs(pvalues, alpha, "hochberg");
+  const m = pvalues.length;
+  const indices = sortedOrder(pvalues);
+
+  const corrected = new Array<number>(m);
+  let cMin = 1;
+  for (let i = m - 1; i >= 0; i--) {
+    const idx = indices[i] as number;
+    cMin = Math.min(cMin, (pvalues[idx] ?? 0) * (m - i));
+    corrected[idx] = cMin;
   }
 
   const rejected = corrected.map((p) => p <= alpha);
@@ -84,16 +133,18 @@ export function holm(pvalues: readonly number[], alpha = 0.05): MultipleComparis
  *
  * A step-up procedure that controls the expected proportion of false positives
  * among rejected hypotheses. More powerful than FWER-controlling methods when
- * many tests are performed.
+ * many tests are performed. Valid for independent or positively dependent tests.
  *
  * @param pvalues - Array of p-values from individual tests
  * @param alpha - Significance level / FDR level (default: 0.05)
- * @returns Corrected p-values and rejection decisions
- * @throws {InvalidParameterError} If pvalues is empty or alpha is not in (0, 1)
+ * @returns Corrected p-values (q-values) and rejection decisions
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
  *
  * @example
  * ```ts
  * const result = benjaminiHochberg([0.01, 0.04, 0.03, 0.005], 0.05);
+ * result.corrected;  // [0.02, 0.04, 0.04, 0.02]
  * ```
  *
  * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Multiple Comparisons}
@@ -103,17 +154,52 @@ export function benjaminiHochberg(
   alpha = 0.05
 ): MultipleComparisonResult {
   validateInputs(pvalues, alpha, "benjaminiHochberg");
+  return fdrStepUp(pvalues, alpha, 1);
+}
+
+/**
+ * Benjamini-Yekutieli (BY) procedure for controlling the false discovery rate (FDR).
+ *
+ * Like {@link benjaminiHochberg}, but valid under arbitrary dependence between the tests. It
+ * divides the BH threshold by `1 + 1/2 + ... + 1/m`, so it is more conservative.
+ *
+ * @param pvalues - Array of p-values from individual tests
+ * @param alpha - FDR level (default: 0.05)
+ * @returns Corrected p-values (q-values) and rejection decisions
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
+ *
+ * @example
+ * ```ts
+ * const result = benjaminiYekutieli([0.01, 0.04, 0.03, 0.005], 0.05);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/stats-tests | Deepbox Multiple Comparisons}
+ */
+export function benjaminiYekutieli(
+  pvalues: readonly number[],
+  alpha = 0.05
+): MultipleComparisonResult {
+  validateInputs(pvalues, alpha, "benjaminiYekutieli");
+  let harmonic = 0;
+  for (let i = pvalues.length; i >= 1; i--) harmonic += 1 / i;
+  return fdrStepUp(pvalues, alpha, harmonic);
+}
+
+/** Step-up FDR adjustment with the penalty `penalty` on the BH multiplier `m / rank`. */
+function fdrStepUp(
+  pvalues: readonly number[],
+  alpha: number,
+  penalty: number
+): MultipleComparisonResult {
   const m = pvalues.length;
-  const indices = Array.from({ length: m }, (_, i) => i);
-  indices.sort((a, b) => (pvalues[a] ?? 0) - (pvalues[b] ?? 0));
+  const indices = sortedOrder(pvalues);
 
   const corrected = new Array<number>(m);
   let cMin = 1;
   for (let i = m - 1; i >= 0; i--) {
-    const idx = indices[i];
-    if (idx === undefined) continue;
-    const rank = i + 1;
-    const adjusted = Math.min(((pvalues[idx] ?? 0) * m) / rank, 1);
+    const idx = indices[i] as number;
+    const adjusted = Math.min(((pvalues[idx] ?? 0) * m * penalty) / (i + 1), 1);
     cMin = Math.min(cMin, adjusted);
     corrected[idx] = cMin;
   }
@@ -123,7 +209,7 @@ export function benjaminiHochberg(
 }
 
 /**
- * Šidák correction for multiple comparisons.
+ * Sidak correction for multiple comparisons.
  *
  * Assumes independence of tests and provides a less conservative correction
  * than Bonferroni. Uses: p_corrected = 1 - (1 - p)^m
@@ -131,7 +217,8 @@ export function benjaminiHochberg(
  * @param pvalues - Array of p-values from individual tests
  * @param alpha - Significance level (default: 0.05)
  * @returns Corrected p-values and rejection decisions
- * @throws {InvalidParameterError} If pvalues is empty or alpha is not in (0, 1)
+ * @throws {InvalidParameterError} If pvalues is empty or contains a value outside [0, 1], or
+ *   alpha is not in (0, 1)
  *
  * @example
  * ```ts
@@ -143,9 +230,19 @@ export function benjaminiHochberg(
 export function sidak(pvalues: readonly number[], alpha = 0.05): MultipleComparisonResult {
   validateInputs(pvalues, alpha, "sidak");
   const m = pvalues.length;
-  const corrected = pvalues.map((p) => Math.min(1 - (1 - p) ** m, 1));
+  // 1 - (1 - p)^m written with log1p and expm1, which keeps full precision for small p.
+  const corrected = pvalues.map((p) => Math.min(-Math.expm1(m * Math.log1p(-p)), 1));
   const rejected = corrected.map((p) => p <= alpha);
   return { pvalues, corrected, rejected };
+}
+
+/** Indices that sort the p-values in ascending order (stable). */
+function sortedOrder(pvalues: readonly number[]): Int32Array {
+  const m = pvalues.length;
+  const indices = new Int32Array(m);
+  for (let i = 0; i < m; i++) indices[i] = i;
+  indices.sort((a, b) => (pvalues[a] as number) - (pvalues[b] as number) || a - b);
+  return indices;
 }
 
 /**

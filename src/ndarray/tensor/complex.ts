@@ -8,6 +8,39 @@
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
  */
 
+import { IndexError, InvalidParameterError } from "../../core/errors/index";
+
+// ─── Shared helpers ──────────────────────────────────────────────────────────
+
+function assertValidLength(length: number, who: string): void {
+  if (!Number.isInteger(length) || length < 0) {
+    throw new InvalidParameterError(
+      `${who} length must be a non-negative integer; received ${String(length)}`,
+      "length",
+      length
+    );
+  }
+}
+
+function assertValidIndex(index: number, length: number, who: string): void {
+  if (!Number.isInteger(index) || index < 0 || index >= length) {
+    throw new IndexError(`${who} index ${String(index)} is out of bounds for length ${length}`, {
+      index,
+      validRange: [0, Math.max(0, length - 1)],
+    });
+  }
+}
+
+/**
+ * Resolve a TypedArray-style relative bound (negative counts from the end,
+ * values are truncated and clamped to `[0, length]`).
+ */
+function resolveBound(value: number, length: number): number {
+  const v = Math.trunc(value);
+  if (Number.isNaN(v)) return 0;
+  return v < 0 ? Math.max(0, length + v) : Math.min(v, length);
+}
+
 // ─── Complex Number ──────────────────────────────────────────────────────────
 
 /**
@@ -94,23 +127,86 @@ export class Complex {
   /** Complex exponential. */
   exp(): Complex {
     const er = Math.exp(this.re);
+    // A zero imaginary part keeps the result exactly real (exp(inf+0j) = inf+0j).
+    if (this.im === 0) return new Complex(er, this.im);
     return new Complex(er * Math.cos(this.im), er * Math.sin(this.im));
   }
 
-  /** Complex natural logarithm (principal value). */
+  /**
+   * Complex natural logarithm (principal value).
+   *
+   * Near the unit circle the real part is computed with `log1p` on
+   * `|z|² - 1`, so `log(1 + 1e-10j)` keeps its `5e-21` real part instead of
+   * rounding `|z|` to exactly 1.
+   */
   log(): Complex {
-    return new Complex(Math.log(this.abs()), this.phase());
+    const ax = Math.abs(this.re);
+    const ay = Math.abs(this.im);
+    const hi = Math.max(ax, ay);
+    const lo = Math.min(ax, ay);
+    const logAbs =
+      hi >= 0.5 && hi <= 2
+        ? 0.5 * Math.log1p((hi - 1) * (hi + 1) + lo * lo)
+        : Math.log(Math.hypot(this.re, this.im));
+    return new Complex(logAbs, this.phase());
   }
 
-  /** Complex square root (principal value). */
+  /**
+   * Complex square root (principal value, branch cut along the negative real
+   * axis). Uses the half-angle-free formulation so that `sqrt(-4+0j)` is
+   * exactly `2j` and signed zeros select the side of the branch cut.
+   */
   sqrt(): Complex {
-    const r = this.abs();
-    const t = this.phase();
-    const sr = Math.sqrt(r);
-    return new Complex(sr * Math.cos(t / 2), sr * Math.sin(t / 2));
+    const { re, im } = this;
+    if (re === 0 && im === 0) return new Complex(0, im);
+    if (im === Number.POSITIVE_INFINITY || im === Number.NEGATIVE_INFINITY) {
+      return new Complex(Number.POSITIVE_INFINITY, im);
+    }
+    const negativeSide = im < 0 || Object.is(im, -0);
+    if (re === Number.POSITIVE_INFINITY) {
+      return new Complex(re, Number.isNaN(im) ? Number.NaN : negativeSide ? -0 : 0);
+    }
+    if (re === Number.NEGATIVE_INFINITY) {
+      if (Number.isNaN(im)) return new Complex(Number.NaN, Number.POSITIVE_INFINITY);
+      return new Complex(0, negativeSide ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY);
+    }
+    if (Number.isNaN(re) || Number.isNaN(im)) return new Complex(Number.NaN, Number.NaN);
+
+    // Scale extreme magnitudes so hypot and the halving below neither overflow
+    // nor underflow; the result is rescaled by the square root of the factor.
+    const big = Math.max(Math.abs(re), Math.abs(im));
+    let scale = 1;
+    let result = 1;
+    if (big >= 2 ** 1000) {
+      scale = 0.25;
+      result = 2;
+    } else if (big < 2 ** -900) {
+      scale = 2 ** 600;
+      result = 2 ** -300;
+    }
+    const a = re * scale;
+    const b = im * scale;
+    const m = Math.hypot(a, b);
+    let x: number;
+    let y: number;
+    if (a >= 0) {
+      x = Math.sqrt((m + a) / 2);
+      y = b / (2 * x);
+    } else {
+      y = Math.sqrt((m - a) / 2);
+      x = Math.abs(b) / (2 * y);
+      if (negativeSide) y = -y;
+    }
+    return new Complex(x * result, y * result);
   }
 
-  /** Complex power. */
+  /**
+   * Complex power.
+   *
+   * Real integer exponents with magnitude below 100 use repeated
+   * multiplication (exact for Gaussian integers, same as NumPy); every other
+   * exponent goes through `exp(n * log(z))` on the principal branch.
+   */
   pow(n: Complex | number): Complex {
     const exp = typeof n === "number" ? new Complex(n, 0) : n;
     if (exp.re === 0 && exp.im === 0) {
@@ -120,19 +216,35 @@ export class Complex {
     if (this.re === 0 && this.im === 0) {
       return exp.re > 0 ? new Complex(0, 0) : new Complex(NaN, NaN);
     }
+    if (exp.im === 0 && Number.isInteger(exp.re) && Math.abs(exp.re) < 100) {
+      let k = Math.abs(exp.re);
+      let result: Complex = Complex.ONE;
+      let base: Complex = this;
+      while (k > 0) {
+        if (k % 2 === 1) result = result.mul(base);
+        k = Math.floor(k / 2);
+        if (k > 0) base = base.mul(base);
+      }
+      return exp.re < 0 ? Complex.ONE.div(result) : result;
+    }
     return this.log().mul(exp).exp();
   }
 
-  /** Check equality with tolerance. */
+  /**
+   * Check equality within an absolute tolerance on both parts.
+   * Identical parts (including matching infinities) always compare equal;
+   * NaN never does.
+   */
   equals(other: Complex, tol = 1e-10): boolean {
-    return Math.abs(this.re - other.re) < tol && Math.abs(this.im - other.im) < tol;
+    const close = (a: number, b: number): boolean => a === b || Math.abs(a - b) <= tol;
+    return close(this.re, other.re) && close(this.im, other.im);
   }
 
   /** String representation. */
   toString(): string {
     if (this.im === 0) return `${this.re}`;
     if (this.re === 0) return `${this.im}j`;
-    const sign = this.im >= 0 ? "+" : "";
+    const sign = this.im >= 0 || Number.isNaN(this.im) ? "+" : "";
     return `(${this.re}${sign}${this.im}j)`;
   }
 
@@ -152,7 +264,7 @@ export class Complex {
 // ─── Complex64Array ──────────────────────────────────────────────────────────
 
 /**
- * Complex64 typed array — each element is two float32 values (real, imag).
+ * Complex64 typed array: each element is two float32 values (real, imag).
  *
  * The `length` property reports the number of complex elements.
  * The underlying Float32Array has `2 * length` entries.
@@ -173,7 +285,12 @@ export class Complex {
  * ```
  */
 export class Complex64Array {
-  /** Numeric index access returns the real part (via the constructor Proxy). */
+  /**
+   * Numeric index access (via the constructor Proxy): reading returns the
+   * real part; writing stores the value as the real part and resets the
+   * imaginary part to 0. Out-of-range reads return `undefined` and
+   * out-of-range writes are ignored, like a native TypedArray.
+   */
   [index: number]: number;
   /** Underlying interleaved float32 storage: [re0, im0, re1, im1, ...] */
   readonly _storage: Float32Array;
@@ -185,7 +302,12 @@ export class Complex64Array {
   readonly byteOffset: number;
   readonly byteLength: number;
 
+  /**
+   * @param length - Number of complex elements (a non-negative integer).
+   * @throws {InvalidParameterError} If `length` is not a non-negative integer.
+   */
   constructor(length: number) {
+    assertValidLength(length, "Complex64Array");
     this._storage = new Float32Array(length * 2);
     this.length = length;
     this.buffer = this._storage.buffer as ArrayBuffer;
@@ -219,34 +341,53 @@ export class Complex64Array {
     });
   }
 
-  /** Get the real part at index. */
+  /**
+   * Get the real part at `index`.
+   * @throws {IndexError} If `index` is not an integer inside `[0, length)`.
+   */
   getReal(index: number): number {
-    return this._storage[index * 2] ?? 0;
+    assertValidIndex(index, this.length, "Complex64Array");
+    return this._storage[index * 2] as number;
   }
 
-  /** Get the imaginary part at index. */
+  /**
+   * Get the imaginary part at `index`.
+   * @throws {IndexError} If `index` is not an integer inside `[0, length)`.
+   */
   getImag(index: number): number {
-    return this._storage[index * 2 + 1] ?? 0;
+    assertValidIndex(index, this.length, "Complex64Array");
+    return this._storage[index * 2 + 1] as number;
   }
 
-  /** Get a Complex value at index. */
+  /**
+   * Get the element at `index` as a {@link Complex}.
+   * @throws {IndexError} If `index` is out of range.
+   */
   getComplex(index: number): Complex {
     return new Complex(this.getReal(index), this.getImag(index));
   }
 
-  /** Set a complex value at index. */
+  /**
+   * Store a complex value at `index`.
+   * @throws {IndexError} If `index` is out of range.
+   */
   setComplex(index: number, value: Complex): void {
+    assertValidIndex(index, this.length, "Complex64Array");
     this._storage[index * 2] = value.re;
     this._storage[index * 2 + 1] = value.im;
   }
 
-  /** Set real and imaginary parts at index. */
+  /**
+   * Store real and imaginary parts at `index`.
+   * @throws {IndexError} If `index` is out of range.
+   */
   setRI(index: number, re: number, im: number): void {
+    assertValidIndex(index, this.length, "Complex64Array");
     this._storage[index * 2] = re;
     this._storage[index * 2 + 1] = im;
   }
 
-  /** Create from an array of Complex values. */
+  /** Create from an array of {@link Complex} values. */
   static fromComplexArray(values: readonly Complex[]): Complex64Array {
     const arr = new Complex64Array(values.length);
     for (let i = 0; i < values.length; i++) {
@@ -257,38 +398,76 @@ export class Complex64Array {
     return arr;
   }
 
-  /** Create from interleaved real/imaginary pairs. */
+  /**
+   * Create from interleaved real/imaginary pairs `[re0, im0, re1, im1, ...]`.
+   * @throws {InvalidParameterError} If `data` has an odd number of entries.
+   */
   static fromInterleaved(data: ArrayLike<number>): Complex64Array {
-    const len = Math.floor(data.length / 2);
-    const arr = new Complex64Array(len);
-    for (let i = 0; i < data.length; i++) {
-      arr._storage[i] = data[i]!;
+    if (data.length % 2 !== 0) {
+      throw new InvalidParameterError(
+        `interleaved data must hold real/imaginary pairs; received ${data.length} values`,
+        "data",
+        data.length
+      );
     }
+    const arr = new Complex64Array(data.length / 2);
+    arr._storage.set(data);
     return arr;
   }
 
-  /** Fill all elements with a complex value. */
+  /**
+   * Fill the range `[start, end)` with a complex value. Negative bounds count
+   * from the end and out-of-range bounds are clamped, as in `TypedArray.fill`.
+   */
   fill(value: Complex, start = 0, end = this.length): this {
-    for (let i = start; i < end; i++) {
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    for (let i = s; i < e; i++) {
       this._storage[i * 2] = value.re;
       this._storage[i * 2 + 1] = value.im;
     }
     return this;
   }
 
-  /** Create a slice copy. */
+  /**
+   * Copy of the range `[start, end)`. Negative bounds count from the end.
+   */
   slice(start = 0, end = this.length): Complex64Array {
-    const s = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
-    const e = end < 0 ? Math.max(0, this.length + end) : Math.min(end, this.length);
-    const len = Math.max(0, e - s);
-    const result = new Complex64Array(len);
-    result._storage.set(this._storage.subarray(s * 2, e * 2));
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    const result = new Complex64Array(Math.max(0, e - s));
+    result._storage.set(this._storage.subarray(s * 2, Math.max(s, e) * 2));
     return result;
   }
 
-  /** Set values from another source. */
-  set(source: ArrayLike<number>, offset = 0): void {
-    this._storage.set(source, offset * 2);
+  /**
+   * Copy values into this array starting at complex index `offset`.
+   *
+   * `source` is either another complex array (copied element-wise) or a flat
+   * list of interleaved real/imaginary pairs `[re0, im0, re1, im1, ...]`.
+   *
+   * @throws {InvalidParameterError} If a flat `source` has an odd length.
+   * @throws {IndexError} If the values do not fit starting at `offset`.
+   */
+  set(source: ArrayLike<number> | Complex64Array | Complex128Array, offset = 0): void {
+    const flat =
+      source instanceof Complex64Array || source instanceof Complex128Array
+        ? source._storage
+        : source;
+    if (flat.length % 2 !== 0) {
+      throw new InvalidParameterError(
+        `interleaved source must hold real/imaginary pairs; received ${flat.length} values`,
+        "source",
+        flat.length
+      );
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset + flat.length / 2 > this.length) {
+      throw new IndexError(
+        `cannot set ${flat.length / 2} complex values at offset ${String(offset)} in an array of length ${this.length}`,
+        { index: offset, validRange: [0, this.length] }
+      );
+    }
+    this._storage.set(flat, offset * 2);
   }
 
   /** Iterator over real parts (for TypedArray compatibility). */
@@ -302,7 +481,7 @@ export class Complex64Array {
     return "Complex64Array";
   }
 
-  /** Convert to array of Complex values. */
+  /** Convert to an array of {@link Complex} values. */
   toComplexArray(): Complex[] {
     const result: Complex[] = [];
     for (let i = 0; i < this.length; i++) {
@@ -312,10 +491,10 @@ export class Complex64Array {
   }
 }
 
-// ─── Complex128Array ─────────────────────────────────────────────────────────
+// ─── Complex128Array ──────────────────────────────────────────────────────────
 
 /**
- * Complex128 typed array — each element is two float64 values (real, imag).
+ * Complex128 typed array: each element is two float64 values (real, imag).
  *
  * Same API as {@link Complex64Array} but with double precision.
  *
@@ -331,7 +510,12 @@ export class Complex64Array {
  * ```
  */
 export class Complex128Array {
-  /** Numeric index access returns the real part (via the constructor Proxy). */
+  /**
+   * Numeric index access (via the constructor Proxy): reading returns the
+   * real part; writing stores the value as the real part and resets the
+   * imaginary part to 0. Out-of-range reads return `undefined` and
+   * out-of-range writes are ignored, like a native TypedArray.
+   */
   [index: number]: number;
   /** Underlying interleaved float64 storage: [re0, im0, re1, im1, ...] */
   readonly _storage: Float64Array;
@@ -343,7 +527,12 @@ export class Complex128Array {
   readonly byteOffset: number;
   readonly byteLength: number;
 
+  /**
+   * @param length - Number of complex elements (a non-negative integer).
+   * @throws {InvalidParameterError} If `length` is not a non-negative integer.
+   */
   constructor(length: number) {
+    assertValidLength(length, "Complex128Array");
     this._storage = new Float64Array(length * 2);
     this.length = length;
     this.buffer = this._storage.buffer as ArrayBuffer;
@@ -378,33 +567,52 @@ export class Complex128Array {
   }
 
   /**
-   * Get the real part of the complex number at the given index.
+   * Get the real part at `index`.
+   * @throws {IndexError} If `index` is not an integer inside `[0, length)`.
    */
   getReal(index: number): number {
-    return this._storage[index * 2]!;
+    assertValidIndex(index, this.length, "Complex128Array");
+    return this._storage[index * 2] as number;
   }
 
   /**
-   * Get the imaginary part of the complex number at the given index.
+   * Get the imaginary part at `index`.
+   * @throws {IndexError} If `index` is not an integer inside `[0, length)`.
    */
   getImag(index: number): number {
-    return this._storage[index * 2 + 1]!;
+    assertValidIndex(index, this.length, "Complex128Array");
+    return this._storage[index * 2 + 1] as number;
   }
 
+  /**
+   * Get the element at `index` as a {@link Complex}.
+   * @throws {IndexError} If `index` is out of range.
+   */
   getComplex(index: number): Complex {
     return new Complex(this.getReal(index), this.getImag(index));
   }
 
+  /**
+   * Store a complex value at `index`.
+   * @throws {IndexError} If `index` is out of range.
+   */
   setComplex(index: number, value: Complex): void {
+    assertValidIndex(index, this.length, "Complex128Array");
     this._storage[index * 2] = value.re;
     this._storage[index * 2 + 1] = value.im;
   }
 
+  /**
+   * Store real and imaginary parts at `index`.
+   * @throws {IndexError} If `index` is out of range.
+   */
   setRI(index: number, re: number, im: number): void {
+    assertValidIndex(index, this.length, "Complex128Array");
     this._storage[index * 2] = re;
     this._storage[index * 2 + 1] = im;
   }
 
+  /** Create from an array of {@link Complex} values. */
   static fromComplexArray(values: readonly Complex[]): Complex128Array {
     const arr = new Complex128Array(values.length);
     for (let i = 0; i < values.length; i++) {
@@ -415,36 +623,79 @@ export class Complex128Array {
     return arr;
   }
 
+  /**
+   * Create from interleaved real/imaginary pairs `[re0, im0, re1, im1, ...]`.
+   * @throws {InvalidParameterError} If `data` has an odd number of entries.
+   */
   static fromInterleaved(data: ArrayLike<number>): Complex128Array {
-    const len = Math.floor(data.length / 2);
-    const arr = new Complex128Array(len);
-    for (let i = 0; i < data.length; i++) {
-      arr._storage[i] = data[i]!;
+    if (data.length % 2 !== 0) {
+      throw new InvalidParameterError(
+        `interleaved data must hold real/imaginary pairs; received ${data.length} values`,
+        "data",
+        data.length
+      );
     }
+    const arr = new Complex128Array(data.length / 2);
+    arr._storage.set(data);
     return arr;
   }
 
+  /**
+   * Fill the range `[start, end)` with a complex value. Negative bounds count
+   * from the end and out-of-range bounds are clamped, as in `TypedArray.fill`.
+   */
   fill(value: Complex, start = 0, end = this.length): this {
-    for (let i = start; i < end; i++) {
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    for (let i = s; i < e; i++) {
       this._storage[i * 2] = value.re;
       this._storage[i * 2 + 1] = value.im;
     }
     return this;
   }
 
+  /**
+   * Copy of the range `[start, end)`. Negative bounds count from the end.
+   */
   slice(start = 0, end = this.length): Complex128Array {
-    const s = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
-    const e = end < 0 ? Math.max(0, this.length + end) : Math.min(end, this.length);
-    const len = Math.max(0, e - s);
-    const result = new Complex128Array(len);
-    result._storage.set(this._storage.subarray(s * 2, e * 2));
+    const s = resolveBound(start, this.length);
+    const e = resolveBound(end, this.length);
+    const result = new Complex128Array(Math.max(0, e - s));
+    result._storage.set(this._storage.subarray(s * 2, Math.max(s, e) * 2));
     return result;
   }
 
-  set(source: ArrayLike<number>, offset = 0): void {
-    this._storage.set(source, offset * 2);
+  /**
+   * Copy values into this array starting at complex index `offset`.
+   *
+   * `source` is either another complex array (copied element-wise) or a flat
+   * list of interleaved real/imaginary pairs `[re0, im0, re1, im1, ...]`.
+   *
+   * @throws {InvalidParameterError} If a flat `source` has an odd length.
+   * @throws {IndexError} If the values do not fit starting at `offset`.
+   */
+  set(source: ArrayLike<number> | Complex64Array | Complex128Array, offset = 0): void {
+    const flat =
+      source instanceof Complex64Array || source instanceof Complex128Array
+        ? source._storage
+        : source;
+    if (flat.length % 2 !== 0) {
+      throw new InvalidParameterError(
+        `interleaved source must hold real/imaginary pairs; received ${flat.length} values`,
+        "source",
+        flat.length
+      );
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset + flat.length / 2 > this.length) {
+      throw new IndexError(
+        `cannot set ${flat.length / 2} complex values at offset ${String(offset)} in an array of length ${this.length}`,
+        { index: offset, validRange: [0, this.length] }
+      );
+    }
+    this._storage.set(flat, offset * 2);
   }
 
+  /** Iterator over real parts (for TypedArray compatibility). */
   *[Symbol.iterator](): IterableIterator<number> {
     for (let i = 0; i < this.length; i++) {
       yield this._storage[i * 2]!;
@@ -455,6 +706,7 @@ export class Complex128Array {
     return "Complex128Array";
   }
 
+  /** Convert to an array of {@link Complex} values. */
   toComplexArray(): Complex[] {
     const result: Complex[] = [];
     for (let i = 0; i < this.length; i++) {

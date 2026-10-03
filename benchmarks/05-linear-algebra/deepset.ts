@@ -1,5 +1,5 @@
 /**
- * Benchmark 05: Linear Algebra — Deepbox vs NumPy/SciPy
+ * Benchmark 05: Linear Algebra (Deepbox vs NumPy/SciPy)
  *
  * Compares matrix decompositions, solvers, and properties:
  * SVD, QR, LU, Cholesky, determinant, inverse, solve.

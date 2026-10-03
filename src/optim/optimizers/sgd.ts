@@ -5,6 +5,7 @@
 import { InvalidParameterError } from "../../core";
 import { add, type GradTensor, mulScalar, sub, type Tensor } from "../../ndarray";
 import {
+  assertBufferSize,
   assertFinite,
   assertFiniteNonNegative,
   assertHasGradFloat,
@@ -13,12 +14,23 @@ import {
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
+/**
+ * Options for the SGD optimizer.
+ *
+ * @property lr - Learning rate
+ * @property momentum - Momentum factor (0 disables momentum)
+ * @property dampening - Dampening applied to the gradient in the momentum buffer
+ * @property weightDecay - Weight decay coefficient (L2 penalty)
+ * @property nesterov - Use Nesterov momentum
+ * @property maximize - Maximize the objective instead of minimizing it
+ */
 type SGDOptions = {
   lr: number;
   momentum: number;
   dampening: number;
   weightDecay: number;
   nesterov: boolean;
+  maximize: boolean;
 };
 
 type SGDState = {
@@ -31,6 +43,16 @@ type SGDState = {
  * Stochastic Gradient Descent (SGD) optimizer.
  *
  * Implements vanilla SGD with optional momentum, weight decay, and Nesterov acceleration.
+ * The update follows PyTorch's `torch.optim.SGD`:
+ *
+ * ```
+ * d = grad + weightDecay * param
+ * buf = momentum * buf + (1 - dampening) * d      (buf = d on the first step)
+ * d = nesterov ? d + momentum * buf : buf
+ * param = param - lr * d
+ * ```
+ *
+ * With `maximize: true` the gradient sign is flipped and the objective is maximized.
  *
  * @example
  * ```ts
@@ -53,6 +75,7 @@ type SGDState = {
  *     const loss = criterion(outputs, targets);
  *     loss.backward();
  *     optimizer.step();
+ *     console.log(`epoch ${epoch}: loss ${loss.item()}`);
  *   }
  * }
  * ```
@@ -60,12 +83,6 @@ type SGDState = {
  * @category Optimizers
  */
 export class SGD extends Optimizer<SGDOptions, SGDState> {
-  /** Internal counter tracking total number of optimization steps */
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
   /**
    * Create a new SGD optimizer.
    *
@@ -76,6 +93,9 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
    * @param options.dampening - Dampening for momentum (default: 0)
    * @param options.weightDecay - Weight decay (L2 penalty) (default: 0)
    * @param options.nesterov - Enable Nesterov momentum (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is invalid, or `nesterov` is set
+   *   without a positive momentum and zero dampening
    */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<SGDOptions>>,
@@ -85,6 +105,7 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
       readonly dampening?: number;
       readonly weightDecay?: number;
       readonly nesterov?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -93,36 +114,30 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
       dampening: options.dampening ?? 0,
       weightDecay: options.weightDecay ?? 0,
       nesterov: options.nesterov ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
+  }
 
-    // Validate options
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertFiniteNonNegative("momentum value", defaults.momentum);
-    assertFiniteNonNegative("dampening", defaults.dampening);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
-    if (defaults.nesterov && (defaults.momentum <= 0 || defaults.dampening !== 0)) {
+  protected override validateOptions(options: Readonly<SGDOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertFiniteNonNegative("momentum value", options.momentum);
+    assertFiniteNonNegative("dampening", options.dampening);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
+    if (options.nesterov && (options.momentum <= 0 || options.dampening !== 0)) {
       throw new InvalidParameterError(
         "Nesterov momentum requires a momentum and zero dampening",
         "nesterov",
         {
-          momentum: defaults.momentum,
-          dampening: defaults.dampening,
-          nesterov: defaults.nesterov,
+          momentum: options.momentum,
+          dampening: options.dampening,
+          nesterov: options.nesterov,
         }
       );
     }
   }
 
-  /**
-   * Perform a single optimization step.
-   *
-   * Implements the SGD update rule with optional momentum and weight decay.
-   *
-   * @param closure - Optional closure that reevaluates the model and returns the loss
-   * @returns Loss value if closure is provided
-   */
   protected isState(state: Record<string, unknown>): state is SGDState {
     if (
       state["momentumBuffer"] !== undefined &&
@@ -133,6 +148,17 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
     return true;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * Applies the update rule from the class description to every parameter. A
+   * parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional closure that reevaluates the model and returns the loss
+   * @returns Loss value if closure is provided
+   * @throws {InvalidParameterError} If a group option is invalid or a gradient or
+   *   parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -141,27 +167,14 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("SGD");
+    this.countStep();
 
     // Update each parameter group
     for (const group of this.paramGroups) {
-      const { lr, momentum, dampening, weightDecay, nesterov } = group.options;
+      const { lr, momentum, dampening, weightDecay, nesterov, maximize } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertFiniteNonNegative("momentum value", momentum);
-      assertFiniteNonNegative("dampening", dampening);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-
-      if (nesterov && (momentum <= 0 || dampening !== 0)) {
-        throw new InvalidParameterError(
-          "Nesterov momentum requires a momentum and zero dampening",
-          "nesterov",
-          { momentum, dampening, nesterov }
-        );
-      }
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         let state = this.state.get(param);
         if (!state) {
           state = {};
@@ -173,7 +186,9 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
         if (param.tensor.isDeviceTensor) {
           const g = param.grad;
           if (!g) continue;
-          let d: Tensor = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const signed: Tensor = maximize ? mulScalar(g, -1) : g;
+          let d: Tensor =
+            weightDecay !== 0 ? add(signed, mulScalar(param.tensor, weightDecay)) : signed;
           if (momentum !== 0) {
             const prev = state.momentumTensor;
             // First step: buf = d_p (no dampening). Later: momentum*buf + (1-dampening)*d_p.
@@ -204,6 +219,7 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
             bufferInitialized = false;
           }
           momentumBuffer = state.momentumBuffer;
+          assertBufferSize(momentumBuffer, size, "SGD momentumBuffer");
         }
 
         for (let i = 0; i < size; i++) {
@@ -213,7 +229,7 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
           assertFinite("parameter", pi);
 
           // d_p = grad + weightDecay * param
-          let d = gi;
+          let d = maximize ? -gi : gi;
           if (weightDecay !== 0) {
             d = d + weightDecay * pi;
           }
@@ -235,35 +251,5 @@ export class SGD extends Optimizer<SGDOptions, SGDState> {
     }
 
     return loss;
-  }
-
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
   }
 }

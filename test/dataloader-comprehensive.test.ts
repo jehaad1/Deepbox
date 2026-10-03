@@ -3,7 +3,7 @@ import { DataLoader } from "../src/datasets";
 import { tensor } from "../src/ndarray";
 import { numRawData } from "./_helpers";
 
-describe("DataLoader - Comprehensive Tests", () => {
+describe("DataLoader tests", () => {
   describe("Constructor and Basic Functionality", () => {
     it("should create DataLoader with X only", () => {
       const X = tensor([

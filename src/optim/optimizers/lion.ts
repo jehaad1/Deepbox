@@ -1,9 +1,41 @@
 /**
+ * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
+ */
+
+import { add, type GradTensor, mulScalar, sub, type Tensor } from "../../ndarray";
+import {
+  assertBufferSize,
+  assertFinite,
+  assertFiniteNonNegative,
+  assertHasGradFloat,
+  assertInRange,
+  deviceSign,
+  replaceParamStorage,
+} from "../_internal";
+import { Optimizer, type ParamGroup } from "../Optimizer";
+
+type LionOptions = {
+  lr: number;
+  beta1: number;
+  beta2: number;
+  weightDecay: number;
+  maximize: boolean;
+};
+
+type LionState = {
+  step: number;
+  momentum: Float64Array;
+  /** Device momentum buffer (used when the parameter lives on a kernel device). */
+  momentumTensor?: Tensor;
+};
+
+/**
  * Lion (EvoLved Sign Momentum) optimizer.
  *
  * Introduced by Chen et al. (2023) in "Symbolic Discovery of Optimization
  * Algorithms". Lion is a simpler, more memory-efficient alternative to Adam
- * that uses only a single momentum buffer and sign-based updates.
+ * that keeps a single momentum buffer and applies sign-based updates, so every
+ * element moves by the same magnitude `lr` regardless of its gradient scale.
  *
  * **Update rule** (per parameter):
  * ```
@@ -12,8 +44,9 @@
  * m = beta2 * m + (1 - beta2) * g
  * ```
  *
- * Lion typically requires 3-10× smaller learning rates than Adam
- * (suggested: 1e-4 to 3e-4, vs Adam's 1e-3).
+ * Weight decay is decoupled, as in AdamW. Lion typically needs a 3-10x smaller
+ * learning rate than Adam (suggested: 1e-4 to 3e-4, versus Adam's 1e-3) and a
+ * correspondingly larger weight decay.
  *
  * @example
  * ```ts
@@ -27,43 +60,22 @@
  * ```
  *
  * @see Chen et al. (2023) "Symbolic Discovery of Optimization Algorithms"
- * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox Optimizers}
  * @category Optimizers
  */
-
-import { InvalidParameterError } from "../../core";
-import { add, type GradTensor, mulScalar, sub, type Tensor } from "../../ndarray";
-import {
-  assertFiniteNonNegative,
-  assertFinitePositive,
-  assertHasGradFloat,
-  assertInRange,
-  deviceSign,
-  replaceParamStorage,
-} from "../_internal";
-import { Optimizer, type ParamGroup } from "../Optimizer";
-
-type LionOptions = {
-  lr: number;
-  beta1: number;
-  beta2: number;
-  weightDecay: number;
-};
-
-type LionState = {
-  step: number;
-  momentum: Float64Array;
-  /** Device momentum buffer (used when the parameter lives on a kernel device). */
-  momentumTensor?: Tensor;
-};
-
 export class Lion extends Optimizer<LionOptions, LionState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new Lion optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 1e-4)
+   * @param options.beta1 - Interpolation factor between momentum and gradient for the update
+   *   direction, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Decay rate of the momentum buffer, in [0, 1) (default: 0.99)
+   * @param options.weightDecay - Decoupled weight decay coefficient (default: 0)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<LionOptions>>,
     options: {
@@ -71,6 +83,7 @@ export class Lion extends Optimizer<LionOptions, LionState> {
       readonly beta1?: number;
       readonly beta2?: number;
       readonly weightDecay?: number;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -78,39 +91,32 @@ export class Lion extends Optimizer<LionOptions, LionState> {
       beta1: options.beta1 ?? 0.9,
       beta2: options.beta2 ?? 0.99,
       weightDecay: options.weightDecay ?? 0,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFinitePositive("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<LionOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is LionState {
     return typeof state["step"] === "number" && state["momentum"] instanceof Float64Array;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -118,21 +124,18 @@ export class Lion extends Optimizer<LionOptions, LionState> {
       loss = closure();
     }
 
-    this._stepCount++;
+    this.prepareStep("Lion");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, weightDecay } = group.options;
+      const { lr, beta1, beta2, weightDecay, maximize } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the sign-based Lion update from device-dispatched ops.
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { step: 0, momentum: new Float64Array(0) };
@@ -175,18 +178,23 @@ export class Lion extends Optimizer<LionOptions, LionState> {
             return next;
           })();
 
+        assertBufferSize(state.momentum, size, "Lion momentum");
         state.step++;
 
+        const momentum = state.momentum;
         for (let i = 0; i < size; i++) {
-          const g = gradData[gradOffset + i] ?? 0;
-          const mPrev = state.momentum[i] ?? 0;
+          const rawGi = gradData[gradOffset + i] as number;
+          const p = paramData[paramOffset + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const g = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(p)) assertFinite("parameter", p);
+          const mPrev = momentum[i] as number;
 
           const update = Math.sign(beta1 * mPrev + (1 - beta1) * g);
-          const p = paramData[paramOffset + i] ?? 0;
 
           paramData[paramOffset + i] = p - lr * (update + weightDecay * p);
 
-          state.momentum[i] = beta2 * mPrev + (1 - beta2) * g;
+          momentum[i] = beta2 * mPrev + (1 - beta2) * g;
         }
       }
     }

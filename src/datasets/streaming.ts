@@ -2,18 +2,18 @@
  * Lazy, out-of-core dataset streaming.
  *
  * Provides a {@link StreamingDataset} abstraction that yields samples (or
- * collated batches) on demand from a user-supplied generator / iterator —
- * reading from disk, network, or a computed generator — WITHOUT ever
+ * collated batches) on demand from a user-supplied generator / iterator,
+ * reading from disk, network, or a computed generator, WITHOUT ever
  * materializing the whole corpus in memory.
  *
  * The pipeline mirrors the ergonomics of `tf.data` / PyTorch `IterableDataset`:
  *
- * - {@link StreamingDataset.map | map} — transform each sample lazily.
- * - {@link StreamingDataset.shuffle | shuffle} — window/reservoir shuffle for
+ * - {@link StreamingDataset.map | map}: transform each sample lazily.
+ * - {@link StreamingDataset.shuffle | shuffle}: window/reservoir shuffle for
  *   streams (a fixed-size buffer, not a full-corpus permutation).
- * - {@link StreamingDataset.batch | batch} — group consecutive samples and
+ * - {@link StreamingDataset.batch | batch}: group consecutive samples and
  *   collate them into batched {@link Tensor}s.
- * - {@link StreamingDataset.prefetch | prefetch} — read ahead N elements
+ * - {@link StreamingDataset.prefetch | prefetch}: read ahead N elements
  *   concurrently (async only), overlapping I/O with compute.
  *
  * A dataset built from a synchronous source is iterable both synchronously
@@ -27,7 +27,8 @@
 
 import { DeepboxError, InvalidParameterError } from "../core/errors";
 import { type Tensor, tensor } from "../ndarray";
-import { createRng } from "./utils";
+import { __randomBelow } from "../random/random";
+import { assertBoolean, createPassRng, normalizeOptionalSeed } from "./utils";
 
 /**
  * A raw stream sample. Either an unlabeled feature vector (`number[]`), or a
@@ -57,16 +58,34 @@ export type AsyncFactory<S> = () => AsyncIterable<S>;
 // ─── Default collation ───────────────────────────────────────────────────────
 
 function isArrayLikeNumbers(v: unknown): v is ArrayLike<number> {
-  return (
-    Array.isArray(v) || ArrayBuffer.isView(v) === true // typed arrays (excluding DataView, which lacks .length semantics here)
-  );
+  // Typed arrays count; DataView does not (it has no element-wise `length`).
+  return Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView));
 }
 
-function allIntegers(values: readonly number[]): boolean {
-  for (const v of values) {
-    if (!Number.isInteger(v)) return false;
+function isLabeledSample(v: unknown): boolean {
+  return Array.isArray(v) && v.length === 2 && isArrayLikeNumbers(v[0]);
+}
+
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+
+/**
+ * Pick the dtype for scalar labels: `int32` for integral values in int32 range
+ * (classification), `float64` for integral values outside it (exact), else the
+ * default float dtype.
+ */
+function scalarLabelTensor(labels: number[]): Tensor {
+  let allInt = true;
+  let inInt32 = true;
+  for (const v of labels) {
+    if (!Number.isInteger(v)) {
+      allInt = false;
+      break;
+    }
+    if (v < INT32_MIN || v > INT32_MAX) inInt32 = false;
   }
-  return true;
+  if (!allInt) return tensor(labels);
+  return tensor(labels, { dtype: inInt32 ? "int32" : "float64" });
 }
 
 /**
@@ -75,10 +94,16 @@ function allIntegers(values: readonly number[]): boolean {
  * - `[features, label]` tuples become `[X, y]` where `X` has shape
  *   `[batch, nFeatures]` and `y` has shape `[batch]` (scalar labels) or
  *   `[batch, nOutputs]` (vector labels). Integer scalar labels are collated as
- *   `int32` (classification); otherwise `float32` (regression).
+ *   `int32` (classification); otherwise as the default float dtype
+ *   (regression).
  * - Bare feature vectors become `[X]` with shape `[batch, nFeatures]`.
  *
- * @throws {@link InvalidParameterError} If the batch is empty.
+ * Whether the batch is labeled is decided by its first sample; every other
+ * sample must have the same layout and the same number of features (and
+ * outputs).
+ *
+ * @throws {@link InvalidParameterError} If the batch is empty, or samples are
+ *   mixed (labeled and unlabeled) or ragged.
  */
 export function defaultCollate(samples: StreamSample[]): Batch {
   if (samples.length === 0) {
@@ -86,34 +111,89 @@ export function defaultCollate(samples: StreamSample[]): Batch {
   }
 
   const first = samples[0] as StreamSample;
-  const labeled =
-    Array.isArray(first) && first.length === 2 && isArrayLikeNumbers((first as unknown[])[0]);
+  const labeled = isLabeledSample(first);
 
   if (labeled) {
     const xs: number[][] = new Array(samples.length);
     const rawLabels: (number | readonly number[])[] = new Array(samples.length);
     for (let i = 0; i < samples.length; i++) {
-      const pair = samples[i] as readonly [ArrayLike<number>, number | readonly number[]];
+      const sample = samples[i];
+      if (!isLabeledSample(sample)) {
+        throw new InvalidParameterError(
+          `samples[${i}] is not a [features, label] pair, but samples[0] is`,
+          "samples",
+          sample
+        );
+      }
+      const pair = sample as readonly [ArrayLike<number>, number | readonly number[]];
       xs[i] = Array.from(pair[0]);
       rawLabels[i] = pair[1];
+    }
+
+    const nFeatures = (xs[0] as number[]).length;
+    for (let i = 1; i < xs.length; i++) {
+      if ((xs[i] as number[]).length !== nFeatures) {
+        throw new InvalidParameterError(
+          `samples[${i}] has ${(xs[i] as number[]).length} features; expected ${nFeatures}`,
+          "samples",
+          samples[i]
+        );
+      }
     }
 
     const x = tensor(xs);
 
     // Multi-output (vector) labels → 2D float target.
     if (isArrayLikeNumbers(rawLabels[0])) {
-      const ys = rawLabels.map((l) => Array.from(l as ArrayLike<number>));
+      const nOutputs = (rawLabels[0] as ArrayLike<number>).length;
+      const ys: number[][] = new Array(rawLabels.length);
+      for (let i = 0; i < rawLabels.length; i++) {
+        const l = rawLabels[i];
+        if (!isArrayLikeNumbers(l) || l.length !== nOutputs) {
+          throw new InvalidParameterError(
+            `samples[${i}] label must be a vector of ${nOutputs} values like samples[0]`,
+            "samples",
+            l
+          );
+        }
+        ys[i] = Array.from(l);
+      }
       return [x, tensor(ys)];
     }
 
-    const labels = rawLabels as number[];
-    const y = allIntegers(labels) ? tensor(labels, { dtype: "int32" }) : tensor(labels);
-    return [x, y];
+    for (let i = 0; i < rawLabels.length; i++) {
+      if (typeof rawLabels[i] !== "number") {
+        throw new InvalidParameterError(
+          `samples[${i}] label must be a number like samples[0]`,
+          "samples",
+          rawLabels[i]
+        );
+      }
+    }
+    return [x, scalarLabelTensor(rawLabels as number[])];
   }
 
   const xs: number[][] = new Array(samples.length);
   for (let i = 0; i < samples.length; i++) {
-    xs[i] = Array.from(samples[i] as ArrayLike<number>);
+    const sample = samples[i];
+    if (!isArrayLikeNumbers(sample) || isLabeledSample(sample)) {
+      throw new InvalidParameterError(
+        `samples[${i}] must be a feature vector (array of numbers)`,
+        "samples",
+        sample
+      );
+    }
+    xs[i] = Array.from(sample);
+  }
+  const nFeatures = (xs[0] as number[]).length;
+  for (let i = 1; i < xs.length; i++) {
+    if ((xs[i] as number[]).length !== nFeatures) {
+      throw new InvalidParameterError(
+        `samples[${i}] has ${(xs[i] as number[]).length} features; expected ${nFeatures}`,
+        "samples",
+        samples[i]
+      );
+    }
   }
   return [tensor(xs)];
 }
@@ -150,12 +230,12 @@ function* shuffleSync<S>(src: Iterable<S>, bufferSize: number, rng: () => number
       buf.push(item);
       continue;
     }
-    const j = Math.floor(rng() * buf.length);
+    const j = __randomBelow(rng, buf.length);
     yield buf[j] as S;
     buf[j] = item;
   }
   while (buf.length > 0) {
-    const j = Math.floor(rng() * buf.length);
+    const j = __randomBelow(rng, buf.length);
     yield buf[j] as S;
     const last = buf.pop() as S;
     if (j < buf.length) buf[j] = last;
@@ -173,12 +253,12 @@ async function* shuffleAsync<S>(
       buf.push(item);
       continue;
     }
-    const j = Math.floor(rng() * buf.length);
+    const j = __randomBelow(rng, buf.length);
     yield buf[j] as S;
     buf[j] = item;
   }
   while (buf.length > 0) {
-    const j = Math.floor(rng() * buf.length);
+    const j = __randomBelow(rng, buf.length);
     yield buf[j] as S;
     const last = buf.pop() as S;
     if (j < buf.length) buf[j] = last;
@@ -231,14 +311,20 @@ async function* batchAsync<S, B>(
 async function* prefetchAsync<S>(src: AsyncIterable<S>, n: number): AsyncGenerator<S> {
   const iterator = src[Symbol.asyncIterator]();
   const queue: Promise<IteratorResult<S>>[] = [];
+  const pull = (): void => {
+    const p = Promise.resolve(iterator.next());
+    // A read that fails while an earlier element is still being consumed would
+    // otherwise be reported as an unhandled rejection; the error is rethrown when
+    // that element's turn comes.
+    p.catch(() => {});
+    queue.push(p);
+  };
   try {
-    for (let i = 0; i < n; i++) {
-      queue.push(iterator.next());
-    }
+    for (let i = 0; i < n; i++) pull();
     while (queue.length > 0) {
       const result = await (queue.shift() as Promise<IteratorResult<S>>);
       if (result.done) break;
-      queue.push(iterator.next());
+      pull();
       yield result.value;
     }
   } finally {
@@ -265,7 +351,7 @@ function syncToAsync<S>(factory: SyncFactory<S>): AsyncFactory<S> {
  * A lazy, re-iterable stream of samples with a chainable transformation
  * pipeline. Nothing is read until iteration begins, and only a bounded working
  * set (shuffle buffer + in-flight prefetch + current batch) is ever held in
- * memory — so corpora far larger than RAM can be processed.
+ * memory, so corpora far larger than RAM can be processed.
  *
  * Construct one with {@link iterableDataset} (sync source) or
  * {@link asyncIterableDataset} (async source), then chain
@@ -345,6 +431,9 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
    * @returns A new stream of the mapped element type.
    */
   map<T>(fn: (sample: S, index: number) => T): StreamingDataset<T> {
+    if (typeof fn !== "function") {
+      throw new InvalidParameterError("map expects a function", "fn", fn);
+    }
     const sync = this.syncFactory;
     const async = this.asyncFactory;
     if (sync !== undefined) {
@@ -361,24 +450,41 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
    * true shuffle; a buffer of 1 is a no-op passthrough.
    *
    * @param bufferSize - Maximum elements held in the shuffle buffer (`>= 1`).
-   * @param seed - Optional seed for deterministic, reproducible shuffling.
+   * @param seed - Optional seed for deterministic, reproducible shuffling. With a
+   *   seed, every pass over the stream uses the same order; without one, each pass
+   *   draws from the global generator and the order differs.
+   * @param options.reshuffleEachIteration - With a `seed`, continue one seeded random
+   *   stream across passes instead of restarting it, so every pass has a different order
+   *   while the sequence of passes stays reproducible (default `false`). Has no effect
+   *   without a seed.
    * @returns A new, shuffled stream.
-   * @throws {@link InvalidParameterError} If `bufferSize` is not a positive integer.
+   * @throws {@link InvalidParameterError} If `bufferSize` is not a positive integer
+   *   or `seed` is not a safe integer.
    */
-  shuffle(bufferSize: number, seed?: number): StreamingDataset<S> {
-    if (!Number.isInteger(bufferSize) || bufferSize < 1) {
+  shuffle(
+    bufferSize: number,
+    seed?: number,
+    options: { readonly reshuffleEachIteration?: boolean } = {}
+  ): StreamingDataset<S> {
+    if (!Number.isSafeInteger(bufferSize) || bufferSize < 1) {
       throw new InvalidParameterError(
         `bufferSize must be a positive integer; received ${bufferSize}`,
         "bufferSize",
         bufferSize
       );
     }
+    normalizeOptionalSeed("seed", seed);
+    const reshuffle = options.reshuffleEachIteration ?? false;
+    if (options.reshuffleEachIteration !== undefined) {
+      assertBoolean("reshuffleEachIteration", reshuffle);
+    }
+    const rngForPass = createPassRng(seed, reshuffle);
     const sync = this.syncFactory;
     const async = this.asyncFactory;
     if (sync !== undefined) {
-      return StreamingDataset._fromSync<S>(() => shuffleSync(sync(), bufferSize, createRng(seed)));
+      return StreamingDataset._fromSync<S>(() => shuffleSync(sync(), bufferSize, rngForPass()));
     }
-    return StreamingDataset._fromAsync<S>(() => shuffleAsync(async(), bufferSize, createRng(seed)));
+    return StreamingDataset._fromAsync<S>(() => shuffleAsync(async(), bufferSize, rngForPass()));
   }
 
   /**
@@ -396,14 +502,18 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
     collate?: (samples: S[]) => B,
     options: { dropLast?: boolean } = {}
   ): StreamingDataset<B> {
-    if (!Number.isInteger(batchSize) || batchSize < 1) {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
       throw new InvalidParameterError(
         `batchSize must be a positive integer; received ${batchSize}`,
         "batchSize",
         batchSize
       );
     }
+    if (collate !== undefined && typeof collate !== "function") {
+      throw new InvalidParameterError("collate must be a function", "collate", collate);
+    }
     const dropLast = options.dropLast ?? false;
+    if (options.dropLast !== undefined) assertBoolean("dropLast", dropLast);
     const collateFn = collate ?? (defaultCollate as unknown as (samples: S[]) => B);
 
     const sync = this.syncFactory;
@@ -426,7 +536,7 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
    * @throws {@link InvalidParameterError} If `n` is not a positive integer.
    */
   prefetch(n: number): StreamingDataset<S> {
-    if (!Number.isInteger(n) || n < 1) {
+    if (!Number.isSafeInteger(n) || n < 1) {
       throw new InvalidParameterError(`n must be a positive integer; received ${n}`, "n", n);
     }
     const async = this.asyncFactory;
@@ -436,7 +546,7 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
   /**
    * Eagerly drain the stream into an array.
    *
-   * @remarks Defeats the point of streaming — use only for small streams or in
+   * @remarks Defeats the point of streaming; use only for small streams or in
    *   tests. Works whether the pipeline is sync or async.
    */
   async toArray(): Promise<S[]> {
@@ -453,7 +563,7 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
  *
  * @param factory - A function returning a fresh {@link Iterable} each call (e.g.
  *   a generator function). A fresh iterator is requested per epoch, so passing a
- *   factory — not a one-shot iterator — is what makes multi-epoch training work.
+ *   factory, not a one-shot iterator, is what makes multi-epoch training work.
  *
  * @example
  * ```ts

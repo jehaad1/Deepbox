@@ -1,51 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { DTypeError, InvalidParameterError, NotFittedError } from "../src/core";
+import { DTypeError, InvalidParameterError } from "../src/core";
 import { parameter, tensor } from "../src/ndarray";
 import { AdaDelta, Adagrad, Adam, AdamW, Nadam, RMSprop, SGD } from "../src/optim";
 import { getParamValue } from "./optim-test-helpers";
 
 describe("deepbox/optim - Edge Cases", () => {
   describe("Missing Gradients", () => {
-    it("should throw NotFittedError when gradient is missing - SGD", () => {
+    it("should skip a parameter whose gradient is null - SGD", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new SGD([p], { lr: 0.01 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - Adam", () => {
+    it("should skip a parameter whose gradient is null - Adam", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new Adam([p], { lr: 0.01 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - AdamW", () => {
+    it("should skip a parameter whose gradient is null - AdamW", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new AdamW([p], { lr: 0.01 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - RMSprop", () => {
+    it("should skip a parameter whose gradient is null - RMSprop", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new RMSprop([p], { lr: 0.01 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - Adagrad", () => {
+    it("should skip a parameter whose gradient is null - Adagrad", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new Adagrad([p], { lr: 0.01 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - AdaDelta", () => {
+    it("should skip a parameter whose gradient is null - AdaDelta", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new AdaDelta([p], { lr: 1.0 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
 
-    it("should throw NotFittedError when gradient is missing - Nadam", () => {
+    it("should skip a parameter whose gradient is null - Nadam", () => {
       const p = parameter(tensor([1, 2], { dtype: "float64" }));
       const optimizer = new Nadam([p], { lr: 0.002 });
-      expect(() => optimizer.step()).toThrow(NotFittedError);
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2]);
     });
   });
 

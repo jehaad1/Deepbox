@@ -2,8 +2,64 @@ import { DataValidationError, IndexError, InvalidParameterError } from "../core/
 import { type Tensor, tensor } from "../ndarray/index";
 import { DateTimeAccessor } from "./DateTimeAccessor";
 import { StringAccessor } from "./StringAccessor";
-import type { SeriesOptions } from "./types";
-import { createKey } from "./utils";
+import type { FillnaMethodOptions, SeriesOptions, ValueCountsOptions } from "./types";
+import {
+  cellText,
+  checkFillLimit,
+  checkFillMethod,
+  compareStrings,
+  compensatedSum,
+  createKey,
+  isPlainObject,
+  propagateFill,
+  sumSquaredDeviations,
+} from "./utils";
+
+/**
+ * Collect the non-missing numbers of a Series. null, undefined and NaN are
+ * skipped; any other type raises a DataValidationError naming the method.
+ */
+function collectNumeric(data: readonly unknown[], method: string): number[] {
+  const out: number[] = [];
+  for (const value of data) {
+    if (value === null || value === undefined) continue;
+    if (typeof value !== "number") {
+      throw new DataValidationError(`Series.${method}() only works on numeric data`);
+    }
+    if (!Number.isNaN(value)) out.push(value);
+  }
+  return out;
+}
+
+function validateDdof(ddof: number): void {
+  if (!Number.isInteger(ddof) || ddof < 0) {
+    throw new InvalidParameterError("ddof must be a non-negative integer", "ddof", ddof);
+  }
+}
+
+/** True for null, undefined, NaN and invalid Dates, which sort after every other value. */
+function isMissing(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    (typeof value === "number" && Number.isNaN(value)) ||
+    (value instanceof Date && Number.isNaN(value.getTime()))
+  );
+}
+
+/** Ascending comparison of two non-missing values. */
+function compareValues(a: unknown, b: unknown): number {
+  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === "string" && typeof b === "string") return compareStrings(a, b);
+  if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
+  if (a instanceof Date && b instanceof Date) {
+    const ta = a.getTime();
+    const tb = b.getTime();
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  }
+  return compareStrings(String(a), String(b));
+}
 
 /**
  * One-dimensional labeled array capable of holding any data type.
@@ -12,8 +68,6 @@ import { createKey } from "./utils";
  * - An array of data values
  * - An array of index labels (can be strings or numbers)
  * - An optional name
- *
- * A one-dimensional labeled array. @see { https://deepbox.dev/docs/dataframe-series | Deepbox Series}
  *
  * @template T - The type of data stored in the Series
  *
@@ -152,7 +206,7 @@ export class Series<T = unknown> {
    * const s = new Series([new Date('2024-01-15'), new Date('2024-06-20')]);
    * s.dt.year();       // Series([2024, 2024])
    * s.dt.month();      // Series([1, 6])
-   * s.dt.dayofweek();  // Series([1, 4])
+   * s.dt.dayOfWeek();  // Series([0, 3])  (Monday is 0)
    * ```
    */
   get dt(): DateTimeAccessor {
@@ -210,7 +264,8 @@ export class Series<T = unknown> {
    * Access a value by integer position (position-based indexing).
    *
    * @param position - The integer position (0-based)
-   * @returns The value at that position, or undefined if out of bounds
+   * @returns The value at that position
+   * @throws {InvalidParameterError} If position is not an integer
    * @throws {IndexError} If position is out of bounds
    *
    * @example
@@ -221,6 +276,9 @@ export class Series<T = unknown> {
    * ```
    */
   iloc(position: number): T | undefined {
+    if (!Number.isInteger(position)) {
+      throw new InvalidParameterError("position must be an integer", "position", position);
+    }
     if (this._data.length === 0) {
       throw new IndexError(`Series is empty`, {
         index: position,
@@ -279,7 +337,8 @@ export class Series<T = unknown> {
     if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
       throw new InvalidParameterError("n must be a non-negative integer", "n", n);
     }
-    const sliceStart = this._data.length - n;
+    // Clamp at 0: slice() with a negative start would count from the end.
+    const sliceStart = Math.max(0, this._data.length - n);
     const options: SeriesOptions = {
       index: this._index.slice(sliceStart),
     };
@@ -360,7 +419,10 @@ export class Series<T = unknown> {
   /**
    * Sort the Series values.
    *
-   * Preserves index-value mapping by sorting `[value, index]` pairs.
+   * Preserves index-value mapping. The sort is stable. null, undefined, NaN and
+   * invalid Dates always go last, in both directions. Numbers, bigints, booleans and Dates
+   * compare by value; strings compare by UTF-16 code unit (locale
+   * independent, like pandas, so "B" sorts before "a").
    *
    * @param ascending - Sort in ascending order (default: true)
    * @returns New sorted Series with index reordered to match
@@ -372,47 +434,23 @@ export class Series<T = unknown> {
    * ```
    */
   sort(ascending: boolean = true): Series<T> {
-    // Create array of [value, index] pairs to maintain association
-    const paired: Array<[T, string | number]> = [];
-    let pairIndex = 0;
-    for (const value of this._data) {
-      const idx = this._index[pairIndex];
-      if (idx === undefined) {
-        throw new DataValidationError("Index labels cannot be undefined");
+    const order = Array.from({ length: this._data.length }, (_, i) => i);
+    const data = this._data;
+    order.sort((i, j) => {
+      const a = data[i];
+      const b = data[j];
+      const aMissing = isMissing(a);
+      const bMissing = isMissing(b);
+      if (aMissing || bMissing) {
+        if (aMissing && bMissing) return 0;
+        return aMissing ? 1 : -1;
       }
-      paired.push([value, idx]);
-      pairIndex++;
-    }
-
-    // Sort the pairs by value
-    paired.sort((a, b) => {
-      const aVal = a[0];
-      const bVal = b[0];
-
-      // Handle numeric comparison (NaN sorts to end)
-      if (typeof aVal === "number" && typeof bVal === "number") {
-        const aIsNaN = Number.isNaN(aVal);
-        const bIsNaN = Number.isNaN(bVal);
-        if (aIsNaN && bIsNaN) return 0;
-        if (aIsNaN) return 1;
-        if (bIsNaN) return -1;
-        return ascending ? aVal - bVal : bVal - aVal;
-      }
-
-      // Handle string comparison
-      if (typeof aVal === "string" && typeof bVal === "string") {
-        return ascending ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-      }
-
-      // Fallback: convert to string and compare
-      const aStr = String(aVal);
-      const bStr = String(bVal);
-      return ascending ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+      const c = compareValues(a, b);
+      return ascending ? c : -c;
     });
 
-    // Separate back into data and index arrays
-    const sortedData = paired.map((p) => p[0]);
-    const sortedIndex = paired.map((p) => p[1]);
+    const sortedData = order.map((i) => data[i] as T);
+    const sortedIndex = order.map((i) => this._index[i] as string | number);
 
     const options: SeriesOptions = {
       index: sortedIndex,
@@ -442,17 +480,46 @@ export class Series<T = unknown> {
   /**
    * Count occurrences of unique values.
    *
-   * Returns a Series where index is the unique values and data is their counts.
+   * Returns a Series where the index is the unique values and the data is
+   * their counts, sorted by count in descending order. Values with equal counts
+   * keep the order of their first appearance.
    *
+   * Like pandas, null, undefined and NaN are left out unless `dropna` is false.
+   * When they are kept, they appear in the index as the labels `"null"`,
+   * `"undefined"` and `NaN`.
+   *
+   * With `normalize: true` the data are relative frequencies (they sum to 1 over the values that
+   * are counted) and the Series is named `proportion`. `sort: false` keeps the order of first
+   * appearance, and `ascending: true` lists the rarest values first.
+   *
+   * @param dropna - Exclude null, undefined and NaN (default: true), or an options object
+   *   `{ normalize?, dropna?, sort?, ascending? }` (see {@link ValueCountsOptions})
    * @returns Series where index is unique values and data is their counts
+   * @throws {DataValidationError} If the Series holds values other than strings and numbers
    *
    * @example
    * ```ts
    * const s = new Series(['a', 'b', 'a', 'c', 'a']);
    * s.valueCounts();  // Series([3, 1, 1]) with index ['a', 'b', 'c']
+   * s.valueCounts({ normalize: true });  // Series([0.6, 0.2, 0.2])
    * ```
    */
-  valueCounts(): Series<number> {
+  valueCounts(dropna: boolean | ValueCountsOptions = true): Series<number> {
+    const options: ValueCountsOptions = typeof dropna === "object" ? dropna : { dropna };
+    const skipMissing = options.dropna ?? true;
+    const normalize = options.normalize ?? false;
+    const sort = options.sort ?? true;
+    const ascending = options.ascending ?? false;
+    for (const [name, flag] of [
+      ["dropna", skipMissing],
+      ["normalize", normalize],
+      ["sort", sort],
+      ["ascending", ascending],
+    ] as const) {
+      if (typeof flag !== "boolean") {
+        throw new InvalidParameterError(`${name} must be a boolean`, name, flag);
+      }
+    }
     // Validate types: must be string or number
     for (const v of this._data) {
       if (typeof v !== "string" && typeof v !== "number" && v !== null && v !== undefined) {
@@ -462,8 +529,11 @@ export class Series<T = unknown> {
 
     const counts = new Map<string, number>();
     const keyToValue = new Map<string, T>();
+    let counted = 0;
 
     for (const v of this._data) {
+      if (skipMissing && isMissing(v)) continue;
+      counted++;
       const key = createKey(v);
       counts.set(key, (counts.get(key) ?? 0) + 1);
       if (!keyToValue.has(key)) {
@@ -471,33 +541,137 @@ export class Series<T = unknown> {
       }
     }
 
-    // Sort keys by count (descending)
-    const sortedKeys = [...counts.keys()].sort((a, b) => {
-      const countA = counts.get(a) ?? 0;
-      const countB = counts.get(b) ?? 0;
-      return countB - countA;
-    });
+    // Array.prototype.sort is stable, so ties keep first-appearance order.
+    const sortedKeys = [...counts.keys()];
+    if (sort) {
+      sortedKeys.sort((a, b) =>
+        ascending
+          ? (counts.get(a) ?? 0) - (counts.get(b) ?? 0)
+          : (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+      );
+    }
 
-    const values = sortedKeys.map((k) => counts.get(k) ?? 0);
-    // Use the original values as index labels.
+    const values = sortedKeys.map((k) => {
+      const count = counts.get(k) ?? 0;
+      return normalize ? count / counted : count;
+    });
+    const used = new Set<string | number>();
     const index = sortedKeys.map((k) => {
       const val = keyToValue.get(k);
       if (typeof val === "string" || typeof val === "number") {
+        used.add(val);
         return val;
       }
       return String(val);
     });
+    // A missing-value label such as "null" must not collide with a real string label.
+    for (let i = 0; i < index.length; i++) {
+      const label = index[i] as string | number;
+      const val = keyToValue.get(sortedKeys[i] as string);
+      if (val === null || val === undefined) {
+        let candidate: string = String(label);
+        while (used.has(candidate)) candidate = `${candidate} (missing)`;
+        used.add(candidate);
+        index[i] = candidate;
+      }
+    }
 
+    const suffix = normalize ? "proportion" : "counts";
     return new Series(values, {
       index: index,
-      name: this._name ? `${this._name}_counts` : "counts",
+      name: this._name ? `${this._name}_${suffix}` : suffix,
+    });
+  }
+
+  /**
+   * Fill missing values (null, undefined, NaN and invalid Dates).
+   *
+   * Pass a value to replace every missing entry with it, or `{ method: "ffill" | "bfill", limit? }`
+   * to copy the previous or next valid value (`"pad"` and `"backfill"` are accepted aliases). An
+   * object whose only keys are `method` and `limit` is read as the method form, so such an object
+   * cannot be used as a fill value.
+   *
+   * @param value - Fill value, or `{ method, limit? }`
+   * @returns New Series with the same index and name
+   * @throws {InvalidParameterError} If `method` or `limit` is invalid
+   *
+   * @example
+   * ```ts
+   * const s = new Series([1, null, null, 4]);
+   * s.fillna(0);                                 // [1, 0, 0, 4]
+   * s.fillna({ method: "ffill" });               // [1, 1, 1, 4]
+   * s.fillna({ method: "bfill", limit: 1 });     // [1, null, 4, 4]
+   * ```
+   */
+  fillna(options: FillnaMethodOptions): Series<T>;
+  fillna<U>(value: U): Series<T | U>;
+  fillna(value: unknown): Series<unknown> {
+    if (
+      isPlainObject(value) &&
+      Object.hasOwn(value, "method") &&
+      Object.keys(value).every((k) => k === "method" || k === "limit")
+    ) {
+      const options = value as unknown as FillnaMethodOptions;
+      return this.propagate(checkFillMethod(options.method), options.limit);
+    }
+    return new Series<unknown>(
+      this._data.map((v) => (isMissing(v) ? value : v)),
+      { index: this._index, ...(this._name !== undefined ? { name: this._name } : {}) }
+    );
+  }
+
+  /**
+   * Fill missing values with the previous valid value (forward fill).
+   *
+   * Leading missing values stay missing. With `limit`, at most that many consecutive missing values
+   * are filled in each gap.
+   *
+   * @param limit - Longest run of missing values to fill (default: no limit)
+   * @returns New Series with the same index and name
+   * @throws {InvalidParameterError} If `limit` is not a positive integer
+   *
+   * @example
+   * ```ts
+   * new Series([null, 1, null, null]).ffill();  // [null, 1, 1, 1]
+   * ```
+   */
+  ffill(limit?: number): Series<T> {
+    return this.propagate("ffill", limit);
+  }
+
+  /**
+   * Fill missing values with the next valid value (backward fill).
+   *
+   * Trailing missing values stay missing. With `limit`, at most that many consecutive missing values
+   * are filled in each gap, counted back from the next valid value.
+   *
+   * @param limit - Longest run of missing values to fill (default: no limit)
+   * @returns New Series with the same index and name
+   * @throws {InvalidParameterError} If `limit` is not a positive integer
+   *
+   * @example
+   * ```ts
+   * new Series([null, null, 3, null]).bfill();  // [3, 3, 3, null]
+   * ```
+   */
+  bfill(limit?: number): Series<T> {
+    return this.propagate("bfill", limit);
+  }
+
+  private propagate(direction: "ffill" | "bfill", limit: number | undefined): Series<T> {
+    const filled = propagateFill(this._data, direction, checkFillLimit(limit), isMissing) as T[];
+    return new Series<T>(filled, {
+      index: this._index,
+      ...(this._name !== undefined ? { name: this._name } : {}),
     });
   }
 
   /**
    * Calculate the sum of all values.
    *
-   * Skips null, undefined, and NaN values.
+   * Skips null, undefined, and NaN values. Uses compensated summation, so the
+   * result does not drift on long or badly scaled inputs. A Series that holds
+   * only missing values sums to 0.
    *
    * @returns Sum of all numeric values.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
@@ -512,25 +686,14 @@ export class Series<T = unknown> {
     if (this._data.length === 0) {
       throw new DataValidationError("Cannot get sum of empty Series");
     }
-
-    let total = 0;
-    for (const val of this._data) {
-      if (val === null || val === undefined) continue;
-      if (typeof val !== "number") {
-        throw new DataValidationError("Series.sum() only works on numeric data");
-      }
-      if (Number.isNaN(val)) continue;
-
-      total += val;
-    }
-
-    return total;
+    return compensatedSum(collectNumeric(this._data, "sum"));
   }
 
   /**
    * Calculate the arithmetic mean (average) of all values.
    *
-   * Skips null, undefined, and NaN values.
+   * Skips null, undefined, and NaN values. Returns NaN when no numeric value
+   * remains.
    *
    * @returns Mean of all numeric values.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
@@ -545,22 +708,8 @@ export class Series<T = unknown> {
     if (this._data.length === 0) {
       throw new DataValidationError("Cannot get mean of empty Series");
     }
-
-    let total = 0;
-    let count = 0;
-
-    for (const val of this._data) {
-      if (val === null || val === undefined) continue;
-      if (typeof val !== "number") {
-        throw new DataValidationError("Series.mean() only works on numeric data");
-      }
-      if (Number.isNaN(val)) continue;
-
-      total += val;
-      count++;
-    }
-
-    return count > 0 ? total / count : NaN;
+    const numericData = collectNumeric(this._data, "mean");
+    return numericData.length > 0 ? compensatedSum(numericData) / numericData.length : NaN;
   }
 
   /**
@@ -569,7 +718,7 @@ export class Series<T = unknown> {
    * Skips null, undefined, and NaN values.
    * For even-length Series, returns the average of the two middle values.
    *
-   * @returns Median value.
+   * @returns Median value, or NaN when no numeric value remains.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
    *
    * @example
@@ -583,49 +732,35 @@ export class Series<T = unknown> {
       throw new DataValidationError("Cannot get median of empty Series");
     }
 
-    const numericData: number[] = [];
-    for (const value of this._data) {
-      if (value === null || value === undefined) continue;
-      if (typeof value !== "number") {
-        throw new DataValidationError("Series.median() only works on numeric data");
-      }
-      if (!Number.isNaN(value)) {
-        numericData.push(value);
-      }
-    }
-
-    if (numericData.length === 0) {
+    const sorted = Float64Array.from(collectNumeric(this._data, "median")).sort();
+    if (sorted.length === 0) {
       return NaN;
     }
 
-    // Create a sorted copy (don't mutate numericData)
-    const sorted = [...numericData].sort((a, b) => a - b);
-
-    // Find the middle index
     const middle = Math.floor(sorted.length / 2);
-
-    // If even length, average the two middle values
-    // If odd length, return the single middle value
     if (sorted.length % 2 === 0) {
-      const val1 = sorted[middle - 1];
-      const val2 = sorted[middle];
-      if (val1 === undefined || val2 === undefined) {
-        return NaN;
-      }
-      return (val1 + val2) / 2;
+      const lo = sorted[middle - 1] as number;
+      const hi = sorted[middle] as number;
+      if (lo === hi) return lo;
+      const mid = (lo + hi) / 2;
+      // Halve before adding when the plain sum overflows to Infinity.
+      return Number.isFinite(mid) || !Number.isFinite(lo) || !Number.isFinite(hi)
+        ? mid
+        : lo / 2 + hi / 2;
     }
-    const val = sorted[middle];
-    return val !== undefined ? val : NaN;
+    return sorted[middle] as number;
   }
 
   /**
    * Calculate the standard deviation of all values.
    *
    * Skips null, undefined, and NaN values.
-   * Uses sample standard deviation (divides by n-1).
+   * Uses the sample standard deviation (divides by n - ddof, default n - 1).
    *
-   * @returns Standard deviation.
+   * @param ddof - Delta degrees of freedom (default: 1)
+   * @returns Standard deviation, or NaN when n <= ddof.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @throws {InvalidParameterError} If ddof is not a non-negative integer
    *
    * @example
    * ```ts
@@ -633,50 +768,21 @@ export class Series<T = unknown> {
    * s.std();  // ~2.58
    * ```
    */
-  std(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get std of empty Series");
-    }
-
-    const numericData: number[] = [];
-    for (const value of this._data) {
-      if (value === null || value === undefined) continue;
-      if (typeof value !== "number") {
-        throw new DataValidationError("Series.std() only works on numeric data");
-      }
-      if (!Number.isNaN(value)) {
-        numericData.push(value);
-      }
-    }
-
-    // Need at least 2 values for sample std
-    if (numericData.length < 2) {
-      return NaN;
-    }
-
-    // Calculate mean first
-    const sum = numericData.reduce((acc, val) => acc + val, 0);
-    const meanVal = sum / numericData.length;
-
-    // Sum of squared differences from mean
-    let sumSquaredDiff = 0;
-    for (const val of numericData) {
-      const diff = val - meanVal;
-      sumSquaredDiff += diff * diff;
-    }
-
-    // Sample standard deviation: divide by (n-1) then sqrt
-    return Math.sqrt(sumSquaredDiff / (numericData.length - 1));
+  std(ddof: number = 1): number {
+    validateDdof(ddof);
+    return Math.sqrt(this.variance("std", "Cannot get std of empty Series", ddof));
   }
 
   /**
    * Calculate the variance of all values.
    *
    * Skips null, undefined, and NaN values.
-   * Uses sample variance (divides by n-1).
+   * Uses the sample variance (divides by n - ddof, default n - 1).
    *
-   * @returns Variance.
+   * @param ddof - Delta degrees of freedom (default: 1)
+   * @returns Variance, or NaN when n <= ddof.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @throws {InvalidParameterError} If ddof is not a non-negative integer
    *
    * @example
    * ```ts
@@ -684,40 +790,21 @@ export class Series<T = unknown> {
    * s.var();  // ~6.67
    * ```
    */
-  var(): number {
+  var(ddof: number = 1): number {
+    validateDdof(ddof);
+    return this.variance("var", "Cannot get variance of empty Series", ddof);
+  }
+
+  private variance(method: string, emptyMessage: string, ddof: number): number {
     if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get variance of empty Series");
+      throw new DataValidationError(emptyMessage);
     }
-
-    const numericData: number[] = [];
-    for (const value of this._data) {
-      if (value === null || value === undefined) continue;
-      if (typeof value !== "number") {
-        throw new DataValidationError("Series.var() only works on numeric data");
-      }
-      if (!Number.isNaN(value)) {
-        numericData.push(value);
-      }
-    }
-
-    // Need at least 2 values for sample variance
-    if (numericData.length < 2) {
+    const numericData = collectNumeric(this._data, method);
+    if (numericData.length <= ddof) {
       return NaN;
     }
-
-    // Calculate mean first
-    const sum = numericData.reduce((acc, val) => acc + val, 0);
-    const meanVal = sum / numericData.length;
-
-    // Sum of squared differences from mean
-    let sumSquaredDiff = 0;
-    for (const val of numericData) {
-      const diff = val - meanVal;
-      sumSquaredDiff += diff * diff;
-    }
-
-    // Sample variance: divide by (n-1)
-    return sumSquaredDiff / (numericData.length - 1);
+    // The corrected two-pass formula can land a hair below zero for constant data.
+    return Math.max(0, sumSquaredDeviations(numericData)) / (numericData.length - ddof);
   }
 
   /**
@@ -725,7 +812,7 @@ export class Series<T = unknown> {
    *
    * Skips null, undefined, and NaN values.
    *
-   * @returns Minimum value.
+   * @returns Minimum value, or NaN when no numeric value remains.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
    *
    * @example
@@ -738,24 +825,13 @@ export class Series<T = unknown> {
     if (this._data.length === 0) {
       throw new DataValidationError("Cannot get min of empty Series");
     }
-
+    const numericData = collectNumeric(this._data, "min");
+    if (numericData.length === 0) return NaN;
     let minVal = Infinity;
-    let hasNumeric = false;
-
-    for (const val of this._data) {
-      if (val === null || val === undefined) continue;
-      if (typeof val !== "number") {
-        throw new DataValidationError("Series.min() only works on numeric data");
-      }
-      if (!Number.isNaN(val)) {
-        if (val < minVal) {
-          minVal = val;
-        }
-        hasNumeric = true;
-      }
+    for (const v of numericData) {
+      if (v < minVal) minVal = v;
     }
-
-    return hasNumeric ? minVal : NaN;
+    return minVal;
   }
 
   /**
@@ -763,7 +839,7 @@ export class Series<T = unknown> {
    *
    * Skips null, undefined, and NaN values.
    *
-   * @returns Maximum value.
+   * @returns Maximum value, or NaN when no numeric value remains.
    * @throws {DataValidationError} If Series is empty or contains non-numeric data
    *
    * @example
@@ -776,24 +852,53 @@ export class Series<T = unknown> {
     if (this._data.length === 0) {
       throw new DataValidationError("Cannot get max of empty Series");
     }
-
+    const numericData = collectNumeric(this._data, "max");
+    if (numericData.length === 0) return NaN;
     let maxVal = -Infinity;
-    let hasNumeric = false;
-
-    for (const val of this._data) {
-      if (val === null || val === undefined) continue;
-      if (typeof val !== "number") {
-        throw new DataValidationError("Series.max() only works on numeric data");
-      }
-      if (!Number.isNaN(val)) {
-        if (val > maxVal) {
-          maxVal = val;
-        }
-        hasNumeric = true;
-      }
+    for (const v of numericData) {
+      if (v > maxVal) maxVal = v;
     }
+    return maxVal;
+  }
 
-    return hasNumeric ? maxVal : NaN;
+  /**
+   * Boolean Series marking missing values (null, undefined, NaN and invalid Dates).
+   *
+   * This is the same notion of "missing" that sort, valueCounts, sum, mean and the
+   * other statistics use. The index and name are kept.
+   *
+   * @returns Series of booleans (true = missing)
+   *
+   * @example
+   * ```ts
+   * new Series([1, null, NaN, 4]).isnull().toArray();  // [false, true, true, false]
+   * ```
+   */
+  isnull(): Series<boolean> {
+    return this.flagMissing(true);
+  }
+
+  /**
+   * Boolean Series marking present values, the complement of {@link Series.isnull}.
+   *
+   * @returns Series of booleans (true = present)
+   *
+   * @example
+   * ```ts
+   * new Series([1, null, NaN, 4]).notnull().toArray();  // [true, false, false, true]
+   * ```
+   */
+  notnull(): Series<boolean> {
+    return this.flagMissing(false);
+  }
+
+  private flagMissing(missing: boolean): Series<boolean> {
+    const options: SeriesOptions = { index: this._index };
+    if (this._name !== undefined) options.name = this._name;
+    return new Series(
+      this._data.map((v) => isMissing(v) === missing),
+      options
+    );
   }
 
   /**
@@ -815,12 +920,19 @@ export class Series<T = unknown> {
   }
 
   /**
-   * Convert the Series to an ndarray Tensor.
+   * Convert the Series to a 1D ndarray Tensor.
    *
-   * Uses the `tensor()` factory function.
+   * Null and undefined become NaN. The tensor is float32 unless `options.dtype`
+   * says otherwise; float32 only keeps 24 bits of precision, so integers above
+   * 2^24 and values that need more than about 7 significant digits are rounded.
+   * Pass `{ dtype: "float64" }` to keep the stored doubles exactly (this matches
+   * `DataFrame.toTensor`).
    *
+   * @param options - Optional settings
+   * @param options.dtype - Element type of the tensor (default: "float32")
    * @returns Tensor containing the Series data
    * @throws {DataValidationError} If data cannot be converted to Tensor
+   * @throws {InvalidParameterError} If dtype is not "float32" or "float64"
    *
    * @example
    * ```ts
@@ -828,9 +940,14 @@ export class Series<T = unknown> {
    *
    * const s = new Series([1, 2, 3, 4]);
    * const t = s.toTensor();  // Tensor([1, 2, 3, 4])
+   * const t64 = s.toTensor({ dtype: "float64" });
    * ```
    */
-  toTensor(): Tensor {
+  toTensor(options: { readonly dtype?: "float32" | "float64" } = {}): Tensor {
+    const dtype = options.dtype ?? "float32";
+    if (dtype !== "float32" && dtype !== "float64") {
+      throw new InvalidParameterError('dtype must be "float32" or "float64"', "dtype", dtype);
+    }
     const numeric: number[] = [];
     for (const v of this._data) {
       if (typeof v === "number") {
@@ -843,17 +960,20 @@ export class Series<T = unknown> {
         );
       }
     }
-    return tensor(numeric);
+    return tensor(numeric, { dtype });
   }
 
   /**
    * Return a human-readable string representation of this Series.
    *
-   * Each row is printed as `index  value`, with an optional name/dtype
-   * footer.  Large Series are truncated with an ellipsis.
+   * Each row is printed as `index  value`, followed by a footer with the
+   * optional name and the length. Series longer than `maxRows` show the first
+   * and last `floor(maxRows / 2)` rows with an ellipsis row in between.
    *
    * @param maxRows - Maximum rows to display before summarizing (default: 20).
+   *   Pass `Infinity` to show every row.
    * @returns Formatted string representation
+   * @throws {InvalidParameterError} If maxRows is negative or not an integer
    *
    * @example
    * ```ts
@@ -863,6 +983,9 @@ export class Series<T = unknown> {
    * ```
    */
   toString(maxRows = 20): string {
+    if (maxRows !== Number.POSITIVE_INFINITY && (!Number.isInteger(maxRows) || maxRows < 0)) {
+      throw new InvalidParameterError("maxRows must be a non-negative integer", "maxRows", maxRows);
+    }
     const n = this._data.length;
     const half = Math.floor(maxRows / 2);
     const showAll = n <= maxRows;
@@ -875,7 +998,7 @@ export class Series<T = unknown> {
     for (let i = 0; i < topCount; i++) {
       const idx = this._index[i];
       const val = this._data[i];
-      rows.push([String(idx ?? i), val === null || val === undefined ? "null" : String(val)]);
+      rows.push([String(idx ?? i), cellText(val)]);
     }
 
     if (!showAll) {
@@ -883,7 +1006,7 @@ export class Series<T = unknown> {
       for (let i = n - bottomCount; i < n; i++) {
         const idx = this._index[i];
         const val = this._data[i];
-        rows.push([String(idx ?? i), val === null || val === undefined ? "null" : String(val)]);
+        rows.push([String(idx ?? i), cellText(val)]);
       }
     }
 

@@ -45,3 +45,10 @@ export {
   WGSL_SHADERS,
 } from "./WebGpuBackend";
 export { WASM_BINARIES } from "./wasm_modules.generated";
+export type {
+  GpuAdapter,
+  GpuBuffer,
+  GpuDevice,
+  GpuLike,
+} from "./webgpu_types";
+export { GPU_BUFFER_USAGE, GPU_MAP_MODE } from "./webgpu_types";

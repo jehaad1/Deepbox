@@ -19,7 +19,7 @@ import {
 import { Animation, createAnimation } from "../src/plot/animation/Animation";
 import { figure } from "../src/plot/figure/state";
 
-describe("AUDIT release surface — WorkerPool", () => {
+describe("AUDIT release surface: WorkerPool", () => {
   it("exec runs inline and updates status", async () => {
     const pool = new WorkerPool({ maxWorkers: 2 });
     const r = await pool.exec((x: number) => x * 2, 21);
@@ -83,7 +83,7 @@ describe("AUDIT release surface — WorkerPool", () => {
   });
 });
 
-describe("AUDIT release surface — DataFrame plot & style", () => {
+describe("AUDIT release surface: DataFrame plot & style", () => {
   const df = new DataFrame({
     x: [1, 2, 3],
     y: [4, 5, 6],
@@ -126,7 +126,7 @@ describe("AUDIT release surface — DataFrame plot & style", () => {
   });
 });
 
-describe("AUDIT release surface — text datasets", () => {
+describe("AUDIT release surface: text datasets", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -174,7 +174,7 @@ describe("AUDIT release surface — text datasets", () => {
   });
 });
 
-describe("AUDIT release surface — packed_sequence", () => {
+describe("AUDIT release surface: packed_sequence", () => {
   it("packs, unpacks, and round-trips 2D sequences", () => {
     const seqs = [
       tensor([
@@ -242,7 +242,7 @@ describe("AUDIT release surface — packed_sequence", () => {
   });
 });
 
-describe("AUDIT release surface — plot Animation", () => {
+describe("AUDIT release surface: plot Animation", () => {
   it("validates options and renders frames", () => {
     expect(() => new Animation({ fps: 0 })).toThrow(/FPS/);
     expect(() => new Animation({ duration: 0 })).toThrow(/Duration/);
@@ -266,7 +266,7 @@ describe("AUDIT release surface — plot Animation", () => {
   });
 });
 
-describe("AUDIT release surface — image datasets (mocked fetch)", () => {
+describe("AUDIT release surface: image datasets (mocked fetch)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -285,7 +285,7 @@ describe("AUDIT release surface — image datasets (mocked fetch)", () => {
   });
 });
 
-describe("AUDIT release surface — Kaggle (mocked fetch)", () => {
+describe("AUDIT release surface: Kaggle (mocked fetch)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });

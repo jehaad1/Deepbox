@@ -1,7 +1,278 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import {
+  assertContiguous,
+  toFloat64View,
+  validateFitInputs,
+  validatePredictInputs,
+} from "../_validation";
 import type { Classifier } from "../base";
+
+// ---------------------------------------------------------------------------
+// Helpers shared by the Naive Bayes classifiers in this directory.
+// They are internal: `deepbox/ml` only re-exports the estimator classes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Class labels found in `y`, with the class index of every sample.
+ *
+ * @internal
+ */
+export type NbClassInfo = {
+  /** Sorted unique labels. */
+  readonly classes: number[];
+  /** Index into `classes` for every sample. */
+  readonly labelIndex: Int32Array;
+  /** Number of samples per class. */
+  readonly counts: Float64Array;
+};
+
+/**
+ * Collect the sorted unique labels of a validated 1-D target tensor.
+ *
+ * @internal
+ */
+export function nbEncodeLabels(y: Tensor): NbClassInfo {
+  const values = toFloat64View(y);
+  const unique = new Set<number>();
+  for (let i = 0; i < values.length; i++) {
+    // `+ 0` turns -0 into 0 so both spellings fall into one class.
+    unique.add((values[i] as number) + 0);
+  }
+  const classes = Array.from(unique).sort((a, b) => a - b);
+  const index = new Map<number, number>();
+  for (let c = 0; c < classes.length; c++) index.set(classes[c] as number, c);
+  const labelIndex = new Int32Array(values.length);
+  const counts = new Float64Array(classes.length);
+  for (let i = 0; i < values.length; i++) {
+    const c = index.get((values[i] as number) + 0) as number;
+    labelIndex[i] = c;
+    counts[c] = (counts[c] as number) + 1;
+  }
+  return { classes, labelIndex, counts };
+}
+
+/**
+ * Validate the smoothing parameter shared by the discrete Naive Bayes models.
+ *
+ * @internal
+ */
+export function nbValidateAlpha(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new InvalidParameterError(
+      `alpha must be a finite number >= 0; got ${String(value)}`,
+      "alpha",
+      value
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate a boolean option.
+ *
+ * @internal
+ */
+export function nbValidateBoolean(name: string, value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new InvalidParameterError(`${name} must be a boolean; got ${String(value)}`, name, value);
+  }
+  return value;
+}
+
+/**
+ * Validate an optional vector of class prior probabilities.
+ *
+ * @returns A copy of the priors, or `null` when none were given
+ * @internal
+ */
+export function nbValidatePriors(name: string, value: unknown): number[] | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new InvalidParameterError(
+      `${name} must be null or a non-empty array of numbers; got ${String(value)}`,
+      name,
+      value
+    );
+  }
+  const out: number[] = [];
+  for (const p of value as unknown[]) {
+    if (typeof p !== "number" || !Number.isFinite(p) || p < 0) {
+      throw new InvalidParameterError(
+        `${name} must contain finite numbers >= 0; got ${String(p)}`,
+        name,
+        value
+      );
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Log prior of every class: explicit priors, empirical frequencies, or uniform.
+ *
+ * @internal
+ */
+export function nbClassLogPrior(
+  counts: Float64Array,
+  nSamples: number,
+  fitPrior: boolean,
+  priors: readonly number[] | null,
+  priorName: string
+): Float64Array {
+  const nClasses = counts.length;
+  const out = new Float64Array(nClasses);
+  if (priors !== null) {
+    if (priors.length !== nClasses) {
+      throw new InvalidParameterError(
+        `${priorName} must have one entry per class; got ${priors.length} entries for ${nClasses} classes`,
+        priorName,
+        priors
+      );
+    }
+    for (let c = 0; c < nClasses; c++) out[c] = Math.log(priors[c] as number);
+  } else if (fitPrior) {
+    for (let c = 0; c < nClasses; c++) out[c] = Math.log((counts[c] as number) / nSamples);
+  } else {
+    out.fill(-Math.log(nClasses));
+  }
+  return out;
+}
+
+/**
+ * Build a 1-D label tensor. Labels that are all 32-bit integers produce an `int32`
+ * tensor (the dtype used by the other classifiers); any other label set keeps full
+ * precision in a `float64` tensor so non-integer labels are not truncated.
+ *
+ * @internal
+ */
+export function nbLabelTensor(values: ArrayLike<number>, classes: readonly number[]): Tensor {
+  const integral = classes.every((c) => Number.isInteger(c) && c >= -2147483648 && c <= 2147483647);
+  if (integral) return tensor(Int32Array.from(values as ArrayLike<number>));
+  return tensor(Float64Array.from(values as ArrayLike<number>));
+}
+
+/**
+ * Tensor of class labels, see {@link nbLabelTensor} for the dtype rule.
+ *
+ * @internal
+ */
+export function nbClassesTensor(classes: readonly number[]): Tensor {
+  return nbLabelTensor(classes, classes);
+}
+
+/**
+ * Index of the largest entry of every row (the first one on ties).
+ *
+ * @internal
+ */
+export function nbArgmaxRows(jll: Float64Array, nSamples: number, nClasses: number): Int32Array {
+  const out = new Int32Array(nSamples);
+  for (let i = 0; i < nSamples; i++) {
+    const base = i * nClasses;
+    let best = 0;
+    let bestValue = jll[base] as number;
+    for (let c = 1; c < nClasses; c++) {
+      const v = jll[base + c] as number;
+      if (v > bestValue) {
+        bestValue = v;
+        best = c;
+      }
+    }
+    out[i] = best;
+  }
+  return out;
+}
+
+/**
+ * Row-wise log-softmax of joint log likelihoods, computed with the log-sum-exp
+ * shift. Rows where every class has probability zero (all `-Infinity`) become
+ * uniform; rows with `+Infinity` entries share the probability among those classes.
+ *
+ * @internal
+ */
+export function nbLogSoftmaxRows(
+  jll: Float64Array,
+  nSamples: number,
+  nClasses: number
+): Float64Array {
+  const out = new Float64Array(nSamples * nClasses);
+  for (let i = 0; i < nSamples; i++) {
+    const base = i * nClasses;
+    let max = -Infinity;
+    for (let c = 0; c < nClasses; c++) {
+      const v = jll[base + c] as number;
+      if (v > max || Number.isNaN(v)) max = v;
+    }
+    if (max === -Infinity) {
+      out.fill(-Math.log(nClasses), base, base + nClasses);
+      continue;
+    }
+    if (max === Infinity) {
+      let nInf = 0;
+      for (let c = 0; c < nClasses; c++) if (jll[base + c] === Infinity) nInf++;
+      for (let c = 0; c < nClasses; c++) {
+        out[base + c] = jll[base + c] === Infinity ? -Math.log(nInf) : -Infinity;
+      }
+      continue;
+    }
+    let sum = 0;
+    for (let c = 0; c < nClasses; c++) sum += Math.exp((jll[base + c] as number) - max);
+    const lse = max + Math.log(sum);
+    for (let c = 0; c < nClasses; c++) out[base + c] = (jll[base + c] as number) - lse;
+  }
+  return out;
+}
+
+/**
+ * Wrap a flat row-major buffer as an `(nSamples, nClasses)` float64 tensor.
+ *
+ * @internal
+ */
+export function nbMatrixTensor(values: Float64Array, nSamples: number, nClasses: number): Tensor {
+  return tensor(values).reshape([nSamples, nClasses]);
+}
+
+/**
+ * Check the target given to `score` and compare it with the predictions.
+ *
+ * @internal
+ */
+export function nbAccuracy(yPred: Tensor, y: Tensor): number {
+  const n = y.size;
+  if (yPred.size !== n) {
+    throw new ShapeError(
+      `X and y must have the same number of samples; got X=${yPred.size}, y=${n}`
+    );
+  }
+  let correct = 0;
+  for (let i = 0; i < n; i++) {
+    if (Number(y.data[y.offset + i]) === Number(yPred.data[yPred.offset + i])) correct++;
+  }
+  return correct / n;
+}
+
+/**
+ * Validate the target tensor passed to `score`.
+ *
+ * @internal
+ */
+export function nbValidateScoreTarget(y: Tensor): void {
+  if (y.ndim !== 1) {
+    throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
+  }
+  assertContiguous(y, "y");
+  if (y.size === 0) {
+    throw new DataValidationError("y must contain at least one sample");
+  }
+  for (let i = 0; i < y.size; i++) {
+    // Number() so that int64 (BigInt) targets are accepted.
+    if (!Number.isFinite(Number(y.data[y.offset + i]))) {
+      throw new DataValidationError("y contains non-finite values (NaN or Inf)");
+    }
+  }
+}
 
 /**
  * Gaussian Naive Bayes classifier.
@@ -14,6 +285,10 @@ import type { Classifier } from "../base";
  * 2. For prediction, calculate likelihood using Gaussian PDF
  * 3. Apply Bayes' theorem to get posterior probabilities
  * 4. Predict class with highest posterior probability
+ *
+ * Like scikit-learn, `varSmoothing` is a fraction of the largest per-feature variance
+ * of the whole training set; that value is added to every class variance. If every
+ * feature is constant, `varSmoothing` itself is added.
  *
  * **Time Complexity**:
  * - Training: O(n * d) where n=samples, d=features
@@ -37,11 +312,13 @@ import type { Classifier } from "../base";
  */
 export class GaussianNB implements Classifier {
   private varSmoothing: number;
+  private priors: number[] | null;
 
   private classes_?: number[];
-  private classPrior_?: Map<number, number>;
-  private theta_?: Map<number, number[]>; // Mean for each class and feature
-  private var_?: Map<number, number[]>; // Variance for each class and feature
+  private classLogPrior_?: Float64Array;
+  private theta_?: Float64Array; // mean, [nClasses * nFeatures]
+  private var_?: Float64Array; // variance without smoothing, [nClasses * nFeatures]
+  private epsilon_ = 0;
   private nFeaturesIn_?: number;
   private fitted = false;
 
@@ -49,11 +326,14 @@ export class GaussianNB implements Classifier {
    * Create a new Gaussian Naive Bayes classifier.
    *
    * @param options - Configuration options
-   * @param options.varSmoothing - Portion of largest variance added to variances for stability (default: 1e-9)
+   * @param options.varSmoothing - Fraction of the largest feature variance added to all variances for stability (default: 1e-9)
+   * @param options.priors - Fixed class prior probabilities, in the order of the sorted class labels. When omitted they are estimated from the training data.
+   * @throws {InvalidParameterError} If `varSmoothing` is not a finite number >= 0 or `priors` is invalid
    */
   constructor(
     options: {
       readonly varSmoothing?: number;
+      readonly priors?: readonly number[] | null;
     } = {}
   ) {
     this.varSmoothing = options.varSmoothing ?? 1e-9;
@@ -64,6 +344,7 @@ export class GaussianNB implements Classifier {
         this.varSmoothing
       );
     }
+    this.priors = nbValidatePriors("priors", options.priors);
   }
 
   /**
@@ -77,84 +358,134 @@ export class GaussianNB implements Classifier {
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
-   * @throws {DataValidationError} If zero variance encountered with varSmoothing=0
+   * @throws {DataValidationError} If a smoothed variance is zero (constant feature with `varSmoothing=0`, or all features constant)
+   * @throws {InvalidParameterError} If `priors` does not have one entry per class
    */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
+    const xv = toFloat64View(X);
+    const { classes, labelIndex, counts } = nbEncodeLabels(y);
+    const nClasses = classes.length;
 
-    // Get unique classes
-    const classSet = new Set<number>();
-    for (let i = 0; i < y.size; i++) {
-      classSet.add(Number(y.data[y.offset + i]));
-    }
-    this.classes_ = Array.from(classSet).sort((a, b) => a - b);
-
-    // Calculate class priors
-    this.classPrior_ = new Map();
-    for (const cls of this.classes_) {
-      let count = 0;
-      for (let i = 0; i < nSamples; i++) {
-        if (Number(y.data[y.offset + i]) === cls) {
-          count++;
-        }
-      }
-      this.classPrior_.set(cls, count / nSamples);
-    }
-
-    // Calculate mean and variance for each class and feature
-    this.theta_ = new Map();
-    this.var_ = new Map();
-
-    for (const cls of this.classes_) {
-      const classSamples: number[][] = [];
-
-      for (let i = 0; i < nSamples; i++) {
-        if (Number(y.data[y.offset + i]) === cls) {
-          const sample: number[] = [];
-          for (let j = 0; j < nFeatures; j++) {
-            sample.push(Number(X.data[X.offset + i * nFeatures + j]));
-          }
-          classSamples.push(sample);
-        }
-      }
-
-      const means: number[] = [];
-      const variances: number[] = [];
-
+    // Per-class means (first pass).
+    const theta = new Float64Array(nClasses * nFeatures);
+    for (let i = 0; i < nSamples; i++) {
+      const base = (labelIndex[i] as number) * nFeatures;
+      const row = i * nFeatures;
       for (let j = 0; j < nFeatures; j++) {
-        // Calculate mean
-        let sum = 0;
-        for (const sample of classSamples) {
-          sum += sample[j] ?? 0;
-        }
-        const mean = sum / classSamples.length;
-        means.push(mean);
-
-        // Calculate variance
-        let varSum = 0;
-        for (const sample of classSamples) {
-          const diff = (sample[j] ?? 0) - mean;
-          varSum += diff * diff;
-        }
-        const variance = varSum / classSamples.length;
-        if (variance === 0 && this.varSmoothing === 0) {
-          throw new DataValidationError(
-            "Zero variance encountered with varSmoothing=0; set varSmoothing > 0 to avoid degenerate Gaussians"
-          );
-        }
-        variances.push(variance);
+        theta[base + j] = (theta[base + j] as number) + (xv[row + j] as number);
       }
-
-      this.theta_.set(cls, means);
-      this.var_.set(cls, variances);
+    }
+    for (let c = 0; c < nClasses; c++) {
+      const nc = counts[c] as number;
+      for (let j = 0; j < nFeatures; j++) {
+        theta[c * nFeatures + j] = (theta[c * nFeatures + j] as number) / nc;
+      }
     }
 
+    // Per-class variances (second pass, population variance).
+    const variance = new Float64Array(nClasses * nFeatures);
+    for (let i = 0; i < nSamples; i++) {
+      const base = (labelIndex[i] as number) * nFeatures;
+      const row = i * nFeatures;
+      for (let j = 0; j < nFeatures; j++) {
+        const d = (xv[row + j] as number) - (theta[base + j] as number);
+        variance[base + j] = (variance[base + j] as number) + d * d;
+      }
+    }
+    for (let c = 0; c < nClasses; c++) {
+      const nc = counts[c] as number;
+      for (let j = 0; j < nFeatures; j++) {
+        variance[c * nFeatures + j] = (variance[c * nFeatures + j] as number) / nc;
+      }
+    }
+
+    // epsilon = varSmoothing * largest per-feature variance of the full training set.
+    let maxVar = 0;
+    for (let j = 0; j < nFeatures; j++) {
+      let mean = 0;
+      for (let i = 0; i < nSamples; i++) mean += xv[i * nFeatures + j] as number;
+      mean /= nSamples;
+      let acc = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const d = (xv[i * nFeatures + j] as number) - mean;
+        acc += d * d;
+      }
+      maxVar = Math.max(maxVar, acc / nSamples);
+    }
+    // With all features constant there is no variance to scale, so the absolute value is used.
+    const epsilon = maxVar > 0 ? this.varSmoothing * maxVar : this.varSmoothing;
+
+    for (let k = 0; k < variance.length; k++) {
+      if ((variance[k] as number) + epsilon <= 0) {
+        throw new DataValidationError(
+          "Zero variance encountered; increase varSmoothing or remove constant features"
+        );
+      }
+    }
+
+    const classLogPrior = nbClassLogPrior(counts, nSamples, true, this.priors, "priors");
+
+    this.classes_ = classes;
+    this.classLogPrior_ = classLogPrior;
+    this.theta_ = theta;
+    this.var_ = variance;
+    this.epsilon_ = epsilon;
+    this.nFeaturesIn_ = nFeatures;
     this.fitted = true;
     return this;
+  }
+
+  private jointLogLikelihood(X: Tensor): Float64Array {
+    if (
+      !this.fitted ||
+      !this.classes_ ||
+      !this.classLogPrior_ ||
+      !this.theta_ ||
+      !this.var_ ||
+      this.nFeaturesIn_ === undefined
+    ) {
+      throw new NotFittedError("GaussianNB must be fitted before prediction");
+    }
+    validatePredictInputs(X, this.nFeaturesIn_, "GaussianNB");
+
+    const nSamples = X.shape[0] ?? 0;
+    const nFeatures = this.nFeaturesIn_;
+    const nClasses = this.classes_.length;
+    const xv = toFloat64View(X);
+    const theta = this.theta_;
+    const eps = this.epsilon_;
+
+    // Per class constant: log prior - 0.5 * sum(log(2 pi var)).
+    const constant = new Float64Array(nClasses);
+    const invVar = new Float64Array(nClasses * nFeatures);
+    for (let c = 0; c < nClasses; c++) {
+      let acc = this.classLogPrior_[c] as number;
+      for (let j = 0; j < nFeatures; j++) {
+        const v = (this.var_[c * nFeatures + j] as number) + eps;
+        acc -= 0.5 * Math.log(2 * Math.PI * v);
+        invVar[c * nFeatures + j] = 1 / v;
+      }
+      constant[c] = acc;
+    }
+
+    const jll = new Float64Array(nSamples * nClasses);
+    for (let i = 0; i < nSamples; i++) {
+      const row = i * nFeatures;
+      for (let c = 0; c < nClasses; c++) {
+        const base = c * nFeatures;
+        let quad = 0;
+        for (let j = 0; j < nFeatures; j++) {
+          const d = (xv[row + j] as number) - (theta[base + j] as number);
+          quad += d * d * (invVar[base + j] as number);
+        }
+        jll[i * nClasses + c] = (constant[c] as number) - 0.5 * quad;
+      }
+    }
+    return jll;
   }
 
   /**
@@ -167,31 +498,13 @@ export class GaussianNB implements Classifier {
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("GaussianNB must be fitted before prediction");
-    }
-
-    const proba = this.predictProba(X);
-    const nSamples = proba.shape[0] ?? 0;
-    const nClasses = proba.shape[1] ?? 0;
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      let maxProb = -1;
-      let maxClass = 0;
-
-      for (let j = 0; j < nClasses; j++) {
-        const prob = Number(proba.data[proba.offset + i * nClasses + j]);
-        if (prob > maxProb) {
-          maxProb = prob;
-          maxClass = this.classes_?.[j] ?? 0;
-        }
-      }
-
-      predictions.push(maxClass);
-    }
-
-    return tensor(predictions, { dtype: "int32" });
+    const jll = this.jointLogLikelihood(X);
+    const classes = this.classes_ as number[];
+    const nSamples = X.shape[0] ?? 0;
+    const best = nbArgmaxRows(jll, nSamples, classes.length);
+    const labels = new Float64Array(nSamples);
+    for (let i = 0; i < nSamples; i++) labels[i] = classes[best[i] as number] as number;
+    return nbLabelTensor(labels, classes);
   }
 
   /**
@@ -206,50 +519,30 @@ export class GaussianNB implements Classifier {
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predictProba(X: Tensor): Tensor {
-    if (!this.fitted || !this.classes_ || !this.classPrior_ || !this.theta_ || !this.var_) {
-      throw new NotFittedError("GaussianNB must be fitted before prediction");
-    }
-
-    validatePredictInputs(X, this.nFeaturesIn_ ?? 0, "GaussianNB");
-
+    const jll = this.jointLogLikelihood(X);
     const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
+    const nClasses = (this.classes_ as number[]).length;
+    const proba = nbLogSoftmaxRows(jll, nSamples, nClasses);
+    for (let i = 0; i < proba.length; i++) proba[i] = Math.exp(proba[i] as number);
+    return nbMatrixTensor(proba, nSamples, nClasses);
+  }
 
-    const probabilities: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const logProbs: number[] = [];
-
-      for (const cls of this.classes_) {
-        const prior = this.classPrior_.get(cls) ?? 0;
-        const means = this.theta_.get(cls) ?? [];
-        const variances = this.var_.get(cls) ?? [];
-
-        let logProb = Math.log(prior);
-
-        for (let j = 0; j < nFeatures; j++) {
-          const x = Number(X.data[X.offset + i * nFeatures + j]);
-          const mean = means[j] ?? 0;
-          const variance = (variances[j] ?? 0) + this.varSmoothing;
-
-          // Gaussian PDF in log space
-          logProb -= 0.5 * Math.log(2 * Math.PI * variance);
-          logProb -= (x - mean) ** 2 / (2 * variance);
-        }
-
-        logProbs.push(logProb);
-      }
-
-      // Convert log probabilities to probabilities using log-sum-exp trick
-      const maxLogProb = Math.max(...logProbs);
-      const expProbs = logProbs.map((lp) => Math.exp(lp - maxLogProb));
-      const sumExpProbs = expProbs.reduce((a, b) => a + b, 0);
-      const probs = expProbs.map((ep) => ep / sumExpProbs);
-
-      probabilities.push(probs);
-    }
-
-    return tensor(probabilities);
+  /**
+   * Predict log class probabilities for samples in X.
+   *
+   * More accurate than `log(predictProba(X))` when probabilities are tiny.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Log probabilities of shape (n_samples, n_classes)
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X has wrong dimensions or feature count
+   * @throws {DataValidationError} If X contains NaN/Inf values
+   */
+  predictLogProba(X: Tensor): Tensor {
+    const jll = this.jointLogLikelihood(X);
+    const nSamples = X.shape[0] ?? 0;
+    const nClasses = (this.classes_ as number[]).length;
+    return nbMatrixTensor(nbLogSoftmaxRows(jll, nSamples, nClasses), nSamples, nClasses);
   }
 
   /**
@@ -260,34 +553,11 @@ export class GaussianNB implements Classifier {
    * @returns Accuracy score in range [0, 1]
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf values
    */
   score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const yPred = this.predict(X);
-    if (yPred.size !== y.size) {
-      throw new ShapeError(
-        `X and y must have the same number of samples; got X=${yPred.size}, y=${y.size}`
-      );
-    }
-    let correct = 0;
-
-    for (let i = 0; i < y.size; i++) {
-      if (Number(y.data[y.offset + i]) === Number(yPred.data[yPred.offset + i])) {
-        correct++;
-      }
-    }
-
-    return correct / y.size;
+    nbValidateScoreTarget(y);
+    return nbAccuracy(this.predict(X), y);
   }
 
   /**
@@ -299,7 +569,7 @@ export class GaussianNB implements Classifier {
     if (!this.fitted || !this.classes_) {
       return undefined;
     }
-    return tensor(this.classes_, { dtype: "int32" });
+    return nbClassesTensor(this.classes_);
   }
 
   /**
@@ -310,6 +580,7 @@ export class GaussianNB implements Classifier {
   getParams(): Record<string, unknown> {
     return {
       varSmoothing: this.varSmoothing,
+      ...(this.priors === null ? {} : { priors: [...this.priors] }),
     };
   }
 
@@ -323,19 +594,31 @@ export class GaussianNB implements Classifier {
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "varSmoothing":
-          if (typeof value !== "number" || value < 0) {
+          if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
             throw new InvalidParameterError(
-              `varSmoothing must be a non-negative number; got ${String(value)}`,
+              `varSmoothing must be a finite number >= 0; got ${String(value)}`,
               "varSmoothing",
               value
             );
           }
           this.varSmoothing = value;
           break;
+        case "priors":
+          this.priors = nbValidatePriors("priors", value);
+          break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
     return this;
+  }
+
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   *
+   * @returns A new GaussianNB
+   */
+  clone(): GaussianNB {
+    return new GaussianNB(this.getParams() as ConstructorParameters<typeof GaussianNB>[0]);
   }
 }

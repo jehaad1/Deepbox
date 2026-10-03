@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -26,7 +25,6 @@ import {
   assertHasGradFloat,
   assertInRange,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -63,7 +61,14 @@ type LARSState = {
  *
  * LARS scales the learning rate per layer based on the ratio of the
  * parameter norm to the gradient norm. This allows training with very
- * large batch sizes (up to 32K) without divergence.
+ * large batch sizes (up to 32K) without divergence. Each parameter tensor is
+ * treated as one layer:
+ *
+ * ```
+ * localLr = eta * ||theta|| / (||g|| + weightDecay * ||theta|| + eps)   (1 when either norm is zero)
+ * m = momentum * m + lr * localLr * (g + weightDecay * theta)
+ * theta -= m
+ * ```
  *
  * Reference: "Large Batch Training of Convolutional Networks" (You et al., 2017)
  *
@@ -88,12 +93,18 @@ type LARSState = {
  * @category Optimizers
  */
 export class LARS extends Optimizer<LARSOptions, LARSState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new LARS optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Global learning rate (default: 0.1)
+   * @param options.momentum - Momentum factor, in [0, 1) (default: 0.9)
+   * @param options.weightDecay - L2 penalty coefficient (default: 1e-4)
+   * @param options.eta - Trust coefficient scaling the layer-wise rate (default: 0.001)
+   * @param options.eps - Term added to the denominator for numerical stability (default: 1e-8)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<LARSOptions>>,
     options: {
@@ -113,51 +124,42 @@ export class LARS extends Optimizer<LARSOptions, LARSState> {
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("momentum", defaults.momentum, 0, 1);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
-    assertFinitePositive("eta", defaults.eta);
-    assertFinitePositive("epsilon", defaults.eps);
   }
 
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(`Invalid group index: ${groupIdx}`, "groupIdx", groupIdx);
-    }
-    return group.options.lr;
-  }
-
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<LARSOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("momentum", options.momentum, 0, 1);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
+    assertFinitePositive("eta", options.eta);
+    assertFinitePositive("epsilon", options.eps);
   }
 
   protected isState(state: Record<string, unknown>): state is LARSState {
     return state["momentumBuffer"] instanceof Float64Array;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
     if (closure) {
       loss = closure();
     }
 
-    this._stepCount++;
+    this.prepareStep("LARS");
+    this.countStep();
 
     for (const group of this.paramGroups) {
       const { lr, momentum, weightDecay, eta, eps } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("momentum", momentum, 0, 1);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-      assertFinitePositive("eta", eta);
-      assertFinitePositive("epsilon", eps);
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the LARS update (layer-wise trust ratio +
         // momentum) from device-dispatched ops. The local learning rate is a
         // device scalar (norms are full reductions), broadcast into the update.
@@ -214,10 +216,10 @@ export class LARS extends Optimizer<LARSOptions, LARSState> {
         let paramNormSq = 0;
         let gradNormSq = 0;
         for (let i = 0; i < size; i++) {
-          const pi = safeArrayAccess(pData, pOff + i, "LARS parameter");
-          const gi = safeArrayAccess(grad, gradOffset + i, "LARS gradient");
-          assertFinite("parameter", pi);
-          assertFinite("gradient", gi);
+          const pi = pData[pOff + i] as number;
+          const gi = grad[gradOffset + i] as number;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
+          if (!Number.isFinite(gi)) assertFinite("gradient", gi);
           paramNormSq += pi * pi;
           gradNormSq += gi * gi;
         }
@@ -233,17 +235,18 @@ export class LARS extends Optimizer<LARSOptions, LARSState> {
         const effectiveLr = lr * localLr;
 
         // Update with momentum and weight decay
+        const momentumBuffer = state.momentumBuffer;
         for (let i = 0; i < size; i++) {
-          const gi = safeArrayAccess(grad, gradOffset + i, "LARS gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "LARS parameter");
-          const mi = safeArrayAccess(state.momentumBuffer, i, "LARS momentumBuffer");
+          const gi = grad[gradOffset + i] as number;
+          const pi = pData[pOff + i] as number;
+          const mi = momentumBuffer[i] as number;
 
           // Gradient with weight decay
           const dP = gi + weightDecay * pi;
 
           // Momentum update
           const mNew = momentum * mi + effectiveLr * dP;
-          state.momentumBuffer[i] = mNew;
+          momentumBuffer[i] = mNew;
 
           // Parameter update
           pData[pOff + i] = pi - mNew;

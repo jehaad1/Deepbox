@@ -34,7 +34,7 @@ function std(arr: number[]): number {
   return Math.sqrt(variance(arr));
 }
 
-describe("Random Module - Comprehensive Test Suite", () => {
+describe("Random Module tests", () => {
   beforeEach(() => {
     setSeed(12345);
   });

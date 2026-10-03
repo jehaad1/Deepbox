@@ -7,10 +7,13 @@ import type { TypedArray } from "../types/common";
 /**
  * Type guard to check if a value is one of the supported TypedArray types.
  *
- * Returns true only for the exact TypedArray subclasses in the Deepbox
+ * Returns true for instances of the TypedArray classes in the Deepbox
  * {@link TypedArray} union: Float32Array, Float64Array, Int32Array,
- * BigInt64Array, and Uint8Array. Returns false for unsupported typed arrays
- * (e.g. Uint16Array, Int16Array), DataView, and regular arrays.
+ * BigInt64Array, and Uint8Array (subclasses such as Node.js `Buffer` included).
+ * Returns false for unsupported typed arrays (e.g. Uint16Array, Int16Array,
+ * Uint8ClampedArray), DataView, and regular arrays. The check uses
+ * `instanceof`, so arrays created in another realm (iframe, vm context) are
+ * not recognised.
  *
  * @param value - The value to check
  * @returns True if value is a supported TypedArray, false otherwise

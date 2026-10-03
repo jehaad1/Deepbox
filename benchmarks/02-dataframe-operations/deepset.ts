@@ -1,5 +1,5 @@
 /**
- * Benchmark 02: DataFrame Operations — Deepbox vs Pandas
+ * Benchmark 02: DataFrame Operations (Deepbox vs Pandas)
  *
  * Compares tabular data operations: creation, selection,
  * filtering, groupby, sorting, and aggregation.

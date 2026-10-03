@@ -1,8 +1,12 @@
 /**
  * Example 16: Learning Rate Schedulers
  *
- * Control the learning rate during training for better convergence.
- * Deepbox provides 8 learning rate schedulers.
+ * A scheduler changes the optimizer's learning rate as training goes on.
+ * This example steps eight of them for a few epochs and prints the learning
+ * rate at each epoch. Example 41 covers more (warm restarts, lambda, cyclic).
+ *
+ * Call scheduler.step() once per epoch, after optimizer.step().
+ * getLastLr() returns one learning rate per parameter group.
  */
 
 import { Linear, ReLU, Sequential } from "deepbox/nn";
@@ -27,7 +31,7 @@ const createOptimizer = () => {
 };
 
 // ---------------------------------------------------------------------------
-// Part 1: StepLR — decay every N steps
+// Part 1: StepLR: decay every N steps
 // ---------------------------------------------------------------------------
 console.log("--- Part 1: StepLR ---");
 
@@ -41,7 +45,7 @@ for (let epoch = 0; epoch < 10; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 2: MultiStepLR — decay at specific milestones
+// Part 2: MultiStepLR: decay at specific milestones
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 2: MultiStepLR ---");
 
@@ -58,7 +62,7 @@ for (let epoch = 0; epoch < 10; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 3: ExponentialLR — exponential decay each epoch
+// Part 3: ExponentialLR: exponential decay each epoch
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 3: ExponentialLR ---");
 
@@ -72,12 +76,12 @@ for (let epoch = 0; epoch < 10; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 4: CosineAnnealingLR — cosine annealing
+// Part 4: CosineAnnealingLR: cosine annealing
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 4: CosineAnnealingLR ---");
 
 const opt4 = createOptimizer();
-const cosineLR = new CosineAnnealingLR(opt4, { T_max: 10, etaMin: 0.001 });
+const cosineLR = new CosineAnnealingLR(opt4, { tMax: 10, etaMin: 0.001 });
 
 for (let epoch = 0; epoch < 10; epoch++) {
   const lr = cosineLR.getLastLr()[0] ?? 0;
@@ -86,7 +90,7 @@ for (let epoch = 0; epoch < 10; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 5: LinearLR — linear warmup / decay
+// Part 5: LinearLR: linear warmup / decay
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 5: LinearLR ---");
 
@@ -104,15 +108,16 @@ for (let epoch = 0; epoch < 8; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 6: ReduceLROnPlateau — reduce when metric stops improving
+// Part 6: ReduceLROnPlateau: reduce when metric stops improving
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 6: ReduceLROnPlateau ---");
 
 const opt6 = createOptimizer();
 const plateauLR = new ReduceLROnPlateau(opt6, { factor: 0.5, patience: 2 });
 
-// Simulate a training loop where loss plateaus
-const fakeLosses = [1.0, 0.8, 0.6, 0.59, 0.58, 0.58, 0.58, 0.3, 0.29, 0.29];
+// Simulate a training loop where the loss stops improving after epoch 3.
+// With patience = 2 the rate is halved after the third epoch without improvement.
+const fakeLosses = [1.0, 0.8, 0.6, 0.59, 0.59, 0.59, 0.59, 0.59, 0.3, 0.3];
 for (let epoch = 0; epoch < fakeLosses.length; epoch++) {
   const loss = fakeLosses[epoch];
   plateauLR.step(loss);
@@ -122,7 +127,7 @@ for (let epoch = 0; epoch < fakeLosses.length; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 7: WarmupLR — linear warmup then constant
+// Part 7: WarmupLR: linear warmup then constant
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 7: WarmupLR ---");
 
@@ -136,7 +141,7 @@ for (let epoch = 0; epoch < 8; epoch++) {
 }
 
 // ---------------------------------------------------------------------------
-// Part 8: OneCycleLR — super-convergence schedule
+// Part 8: OneCycleLR: super-convergence schedule
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 8: OneCycleLR ---");
 

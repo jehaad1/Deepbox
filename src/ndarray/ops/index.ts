@@ -39,16 +39,22 @@ export {
 } from "./comparison";
 // Convolution
 export { col2im, im2col } from "./conv";
+export { einsum } from "./einsum";
 export {
+  type FFTNorm,
   type FFTResult,
   fft,
   fft2,
+  fftfreq,
   fftn,
+  fftshift,
   ifft,
   ifft2,
   ifftn,
+  ifftshift,
   irfft,
   rfft,
+  rfftfreq,
 } from "./fft";
 export { delete_, insert } from "./insert_delete";
 // Logical
@@ -81,6 +87,7 @@ export {
   gradient,
   hstack,
   interp,
+  trapezoid,
   trapz,
   vstack,
 } from "./numerical";
@@ -90,6 +97,8 @@ export { dropoutMask } from "./random";
 export {
   all,
   any,
+  argmax,
+  argmin,
   cumprod,
   cumsum,
   diff,
@@ -97,6 +106,13 @@ export {
   mean,
   median,
   min,
+  nanargmax,
+  nanargmin,
+  nancumsum,
+  nanmedian,
+  nanprod,
+  nanquantile,
+  nanvar,
   prod,
   std,
   sum,
@@ -107,11 +123,13 @@ export { gcd, intersect1d, lcm, setdiff1d, union1d } from "./setops";
 export {
   bartlettWindow,
   blackmanWindow,
+  type ConvolveMode,
   convolve,
   correlate,
   hammingWindow,
   hannWindow,
   kaiserWindow,
+  type WindowOptions,
 } from "./signal";
 // Sorting
 export { argsort, sort } from "./sorting";
@@ -131,8 +149,19 @@ export {
   tan,
   tanh,
 } from "./trigonometry";
+export type {
+  CrossOptions,
+  HistogramOptions,
+  LikeOptions,
+  PadMode,
+  PadWidth,
+  UniqueOptions,
+  UniqueOutput,
+  UniqueResult,
+} from "./utils";
 // Utils (tensor utilities)
 export {
+  argwhere,
   atleast_1d,
   atleast_2d,
   atleast1d,
@@ -144,6 +173,7 @@ export {
   clone,
   contiguous,
   copy,
+  countNonzero,
   cross,
   detach,
   diag,
@@ -169,14 +199,17 @@ export {
   nanmin,
   nanstd,
   nansum,
+  nonzero,
   ones_like,
   onesLike,
   pad,
+  putAlongAxis,
   roll,
   rot90,
   scatter,
   searchsorted,
   swapaxes,
+  takeAlongAxis,
   tril,
   triu,
   unique,

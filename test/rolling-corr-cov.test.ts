@@ -39,7 +39,7 @@ describe("Rolling.corr()", () => {
     const col = result.get("A_B").data;
     expect(col[0]).toBeNull();
     expect(col[1]).toBeNull();
-    // Window [1, null, 3] vs [2, 4, 6] — only 2 valid pairs (idx 0 and 2)
+    // Window [1, null, 3] vs [2, 4, 6]: only 2 valid pairs (idx 0 and 2)
     // corr([1,3], [2,6]) = 1.0
     expect(col[2]).toBeCloseTo(1.0, 10);
   });

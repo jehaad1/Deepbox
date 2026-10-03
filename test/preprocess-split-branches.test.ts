@@ -36,7 +36,7 @@ describe("preprocess split branches", () => {
     expect(Xtr.shape[0]).toBe(2);
     expect(Xte.shape[0]).toBe(1);
 
-    // A singleton class (class 1 appears once) cannot be stratified — sklearn
+    // A singleton class (class 1 appears once) cannot be stratified, sklearn
     // raises unconditionally, even with a fixed randomState.
     const ySingleton = tensor([0, 1, 0]);
     expect(() =>

@@ -4,9 +4,12 @@ import { GradTensor, noGrad, parameter } from "../src/ndarray/autograd";
 import { Tensor } from "../src/ndarray/tensor";
 
 describe("Autograd - branch coverage extras", () => {
-  it("disables grad tracking inside noGrad", () => {
+  it("keeps the requested requiresGrad flag for leaves created inside noGrad (PyTorch semantics)", () => {
     const out = noGrad(() => parameter([1, 2, 3]));
-    expect(out.requiresGrad).toBe(false);
+    expect(out.requiresGrad).toBe(true);
+    // Operations executed inside noGrad are the ones that do not record a graph.
+    const result = noGrad(() => out.mul(out));
+    expect(result.requiresGrad).toBe(false);
   });
 
   it("throws when creating a GradTensor for string dtype", () => {
@@ -133,7 +136,7 @@ describe("Autograd - branch coverage extras", () => {
     });
     const g = GradTensor.fromTensor(big, { requiresGrad: true });
     expect(() => g.pow(2)).toThrow("pow() backward is not supported for int64 tensors");
-    // relu must not silently detach the graph — it throws like pow
+    // relu must not silently detach the graph, it throws like pow
     expect(() => g.relu()).toThrow("relu gradients are not supported for int64 tensors");
     // Without requiresGrad, relu on int64 works and returns int64
     const noGrad = GradTensor.fromTensor(big, { requiresGrad: false });

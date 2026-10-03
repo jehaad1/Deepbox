@@ -2,9 +2,11 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
+import { getConfig } from "../core/config";
 import { DeepboxError, InvalidParameterError } from "../core/errors";
+import type { DType } from "../core/types/dtype";
 import { Generator } from "../random/Generator";
-import { __fillNormal, __fillUniform, __random } from "../random/random";
+import { __fillNormal, __fillUniform, __random, __randomBelow } from "../random/random";
 
 /**
  * Assert that an input is a positive integer.
@@ -12,7 +14,7 @@ import { __fillNormal, __fillUniform, __random } from "../random/random";
  * @internal
  */
 export function assertPositiveInt(name: string, value: number): void {
-  if (!Number.isInteger(value) || value <= 0 || !Number.isSafeInteger(value)) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
     throw new InvalidParameterError(
       `${name} must be a positive safe integer; received ${value}`,
       name,
@@ -36,6 +38,23 @@ export function assertBoolean(name: string, value: unknown): void {
   }
 }
 
+const FLOAT_DTYPES: readonly DType[] = ["float16", "bfloat16", "float32", "float64"];
+
+/**
+ * Floating-point dtype for dataset values built without an explicit dtype.
+ *
+ * Follows the global default dtype when it is a floating-point dtype. When the
+ * global default is an integer, boolean or other non-float dtype (for example
+ * after `setDtype("int32")`), it returns `float32`, so dataset values are never
+ * truncated.
+ *
+ * @internal
+ */
+export function defaultFloatDtype(): DType {
+  const configured = getConfig().defaultDtype;
+  return FLOAT_DTYPES.includes(configured) ? configured : "float32";
+}
+
 /**
  * Normalize and validate an optional seed value.
  *
@@ -45,7 +64,7 @@ export function normalizeOptionalSeed(name: string, value: number | undefined): 
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isFinite(value) || !Number.isInteger(value) || !Number.isSafeInteger(value)) {
+  if (!Number.isSafeInteger(value)) {
     throw new InvalidParameterError(
       `${name} must be a finite safe integer; received ${value}`,
       name,
@@ -58,7 +77,7 @@ export function normalizeOptionalSeed(name: string, value: number | undefined): 
 /**
  * A dataset RNG: callable for a uniform [0,1) draw, plus bulk fills that draw
  * from the SAME underlying stream. `fillNormal` runs the fast Ziggurat sampler
- * (≈10x the Box-Muller {@link fillNormal01}); both fills stay consistent with
+ * (about 10x faster than the Box-Muller {@link fillNormal01}); both fills stay consistent with
  * interspersed `rng()` calls because they share one generator instance.
  *
  * @internal
@@ -67,6 +86,26 @@ export interface DatasetRng {
   (): number;
   fillNormal(out: Float64Array, off: number, count: number): void;
   fillUniform(out: Float64Array, off: number, count: number): void;
+}
+
+/**
+ * Check that `out[off .. off+count)` lies inside `out`, so the unseeded and seeded
+ * fills reject an out-of-range window the same way instead of truncating silently.
+ */
+function assertFillWindow(out: Float64Array, off: number, count: number): void {
+  if (
+    !Number.isSafeInteger(off) ||
+    !Number.isSafeInteger(count) ||
+    off < 0 ||
+    count < 0 ||
+    off + count > out.length
+  ) {
+    throw new InvalidParameterError(
+      `fill window [${off}, ${off + count}) does not fit a buffer of length ${out.length}`,
+      "count",
+      count
+    );
+  }
 }
 
 /**
@@ -80,8 +119,14 @@ export interface DatasetRng {
 export function createRng(seed?: number): DatasetRng {
   if (seed === undefined) {
     const f = (() => __random()) as DatasetRng;
-    f.fillNormal = (out, off, count) => __fillNormal(out.subarray(off, off + count), count);
-    f.fillUniform = (out, off, count) => __fillUniform(out.subarray(off, off + count), count);
+    f.fillNormal = (out, off, count) => {
+      assertFillWindow(out, off, count);
+      __fillNormal(out.subarray(off, off + count), count);
+    };
+    f.fillUniform = (out, off, count) => {
+      assertFillWindow(out, off, count);
+      __fillUniform(out.subarray(off, off + count), count);
+    };
     return f;
   }
   const generator = new Generator(seed);
@@ -89,6 +134,27 @@ export function createRng(seed?: number): DatasetRng {
   f.fillNormal = (out, off, count) => generator.fillNormalInto(out, off, count);
   f.fillUniform = (out, off, count) => generator.fillUniformInto(out, off, count);
   return f;
+}
+
+/**
+ * Return a function that supplies the RNG for each pass over a dataset.
+ *
+ * By default every call builds a fresh generator from `seed`, so a seeded
+ * dataset repeats the same order on every pass. With `persist` set and a seed
+ * given, all calls share one generator, so the first pass matches the default
+ * and later passes continue the stream and differ from each other, while the
+ * whole sequence stays reproducible. Without a seed, the global generator is
+ * used and `persist` has no effect.
+ *
+ * @internal
+ */
+export function createPassRng(seed: number | undefined, persist: boolean): () => DatasetRng {
+  if (!persist || seed === undefined) return () => createRng(seed);
+  let shared: DatasetRng | undefined;
+  return () => {
+    shared ??= createRng(seed);
+    return shared;
+  };
 }
 
 /**
@@ -106,7 +172,7 @@ export function normal01(rng: () => number): number {
  * Fill `out[off .. off+count)` with standard-normal samples, using BOTH
  * outputs of each Box-Muller pair (the scalar {@link normal01} discards the
  * sine twin, paying log+sqrt+cos and two rng draws per sample; this pays
- * them per two samples — roughly half the transcendental and RNG cost).
+ * them per two samples, roughly half the transcendental and RNG cost).
  *
  * Deterministic for a given rng stream. Draws `2*ceil(count/2)` uniforms.
  *
@@ -138,28 +204,25 @@ export function fillNormal01(
 /**
  * Shuffle an array in-place using Fisher-Yates.
  *
+ * Works for arrays of any element type, including arrays that contain
+ * `undefined`. Consumes exactly one `rng()` draw per swap position.
+ *
  * @internal
  */
 export function shuffleInPlace<T>(array: T[], rng: () => number): void {
-  if (array.length <= 1) return;
-
   for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    // Safety: i and j are both in [0, array.length - 1]
-    const tmp = array[i];
-    const swap = array[j];
-    if (tmp === undefined || swap === undefined) {
-      throw new DeepboxError(
-        `Internal error: shuffle index out of bounds (i=${i}, j=${j}, len=${array.length})`
-      );
-    }
-    array[i] = swap;
+    const j = __randomBelow(rng, i + 1);
+    const tmp = array[i] as T;
+    array[i] = array[j] as T;
     array[j] = tmp;
   }
 }
 
 /**
  * Shuffle two aligned arrays in-place using Fisher-Yates.
+ *
+ * Consumes the RNG exactly like {@link shuffleInPlace}, so both arrays end up
+ * permuted identically.
  *
  * @internal
  */
@@ -169,29 +232,15 @@ export function shufflePairedInPlace<T, U>(left: T[], right: U[], rng: () => num
       `Internal error: array length mismatch during shuffle (${left.length} vs ${right.length})`
     );
   }
-  if (left.length <= 1) return;
 
   for (let i = left.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    // Safety: i and j are both in [0, left.length - 1]
-    const leftTmp = left[i];
-    const leftSwap = left[j];
-    if (leftTmp === undefined || leftSwap === undefined) {
-      throw new DeepboxError(
-        `Internal error: shuffle index out of bounds (i=${i}, j=${j}, len=${left.length})`
-      );
-    }
-    left[i] = leftSwap;
+    const j = __randomBelow(rng, i + 1);
+    const leftTmp = left[i] as T;
+    left[i] = left[j] as T;
     left[j] = leftTmp;
 
-    const rightTmp = right[i];
-    const rightSwap = right[j];
-    if (rightTmp === undefined || rightSwap === undefined) {
-      throw new DeepboxError(
-        `Internal error: shuffle index out of bounds (i=${i}, j=${j}, len=${right.length})`
-      );
-    }
-    right[i] = rightSwap;
+    const rightTmp = right[i] as U;
+    right[i] = right[j] as U;
     right[j] = rightTmp;
   }
 }
@@ -200,7 +249,7 @@ export function shufflePairedInPlace<T, U>(left: T[], right: U[], rng: () => num
  * Fisher-Yates shuffle of the rows of a row-major flat matrix, paired with a
  * label array. Consumes the RNG in exactly the same order as
  * {@link shufflePairedInPlace} on nested arrays, so seeded output is
- * bit-identical — it just swaps `nCols`-wide row slabs in a typed buffer
+ * bit-identical, it just swaps `nCols`-wide row slabs in a typed buffer
  * instead of reordering an array of row references.
  *
  * @internal
@@ -214,7 +263,7 @@ export function shuffleRowsPairedInPlace(
 ): void {
   if (nRows <= 1) return;
   for (let i = nRows - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
+    const j = __randomBelow(rng, i + 1);
     if (j !== i) {
       // Direct element swap of the two rows. For the narrow rows these
       // datasets produce (2-3 columns), this beats subarray/copyWithin/set,

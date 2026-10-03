@@ -47,29 +47,39 @@ function assertFiniteCoords(values: Float64Array, name: string): void {
   }
 }
 
+function assertStrictlyMonotonic(values: Float64Array, name: string): void {
+  if (values.length < 2) return;
+  const direction = Math.sign((values[1] ?? 0) - (values[0] ?? 0));
+  for (let i = 1; i < values.length; i++) {
+    const diff = (values[i] ?? 0) - (values[i - 1] ?? 0);
+    if (direction === 0 || Math.sign(diff) !== direction) {
+      throw new InvalidParameterError(
+        `${name} coordinates must be strictly increasing or strictly decreasing; ` +
+          `found ${values[i - 1]} followed by ${values[i]} at index ${i}`,
+        name,
+        values[i]
+      );
+    }
+  }
+}
+
+/** Smallest and largest finite value of `data`; NaN and infinite values are ignored. */
 function computeDataRange(data: Float64Array): {
   readonly min: number;
   readonly max: number;
-  readonly hasNaN: boolean;
 } {
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
-  let hasNaN = false;
   for (let i = 0; i < data.length; i++) {
     const v = data[i] ?? 0;
-    if (!isFiniteNumber(v)) {
-      if (Number.isNaN(v)) {
-        hasNaN = true;
-      }
-      continue;
-    }
+    if (!isFiniteNumber(v)) continue;
     if (v < min) min = v;
     if (v > max) max = v;
   }
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     throw new InvalidParameterError("Contour requires at least one finite Z value", "Z", data);
   }
-  return { min, max, hasNaN };
+  return { min, max };
 }
 
 function meshgridToCoords(
@@ -96,7 +106,8 @@ function meshgridToCoords(
     yCoords[i] = xMat.cols > 0 ? (yMat.data[i * cols] ?? 0) : 0;
   }
 
-  const tol = 1e-12;
+  // Relative tolerance: absolute 1e-12 would reject grids with large coordinates.
+  const tolFor = (expected: number): number => 1e-12 * Math.max(1, Math.abs(expected));
   for (let i = 0; i < rows; i++) {
     const rowOffset = i * cols;
     for (let j = 0; j < cols; j++) {
@@ -110,7 +121,10 @@ function meshgridToCoords(
           y: yv,
         });
       }
-      if (Math.abs(xv - expectedX) > tol || Math.abs(yv - expectedY) > tol) {
+      if (
+        Math.abs(xv - expectedX) > tolFor(expectedX) ||
+        Math.abs(yv - expectedY) > tolFor(expectedY)
+      ) {
         throw new InvalidParameterError(
           "Contour supports only rectilinear grids (use 1D X/Y or meshgrid)",
           "X/Y",
@@ -122,12 +136,22 @@ function meshgridToCoords(
 
   assertFiniteCoords(xCoords, "X");
   assertFiniteCoords(yCoords, "Y");
+  assertStrictlyMonotonic(xCoords, "X");
+  assertStrictlyMonotonic(yCoords, "Y");
 
   return { xCoords, yCoords };
 }
 
 /**
  * Builds a rectilinear contour grid from X/Y/Z tensors.
+ *
+ * `Z` is a `rows x cols` matrix. `X` and `Y` are either 1D coordinate vectors (length `cols`
+ * and `rows`), 2D meshgrids matching `Z` (`indexing="xy"`, so X varies along columns), or both
+ * empty, in which case the coordinates come from `extent` (or the integer indices). Coordinates
+ * must be finite and strictly monotonic.
+ * @throws {InvalidParameterError} For non-finite or non-monotonic coordinates, a non-rectilinear
+ *   meshgrid, an invalid `extent`, or a `Z` without any finite value.
+ * @throws {ShapeError} If the shapes of `X`, `Y` and `Z` disagree.
  * @internal
  */
 export function buildContourGrid(
@@ -138,7 +162,7 @@ export function buildContourGrid(
 ): ContourGrid {
   const zMat = tensorToFloat64Matrix2D(Z);
   const { rows, cols, data } = zMat;
-  const { min, max, hasNaN } = computeDataRange(data);
+  const { min, max } = computeDataRange(data);
 
   const xSize = tensorSize(X);
   const ySize = tensorSize(Y);
@@ -195,6 +219,8 @@ export function buildContourGrid(
       }
       assertFiniteCoords(xCoords, "X");
       assertFiniteCoords(yCoords, "Y");
+      assertStrictlyMonotonic(xCoords, "X");
+      assertStrictlyMonotonic(yCoords, "Y");
     } else if (rawX.ndim === 2 && rawY.ndim === 2) {
       ({ xCoords, yCoords } = meshgridToCoords(X, Y, rows, cols));
     } else {
@@ -214,6 +240,6 @@ export function buildContourGrid(
     xCoords,
     yCoords,
     dataMin: min,
-    dataMax: max + (hasNaN ? Number.EPSILON : 0),
+    dataMax: max,
   };
 }

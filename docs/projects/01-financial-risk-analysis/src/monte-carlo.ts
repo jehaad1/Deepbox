@@ -2,7 +2,7 @@
  * Monte Carlo Simulation Module
  *
  * Implements Monte Carlo methods for portfolio simulation and stress testing.
- * Demonstrates deepbox/random and deepbox/ndarray usage.
+ * Uses a small seeded generator, `cholesky` from deepbox/linalg and tensors from deepbox/ndarray.
  */
 
 import { cholesky } from "deepbox/linalg";
@@ -60,21 +60,18 @@ class SeededRandom {
   }
 
   /**
-   * Generate correlated random variables using Cholesky decomposition
+   * Generate correlated random variables from the lower-triangular Cholesky factor
    */
-  correlatedRandn(covMatrix: Tensor): number[] {
-    const n = covMatrix.shape[0];
+  correlatedRandn(L: number[][]): number[] {
+    const n = L.length;
     const uncorrelated = this.randnArray(n);
 
-    // Get Cholesky decomposition: Σ = L * L'
-    const L = cholesky(covMatrix);
-
-    // Correlated = L * uncorrelated
+    // Correlated = L * uncorrelated, where Σ = L * L' (L comes from cholesky)
     const correlated: number[] = [];
     for (let i = 0; i < n; i++) {
       let sum = 0;
       for (let j = 0; j <= i; j++) {
-        sum += Number(L.data[i * n + j]) * uncorrelated[j];
+        sum += L[i][j] * uncorrelated[j];
       }
       correlated.push(sum);
     }
@@ -106,12 +103,15 @@ export function simulatePortfolioReturns(
   const n = weights.length;
   const scenarios: number[] = [];
 
+  // Factor the covariance matrix once: Σ = L * L'
+  const L = cholesky(covMatrix).toArray() as number[][];
+
   for (let sim = 0; sim < numSimulations; sim++) {
     let cumulativeReturn = 1.0;
 
     for (let t = 0; t < horizon; t++) {
       // Generate correlated asset returns
-      const randomShocks = rng.correlatedRandn(covMatrix);
+      const randomShocks = rng.correlatedRandn(L);
 
       // Calculate period return for each asset
       let portfolioReturn = 0;
@@ -131,8 +131,8 @@ export function simulatePortfolioReturns(
 
   // Calculate statistics
   const scenariosTensor = tensor(scenarios);
-  const meanReturn = Number(mean(scenariosTensor).data[0]);
-  const volatility = Number(std(scenariosTensor).data[0]);
+  const meanReturn = Number(mean(scenariosTensor).item());
+  const volatility = Number(std(scenariosTensor).item());
 
   // Median
   const medianIdx = Math.floor(numSimulations / 2);

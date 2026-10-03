@@ -1,5 +1,5 @@
 /**
- * Benchmark 13 — Core Runtime Utilities
+ * Benchmark 13: Core Runtime Utilities
  * Deepbox-only local benchmarks
  */
 
@@ -17,7 +17,7 @@ import { tensor } from "deepbox/ndarray";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("core");
-header("Benchmark 13 — Core Runtime Utilities");
+header("Benchmark 13: Core Runtime Utilities");
 
 const X1k = tensor(
   Array.from({ length: 1000 }, (_, i) =>

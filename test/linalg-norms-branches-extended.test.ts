@@ -56,7 +56,7 @@ describe("linalg norms branch coverage", () => {
 
   it("rejects >2D when axis is omitted", () => {
     const t = zeros([2, 2, 2]);
-    expect(() => norm(t)).toThrow(/1D or 2D/i);
+    expect(() => norm(t, "fro")).toThrow(/1D or 2D/i);
   });
 
   it("covers matrix norms without axis", () => {

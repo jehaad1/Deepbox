@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/core-config | Config & backends}
  */
 
-import { __clearSeed, __setSeed } from "../../random/random";
+import { __clearSeed, __getSeed, __setSeed } from "../../random/random";
 import { ensureBackendAvailable } from "../backend/registry";
 import { DataValidationError } from "../errors/validation";
 import type { Device } from "../types/device";
@@ -14,7 +14,9 @@ import { validateDevice, validateDtype, validateInteger } from "../utils/validat
  *
  * @property defaultDtype - Default data type for new tensors
  * @property defaultDevice - Default compute device
- * @property seed - Random seed for reproducibility (null = not set)
+ * @property seed - Random seed for reproducibility (null = not set). Mirrors the
+ *   state of the global random generator, so a seed set through `deepbox/random`
+ *   is reported here too.
  */
 export type DeepboxConfig = {
   readonly defaultDtype: DType;
@@ -39,6 +41,15 @@ const CONFIG_KEYS: readonly ConfigKey[] = ["defaultDtype", "defaultDevice", "see
 
 let config: DeepboxConfig = { ...DEFAULT_CONFIG };
 
+/**
+ * The global random generator owns the seed. Reading it from there keeps
+ * `getSeed()` / `getConfig().seed` correct when the seed was set or cleared
+ * through `deepbox/random` instead of this module.
+ */
+function currentSeed(): number | null {
+  return __getSeed() ?? null;
+}
+
 function isPlainConfigObject(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
@@ -61,7 +72,9 @@ function normalizeSeed(value: unknown, name: string, allowNull: boolean): number
 
   // Reject non-numeric values early with a descriptive message.
   if (typeof value !== "number") {
-    throw new DataValidationError(`${name} must be a finite number; received ${String(value)}`);
+    throw new DataValidationError(
+      `${name} must be a safe integer${allowNull ? " or null" : ""}; received ${String(value)}`
+    );
   }
 
   // validateInteger enforces finite, integer, and safe-integer constraints.
@@ -90,14 +103,17 @@ function normalizeConfiguredDevice(value: unknown, name: string): Device {
  * ```
  */
 export function getConfig(): Readonly<DeepboxConfig> {
-  return { ...config };
+  return { ...config, seed: currentSeed() };
 }
 
 /**
  * Update global configuration.
  *
  * Merges provided settings with current configuration.
- * Only specified fields are updated.
+ * Only specified fields are updated. All values are validated before any of
+ * them is applied, so a failing call leaves the configuration unchanged. The
+ * random generator is re-seeded only when `seed` is part of the update;
+ * changing the dtype or device does not disturb a running random stream.
  *
  * @param next - Partial configuration to merge
  * @throws {DataValidationError} If config is invalid or contains unknown keys
@@ -159,26 +175,30 @@ export function setConfig(next: Partial<DeepboxConfig>): void {
     ? normalizeConfiguredDevice(next.defaultDevice, "defaultDevice")
     : config.defaultDevice;
 
-  const nextSeed = hasOwnConfigKey(next, "seed")
-    ? normalizeSeed(next.seed, "seed", true)
-    : config.seed;
+  const seedProvided = hasOwnConfigKey(next, "seed");
+  const nextSeed = seedProvided ? normalizeSeed(next.seed, "seed", true) : null;
 
-  // Commit the new immutable config snapshot.
+  // Commit the new config snapshot.
   config = {
     defaultDtype: nextDefaultDtype,
     defaultDevice: nextDefaultDevice,
-    seed: nextSeed,
+    seed: seedProvided ? nextSeed : currentSeed(),
   };
 
-  if (nextSeed !== null) {
-    __setSeed(nextSeed);
-  } else {
-    __clearSeed();
+  // Touch the random generator only when the caller asked to change the seed.
+  if (seedProvided) {
+    if (nextSeed !== null) {
+      __setSeed(nextSeed);
+    } else {
+      __clearSeed();
+    }
   }
 }
 
 /**
  * Reset configuration to default values.
+ *
+ * Also clears the global random seed.
  *
  * @example
  * ```ts
@@ -195,7 +215,7 @@ export function resetConfig(): void {
 /**
  * Set the global random seed for reproducibility.
  *
- * @param seed - Integer seed value
+ * @param seed - Integer seed value (negative values and zero are allowed)
  * @throws {DataValidationError} If seed is not a safe integer
  *
  * @example
@@ -217,7 +237,7 @@ export function setSeed(seed: number): void {
  * @returns Current seed value or null if not set
  */
 export function getSeed(): number | null {
-  return config.seed;
+  return currentSeed();
 }
 
 /**

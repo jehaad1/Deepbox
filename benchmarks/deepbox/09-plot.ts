@@ -1,5 +1,5 @@
 /**
- * Benchmark 09 — Plotting
+ * Benchmark 09: Plotting
  * Deepbox vs Matplotlib
  */
 
@@ -41,7 +41,7 @@ import {
 import { createSuite, footer, header, run, runAsync } from "../utils";
 
 const suite = createSuite("plot");
-header("Benchmark 09 — Plotting");
+header("Benchmark 09: Plotting");
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ function freshFig() {
  * object graph of series + styling) and defer all rasterization until `show()`.
  * Matplotlib's `ax.scatter(...)` immediately constructs a full Figure/Axes
  * object graph with transforms, artists, and a renderer. The two sides measure
- * fundamentally different work — a spec append versus a figure construction — so
+ * fundamentally different work (a spec append versus a figure construction), so
  * counting them head-to-head inflates Deepbox's win rate (the historical
  * "28184x" pie result was never a rendering comparison).
  *

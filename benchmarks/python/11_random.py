@@ -1,5 +1,5 @@
 """
-Benchmark 11 — Random Number Generation
+Benchmark 11: Random Number Generation
 NumPy
 """
 
@@ -10,7 +10,7 @@ import numpy as np
 from utils import run, create_suite, header, footer
 
 suite = create_suite("random", "NumPy")
-header("Benchmark 11 — Random Number Generation", "NumPy")
+header("Benchmark 11: Random Number Generation", "NumPy")
 
 rng = np.random.RandomState(42)
 default_rng = np.random.default_rng(42)

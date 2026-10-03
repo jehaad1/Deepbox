@@ -8,16 +8,18 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
-import { DeepboxError } from "../core/errors";
-import { type Tensor, tensor } from "../ndarray";
+import { DeepboxError, InvalidParameterError } from "../core/errors";
+import { type Tensor, Tensor as TensorClass } from "../ndarray";
+import { decompressGzip, extractTarFiles } from "./_archive";
+import { assertPositiveInt } from "./utils";
 
 /**
  * Result of an image dataset fetch.
  */
 export type ImageDataset = {
-  /** Flattened image data tensor of shape (nSamples, nPixels) */
+  /** Flattened image tensor of shape `(nSamples, nPixels)`, dtype `float32`, pixel values scaled to [0, 1]. */
   readonly data: Tensor;
-  /** Integer label tensor of shape (nSamples,) */
+  /** Class index tensor of shape `(nSamples,)`, dtype `int32`. */
   readonly target: Tensor;
   /** Number of classes */
   readonly nClasses: number;
@@ -29,8 +31,51 @@ export type ImageDataset = {
   readonly description: string;
 };
 
+/** Options shared by {@link fetchMNIST} and {@link fetchCIFAR10}. */
+export type ImageFetchOptions = {
+  /** Base URL override for custom mirrors. A trailing slash is optional. */
+  readonly baseUrl?: string;
+  /** Maximum number of samples to load (positive integer). Default: all. */
+  readonly maxSamples?: number;
+  /** Which split to load: 'train' or 'test'. Default: 'train'. */
+  readonly split?: "train" | "test";
+  /** Abort signal forwarded to `fetch`. */
+  readonly signal?: AbortSignal;
+};
+
 const MNIST_BASE = "https://storage.googleapis.com/cvdf-datasets/mnist/";
 const CIFAR10_BASE = "https://www.cs.toronto.edu/~kriz/";
+
+const MNIST_IMAGE_MAGIC = 0x00000803;
+const MNIST_LABEL_MAGIC = 0x00000801;
+
+function resolveImageOptions(options: ImageFetchOptions): {
+  base: string;
+  split: "train" | "test";
+  maxSamples: number | undefined;
+} {
+  if (options === null || typeof options !== "object") {
+    throw new InvalidParameterError("options must be an object", "options", options);
+  }
+  const rawBase = options.baseUrl ?? "";
+  if (options.baseUrl !== undefined && (typeof rawBase !== "string" || rawBase.length === 0)) {
+    throw new InvalidParameterError("baseUrl must be a non-empty string", "baseUrl", rawBase);
+  }
+  const split = options.split ?? "train";
+  if (split !== "train" && split !== "test") {
+    throw new InvalidParameterError(
+      `split must be "train" or "test"; received ${String(split)}`,
+      "split",
+      split
+    );
+  }
+  if (options.maxSamples !== undefined) assertPositiveInt("maxSamples", options.maxSamples);
+  return { base: rawBase, split, maxSamples: options.maxSamples };
+}
+
+function withTrailingSlash(url: string): string {
+  return url.endsWith("/") ? url : `${url}/`;
+}
 
 /**
  * Fetch the MNIST handwritten digits dataset.
@@ -39,7 +84,12 @@ const CIFAR10_BASE = "https://www.cs.toronto.edu/~kriz/";
  * 60,000 training images (28×28 grayscale) with labels 0-9.
  *
  * @param options - Configuration options
- * @returns ImageDataset with MNIST data
+ * @param options.baseUrl - Mirror URL that serves the four `*-idx*-ubyte.gz` files.
+ * @param options.maxSamples - Keep only the first `maxSamples` images.
+ * @param options.split - `"train"` (60,000 images, default) or `"test"` (10,000 images).
+ * @returns ImageDataset with MNIST data (`float32` pixels in [0, 1], `int32` labels)
+ * @throws {@link InvalidParameterError} If an option is invalid.
+ * @throws {@link DeepboxError} If the download fails or the IDX files are malformed or truncated.
  *
  * @example
  * ```ts
@@ -50,29 +100,21 @@ const CIFAR10_BASE = "https://www.cs.toronto.edu/~kriz/";
  * console.log(mnist.target.shape); // [60000]
  * ```
  */
-export async function fetchMNIST(
-  options: {
-    /** Base URL override for custom mirrors */
-    readonly baseUrl?: string;
-    /** Maximum number of samples to load (default: all) */
-    readonly maxSamples?: number;
-    /** Which split to load: 'train' (60k) or 'test' (10k) */
-    readonly split?: "train" | "test";
-  } = {}
-): Promise<ImageDataset> {
-  const base = options.baseUrl ?? MNIST_BASE;
-  const split = options.split ?? "train";
+export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<ImageDataset> {
+  const { base: rawBase, split, maxSamples } = resolveImageOptions(options);
+  const base = withTrailingSlash(rawBase === "" ? MNIST_BASE : rawBase);
 
   const imageFile = split === "train" ? "train-images-idx3-ubyte.gz" : "t10k-images-idx3-ubyte.gz";
   const labelFile = split === "train" ? "train-labels-idx1-ubyte.gz" : "t10k-labels-idx1-ubyte.gz";
+  const init: RequestInit = options.signal ? { signal: options.signal } : {};
 
   let imageBytes: Uint8Array;
   let labelBytes: Uint8Array;
 
   try {
     const [imageResp, labelResp] = await Promise.all([
-      fetch(`${base}${imageFile}`),
-      fetch(`${base}${labelFile}`),
+      fetch(`${base}${imageFile}`, init),
+      fetch(`${base}${labelFile}`, init),
     ]);
 
     if (!imageResp.ok) {
@@ -100,10 +142,20 @@ export async function fetchMNIST(
 
   // Parse IDX format
   // Images: magic (4) | nImages (4) | rows (4) | cols (4) | pixels...
+  // Labels: magic (4) | nLabels (4) | labels...
+  if (imageBytes.length < 16 || readUint32BE(imageBytes, 0) !== MNIST_IMAGE_MAGIC) {
+    throw new DeepboxError("MNIST image file is not a valid IDX3 (unsigned byte) file");
+  }
+  if (labelBytes.length < 8 || readUint32BE(labelBytes, 0) !== MNIST_LABEL_MAGIC) {
+    throw new DeepboxError("MNIST label file is not a valid IDX1 (unsigned byte) file");
+  }
   const nImages = readUint32BE(imageBytes, 4);
   const rows = readUint32BE(imageBytes, 8);
   const cols = readUint32BE(imageBytes, 12);
   const nPixels = rows * cols;
+  if (nPixels === 0) {
+    throw new DeepboxError(`MNIST image dimensions are invalid: ${rows}x${cols}`);
+  }
 
   const nLabels = readUint32BE(labelBytes, 4);
   if (nImages !== nLabels) {
@@ -112,23 +164,42 @@ export async function fetchMNIST(
     );
   }
 
-  const n = options.maxSamples ? Math.min(options.maxSamples, nImages) : nImages;
-
-  const data = new Float64Array(n * nPixels);
-  for (let i = 0; i < n; i++) {
-    for (let p = 0; p < nPixels; p++) {
-      data[i * nPixels + p] = (imageBytes[16 + i * nPixels + p] ?? 0) / 255.0;
-    }
+  const n = maxSamples === undefined ? nImages : Math.min(maxSamples, nImages);
+  if (imageBytes.length < 16 + n * nPixels) {
+    throw new DeepboxError(
+      `MNIST image file is truncated: expected ${16 + n * nPixels} bytes, got ${imageBytes.length}`
+    );
+  }
+  if (labelBytes.length < 8 + n) {
+    throw new DeepboxError(
+      `MNIST label file is truncated: expected ${8 + n} bytes, got ${labelBytes.length}`
+    );
   }
 
-  const labels = new Float64Array(n);
+  const data = new Float32Array(n * nPixels);
+  const total = n * nPixels;
+  for (let i = 0; i < total; i++) {
+    data[i] = (imageBytes[16 + i] as number) / 255.0;
+  }
+
+  const labels = new Int32Array(n);
   for (let i = 0; i < n; i++) {
-    labels[i] = labelBytes[8 + i] ?? 0;
+    labels[i] = labelBytes[8 + i] as number;
   }
 
   return {
-    data: tensor(Array.from(data)).reshape([n, nPixels]),
-    target: tensor(Array.from(labels)),
+    data: TensorClass.fromTypedArray({
+      data,
+      shape: [n, nPixels],
+      dtype: "float32",
+      device: "cpu",
+    }),
+    target: TensorClass.fromTypedArray({
+      data: labels,
+      shape: [n],
+      dtype: "int32",
+      device: "cpu",
+    }),
     nClasses: 10,
     classNames: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     imageDims: [rows, cols, 1],
@@ -144,10 +215,17 @@ export async function fetchMNIST(
  * Fetch the CIFAR-10 image classification dataset.
  *
  * Downloads the binary version from a public mirror and returns
- * images (32×32×3 RGB) with labels across 10 categories.
+ * images (32×32×3 RGB) with labels across 10 categories. Each row of `data`
+ * keeps the CIFAR channel-major layout (1024 red values, then 1024 green,
+ * then 1024 blue).
  *
  * @param options - Configuration options
- * @returns ImageDataset with CIFAR-10 data
+ * @param options.baseUrl - Mirror URL that serves `cifar-10-binary.tar.gz`.
+ * @param options.maxSamples - Keep only the first `maxSamples` images.
+ * @param options.split - `"train"` (50,000 images, default) or `"test"` (10,000 images).
+ * @returns ImageDataset with CIFAR-10 data (`float32` pixels in [0, 1], `int32` labels)
+ * @throws {@link InvalidParameterError} If an option is invalid.
+ * @throws {@link DeepboxError} If the download fails or the archive is missing batch files or is malformed.
  *
  * @example
  * ```ts
@@ -158,24 +236,15 @@ export async function fetchMNIST(
  * console.log(cifar.target.shape); // [50000]
  * ```
  */
-export async function fetchCIFAR10(
-  options: {
-    /** Base URL override for custom mirrors */
-    readonly baseUrl?: string;
-    /** Maximum number of samples to load (default: all) */
-    readonly maxSamples?: number;
-    /** Which split to load: 'train' (50k) or 'test' (10k) */
-    readonly split?: "train" | "test";
-  } = {}
-): Promise<ImageDataset> {
-  const base = options.baseUrl ?? CIFAR10_BASE;
-  const split = options.split ?? "train";
+export async function fetchCIFAR10(options: ImageFetchOptions = {}): Promise<ImageDataset> {
+  const { base: rawBase, split, maxSamples } = resolveImageOptions(options);
+  const base = withTrailingSlash(rawBase === "" ? CIFAR10_BASE : rawBase);
 
   const url = `${base}cifar-10-binary.tar.gz`;
 
   let tarBytes: Uint8Array;
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, options.signal ? { signal: options.signal } : {});
     if (!resp.ok) {
       throw new DeepboxError(`Failed to fetch CIFAR-10: ${resp.status} ${resp.statusText}`);
     }
@@ -214,32 +283,60 @@ export async function fetchCIFAR10(
   const testBatches = ["test_batch.bin"];
   const targetBatches = split === "train" ? trainBatches : testBatches;
 
-  const allData: number[] = [];
-  const allLabels: number[] = [];
   const nPixels = 32 * 32 * 3;
   const recordSize = 1 + nPixels; // 1 byte label + 3072 bytes image
 
+  const batches: Uint8Array[] = [];
+  let available = 0;
   for (const batchName of targetBatches) {
-    const file = batchFiles.find((f) => f.name.endsWith(batchName));
-    if (!file) continue;
+    const file = batchFiles.find((f) => f.name === batchName || f.name.endsWith(`/${batchName}`));
+    if (!file) {
+      throw new DeepboxError(`CIFAR-10 archive is missing ${batchName}`);
+    }
+    if (file.data.length % recordSize !== 0) {
+      throw new DeepboxError(
+        `CIFAR-10 batch ${batchName} has ${file.data.length} bytes, ` +
+          `which is not a multiple of the ${recordSize}-byte record size`
+      );
+    }
+    batches.push(file.data);
+    available += file.data.length / recordSize;
+  }
 
-    const batchData = file.data;
-    const nRecords = Math.floor(batchData.length / recordSize);
+  const n = maxSamples === undefined ? available : Math.min(maxSamples, available);
+  const data = new Float32Array(n * nPixels);
+  const labels = new Int32Array(n);
 
-    for (let i = 0; i < nRecords; i++) {
+  let row = 0;
+  for (const batch of batches) {
+    const nRecords = batch.length / recordSize;
+    for (let i = 0; i < nRecords && row < n; i++, row++) {
       const offset = i * recordSize;
-      allLabels.push(batchData[offset] ?? 0);
+      const label = batch[offset] as number;
+      if (label >= CIFAR10_CLASSES.length) {
+        throw new DeepboxError(`CIFAR-10 record has invalid label ${label}`);
+      }
+      labels[row] = label;
+      const dst = row * nPixels;
       for (let p = 0; p < nPixels; p++) {
-        allData.push((batchData[offset + 1 + p] ?? 0) / 255.0);
+        data[dst + p] = (batch[offset + 1 + p] as number) / 255.0;
       }
     }
   }
 
-  const n = options.maxSamples ? Math.min(options.maxSamples, allLabels.length) : allLabels.length;
-
   return {
-    data: tensor(allData.slice(0, n * nPixels)).reshape([n, nPixels]),
-    target: tensor(allLabels.slice(0, n)),
+    data: TensorClass.fromTypedArray({
+      data,
+      shape: [n, nPixels],
+      dtype: "float32",
+      device: "cpu",
+    }),
+    target: TensorClass.fromTypedArray({
+      data: labels,
+      shape: [n],
+      dtype: "int32",
+      device: "cpu",
+    }),
     nClasses: 10,
     classNames: CIFAR10_CLASSES,
     imageDims: [32, 32, 3],
@@ -261,99 +358,4 @@ function readUint32BE(data: Uint8Array, offset: number): number {
       (data[offset + 3] ?? 0)) >>>
     0
   );
-}
-
-/**
- * Decompress gzip data using DecompressionStream (available in Node 18+ and modern browsers).
- */
-async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
-  if (typeof DecompressionStream === "undefined") {
-    throw new DeepboxError(
-      "DecompressionStream is not available. Use Node.js 18+ or a modern browser."
-    );
-  }
-
-  const ds = new DecompressionStream("gzip");
-  const writer = ds.writable.getWriter();
-  const reader = ds.readable.getReader();
-
-  const writePromise = writer.write(data as Uint8Array<ArrayBuffer>).then(() => writer.close());
-
-  const chunks: Uint8Array[] = [];
-  let totalLength = 0;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value as Uint8Array);
-    totalLength += (value as Uint8Array).byteLength;
-  }
-
-  await writePromise;
-
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
-}
-
-/**
- * Minimal tar file extraction (ustar format).
- */
-function extractTarFiles(tarData: Uint8Array): { name: string; data: Uint8Array }[] {
-  const files: { name: string; data: Uint8Array }[] = [];
-  let offset = 0;
-
-  while (offset + 512 <= tarData.length) {
-    // Check for end-of-archive (two zero blocks)
-    let allZero = true;
-    for (let i = 0; i < 512; i++) {
-      if ((tarData[offset + i] ?? 0) !== 0) {
-        allZero = false;
-        break;
-      }
-    }
-    if (allZero) break;
-
-    // Parse header
-    const nameBytes = tarData.slice(offset, offset + 100);
-    let name = "";
-    for (let i = 0; i < nameBytes.length; i++) {
-      const ch = nameBytes[i] ?? 0;
-      if (ch === 0) break;
-      name += String.fromCharCode(ch);
-    }
-
-    // File size (octal, bytes 124-135)
-    let sizeStr = "";
-    for (let i = 124; i < 136; i++) {
-      const ch = tarData[offset + i] ?? 0;
-      if (ch === 0 || ch === 32) break;
-      sizeStr += String.fromCharCode(ch);
-    }
-    const fileSize = parseInt(sizeStr, 8) || 0;
-
-    // Type flag (byte 156)
-    const typeFlag = tarData[offset + 156] ?? 0;
-
-    offset += 512; // Move past header
-
-    if (typeFlag === 48 || typeFlag === 0) {
-      // Regular file ('0' or null)
-      if (fileSize > 0 && offset + fileSize <= tarData.length) {
-        files.push({
-          name,
-          data: tarData.slice(offset, offset + fileSize),
-        });
-      }
-    }
-
-    // Move past file data (padded to 512 bytes)
-    offset += Math.ceil(fileSize / 512) * 512;
-  }
-
-  return files;
 }

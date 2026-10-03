@@ -1,27 +1,17 @@
 /**
- * Advanced ML Models Example
+ * Example 10: Advanced ML Models
  *
- * Demonstrates the new ML models added to Deepbox:
+ * Five models on tiny datasets, each shown with its own fit/predict/score calls:
  * - KMeans clustering
  * - K-Nearest Neighbors (classification and regression)
  * - PCA (dimensionality reduction)
  * - Gaussian Naive Bayes
  */
 
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { accuracy } from "deepbox/metrics";
 import { GaussianNB, KMeans, KNeighborsClassifier, KNeighborsRegressor, PCA } from "deepbox/ml";
 import { tensor } from "deepbox/ndarray";
 import { trainTestSplit } from "deepbox/preprocess";
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 console.log("=".repeat(60));
 console.log("Example 10: Advanced ML Models");
@@ -30,7 +20,7 @@ console.log("=".repeat(60));
 // ============================================================================
 // Part 1: KMeans Clustering
 // ============================================================================
-console.log("\n📦 Part 1: KMeans Clustering");
+console.log("\nPart 1: KMeans Clustering");
 console.log("-".repeat(60));
 
 const clusterData = tensor([
@@ -57,7 +47,7 @@ console.log("Number of iterations:", kmeans.nIter);
 // ============================================================================
 // Part 2: K-Nearest Neighbors Classification
 // ============================================================================
-console.log("\n📦 Part 2: K-Nearest Neighbors Classification");
+console.log("\nPart 2: K-Nearest Neighbors Classification");
 console.log("-".repeat(60));
 
 const XClass = tensor([
@@ -84,15 +74,30 @@ const yPredKNN = knnClassifier.predict(XTestKNN);
 const knnAccuracy = accuracy(yTestKNN, yPredKNN);
 
 console.log("KNN Classifier trained with k=3");
-console.log("Test accuracy:", `${(Number(knnAccuracy) * 100).toFixed(2)}%`);
+console.log("Test accuracy:", `${(knnAccuracy * 100).toFixed(2)}%`);
 
 const probabilities = knnClassifier.predictProba(XTestKNN);
 console.log("Prediction probabilities shape:", probabilities.shape);
 
+// clone() returns an unfitted estimator with the same settings.
+const knnFresh = knnClassifier.clone();
+knnFresh.fit(XClass, yClass);
+console.log(
+  "Cloned classifier fitted on all rows, predicts:",
+  knnFresh
+    .predict(
+      tensor([
+        [0.5, 0.5],
+        [6.5, 6.5],
+      ])
+    )
+    .toString()
+);
+
 // ============================================================================
 // Part 3: K-Nearest Neighbors Regression
 // ============================================================================
-console.log("\n📦 Part 3: K-Nearest Neighbors Regression");
+console.log("\nPart 3: K-Nearest Neighbors Regression");
 console.log("-".repeat(60));
 
 const XReg = tensor([[0], [1], [2], [3], [4], [5]]);
@@ -104,13 +109,13 @@ knnRegressor.fit(XReg, yReg);
 const yPredReg = knnRegressor.predict(tensor([[2.5], [3.5]]));
 console.log("Predictions for [2.5] and [3.5]:", yPredReg.toString());
 
-const r2Score = knnRegressor.score(XReg, yReg);
-console.log("R² score:", r2Score.toFixed(4));
+const knnR2 = knnRegressor.score(XReg, yReg);
+console.log("R² score:", knnR2.toFixed(4));
 
 // ============================================================================
 // Part 4: PCA (Dimensionality Reduction)
 // ============================================================================
-console.log("\n📦 Part 4: PCA - Dimensionality Reduction");
+console.log("\nPart 4: PCA - Dimensionality Reduction");
 console.log("-".repeat(60));
 
 const XPca = tensor([
@@ -134,8 +139,7 @@ console.log("Original shape:", XPca.shape);
 console.log("Transformed shape:", XTransformed.shape);
 console.log("Explained variance ratio:", pca.explainedVarianceRatio.toString());
 
-const varianceData = expectNumericTypedArray(pca.explainedVarianceRatio.data);
-const totalVariance = Array.from(varianceData).reduce((a, b) => a + b, 0);
+const totalVariance = Number(pca.explainedVarianceRatio.sum().item());
 console.log("Total variance explained:", `${(totalVariance * 100).toFixed(2)}%`);
 
 // Reconstruct data
@@ -145,7 +149,7 @@ console.log("Reconstructed shape:", XReconstructed.shape);
 // ============================================================================
 // Part 5: Gaussian Naive Bayes
 // ============================================================================
-console.log("\n📦 Part 5: Gaussian Naive Bayes");
+console.log("\nPart 5: Gaussian Naive Bayes");
 console.log("-".repeat(60));
 
 const XNB = tensor([
@@ -172,7 +176,7 @@ const yPredNB = nb.predict(XTestNB);
 const nbAccuracy = accuracy(yTestNB, yPredNB);
 
 console.log("Gaussian Naive Bayes trained");
-console.log("Test accuracy:", `${(Number(nbAccuracy) * 100).toFixed(2)}%`);
+console.log("Test accuracy:", `${(nbAccuracy * 100).toFixed(2)}%`);
 
 const nbProba = nb.predictProba(XTestNB);
 console.log("Prediction probabilities shape:", nbProba.shape);
@@ -180,13 +184,11 @@ console.log("Prediction probabilities shape:", nbProba.shape);
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nSummary");
 console.log("-".repeat(60));
-console.log("• KMeans: Unsupervised clustering for grouping similar data points");
-console.log("• KNN: Instance-based learning for classification and regression");
-console.log("• PCA: Dimensionality reduction while preserving variance");
-console.log("• Naive Bayes: Probabilistic classifier based on Bayes' theorem");
-console.log("• All models follow the fit/predict/score API (fit/predict/score)");
-
-console.log("\n✅ Advanced ML Models Example Complete!");
+console.log("KMeans: unsupervised clustering of similar points");
+console.log("KNN: instance-based classification and regression");
+console.log("PCA: dimensionality reduction that keeps as much variance as possible");
+console.log("Naive Bayes: probabilistic classifier based on Bayes' theorem");
+console.log("Supervised models share fit(X, y), predict(X) and score(X, y).");
 console.log("=".repeat(60));

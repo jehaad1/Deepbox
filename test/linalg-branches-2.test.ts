@@ -107,7 +107,7 @@ describe("linalg branches 2", () => {
       [3, 4],
     ]);
     expect(cond(A, "fro")).toBeGreaterThan(0);
-    expect(() => cond(A, 1)).toThrow(/Only 2-norm/);
+    expect(() => cond(A, 3)).toThrow(/Unsupported norm order/);
 
     const bad = tensor([
       [1, 2],

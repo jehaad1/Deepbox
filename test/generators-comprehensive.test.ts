@@ -11,7 +11,7 @@ import { numRawData } from "./_helpers";
 
 const invalidSeeds = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1.5];
 
-describe("makeClassification - Comprehensive Tests", () => {
+describe("makeClassification tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeClassification();
     expect(X.shape[0]).toBe(100);
@@ -214,7 +214,7 @@ describe("makeClassification - Comprehensive Tests", () => {
   });
 });
 
-describe("makeRegression - Comprehensive Tests", () => {
+describe("makeRegression tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeRegression();
     expect(X.shape[0]).toBe(100);
@@ -370,7 +370,7 @@ describe("makeRegression - Comprehensive Tests", () => {
   });
 });
 
-describe("makeBlobs - Comprehensive Tests", () => {
+describe("makeBlobs tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeBlobs();
     expect(X.shape[0]).toBe(100);
@@ -587,7 +587,7 @@ describe("makeBlobs - Comprehensive Tests", () => {
   });
 });
 
-describe("makeMoons - Comprehensive Tests", () => {
+describe("makeMoons tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeMoons();
     expect(X.shape[0]).toBe(100);
@@ -713,7 +713,7 @@ describe("makeMoons - Comprehensive Tests", () => {
   });
 });
 
-describe("makeCircles - Comprehensive Tests", () => {
+describe("makeCircles tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeCircles();
     expect(X.shape[0]).toBe(100);
@@ -857,7 +857,7 @@ describe("makeCircles - Comprehensive Tests", () => {
   });
 });
 
-describe("makeGaussianQuantiles - Comprehensive Tests", () => {
+describe("makeGaussianQuantiles tests", () => {
   it("should generate dataset with default parameters", () => {
     const [X, y] = makeGaussianQuantiles();
     expect(X.shape[0]).toBe(100);

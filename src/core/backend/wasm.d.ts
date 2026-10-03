@@ -1,8 +1,12 @@
 /**
  * Minimal WebAssembly type declarations for the Deepbox WASM backend.
  *
- * The Deepbox tsconfig targets ES2024 without DOM lib, so WebAssembly
- * globals need to be declared explicitly.
+ * These cover only the calls the backend makes, so it type-checks in builds
+ * whose `lib` setting has no WebAssembly typings (for example a Node-only
+ * configuration without the DOM lib). When the DOM lib is present its fuller
+ * declarations merge with these.
+ *
+ * @see {@link https://deepbox.dev/docs/devices-and-execution | Devices & execution}
  */
 
 declare namespace WebAssembly {

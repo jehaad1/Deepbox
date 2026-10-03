@@ -4,60 +4,64 @@
 <rect x="50" y="50" width="540" height="380" fill="#ffffff" stroke="#000" />
 <clipPath id="dbclip-50-50-540-380"><path d="M50 50 L590 50 L590 430 L50 430 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-540-380)">
-<circle cx="397.88" cy="189.48" r="8" fill="#1f77b4" />
-<circle cx="478.01" cy="123.45" r="8" fill="#1f77b4" />
-<circle cx="459.65" cy="143.60" r="8" fill="#1f77b4" />
-<circle cx="301.71" cy="260.66" r="8" fill="#1f77b4" />
-<circle cx="432.21" cy="168.33" r="8" fill="#1f77b4" />
-<circle cx="243.63" cy="287.18" r="8" fill="#1f77b4" />
-<circle cx="332.19" cy="225.29" r="8" fill="#1f77b4" />
-<circle cx="469.35" cy="139.28" r="8" fill="#1f77b4" />
-<circle cx="267.70" cy="282.47" r="8" fill="#1f77b4" />
-<circle cx="299.79" cy="259.66" r="8" fill="#1f77b4" />
-<circle cx="455.20" cy="150.79" r="8" fill="#1f77b4" />
-<circle cx="313.86" cy="241.27" r="8" fill="#1f77b4" />
-<circle cx="269.93" cy="276.84" r="8" fill="#1f77b4" />
-<circle cx="192.32" cy="328.20" r="8" fill="#1f77b4" />
-<circle cx="254.47" cy="292.32" r="8" fill="#1f77b4" />
-<circle cx="401.17" cy="182.48" r="8" fill="#1f77b4" />
-<circle cx="519.49" cy="108.13" r="8" fill="#1f77b4" />
-<circle cx="338.45" cy="223.48" r="8" fill="#1f77b4" />
-<circle cx="449.59" cy="155.11" r="8" fill="#1f77b4" />
-<circle cx="246.30" cy="287.79" r="8" fill="#1f77b4" />
-<circle cx="485.38" cy="115.60" r="8" fill="#1f77b4" />
-<circle cx="316.32" cy="253.87" r="8" fill="#1f77b4" />
-<circle cx="427.24" cy="168.00" r="8" fill="#1f77b4" />
-<circle cx="223.51" cy="305.46" r="8" fill="#1f77b4" />
-<circle cx="565.45" cy="67.27" r="8" fill="#1f77b4" />
-<circle cx="266.53" cy="276.99" r="8" fill="#1f77b4" />
-<circle cx="486.10" cy="120.97" r="8" fill="#1f77b4" />
-<circle cx="272.32" cy="276.67" r="8" fill="#1f77b4" />
-<circle cx="559.50" cy="75.93" r="8" fill="#1f77b4" />
-<circle cx="413.92" cy="179.32" r="8" fill="#1f77b4" />
-<circle cx="377.27" cy="194.00" r="8" fill="#1f77b4" />
-<circle cx="303.64" cy="246.81" r="8" fill="#1f77b4" />
-<circle cx="407.15" cy="183.76" r="8" fill="#1f77b4" />
-<circle cx="236.12" cy="304.14" r="8" fill="#1f77b4" />
-<circle cx="312.76" cy="250.91" r="8" fill="#1f77b4" />
-<circle cx="454.44" cy="135.50" r="8" fill="#1f77b4" />
-<circle cx="222.14" cy="307.24" r="8" fill="#1f77b4" />
-<circle cx="527.18" cy="96.81" r="8" fill="#1f77b4" />
-<circle cx="302.77" cy="252.28" r="8" fill="#1f77b4" />
-<circle cx="447.54" cy="155.12" r="8" fill="#1f77b4" />
-<polyline fill="none" stroke="#ff0000" stroke-width="2" points="74.55,412.73 75.47,412.08 76.39,411.43" />
+<circle cx="446.44" cy="147.31" r="8" fill="#1f77b4" />
+<circle cx="74.55" cy="409.27" r="8" fill="#1f77b4" />
+<circle cx="318.11" cy="229.91" r="8" fill="#1f77b4" />
+<circle cx="107.86" cy="385.26" r="8" fill="#1f77b4" />
+<circle cx="223.39" cy="316.62" r="8" fill="#1f77b4" />
+<circle cx="366.87" cy="213.03" r="8" fill="#1f77b4" />
+<circle cx="102.69" cy="398.15" r="8" fill="#1f77b4" />
+<circle cx="463.29" cy="131.64" r="8" fill="#1f77b4" />
+<circle cx="331.18" cy="233.95" r="8" fill="#1f77b4" />
+<circle cx="489.88" cy="129.12" r="8" fill="#1f77b4" />
+<circle cx="474.29" cy="129.12" r="8" fill="#1f77b4" />
+<circle cx="114.06" cy="369.77" r="8" fill="#1f77b4" />
+<circle cx="110.66" cy="394.34" r="8" fill="#1f77b4" />
+<circle cx="175.94" cy="342.57" r="8" fill="#1f77b4" />
+<circle cx="100.68" cy="381.97" r="8" fill="#1f77b4" />
+<circle cx="389.88" cy="186.12" r="8" fill="#1f77b4" />
+<circle cx="345.64" cy="224.82" r="8" fill="#1f77b4" />
+<circle cx="213.73" cy="320.63" r="8" fill="#1f77b4" />
+<circle cx="307.81" cy="250.40" r="8" fill="#1f77b4" />
+<circle cx="247.59" cy="280.97" r="8" fill="#1f77b4" />
+<circle cx="139.46" cy="363.87" r="8" fill="#1f77b4" />
+<circle cx="201.14" cy="309.06" r="8" fill="#1f77b4" />
+<circle cx="478.91" cy="125.99" r="8" fill="#1f77b4" />
+<circle cx="397.59" cy="174.58" r="8" fill="#1f77b4" />
+<circle cx="341.13" cy="223.29" r="8" fill="#1f77b4" />
+<circle cx="543.45" cy="83.22" r="8" fill="#1f77b4" />
+<circle cx="115.63" cy="371.23" r="8" fill="#1f77b4" />
+<circle cx="540.81" cy="95.26" r="8" fill="#1f77b4" />
+<circle cx="548.68" cy="67.27" r="8" fill="#1f77b4" />
+<circle cx="432.25" cy="169.69" r="8" fill="#1f77b4" />
+<circle cx="224.78" cy="302.07" r="8" fill="#1f77b4" />
+<circle cx="358.21" cy="204.92" r="8" fill="#1f77b4" />
+<circle cx="347.82" cy="210.90" r="8" fill="#1f77b4" />
+<circle cx="343.32" cy="220.46" r="8" fill="#1f77b4" />
+<circle cx="97.85" cy="393.27" r="8" fill="#1f77b4" />
+<circle cx="348.65" cy="216.62" r="8" fill="#1f77b4" />
+<circle cx="556.82" cy="83.98" r="8" fill="#1f77b4" />
+<circle cx="183.41" cy="339.46" r="8" fill="#1f77b4" />
+<circle cx="273.39" cy="266.04" r="8" fill="#1f77b4" />
+<circle cx="277.33" cy="263.54" r="8" fill="#1f77b4" />
+<polyline fill="none" stroke="#ff0000" stroke-width="2" points="74.55,412.73 565.45,67.27" />
 </g>
-<line class="x-tick" x1="74.55" y1="430.00" x2="74.55" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="74.55" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
-<line class="x-tick" x1="259.18" y1="430.00" x2="259.18" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="259.18" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">200</text>
-<line class="x-tick" x1="443.82" y1="430.00" x2="443.82" y2="435.00" stroke="#000" />
-<text class="tick-label tick-label-x" x="443.82" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">400</text>
-<line class="y-tick" x1="50.00" y1="412.73" x2="45.00" y2="412.73" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="412.73" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
-<line class="y-tick" x1="50.00" y1="282.68" x2="45.00" y2="282.68" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="282.68" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">200</text>
-<line class="y-tick" x1="50.00" y1="152.63" x2="45.00" y2="152.63" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="152.63" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">400</text>
+<line class="x-tick" x1="165.53" y1="430.00" x2="165.53" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="165.53" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">200</text>
+<line class="x-tick" x1="291.15" y1="430.00" x2="291.15" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="291.15" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">300</text>
+<line class="x-tick" x1="416.77" y1="430.00" x2="416.77" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="416.77" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">400</text>
+<line class="x-tick" x1="542.39" y1="430.00" x2="542.39" y2="435.00" stroke="#000" />
+<text class="tick-label tick-label-x" x="542.39" y="437.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">500</text>
+<line class="y-tick" x1="50.00" y1="348.70" x2="45.00" y2="348.70" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="348.70" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">200</text>
+<line class="y-tick" x1="50.00" y1="260.30" x2="45.00" y2="260.30" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="260.30" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">300</text>
+<line class="y-tick" x1="50.00" y1="171.90" x2="45.00" y2="171.90" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="171.90" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">400</text>
+<line class="y-tick" x1="50.00" y1="83.50" x2="45.00" y2="83.50" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="83.50" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">500</text>
 <text x="320" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Predictions vs Actual Values</text>
 <text x="320" y="465" text-anchor="middle" font-size="12" fill="#000">Actual</text>
 <text x="15" y="240" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 240)">Predicted</text>

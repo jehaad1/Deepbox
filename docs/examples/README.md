@@ -2,7 +2,15 @@
 
 > **Browse online:** https://deepbox.dev/examples · **Docs:** https://deepbox.dev/docs
 
-This directory contains **50 self-contained examples (00-49)** covering the full v1.0.0 framework surface, from tensor fundamentals to runtime tooling, inference workflows, advanced model selection, FFTs, and DataFrame operational workflows.
+This directory contains **50 self-contained examples (00-49)** for Deepbox 1.5.0. They run from tensor basics to runtime tooling, inference workflows, model selection, FFTs and DataFrame workflows. Each example is a single `index.ts` with a `README.md` that explains what it shows.
+
+## Conventions Used in the Examples
+
+- **Training with plain tensors.** Data is a plain `tensor(...)`. When gradient mode is on and a module has trainable parameters, `model.forward(x)` returns a `GradTensor` that tracks the weights, so `loss.backward()` works without wrapping the data. `parameter(...)` is used only for tensors you want gradients for, and `noGrad(() => ...)` turns tracking off for evaluation. See examples 13 and 14.
+- **Fluent methods.** `Tensor` and `GradTensor` share one method surface, so `a.add(b).mul(2).sum()` and `loss.item()` work. The functional forms (`add(a, b)`) still work.
+- **camelCase names.** Examples use `matrixPower`, `toDatetime`, `ttestInd`, `crossValScore`, `multivariateNormal` and so on. The snake_case names still work in 1.x and are marked deprecated.
+- **dtypes.** `tensor()` creates `float32` tensors. Float operations keep the input float dtype, and index results such as `argmax` are `int32`.
+- **Typing note.** `Tensor.item()` is typed as `string | number | bigint`, so examples write `Number(t.item())` before calling `toFixed`. Metric functions already return plain numbers.
 
 ## Example Catalog
 
@@ -10,7 +18,7 @@ This directory contains **50 self-contained examples (00-49)** covering the full
 
 | #   | Example                                      | Modules Used           | Description                                    |
 | --- | -------------------------------------------- | ---------------------- | ---------------------------------------------- |
-| 00  | [Quick Start](./00-quick-start/)             | ndarray, dataframe, ml | Tensors, DataFrames, and ML in under 50 lines  |
+| 00  | [Quick Start](./00-quick-start/)             | ndarray, dataframe, ml | Tensors, DataFrames, and a first ML model          |
 | 01  | [Tensor Basics](./01-tensor-basics/)         | ndarray                | Creating and inspecting N-dimensional arrays   |
 | 02  | [Tensor Operations](./02-tensor-operations/) | ndarray                | Arithmetic, math, reductions, and broadcasting |
 | 03  | [Data Analysis](./03-data-analysis/)         | dataframe, stats, plot | Exploratory tabular workflow with charts       |
@@ -22,7 +30,7 @@ This directory contains **50 self-contained examples (00-49)** covering the full
 | #   | Example                                              | Modules Used                  | Description                                                |
 | --- | ---------------------------------------------------- | ----------------------------- | ---------------------------------------------------------- |
 | 06  | [ML Pipeline](./06-ml-pipeline/)                     | ml, metrics, preprocess, plot | End-to-end ML pipeline with multiple models                |
-| 07  | [Linear Regression](./07-linear-regression/)         | ml, metrics, preprocess       | Supervised regression workflow                             |
+| 07  | [Linear Regression](./07-linear-regression/)         | ml, metrics, preprocess, random | Supervised regression workflow                           |
 | 08  | [Logistic Regression](./08-logistic-regression/)     | ml, metrics, preprocess       | Binary classification with evaluation                      |
 | 09  | [Ridge & Lasso](./09-ridge-lasso/)                   | ml, metrics, preprocess       | Regularized linear models                                  |
 | 10  | [Advanced ML Models](./10-advanced-ml-models/)       | ml, metrics, preprocess       | KMeans, KNN, PCA, and Gaussian Naive Bayes                 |
@@ -33,9 +41,9 @@ This directory contains **50 self-contained examples (00-49)** covering the full
 
 | #   | Example                                                    | Modules Used       | Description                                               |
 | --- | ---------------------------------------------------------- | ------------------ | --------------------------------------------------------- |
-| 13  | [Neural Network Training](./13-neural-network-training/)   | nn, optim, ndarray | Sequential models, losses, and optimizers                 |
-| 14  | [Autograd](./14-autograd/)                                 | ndarray            | Reverse-mode differentiation and gradient flow            |
-| 15  | [Activation Functions](./15-activation-functions/)         | ndarray, plot      | Activation comparisons with SVG output                    |
+| 13  | [Neural Network Training](./13-neural-network-training/)   | nn, optim, ndarray | Training with plain tensors: models, losses, optimizers   |
+| 14  | [Autograd](./14-autograd/)                                 | ndarray, nn        | Reverse-mode differentiation and gradient flow            |
+| 15  | [Activation Functions](./15-activation-functions/)         | ndarray, plot      | Thirteen activations compared, with SVG output            |
 | 16  | [LR Schedulers](./16-lr-schedulers/)                       | optim, nn          | Learning-rate scheduler patterns                          |
 | 27  | [CNN Layers](./27-cnn-layers/)                             | nn, ndarray        | Convolution and pooling layers                            |
 | 28  | [RNN, LSTM, GRU](./28-rnn-lstm-gru/)                       | nn, ndarray        | Sequence modeling layers                                  |
@@ -54,22 +62,22 @@ This directory contains **50 self-contained examples (00-49)** covering the full
 | 18  | [Scalers](./18-preprocessing-scalers/)                     | preprocess, ndarray    | Standard, MinMax, Robust, MaxAbs, Power, and Quantile       |
 | 19  | [Statistics](./19-statistics/)                             | stats, ndarray         | Descriptive statistics and correlation analysis             |
 | 20  | [Linear Algebra](./20-linear-algebra/)                     | linalg, ndarray        | SVD, QR, LU, solving, and norms                             |
-| 21  | [Random Sampling](./21-random-sampling/)                   | random                 | Random distributions and seeded sampling                    |
+| 21  | [Random Sampling](./21-random-sampling/)                   | random, ndarray        | Random distributions and seeded sampling                    |
 | 22  | [Datasets](./22-datasets/)                                 | datasets               | Built-in datasets and synthetic generators                  |
-| 23  | [Cross-Validation](./23-cross-validation/)                 | preprocess, ndarray    | KFold, StratifiedKFold, LeaveOneOut                         |
-| 24  | [Metrics](./24-metrics/)                                   | metrics, ndarray       | Classification, regression, and clustering metrics          |
+| 23  | [Cross-Validation](./23-cross-validation/)                 | preprocess, ml, ndarray | KFold, StratifiedKFold, LeaveOneOut, crossValScore         |
+| 24  | [Metrics](./24-metrics/)                                   | metrics, ndarray       | Binary and multiclass, probability, regression and clustering metrics |
 | 26  | [Sparse Matrices](./26-sparse-matrices/)                   | ndarray                | CSR sparse matrix operations                                |
 | 31  | [DataLoader](./31-dataloader/)                             | datasets, ndarray      | Batch iteration with shuffle, seed, and drop-last           |
 | 33  | [Advanced DataFrame Features](./33-dataframe-advanced/)    | dataframe              | String/datetime accessors, rolling, expanding, query, eval  |
 | 35  | [Advanced Clustering](./35-advanced-clustering/)           | ml, metrics, datasets  | Agglomerative, GMM, spectral, OPTICS, MeanShift, Birch      |
-| 37  | [Model Selection & Pipeline](./37-model-selection-pipeline/) | ml, preprocess       | GridSearchCV, RandomizedSearchCV, cross_validate, Pipeline  |
+| 37  | [Model Selection & Pipeline](./37-model-selection-pipeline/) | ml, preprocess       | GridSearchCV, RandomizedSearchCV, crossValidate, Pipeline   |
 | 38  | [Feature Engineering](./38-feature-engineering/)           | preprocess, ml, metrics | Imputation, polynomial features, discretization, selection |
 | 42  | [FFT & Signal Processing](./42-fft-signal-processing/)     | ndarray                | FFT, inverse FFT, rFFT, 2D FFT, and spectral filtering      |
 | 43  | [Statistical Tests](./43-statistical-tests/)               | stats, ndarray         | Distributions, t-tests, ANOVA, chi-square, correlations     |
 | 48  | [Statistical Inference Playbook](./48-statistical-inference-playbook/) | stats, plot      | Confidence intervals, bootstrap, KDE, multiple testing, power |
 | 49  | [Advanced Linear Algebra Toolkit](./49-advanced-linear-algebra/) | linalg, ndarray | Hessenberg, Schur, polar, matrix functions, sparse solvers     |
 
-### Specialized v1.0 Additions
+### Specialized Topics
 
 | #   | Example                                                    | Modules Used            | Description                                                   |
 | --- | ---------------------------------------------------------- | ----------------------- | ------------------------------------------------------------- |
@@ -97,8 +105,8 @@ This directory contains **50 self-contained examples (00-49)** covering the full
 
 - **Start here**: `00`-`06`
 - **Build depth**: `07`-`24`
-- **Learn the expanded v1.0 surface**: `25`-`49`
+- **Cover the rest of the library**: `25`-`49`
 
 ## License
 
-MIT — See the parent directory.
+MIT. See the license file in the parent directory.

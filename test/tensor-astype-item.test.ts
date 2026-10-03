@@ -152,7 +152,7 @@ describe("radix sort paths (large lanes)", () => {
       }
       const f32 = tensor(raw, { dtype: "float32" });
       const f64 = tensor(raw, { dtype: "float64" });
-      // argsort order is where signed zero actually matters — must agree.
+      // argsort order is where signed zero actually matters, so they must agree.
       expect(argsort(f32).toArray()).toEqual(argsort(f64).toArray());
       // sorted values agree because every input is exactly representable in f32.
       expect(sort(f32).toArray()).toEqual(sort(f64).toArray());

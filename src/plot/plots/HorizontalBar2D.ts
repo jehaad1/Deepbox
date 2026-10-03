@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
-import { ShapeError } from "../../core";
+import { InvalidParameterError, ShapeError } from "../../core";
 import type {
   Color,
   DataRange,
@@ -18,6 +18,10 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Horizontal bars centered on each `y`, extending from 0 to `width` (leftwards
+ * for negative widths). The bar thickness is `options.barHeight` in data units
+ * (default 0.8). Entries with a non-finite y or width are skipped. The x range
+ * always includes 0.
  * @internal
  */
 export class HorizontalBar2D implements Drawable {
@@ -35,7 +39,15 @@ export class HorizontalBar2D implements Drawable {
     this.width = width;
     this.color = normalizeColor(options.color, "#9467bd");
     this.edgecolor = normalizeColor(options.edgecolor, "#000000");
-    this.barHeight = 0.8;
+    const barHeight = options.barHeight ?? 0.8;
+    if (!Number.isFinite(barHeight) || barHeight <= 0) {
+      throw new InvalidParameterError(
+        `barHeight must be a positive finite number; received ${barHeight}`,
+        "barHeight",
+        barHeight
+      );
+    }
+    this.barHeight = barHeight;
     this.label = normalizeLegendLabel(options.label);
   }
 

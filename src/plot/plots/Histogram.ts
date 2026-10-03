@@ -18,6 +18,12 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Histogram with equal-width bins over `[min, max]` of the finite values.
+ *
+ * Bins are half-open `[left, right)` except the last one, which also contains
+ * the maximum (same convention as `numpy.histogram`). Non-finite values are
+ * ignored. `bins` holds the left edge of every bin and `counts` the number of
+ * samples in it.
  * @internal
  */
 export class Histogram implements Drawable {
@@ -71,34 +77,56 @@ export class Histogram implements Drawable {
     }
 
     const span = max - min;
-    const binWidth = span > 0 ? span / numBins : 1;
-    const binStart = span > 0 ? min : min - (numBins * binWidth) / 2;
+    if (!Number.isFinite(span)) {
+      throw new InvalidParameterError(
+        "histogram data range is too large to bin (max - min overflows)",
+        "data",
+        data
+      );
+    }
+
+    // A constant sample is binned over [min - 0.5, min + 0.5], like numpy.histogram.
+    const binWidth = span > 0 ? span / numBins : 1 / numBins;
+    if (!(binWidth > 0)) {
+      throw new InvalidParameterError(
+        `histogram data range is too small for ${numBins} bins (bin width underflows)`,
+        "bins",
+        numBins
+      );
+    }
+    const binStart = span > 0 ? min : min - 0.5;
     this.bins = new Float64Array(numBins);
     this.counts = new Float64Array(numBins);
     this.binWidth = binWidth;
 
     for (let i = 0; i < numBins; i++) {
       this.bins[i] = binStart + i * binWidth;
-      this.counts[i] = 0;
     }
 
     if (span === 0) {
       let finiteCount = 0;
       for (let i = 0; i < data.length; i++) {
-        const v = data[i] ?? 0;
-        if (isFiniteNumber(v)) finiteCount++;
+        if (isFiniteNumber(data[i] ?? 0)) finiteCount++;
       }
-      const mid = Math.floor(numBins / 2);
-      this.counts[mid] = finiteCount;
+      // numpy puts the constant value in bin floor(numBins / 2).
+      this.counts[Math.floor(numBins / 2)] = finiteCount;
       return;
     }
 
+    const bins = this.bins;
+    const counts = this.counts;
+    const last = numBins - 1;
     for (let i = 0; i < data.length; i++) {
       const v = data[i] ?? 0;
       if (!isFiniteNumber(v)) continue;
-      const rawIdx = Math.floor((v - min) / binWidth);
-      const binIdx = Math.min(Math.max(0, rawIdx), numBins - 1);
-      this.counts[binIdx] = (this.counts[binIdx] ?? 0) + 1;
+      let idx = Math.floor((v - min) / binWidth);
+      if (idx > last) idx = last;
+      else if (idx < 0) idx = 0;
+      // Correct rounding error against the stored edges (same step as numpy):
+      // a value must sit in [edge[idx], edge[idx + 1]), the last bin is closed.
+      if (v < (bins[idx] ?? min)) idx--;
+      else if (idx < last && v >= (bins[idx + 1] ?? max)) idx++;
+      counts[idx] = (counts[idx] ?? 0) + 1;
     }
   }
 

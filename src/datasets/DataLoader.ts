@@ -1,28 +1,119 @@
-import { DeepboxError, InvalidParameterError } from "../core/errors";
+import {
+  DeepboxError,
+  type DType,
+  dtypeToTypedArrayCtor,
+  IndexError,
+  InvalidParameterError,
+} from "../core";
 import { gather, Tensor, tensor } from "../ndarray";
+import { isContiguous } from "../ndarray/tensor/strides";
 import type { Sampler } from "./samplers";
 import { type Batch, StreamingDataset } from "./streaming";
 import {
   assertBoolean,
   assertPositiveInt,
-  createRng,
+  createPassRng,
+  type DatasetRng,
   normalizeOptionalSeed,
   shuffleInPlace,
 } from "./utils";
 
-/** Function that merges a list of samples into a mini-batch. */
+/**
+ * Function that post-processes a mini-batch.
+ *
+ * An in-memory {@link DataLoader} gathers each batch itself and calls the
+ * collate function with a single-element list holding that batch
+ * (`[[xBatch]]` or `[[xBatch, yBatch]]`); the returned value is what the
+ * loader yields.
+ */
 export type CollateFn<T = [Tensor] | [Tensor, Tensor]> = (batch: T[]) => T;
 
 /** Configuration options for {@link DataLoader}. */
 export type DataLoaderOptions = {
+  /** Samples per batch (positive integer). Default: 1. */
   batchSize?: number;
+  /** Reshuffle the sample order at the start of every iteration. Default: false. */
   shuffle?: boolean;
+  /** Drop a trailing batch that has fewer than `batchSize` samples. Default: false. */
   dropLast?: boolean;
+  /** Seed for the shuffle. With a seed, every iteration uses the same order unless `reshuffleEachIteration` is set. */
   seed?: number;
+  /**
+   * With a `seed`, continue one seeded random stream across iterations, so every
+   * epoch has a different order while the sequence of epochs stays reproducible
+   * (the first epoch matches the default behavior). Default: false. Has no effect
+   * without a seed or without `shuffle`.
+   */
+  reshuffleEachIteration?: boolean;
+  /** Custom index order. Mutually exclusive with `shuffle: true`. */
   sampler?: Sampler;
+  /** Post-process every batch, see {@link CollateFn}. */
   // biome-ignore lint/suspicious/noExplicitAny: collate function works with any batch type
   collateFn?: CollateFn<any>;
 };
+
+/** Dtypes whose tensor storage is one typed-array element per tensor element. */
+const ROW_COPY_DTYPES: ReadonlySet<DType> = new Set<DType>([
+  "float16",
+  "bfloat16",
+  "float32",
+  "float64",
+  "int32",
+  "int64",
+  "uint8",
+  "bool",
+]);
+
+type RowStorage = {
+  readonly length: number;
+  subarray(begin: number, end: number): RowStorage;
+  set(source: RowStorage, offset?: number): void;
+};
+
+/**
+ * Select rows `indices` along axis 0 of `t`.
+ *
+ * Row-major CPU tensors take a block-copy fast path (one `set` per row);
+ * everything else falls back to the general {@link gather}. Both paths return
+ * a freshly allocated tensor and raise the same errors for bad indices.
+ */
+function gatherRows(t: Tensor, indices: readonly number[]): Tensor {
+  const nRows = t.shape[0] ?? 0;
+  const rowSize = nRows > 0 ? t.size / nRows : 0;
+  const dtype = t.dtype;
+  if (
+    dtype === "string" ||
+    t.device !== "cpu" ||
+    !ROW_COPY_DTYPES.has(dtype) ||
+    rowSize === 0 ||
+    Array.isArray(t.data) ||
+    !isContiguous(t.shape, t.strides)
+  ) {
+    return gather(t, tensor(indices as number[], { dtype: "int32" }), 0);
+  }
+
+  const Ctor = dtypeToTypedArrayCtor(dtype);
+  const out = new Ctor(indices.length * rowSize);
+  const src = t.data as unknown as RowStorage;
+  const dst = out as unknown as RowStorage;
+  for (let j = 0; j < indices.length; j++) {
+    const idx = indices[j] as number;
+    if (!Number.isInteger(idx)) {
+      throw new InvalidParameterError(`sample index ${idx} is not an integer`, "indices", idx);
+    }
+    if (idx < 0 || idx >= nRows) {
+      throw new IndexError(`index ${idx} is out of bounds for axis 0 with size ${nRows}`);
+    }
+    const start = t.offset + idx * rowSize;
+    dst.set(src.subarray(start, start + rowSize), j * rowSize);
+  }
+  return Tensor.fromTypedArray({
+    data: out,
+    shape: [indices.length, ...t.shape.slice(1)],
+    dtype,
+    device: "cpu",
+  });
+}
 
 /**
  * Configuration options for a {@link DataLoader} constructed over a
@@ -48,6 +139,13 @@ export type StreamingDataLoaderOptions = {
   /** Seed for deterministic shuffle-buffer ordering. */
   seed?: number;
   /**
+   * With a `seed`, continue one seeded random stream across iterations, so every
+   * pass has a different order while the sequence of passes stays reproducible.
+   * Default: false (a seeded loader repeats the same order). Has no effect without
+   * a seed or a `shuffleBufferSize`.
+   */
+  reshuffleEachIteration?: boolean;
+  /**
    * Merge raw samples into a batch. Defaults to the stream's own
    * {@link import('./streaming').defaultCollate | defaultCollate}.
    */
@@ -65,13 +163,19 @@ export type StreamingDataLoaderOptions = {
  * **Iteration Behavior:**
  * - Each iteration creates a fresh shuffle (if enabled), so multiple iterations over the same
  * loader will produce different orderings unless a seed is provided.
- * - With a seed, all iterations produce identical shuffles (deterministic).
- * - The underlying tensors are not copied; batches reference the same data via gather operations.
+ * - With a seed, all iterations produce identical shuffles (deterministic). Leave the seed unset
+ * if every training epoch should see a different order, or set `reshuffleEachIteration: true` to
+ * get a different but reproducible order in every epoch.
+ * - Each batch is a copy of the selected rows; the source tensors are never modified.
  *
  * **Shuffling:**
  * - Uses Fisher-Yates shuffle algorithm for uniform random permutation.
  * - When `seed` is provided, shuffling is deterministic and reproducible across runs.
  * - Shuffle happens per iteration, not per construction.
+ *
+ * **Length:**
+ * - `length` is the number of batches per iteration. With a `sampler` it is derived from
+ * `sampler.length`.
  *
  * @example
  * ```ts
@@ -117,6 +221,9 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
   private dropLast: boolean;
   private indices: number[];
   private seed: number | undefined;
+  private rngForPass: () => DatasetRng;
+  private reshuffleEachIteration: boolean;
+  private shuffledStream: StreamingDataset<unknown> | undefined;
   private nSamples: number;
   private sampler: Sampler | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: collate function works with any batch type
@@ -151,9 +258,14 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       this.collateFn = undefined;
 
       const sOpts = (yOrOptions as StreamingDataLoaderOptions | undefined) ?? {};
-      if (sOpts === null || typeof sOpts !== "object" || Array.isArray(sOpts)) {
+      if (
+        sOpts === null ||
+        typeof sOpts !== "object" ||
+        Array.isArray(sOpts) ||
+        sOpts instanceof Tensor
+      ) {
         throw new InvalidParameterError(
-          "options must be an object when provided",
+          "options must be an object when provided; a streaming DataLoader takes no y tensor",
           "options",
           sOpts
         );
@@ -164,6 +276,14 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       this.dropLast = sOpts.dropLast ?? false;
       if (sOpts.dropLast !== undefined) assertBoolean("dropLast", this.dropLast);
       this.seed = normalizeOptionalSeed("seed", sOpts.seed);
+      this.reshuffleEachIteration = sOpts.reshuffleEachIteration ?? false;
+      if (sOpts.reshuffleEachIteration !== undefined) {
+        assertBoolean("reshuffleEachIteration", this.reshuffleEachIteration);
+      }
+      this.rngForPass = createPassRng(this.seed, false);
+      if (sOpts.collateFn !== undefined && typeof sOpts.collateFn !== "function") {
+        throw new InvalidParameterError("collateFn must be a function", "collateFn");
+      }
       this.streamCollate = sOpts.collateFn;
 
       if (sOpts.shuffleBufferSize !== undefined) {
@@ -177,6 +297,9 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       return;
     }
 
+    if (!(source instanceof Tensor)) {
+      throw new InvalidParameterError("X must be a Tensor or a StreamingDataset", "X", source);
+    }
     const X = source;
     this.X = X;
 
@@ -187,6 +310,13 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       rawOpts = options;
     } else {
       this.y = undefined;
+      if (Array.isArray(yOrOptions)) {
+        throw new InvalidParameterError(
+          "y must be a Tensor (or omitted); convert arrays with tensor()",
+          "y",
+          yOrOptions
+        );
+      }
       // supports: new DataLoader(X, options) AND new DataLoader(X, undefined, options)
       rawOpts = yOrOptions === undefined ? options : yOrOptions;
     }
@@ -207,8 +337,34 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
     this.shuffle = opts.shuffle ?? false;
     this.dropLast = opts.dropLast ?? false;
     this.seed = normalizeOptionalSeed("seed", opts.seed);
+    this.reshuffleEachIteration = opts.reshuffleEachIteration ?? false;
+    if (opts.reshuffleEachIteration !== undefined) {
+      assertBoolean("reshuffleEachIteration", this.reshuffleEachIteration);
+    }
+    this.rngForPass = createPassRng(this.seed, this.reshuffleEachIteration);
     this.sampler = opts.sampler;
     this.collateFn = opts.collateFn;
+
+    assertPositiveInt("batchSize", this.batchSize);
+    if (opts.shuffle !== undefined) assertBoolean("shuffle", this.shuffle);
+    if (opts.dropLast !== undefined) assertBoolean("dropLast", this.dropLast);
+    if (this.collateFn !== undefined && typeof this.collateFn !== "function") {
+      throw new InvalidParameterError("collateFn must be a function", "collateFn");
+    }
+    if (this.sampler !== undefined) {
+      const sampler = this.sampler as Partial<Sampler> | null;
+      if (
+        sampler === null ||
+        typeof sampler !== "object" ||
+        typeof sampler[Symbol.iterator] !== "function" ||
+        !Number.isInteger(sampler.length)
+      ) {
+        throw new InvalidParameterError(
+          "sampler must be iterable and expose an integer length",
+          "sampler"
+        );
+      }
+    }
 
     if (this.sampler && this.shuffle) {
       throw new InvalidParameterError(
@@ -216,10 +372,6 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
         "sampler"
       );
     }
-
-    assertPositiveInt("batchSize", this.batchSize);
-    if (opts.shuffle !== undefined) assertBoolean("shuffle", this.shuffle);
-    if (opts.dropLast !== undefined) assertBoolean("dropLast", this.dropLast);
 
     if (this.X.ndim === 0) {
       throw new InvalidParameterError("X must have at least 1 dimension (samples axis)", "X");
@@ -262,9 +414,8 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
           "is not known without consuming the source. Iterate the loader instead."
       );
     }
-    return this.dropLast
-      ? Math.floor(this.nSamples / this.batchSize)
-      : Math.ceil(this.nSamples / this.batchSize);
+    const total = this.sampler ? this.sampler.length : this.nSamples;
+    return this.dropLast ? Math.floor(total / this.batchSize) : Math.ceil(total / this.batchSize);
   }
 
   /**
@@ -280,7 +431,15 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
     }
     let s: StreamingDataset<unknown> = stream;
     if (this.streamShuffleBuffer !== undefined) {
-      s = s.shuffle(this.streamShuffleBuffer, this.seed);
+      if (this.reshuffleEachIteration) {
+        // One shuffled stream is reused so its seeded generator advances between passes.
+        this.shuffledStream ??= stream.shuffle(this.streamShuffleBuffer, this.seed, {
+          reshuffleEachIteration: true,
+        });
+        s = this.shuffledStream;
+      } else {
+        s = s.shuffle(this.streamShuffleBuffer, this.seed);
+      }
     }
     let batched = s.batch<Batch>(this.batchSize, this.streamCollate, { dropLast: this.dropLast });
     if (allowPrefetch && this.streamPrefetch !== undefined) {
@@ -331,8 +490,7 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
     } else {
       indices = [...this.indices];
       if (this.shuffle) {
-        const rng = createRng(this.seed);
-        shuffleInPlace(indices, rng);
+        shuffleInPlace(indices, this.rngForPass());
       }
     }
 
@@ -352,8 +510,7 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       const end = Math.min(start + this.batchSize, indices.length);
       const batchIndices = indices.slice(start, end);
 
-      const indexTensor = tensor(batchIndices, { dtype: "int32" });
-      const xBatch = gather(this.X, indexTensor, 0);
+      const xBatch = gatherRows(this.X, batchIndices);
 
       if (this.collateFn) {
         yield this.collateFn([[xBatch]]) as [Tensor];
@@ -375,9 +532,8 @@ export class DataLoader<TTarget extends Tensor | undefined = undefined> {
       const end = Math.min(start + this.batchSize, indices.length);
       const batchIndices = indices.slice(start, end);
 
-      const indexTensor = tensor(batchIndices, { dtype: "int32" });
-      const xBatch = gather(this.X, indexTensor, 0);
-      const yBatch = gather(y, indexTensor, 0);
+      const xBatch = gatherRows(this.X, batchIndices);
+      const yBatch = gatherRows(y, batchIndices);
 
       if (this.collateFn) {
         yield this.collateFn([[xBatch, yBatch]]) as [Tensor, Tensor];

@@ -1,8 +1,7 @@
 /**
  * Example 05: DataFrame GroupBy & Aggregation
  *
- * Learn to group and aggregate data for analysis.
- * Similar to SQL GROUP BY operations.
+ * Group rows by one or more columns and aggregate each group, like SQL GROUP BY.
  */
 
 import { DataFrame } from "deepbox/dataframe";
@@ -21,9 +20,8 @@ const sales = new DataFrame({
 console.log("Sales Data:");
 console.log(`${sales.toString()}\n`);
 
-// Group by a single column and aggregate
-console.log("\nGroup by single column");
-// Group by product and calculate total sales
+// Group by one column and sum two others
+console.log("Group by a single column");
 const byProduct = sales.groupBy("product");
 const productStats = byProduct.agg({
   quantity: "sum",
@@ -33,8 +31,7 @@ const productStats = byProduct.agg({
 console.log("Sales by Product:");
 console.log(`${productStats.toString()}\n`);
 
-// Group by region
-// Calculate average sales by region
+// Group by region and take the mean of each numeric column
 const byRegion = sales.groupBy("region");
 const regionStats = byRegion.agg({
   quantity: "mean",
@@ -44,15 +41,33 @@ const regionStats = byRegion.agg({
 console.log("Average Sales by Region:");
 console.log(`${regionStats.toString()}\n`);
 
-// Perform multiple aggregations at once
-console.log("\nMultiple aggregations");
-// Calculate sum, mean, and count for each product
+// Use a different function per column
+console.log("Different function per column");
 const detailedStats = byProduct.agg({
   quantity: "sum",
   revenue: "mean",
 });
 
-console.log("Detailed Product Statistics:");
+console.log("Total quantity and mean revenue by product:");
 console.log(`${detailedStats.toString()}\n`);
 
-console.log("✓ GroupBy operations complete!");
+// Named aggregation: the key is the output column, the value is [column, function]
+console.log("Named aggregation");
+const named = byProduct.agg({
+  unitsSold: ["quantity", "sum"],
+  avgRevenue: ["revenue", "mean"],
+  orders: ["revenue", "count"],
+});
+console.log(`${named.toString()}\n`);
+
+// Group by two columns
+console.log("Group by two columns");
+console.log(`${sales.groupBy(["product", "region"]).agg({ revenue: "sum" }).toString()}\n`);
+
+// Pull out the rows of a single group
+console.log("Rows of the Laptop group:");
+console.log(`${byProduct.getGroup("Laptop").toString()}\n`);
+
+// Number of distinct values per group
+console.log("Distinct values per product:");
+console.log(byProduct.nunique().toString());

@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
-import { ShapeError } from "../../core";
+import { InvalidParameterError, ShapeError } from "../../core";
 import type {
   Color,
   DataRange,
@@ -18,7 +18,9 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
- * Quiver plot: draws arrows representing a vector field.
+ * Quiver plot: draws arrows representing a vector field. The arrow at `(x, y)`
+ * runs to `(x + u * scale, y + v * scale)` in data coordinates. Entries with a
+ * non-finite x, y, u or v are skipped, and zero-length arrows draw nothing.
  * @internal
  */
 export class Quiver2D implements Drawable {
@@ -47,8 +49,20 @@ export class Quiver2D implements Drawable {
     this.u = u;
     this.v = v;
     this.color = normalizeColor(options.color, "#1f77b4");
-    this.linewidth = options.linewidth ?? 1.5;
-    this.scale = options.scale ?? 1;
+    const lw = options.linewidth ?? 1.5;
+    if (!Number.isFinite(lw) || lw <= 0) {
+      throw new InvalidParameterError(
+        `linewidth must be a positive number; received ${lw}`,
+        "linewidth",
+        lw
+      );
+    }
+    this.linewidth = lw;
+    const scale = options.scale ?? 1;
+    if (!Number.isFinite(scale)) {
+      throw new InvalidParameterError(`scale must be finite; received ${scale}`, "scale", scale);
+    }
+    this.scale = scale;
     this.label = normalizeLegendLabel(options.label);
   }
 
@@ -64,6 +78,7 @@ export class Quiver2D implements Drawable {
       const ui = (this.u[i] ?? 0) * this.scale;
       const vi = (this.v[i] ?? 0) * this.scale;
       if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
+      if (!isFiniteNumber(ui) || !isFiniteNumber(vi)) continue;
       xmin = Math.min(xmin, xi, xi + ui);
       xmax = Math.max(xmax, xi, xi + ui);
       ymin = Math.min(ymin, yi, yi + vi);
@@ -71,13 +86,38 @@ export class Quiver2D implements Drawable {
     }
 
     if (!isFiniteNumber(xmin) || !isFiniteNumber(xmax)) return null;
+    if (!isFiniteNumber(ymin) || !isFiniteNumber(ymax)) return null;
     return { xmin, xmax, ymin, ymax };
+  }
+
+  /**
+   * Arrowhead corner points for a shaft ending at (x1, y1) that started at (x0, y0),
+   * in pixels. The head is 6 px long (at most half the shaft) with a 30 degree
+   * half-angle. Returns null for a zero-length shaft.
+   */
+  private static arrowhead(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number
+  ): readonly [number, number, number, number] | null {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const length = Math.hypot(dx, dy);
+    if (!(length > 0)) return null;
+    const headLen = Math.min(6, length / 2);
+    const headAngle = Math.PI / 6;
+    const angle = Math.atan2(dy, dx);
+    return [
+      x1 - headLen * Math.cos(angle - headAngle),
+      y1 - headLen * Math.sin(angle - headAngle),
+      x1 - headLen * Math.cos(angle + headAngle),
+      y1 - headLen * Math.sin(angle + headAngle),
+    ];
   }
 
   drawSVG(ctx: SvgDrawContext): void {
     const ec = escapeXml(this.color);
-    const headLen = 6;
-    const headAngle = Math.PI / 6;
 
     for (let i = 0; i < this.x.length; i++) {
       const xi = this.x[i] ?? 0;
@@ -85,11 +125,15 @@ export class Quiver2D implements Drawable {
       const ui = (this.u[i] ?? 0) * this.scale;
       const vi = (this.v[i] ?? 0) * this.scale;
       if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
+      if (!isFiniteNumber(ui) || !isFiniteNumber(vi)) continue;
 
       const x0 = ctx.transform.xToPx(xi);
       const y0 = ctx.transform.yToPx(yi);
       const x1 = ctx.transform.xToPx(xi + ui);
       const y1 = ctx.transform.yToPx(yi + vi);
+
+      const head = Quiver2D.arrowhead(x0, y0, x1, y1);
+      if (head === null) continue;
 
       // Shaft
       ctx.push(
@@ -97,13 +141,7 @@ export class Quiver2D implements Drawable {
       );
 
       // Arrowhead
-      const dx = x1 - x0;
-      const dy = y1 - y0;
-      const angle = Math.atan2(dy, dx);
-      const ax1 = x1 - headLen * Math.cos(angle - headAngle);
-      const ay1 = y1 - headLen * Math.sin(angle - headAngle);
-      const ax2 = x1 - headLen * Math.cos(angle + headAngle);
-      const ay2 = y1 - headLen * Math.sin(angle + headAngle);
+      const [ax1, ay1, ax2, ay2] = head;
       ctx.push(
         `<polygon points="${x1.toFixed(2)},${y1.toFixed(2)} ${ax1.toFixed(2)},${ay1.toFixed(2)} ${ax2.toFixed(2)},${ay2.toFixed(2)}" fill="${ec}" />`
       );
@@ -118,12 +156,32 @@ export class Quiver2D implements Drawable {
       const ui = (this.u[i] ?? 0) * this.scale;
       const vi = (this.v[i] ?? 0) * this.scale;
       if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
+      if (!isFiniteNumber(ui) || !isFiniteNumber(vi)) continue;
 
-      const x0 = Math.round(ctx.transform.xToPx(xi));
-      const y0 = Math.round(ctx.transform.yToPx(yi));
-      const x1 = Math.round(ctx.transform.xToPx(xi + ui));
-      const y1 = Math.round(ctx.transform.yToPx(yi + vi));
+      const px0 = ctx.transform.xToPx(xi);
+      const py0 = ctx.transform.yToPx(yi);
+      const px1 = ctx.transform.xToPx(xi + ui);
+      const py1 = ctx.transform.yToPx(yi + vi);
+      const head = Quiver2D.arrowhead(px0, py0, px1, py1);
+      if (head === null) continue;
+
+      const x0 = Math.round(px0);
+      const y0 = Math.round(py0);
+      const x1 = Math.round(px1);
+      const y1 = Math.round(py1);
       ctx.canvas.drawLineRGBA(x0, y0, x1, y1, rgba.r, rgba.g, rgba.b, rgba.a);
+      ctx.canvas.fillTriangleRGBA(
+        x1,
+        y1,
+        Math.round(head[0]),
+        Math.round(head[1]),
+        Math.round(head[2]),
+        Math.round(head[3]),
+        rgba.r,
+        rgba.g,
+        rgba.b,
+        rgba.a
+      );
     }
   }
 

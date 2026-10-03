@@ -90,14 +90,14 @@ describe("nn autograd regression (previously-detached layers)", () => {
     );
     const mp = new nn.MaxPool2d(2, { stride: 1, padding: 1 });
     const out = flat(mp.forward(db.GradTensor.fromTensor(neg)));
-    // Every output must be negative — a spurious 0 would indicate 0-padding.
+    // Every output must be negative, a spurious 0 would indicate 0-padding.
     expect(out.every((v) => v < 0)).toBe(true);
   });
 
   it("Embedding propagates gradient to the weight table (duplicate indices accumulate)", () => {
     const emb = new nn.Embedding(5, 3);
     const idx = db.tensor([0, 2, 2, 4], { dtype: "int32" });
-    emb.forward(idx).sum().backward();
+    (emb.forward(idx) as db.GradTensor).sum().backward();
     const g = emb.weight.grad?.toArray() as number[][];
     expect(g[2]).toEqual([2, 2, 2]); // index 2 used twice
     expect(g[1]).toEqual([0, 0, 0]); // index 1 unused
@@ -105,7 +105,7 @@ describe("nn autograd regression (previously-detached layers)", () => {
 
   it("RNN/LSTM/GRU are trainable (all params receive gradients)", () => {
     for (const layer of [new nn.RNN(3, 4), new nn.LSTM(3, 4), new nn.GRU(3, 4)]) {
-      const y = layer.forward(db.randn([2, 3, 3], { dtype: "float64" }));
+      const y = layer.forward(db.randn([2, 3, 3], { dtype: "float64" })) as db.GradTensor;
       y.sum().backward();
       for (const p of layer.parameters()) expect(p.grad).not.toBeNull();
     }

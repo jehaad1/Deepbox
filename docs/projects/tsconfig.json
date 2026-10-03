@@ -3,7 +3,8 @@
     "target": "ES2024",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2024"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
@@ -16,12 +17,12 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "composite": false,
-    "rootDir": "..",
+    "rootDir": "../..",
     "paths": {
-      "deepbox": ["./src/index.ts"],
-      "deepbox/*": ["./src/*/index.ts"]
+      "deepbox": ["../../src/index.ts"],
+      "deepbox/*": ["../../src/*/index.ts"]
     }
   },
-  "include": ["./**/*.ts", "../src/**/*.ts"],
+  "include": ["./**/*.ts", "../../src/**/*.ts"],
   "exclude": ["node_modules", "output"]
 }

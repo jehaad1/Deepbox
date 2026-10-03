@@ -1,5 +1,5 @@
 /**
- * Benchmark 06: Statistical Analysis — Deepbox vs NumPy/SciPy
+ * Benchmark 06: Statistical Analysis (Deepbox vs NumPy/SciPy)
  *
  * Compares statistical operations: descriptive stats, correlations,
  * percentiles, and distribution analysis.

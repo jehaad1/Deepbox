@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tensor } from "../src/ndarray";
+import { type Tensor, tensor } from "../src/ndarray";
 import { RFE, SelectFromModel } from "../src/preprocess";
 
 // ---------------------------------------------------------------------------
@@ -8,13 +8,25 @@ import { RFE, SelectFromModel } from "../src/preprocess";
 class MockImportanceEstimator {
   featureImportances_: number[] | undefined;
   private readonly importances: number[];
+  private readonly keys: number[];
 
-  constructor(importances: number[]) {
+  /**
+   * @param importances - Importance of each original feature
+   * @param keys - First-row value that identifies each original column, so the
+   *   mock can report importances for whichever columns it is given
+   */
+  constructor(importances: number[], keys: number[] = [1, 10, 100, 1000]) {
     this.importances = importances;
+    this.keys = keys;
   }
 
-  fit(_X: unknown, _y: unknown): this {
-    this.featureImportances_ = [...this.importances];
+  fit(X: Tensor, _y: unknown): this {
+    const nCols = X.shape[1] ?? 0;
+    const firstRow = (X.toArray() as number[][])[0] ?? [];
+    this.featureImportances_ = Array.from(
+      { length: nCols },
+      (_, j) => this.importances[this.keys.indexOf(firstRow[j] as number)] ?? 0
+    );
     return this;
   }
 }
@@ -158,7 +170,7 @@ describe("SelectFromModel", () => {
 // ---------------------------------------------------------------------------
 describe("RFE", () => {
   // We create an estimator whose importances change based on active features
-  // For simplicity, use a fixed importance estimator — RFE will re-fit each round
+  // For simplicity, use a fixed importance estimator. RFE will re-fit each round
   // but the mock always returns the same importances (truncated to active count)
 
   it("eliminates features down to nFeaturesToSelect", () => {

@@ -3,7 +3,7 @@ import { Lasso, LinearRegression, LogisticRegression, Ridge } from "../src/ml";
 import { tensor } from "../src/ndarray";
 
 /**
- * Comprehensive test suite for ML package
+ * Test suite for the ML package
  *
  * This file contains extensive tests covering:
  * - Edge cases (empty data, single sample, NaN, Infinity)
@@ -15,8 +15,8 @@ import { tensor } from "../src/ndarray";
  * - API compliance
  */
 
-describe("deepbox/ml - Comprehensive ML Package Tests", () => {
-  describe("LinearRegression - Comprehensive", () => {
+describe("deepbox/ml package tests", () => {
+  describe("LinearRegression tests", () => {
     describe("Edge Cases", () => {
       it("should handle single sample", () => {
         const model = new LinearRegression();
@@ -372,7 +372,7 @@ describe("deepbox/ml - Comprehensive ML Package Tests", () => {
     });
   });
 
-  describe("Ridge - Comprehensive", () => {
+  describe("Ridge tests", () => {
     describe("Regularization Behavior", () => {
       it("should reduce coefficient magnitudes with regularization", () => {
         const X = tensor([
@@ -545,7 +545,7 @@ describe("deepbox/ml - Comprehensive ML Package Tests", () => {
     });
   });
 
-  describe("Lasso - Comprehensive", () => {
+  describe("Lasso tests", () => {
     describe("Sparsity Behavior", () => {
       it("should produce sparse solutions with high alpha", () => {
         const model = new Lasso({ alpha: 10.0, maxIter: 2000 });
@@ -795,7 +795,7 @@ describe("deepbox/ml - Comprehensive ML Package Tests", () => {
     });
   });
 
-  describe("LogisticRegression - Comprehensive", () => {
+  describe("LogisticRegression tests", () => {
     describe("Binary Classification", () => {
       it("should classify linearly separable data", () => {
         const model = new LogisticRegression({

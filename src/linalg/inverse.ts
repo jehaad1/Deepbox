@@ -24,6 +24,12 @@ import { svd } from "./decomposition/svd";
  * - Matrix must be square
  * - Matrix must be non-singular (det(A) ≠ 0)
  *
+ * **Numerical singularity**: as in NumPy, only an exactly zero pivot is reported as
+ * singular. A matrix that is singular up to rounding error, such as
+ * `[[1, 2, 3], [4, 5, 6], [7, 8, 9]]`, returns very large entries instead of throwing.
+ * Check `cond(a)` or `matrixRank(a)` first when the input may be rank deficient, or use
+ * {@link pinv}.
+ *
  * **Properties**:
  * - A * inv(A) = I
  * - inv(inv(A)) = A
@@ -42,7 +48,7 @@ import { svd } from "./decomposition/svd";
  * ```
  *
  * @throws {ShapeError} If matrix is not square or not 2D
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If matrix is singular or contains non-finite values
  *
  * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
@@ -59,7 +65,7 @@ export function inv(a: Tensor): Tensor {
     return fromDenseMatrix2D(0, 0, new Float64Array(0));
   }
 
-  const { data: A } = toDenseMatrix2D(a);
+  const { data: A } = toDenseMatrix2D(a, "inv()");
   const { lu, piv } = luFactorSquare(A, n);
 
   const rhs = new Float64Array(n * n);
@@ -76,7 +82,8 @@ export function inv(a: Tensor): Tensor {
  *
  * **Parameters**:
  * @param a - Input matrix of shape (M, N)
- * @param rcond - Cutoff for small singular values
+ * @param rcond - Cutoff for small singular values, relative to the largest one.
+ *               Defaults to max(M, N) * machine epsilon, as in NumPy 2.x.
  *
  * **Returns**: Pseudo-inverse of shape (N, M)
  *
@@ -89,7 +96,7 @@ export function inv(a: Tensor): Tensor {
  * **Algorithm**: Using SVD
  * A = U * Σ * V^T
  * pinv(A) = V * Σ^+ * U^T
- * where Σ^+ is pseudo-inverse of Σ (1/s_i for s_i > rcond, else 0)
+ * where Σ^+ is pseudo-inverse of Σ (1/s_i for s_i > rcond * s_max, else 0)
  *
  * @example
  * ```ts
@@ -104,7 +111,7 @@ export function inv(a: Tensor): Tensor {
  * ```
  *
  * @throws {ShapeError} If input is not 2D matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {InvalidParameterError} If rcond is negative or non-finite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
@@ -126,7 +133,7 @@ export function pinv(a: Tensor, rcond?: number): Tensor {
   }
 
   const [U_t, s_t, Vt_t] = svd(a, false);
-  const { data: U, cols: uCols, rows: uRows } = toDenseMatrix2D(U_t);
+  const { data: U, cols: uCols, rows: uRows } = toDenseMatrix2D(U_t, "pinv()");
   const s = toDenseVector1D(s_t);
   const { data: Vt, cols: vtCols, rows: vtRows } = toDenseMatrix2D(Vt_t);
 
@@ -144,18 +151,19 @@ export function pinv(a: Tensor, rcond?: number): Tensor {
     sInv[i] = si > cutoff ? 1 / si : 0;
   }
 
-  // Compute pinv(A) = V * diag(sInv) * U^T
-  // V is n x k (transpose of Vt).
+  // Compute pinv(A) = V * diag(sInv) * U^T. Scale the rows of Vt once, then
+  // accumulate rank-one terms so that U and the output are read row by row.
   const out = new Float64Array(n * m);
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < m; j++) {
-      let sum = 0;
-      for (let r = 0; r < k; r++) {
-        const v_ir = Vt[r * n + i] as number; // Vt[r,i] = V[i,r]
-        const u_jr = U[j * k + r] as number; // U[j,r]
-        sum += v_ir * (sInv[r] as number) * u_jr;
+  for (let r = 0; r < k; r++) {
+    const si = sInv[r] as number;
+    if (si === 0) continue;
+    for (let i = 0; i < n; i++) {
+      const vs = (Vt[r * n + i] as number) * si; // V[i,r] / s_r
+      if (vs === 0) continue;
+      const outRow = i * m;
+      for (let j = 0; j < m; j++) {
+        out[outRow + j] = (out[outRow + j] as number) + vs * (U[j * k + r] as number);
       }
-      out[i * m + j] = sum;
     }
   }
 

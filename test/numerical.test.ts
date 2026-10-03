@@ -198,8 +198,9 @@ describe("digitize", () => {
     expect(() => digitize(tensor([1]), tensor([[1, 2]]))).toThrow();
   });
 
-  it("throws on unsorted bins", () => {
-    expect(() => digitize(tensor([1]), tensor([3, 1]))).toThrow();
+  it("throws on bins that are neither increasing nor decreasing", () => {
+    // [3, 1] is a valid decreasing edge list (numpy.digitize accepts it).
+    expect(() => digitize(tensor([1]), tensor([1, 3, 2]))).toThrow();
   });
 });
 

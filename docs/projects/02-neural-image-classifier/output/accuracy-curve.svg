@@ -4,7 +4,7 @@
 <rect x="50" y="50" width="700" height="300" fill="#ffffff" stroke="#000" />
 <clipPath id="dbclip-50-50-700-300"><path d="M50 50 L750 50 L750 350 L50 350 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-700-300)">
-<polyline fill="none" stroke="#4caf50" stroke-width="2" points="81.82,336.36 98.14,138.47 114.45,104.38 130.77,88.17 147.09,77.36 163.40,73.61 179.72,72.37 196.04,67.38 212.35,67.38 228.67,66.55 244.99,66.13 261.31,66.13 277.62,64.88 293.94,64.88 310.26,64.47 326.57,64.05 342.89,64.05 359.21,64.05 375.52,64.05 391.84,63.64 408.16,63.64 424.48,63.64 440.79,63.64 457.11,63.64 473.43,63.64 489.74,63.64 506.06,63.64 522.38,63.64 538.69,63.64 555.01,63.64 571.33,63.64 587.65,63.64 603.96,63.64 620.28,63.64 636.60,63.64 652.91,63.64 669.23,63.64 685.55,63.64 701.86,63.64 718.18,63.64" />
+<polyline fill="none" stroke="#4caf50" stroke-width="2" points="81.82,336.36 98.14,146.12 114.45,106.94 130.77,93.54 147.09,90.45 163.40,79.62 179.72,75.49 196.04,70.85 212.35,70.34 228.67,68.28 244.99,66.73 261.31,66.21 277.62,65.70 293.94,65.70 310.26,65.70 326.57,64.67 342.89,65.18 359.21,64.67 375.52,64.67 391.84,64.15 408.16,64.15 424.48,63.64 440.79,63.64 457.11,63.64 473.43,63.64 489.74,63.64 506.06,63.64 522.38,63.64 538.69,63.64 555.01,63.64 571.33,63.64 587.65,63.64 603.96,63.64 620.28,63.64 636.60,63.64 652.91,63.64 669.23,63.64 685.55,63.64 701.86,63.64 718.18,63.64" />
 </g>
 <line class="x-tick" x1="65.50" y1="350.00" x2="65.50" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="65.50" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
@@ -16,10 +16,12 @@
 <text class="tick-label tick-label-x" x="555.01" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">30</text>
 <line class="x-tick" x1="718.18" y1="350.00" x2="718.18" y2="355.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="718.18" y="357.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">40</text>
-<line class="y-tick" x1="50.00" y1="302.61" x2="45.00" y2="302.61" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="302.61" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
-<line class="y-tick" x1="50.00" y1="183.12" x2="45.00" y2="183.12" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="183.12" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">80</text>
+<line class="y-tick" x1="50.00" y1="285.89" x2="45.00" y2="285.89" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="285.89" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">70</text>
+<line class="y-tick" x1="50.00" y1="211.81" x2="45.00" y2="211.81" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="211.81" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">80</text>
+<line class="y-tick" x1="50.00" y1="137.72" x2="45.00" y2="137.72" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="137.72" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">90</text>
 <line class="y-tick" x1="50.00" y1="63.64" x2="45.00" y2="63.64" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="63.64" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">100</text>
 <text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Training Accuracy Curve</text>

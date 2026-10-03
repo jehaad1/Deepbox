@@ -50,14 +50,14 @@ describe("deepbox/ndarray - Arithmetic Branches", () => {
     expect(sub(a, b).toArray()).toEqual([3n, 3n]);
     expect(mul(a, b).toArray()).toEqual([10n, 18n]);
     const divOut = div(a, b);
-    expect(divOut.dtype).toBe("float64");
+    expect(divOut.dtype).toBe("float32");
     expect(divOut.toArray()).toEqual([2.5, 2]);
     expect(floorDiv(a, b).toArray()).toEqual([2n, 2n]);
     expect(mod(a, b).toArray()).toEqual([1n, 0n]);
     expect(pow(a, b).toArray()).toEqual([25n, 216n]);
 
     const rec = reciprocal(tensor([0, 2], { dtype: "int64" }));
-    expect(rec.dtype).toBe("float64");
+    expect(rec.dtype).toBe("float32");
     expect(rec.toArray()).toEqual([Infinity, 0.5]);
     expect(sign(tensor([-1, 0, 2], { dtype: "int64" })).toArray()).toEqual([-1n, 0n, 1n]);
   });
@@ -90,11 +90,11 @@ describe("deepbox/ndarray - Arithmetic Branches", () => {
     const a = tensor([1, 2], { dtype: "int32" });
     const b = tensor([2, 2], { dtype: "int32" });
     const out = div(a, b);
-    expect(out.dtype).toBe("float64");
+    expect(out.dtype).toBe("float32");
     expect(out.toArray()).toEqual([0.5, 1]);
 
     const rec = reciprocal(tensor([2, 4], { dtype: "uint8" }));
-    expect(rec.dtype).toBe("float64");
+    expect(rec.dtype).toBe("float32");
     expect(rec.toArray()).toEqual([0.5, 0.25]);
   });
 });

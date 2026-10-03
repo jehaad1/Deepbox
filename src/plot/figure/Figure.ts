@@ -11,16 +11,37 @@ import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { assertPositiveInt } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 import { Axes } from "./Axes";
+import { getTheme } from "./theme";
 
 /**
  * A Figure represents the entire plotting canvas.
+ *
+ * A new Figure has no axes; add them with {@link Figure.addAxes}. It renders to
+ * SVG, PDF, or (in Node.js) PNG.
+ *
+ * @example
+ * ```ts
+ * const fig = new Figure({ width: 400, height: 300 });
+ * const ax = fig.addAxes();
+ * ax.plot(tensor([0, 1, 2]), tensor([0, 1, 4]));
+ * const { svg } = fig.renderSVG();
+ * ```
  */
 export class Figure {
+  /** Width in pixels. */
   readonly width: number;
+  /** Height in pixels. */
   readonly height: number;
+  /** Background color. */
   readonly background: Color;
+  /** Axes in drawing order (later axes are drawn on top). */
   public readonly axesList: Axes[];
 
+  /**
+   * @param options - `width` and `height` in pixels (positive integers up to 32,768; default
+   *   640 x 480) and the `background` color (default: the figure color of the active theme,
+   *   white in the default theme)
+   */
   constructor(
     options: {
       readonly width?: number;
@@ -41,13 +62,16 @@ export class Figure {
       );
     }
 
-    this.background = normalizeColor(options.background, "#ffffff");
+    this.background = normalizeColor(options.background ?? getTheme().figureFacecolor, "#ffffff");
     this.axesList = [];
   }
 
   /**
-   * Add a new axes to the figure.
-   * @param options - Axes layout options
+   * Add a new axes to the figure and return it.
+   * @param options - `padding` (pixels kept free on each side for ticks and labels; default a
+   *   quarter of the smaller viewport side, at most 50), `facecolor` (default: the axes color of
+   *   the active theme, white in the default theme) and `viewport` (the figure region the axes
+   *   occupies; default the whole figure)
    */
   addAxes(
     options: {
@@ -63,6 +87,7 @@ export class Figure {
 
   /**
    * Render this figure to SVG.
+   * @returns The complete SVG document
    */
   renderSVG(): RenderedSVG {
     const elements: string[] = [];
@@ -78,7 +103,8 @@ export class Figure {
    * Render this figure to PNG (Node.js only).
    *
    * Note: PNG text rendering uses a built-in bitmap font for basic ASCII.
-   * Unsupported characters are rendered as "?".
+   * Lowercase letters are drawn as uppercase and unsupported characters are
+   * rendered as "?". Throws a MemoryError if the pixel buffer would exceed 2 GiB.
    */
   async renderPNG(): Promise<RenderedPNG> {
     if (!isNodeEnvironment_export()) {

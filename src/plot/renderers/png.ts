@@ -1,9 +1,18 @@
 /**
+ * Dependency-free PNG encoder (8-bit RGBA, no interlacing).
+ *
+ * Uses `node:zlib` for compression when running under Node.js and falls back to stored
+ * (uncompressed) deflate blocks elsewhere.
+ *
+ * @module plot/renderers/png
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
 import { InvalidParameterError } from "../../core";
 import { assertPositiveInt } from "../utils/validation";
+
+/** Largest width or height the PNG format allows (2^31 - 1). */
+const PNG_MAX_DIMENSION = 0x7fffffff;
 
 function isNodeEnvironment(): boolean {
   return (
@@ -38,14 +47,23 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-function crc32(buf: Uint8Array): number {
+const CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+/** CRC-32 (IEEE 802.3) as used by PNG chunks, over the concatenation of `parts`. */
+function crc32(...parts: Uint8Array[]): number {
   let crc = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    let x = (crc ^ (buf[i] ?? 0)) & 0xff;
-    for (let k = 0; k < 8; k++) {
-      x = (x & 1) !== 0 ? 0xedb88320 ^ (x >>> 1) : x >>> 1;
+  for (const buf of parts) {
+    for (let i = 0; i < buf.length; i++) {
+      crc = (CRC_TABLE[(crc ^ (buf[i] ?? 0)) & 0xff] ?? 0) ^ (crc >>> 8);
     }
-    crc = (crc >>> 8) ^ x;
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -53,13 +71,31 @@ function crc32(buf: Uint8Array): number {
 function pngChunk(type: string, data: Uint8Array): Uint8Array {
   const t = ascii4(type);
   const len = u32be(data.length);
-  const crc = u32be(crc32(concatBytes([t, data])));
+  const crc = u32be(crc32(t, data));
   return concatBytes([len, t, data, crc]);
 }
 
+/** Adler-32 checksum, reducing modulo 65521 once per 5552 bytes instead of per byte. */
+function adler32(data: Uint8Array): number {
+  let a = 1;
+  let b = 0;
+  for (let start = 0; start < data.length; start += 5552) {
+    const end = Math.min(start + 5552, data.length);
+    for (let i = start; i < end; i++) {
+      a += data[i] ?? 0;
+      b += a;
+    }
+    a %= 65521;
+    b %= 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+/** Zlib stream made of stored (uncompressed) deflate blocks. */
 function deflateUncompressed(data: Uint8Array): Uint8Array {
   const maxBlockSize = 65535;
-  const numBlocks = Math.ceil(data.length / maxBlockSize);
+  // An empty input still needs one final (empty) block to be a valid stream.
+  const numBlocks = Math.max(1, Math.ceil(data.length / maxBlockSize));
 
   let totalSize = 0;
   for (let i = 0; i < numBlocks; i++) {
@@ -92,24 +128,23 @@ function deflateUncompressed(data: Uint8Array): Uint8Array {
     outPos += blockSize;
   }
 
-  let a = 1;
-  let b = 0;
-  for (let i = 0; i < data.length; i++) {
-    a = (a + (data[i] ?? 0)) % 65521;
-    b = (b + a) % 65521;
-  }
-  const adler32 = ((b << 16) | a) >>> 0;
+  const adler = adler32(data);
 
-  output[outPos++] = (adler32 >>> 24) & 0xff;
-  output[outPos++] = (adler32 >>> 16) & 0xff;
-  output[outPos++] = (adler32 >>> 8) & 0xff;
-  output[outPos++] = adler32 & 0xff;
+  output[outPos++] = (adler >>> 24) & 0xff;
+  output[outPos++] = (adler >>> 16) & 0xff;
+  output[outPos++] = (adler >>> 8) & 0xff;
+  output[outPos++] = adler & 0xff;
 
   return output;
 }
 
 /**
- * Encodes RGBA to PNG.
+ * Encodes non-premultiplied 8-bit RGBA pixels (row-major, top row first) as a PNG file.
+ * @param width - Image width in pixels (1 to 2^31 - 1)
+ * @param height - Image height in pixels (1 to 2^31 - 1)
+ * @param rgba - Pixel data, exactly `width * height * 4` bytes
+ * @throws {InvalidParameterError} If a dimension is not a positive integer within the PNG limit
+ *   or `rgba` has the wrong length.
  * @internal
  */
 export async function pngEncodeRGBA(
@@ -119,6 +154,13 @@ export async function pngEncodeRGBA(
 ): Promise<Uint8Array> {
   assertPositiveInt("width", width);
   assertPositiveInt("height", height);
+  if (width > PNG_MAX_DIMENSION || height > PNG_MAX_DIMENSION) {
+    throw new InvalidParameterError(
+      `PNG dimensions must not exceed ${PNG_MAX_DIMENSION}; received ${width}x${height}`,
+      "width/height",
+      { width, height }
+    );
+  }
   if (rgba.length !== width * height * 4)
     throw new InvalidParameterError("RGBA buffer has incorrect length", "rgba", rgba.length);
 

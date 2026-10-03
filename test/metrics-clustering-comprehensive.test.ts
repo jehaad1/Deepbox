@@ -14,7 +14,7 @@ import {
 } from "../src/metrics";
 import { tensor } from "../src/ndarray";
 
-describe("Clustering Metrics - Comprehensive Tests", () => {
+describe("Clustering Metrics tests", () => {
   // Standard test data
   const X = tensor([
     [1, 2],

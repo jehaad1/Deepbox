@@ -1,8 +1,9 @@
 /**
- * Device kernel contract — the execution interface accelerated backends implement.
+ * Device kernel contract: the execution interface that accelerated backends implement.
  *
  * A {@link KernelBackend} owns device memory ({@link DeviceBuffer}) and executes
- * a fixed set of float32 tensor kernels on it. The ndarray dispatch layer routes
+ * a fixed set of tensor kernels on it (float32, plus float16/bfloat16 buffers
+ * where the backend supports them). The ndarray dispatch layer routes
  * eligible ops on non-CPU tensors here; everything it cannot express throws a
  * `DeviceError` instead of silently computing on the wrong device.
  *
@@ -19,6 +20,19 @@ import type { Device } from "../types/device";
 import type { Backend } from "./Backend";
 
 /**
+ * Element type of a {@link DeviceBuffer}.
+ *
+ * `float32` is the default (an absent/`undefined` `dtype` on a buffer means
+ * float32, so all existing code keeps working). `float16` is true on-device
+ * IEEE-754 half precision (2 bytes/element, requires the WebGPU `shader-f16`
+ * feature). `bfloat16` gives correct bfloat16 numerics to the user via
+ * rounding at upload/download while computing on-device in float32, so the
+ * WebGPU backend stores it in 4 bytes/element
+ * (see {@link https://deepbox.dev/docs/devices-and-execution | Devices & execution}).
+ */
+export type DeviceDType = "float32" | "float16" | "bfloat16";
+
+/**
  * Opaque handle to memory owned by a {@link KernelBackend}.
  *
  * The handle is created by the backend (`upload`, `fill`, or as a kernel
@@ -27,22 +41,14 @@ import type { Backend } from "./Backend";
  * finalization registry, but deterministic release via `Tensor.dispose()`
  * is recommended for large buffers.
  */
-/**
- * Element type of a {@link DeviceBuffer}.
- *
- * `float32` is the default (an absent/`undefined` `dtype` on a buffer means
- * float32, so all existing code keeps working). `float16` is true on-device
- * IEEE-754 half precision (2 bytes/element, requires the WebGPU `shader-f16`
- * feature). `bfloat16` gives correct bfloat16 numerics to the user via
- * host-side rounding at upload/download while computing on-device in float32
- * (see {@link https://deepbox.dev/docs/devices-and-execution | Devices & execution}).
- */
-export type DeviceDType = "float32" | "float16" | "bfloat16";
-
 export type DeviceBuffer = {
   /** Device that owns this buffer. */
   readonly device: Device;
-  /** Size of the buffer in bytes (dtype-aware: f16/bf16 are 2 bytes/element). */
+  /**
+   * Size of the buffer's payload in bytes. This is the on-device storage
+   * size: 2 bytes per element for `float16`, 4 for `float32`, and 4 for
+   * `bfloat16` on backends that store it as float32 (the WebGPU backend).
+   */
   readonly byteLength: number;
   /** Number of elements in the buffer. */
   readonly size: number;
@@ -106,7 +112,7 @@ export type TernaryKernelOp = "where";
 /**
  * Geometry of a 2-D convolution unfold/fold (`im2col`/`col2im`), all in
  * elements. The input is `[batch, channels, height, width]`; the unfolded
- * columns are `[batch, outH*outW, channels*kH*kW]` — laid out for a
+ * columns are `[batch, outH*outW, channels*kH*kW]`, laid out for a
  * `[channels*kH*kW, outChannels]` weight matmul.
  */
 export type Im2ColParams = {
@@ -130,7 +136,7 @@ export type PoolKernelOp = "max" | "avg";
 /**
  * Execution interface for accelerated (non-CPU) backends.
  *
- * Implementations execute float32 kernels over {@link DeviceBuffer} memory.
+ * Implementations execute kernels over {@link DeviceBuffer} memory.
  * All kernels are synchronous from the caller's perspective: they enqueue
  * device work and return a handle immediately. The only asynchronous
  * operation is `download`, which must wait for in-flight work targeting the
@@ -205,7 +211,8 @@ export interface KernelBackend extends Backend {
 
   /**
    * Full reduction over all elements. Returns a buffer holding a single
-   * float32 value.
+   * element of the input's dtype. `max`/`min` propagate NaN; `mean` divides
+   * the sum by the element count.
    */
   reduce(op: ReduceKernelOp, x: DeviceBuffer, layout: KernelLayout): DeviceBuffer;
 
@@ -214,11 +221,12 @@ export interface KernelBackend extends Backend {
    * `layout.shape`. Returns a contiguous row-major buffer of the input shape
    * with `axis` removed (`prod(shape) / shape[axis]` elements); the caller
    * reshapes to add a size-1 axis back when `keepdims` is requested.
+   * Reducing a zero-length axis is an error.
    */
   reduceAxis(op: ReduceKernelOp, x: DeviceBuffer, layout: KernelLayout, axis: number): DeviceBuffer;
 
   /**
-   * Batched matrix multiply: `[..., m, k] @ [..., n', k] -> [..., m, n]` where
+   * Batched matrix multiply: `[..., m, k] @ [..., k, n] -> [..., m, n]` where
    * the leading batch dimensions match. Each operand arrives with an explicit
    * per-dimension stride (broadcasting a batch dim is a stride-0 dimension),
    * so a shared operand (e.g. one weight matrix across a batch) needs no copy.
@@ -269,9 +277,9 @@ export interface KernelBackend extends Backend {
 
   /**
    * 2-D pooling over a `[batch, channels, height, width]` input, producing a
-   * contiguous `[batch, channels, outH, outW]` buffer. `max` propagates NaN;
-   * `avg` divides by the full window size (count-includes-pad = false: only
-   * in-range taps are averaged).
+   * contiguous `[batch, channels, outH, outW]` buffer. `max` propagates NaN
+   * and ignores padding; `avg` divides by the number of in-range taps, so
+   * padded positions do not count (PyTorch's `count_include_pad=False`).
    */
   pool2d(
     x: DeviceBuffer,
@@ -306,9 +314,10 @@ export type HostBinaryOp = "add" | "sub" | "mul" | "div";
  *
  * Host accelerators share the CPU address space: tensors on their device
  * keep ordinary TypedArray storage, eligible ops run through the
- * accelerator, and everything else silently uses the normal CPU
- * implementation — safe because the results are bit-identical IEEE-754
- * float32 arithmetic either way.
+ * accelerator, and everything else uses the normal CPU implementation. That
+ * fallback is safe as long as the accelerator's results are bit-identical
+ * IEEE-754 float32 arithmetic, which element-wise `add`, `sub`, `mul` and
+ * `div` are.
  */
 export interface HostAcceleratorBackend extends Backend {
   /**
@@ -321,7 +330,7 @@ export interface HostAcceleratorBackend extends Backend {
 }
 
 /**
- * Type guard: does this backend implement the {@link HostAcceleratorBackend} surface?
+ * Type guard for the {@link HostAcceleratorBackend} surface.
  *
  * @param backend - Backend to test
  * @returns `true` if the backend exposes host-accelerator kernels
@@ -331,7 +340,7 @@ export function isHostAcceleratorBackend(backend: Backend): backend is HostAccel
 }
 
 /**
- * Type guard: does this backend implement the {@link KernelBackend} execution surface?
+ * Type guard for the {@link KernelBackend} execution surface.
  *
  * @param backend - Backend to test
  * @returns `true` if the backend exposes device kernels

@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { mean, tensor } from "../src/ndarray";
 
 describe("deepbox/ndarray - mean edge cases", () => {
-  it("returns float64 for integer inputs", () => {
+  it("returns float32 for integer inputs", () => {
     const t32 = tensor([1, 2, 3], { dtype: "int32" });
     const m32 = mean(t32);
-    expect(m32.dtype).toBe("float64");
+    expect(m32.dtype).toBe("float32");
     expect(m32.toArray()).toBe(2);
 
     const t64 = tensor([1, 2], { dtype: "int64" });
     const m64 = mean(t64);
-    expect(m64.dtype).toBe("float64");
+    expect(m64.dtype).toBe("float32");
     expect(m64.toArray()).toBe(1.5);
   });
 
@@ -28,7 +28,7 @@ describe("deepbox/ndarray - mean edge cases", () => {
     const empty = tensor([], { dtype: "float32" });
     const m = mean(empty);
     expect(m.shape).toEqual([]);
-    expect(m.dtype).toBe("float64");
+    expect(m.dtype).toBe("float32");
     expect(Number.isNaN(Number(m.toArray()))).toBe(true);
   });
 

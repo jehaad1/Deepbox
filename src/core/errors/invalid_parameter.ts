@@ -26,8 +26,13 @@ export class InvalidParameterError extends DeepboxError {
   /** The invalid value that was provided */
   readonly value?: unknown;
 
-  constructor(message: string, parameterName?: string, value?: unknown) {
-    super(message);
+  constructor(
+    message: string,
+    parameterName?: string,
+    value?: unknown,
+    options?: { readonly cause?: unknown }
+  ) {
+    super(message, options);
     if (parameterName !== undefined) {
       this.parameterName = parameterName;
     }

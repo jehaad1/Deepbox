@@ -233,12 +233,12 @@ describe("F Distribution", () => {
 
   it("mean", () => {
     closeTo(f(5, 10).mean(), 10 / 8); // dfd/(dfd-2) when dfd > 2
-    expect(f(5, 2).mean()).toBeNaN(); // dfd <= 2
+    expect(f(5, 2).mean()).toBe(Number.POSITIVE_INFINITY); // dfd <= 2 (scipy: inf)
   });
 
   it("variance", () => {
     expect(Number.isFinite(f(5, 10).variance())).toBe(true);
-    expect(f(5, 4).variance()).toBeNaN(); // dfd <= 4
+    expect(f(5, 4).variance()).toBe(Number.POSITIVE_INFINITY); // dfd <= 4 (scipy: inf)
   });
 
   it("entropy is finite", () => {

@@ -19,30 +19,31 @@ import { toNum2D, toNumArr } from "./_helpers";
 describe("deepbox/ndarray - Activation Branches", () => {
   it("covers BigInt paths", () => {
     const t = tensor([-1, 0, 2], { dtype: "int64" });
-    expect(sigmoid(t).dtype).toBe("float64");
-    expect(relu(t).dtype).toBe("float64");
-    expect(leakyRelu(t, 0.1).dtype).toBe("float64");
-    expect(elu(t).dtype).toBe("float64");
-    expect(gelu(t).dtype).toBe("float64");
-    expect(tanh(t).dtype).toBe("float64");
-    expect(swish(t).dtype).toBe("float64");
-    expect(mish(t).dtype).toBe("float64");
-    expect(softplus(t).dtype).toBe("float64");
+    // Float ops compute in float32 for integer input; relu is a clip and keeps int64.
+    expect(sigmoid(t).dtype).toBe("float32");
+    expect(relu(t).dtype).toBe("int64");
+    expect(leakyRelu(t, 0.1).dtype).toBe("float32");
+    expect(elu(t).dtype).toBe("float32");
+    expect(gelu(t).dtype).toBe("float32");
+    expect(tanh(t).dtype).toBe("float32");
+    expect(swish(t).dtype).toBe("float32");
+    expect(mish(t).dtype).toBe("float32");
+    expect(softplus(t).dtype).toBe("float32");
   });
 
   it("promotes non-float activations to float outputs", () => {
     const tInt = tensor([-1, 0, 1], { dtype: "int32" });
     const sigmoidInt = sigmoid(tInt);
-    expect(sigmoidInt.dtype).toBe("float64");
+    expect(sigmoidInt.dtype).toBe("float32");
     expect(toNumArr(sigmoidInt.toArray())[1]).toBeCloseTo(0.5, 6);
 
     const leaky = leakyRelu(tInt, 0.1);
-    expect(leaky.dtype).toBe("float64");
+    expect(leaky.dtype).toBe("float32");
     expect(toNumArr(leaky.toArray())[0]).toBeCloseTo(-0.1, 6);
 
     const tBool = tensor([0, 1], { dtype: "bool" });
-    expect(sigmoid(tBool).dtype).toBe("float64");
-    expect(leakyRelu(tBool).dtype).toBe("float64");
+    expect(sigmoid(tBool).dtype).toBe("float32");
+    expect(leakyRelu(tBool).dtype).toBe("float32");
   });
 
   it("covers softmax/logSoftmax axis branches", () => {

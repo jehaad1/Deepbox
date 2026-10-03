@@ -8,13 +8,13 @@ import {
   DTypeError,
   dtypeToTypedArrayCtor,
   getBigIntElement,
-  getNumericElement,
   type Shape,
-  ShapeError,
 } from "../../core";
+import { roundHalfResult } from "../ops/_internal";
 import { dispatchDot } from "../ops/device_dispatch";
 import { transpose as tensorTranspose } from "../tensor/shape";
 import { type Tensor, Tensor as TensorClass } from "../tensor/Tensor";
+import { type MatmulOp, planMatmul } from "./matmul_plan";
 
 const INT64_MIN = -(1n << 63n);
 const INT64_MAX = (1n << 63n) - 1n;
@@ -25,13 +25,25 @@ function isFloatDType(dtype: DType): boolean {
 
 type NumericDType = Exclude<DType, "string">;
 
-function resolveDotDtype(a: DType, b: DType): NumericDType {
+type NumericOut = Exclude<import("../tensor/Tensor").Tensor["data"], string[] | BigInt64Array>;
+
+/** Name of the public operation, used in error messages. */
+export type ContractionOp = MatmulOp;
+
+/**
+ * Output dtype of a matrix product.
+ *
+ * Equal dtypes are kept as they are, float32 mixed with float64 gives float64,
+ * and every other combination (including int64 with a non-int64 dtype) is
+ * rejected so integer products are never silently routed through floats.
+ */
+function resolveDotDtype(op: ContractionOp, a: DType, b: DType): NumericDType {
   if (a === "string" || b === "string") {
-    throw new DTypeError("dot is not defined for string dtype");
+    throw new DTypeError(`${op} is not defined for string dtype`);
   }
   if (a === "int64" || b === "int64") {
     if (a !== b) {
-      throw new DTypeError(`dot requires matching dtypes; received ${a} and ${b}`);
+      throw new DTypeError(`${op} requires matching dtypes; received ${a} and ${b}`);
     }
     return "int64";
   }
@@ -41,32 +53,16 @@ function resolveDotDtype(a: DType, b: DType): NumericDType {
   if (isFloatDType(a) && isFloatDType(b)) {
     return "float64";
   }
-  throw new DTypeError(`dot requires matching dtypes; received ${a} and ${b}`);
+  throw new DTypeError(`${op} requires matching dtypes; received ${a} and ${b}`);
 }
-
-/**
- * Compute dot product or matrix multiplication.
- *
- * Supported cases:
- * - Both 1-D (vector, vector): inner product, returns a scalar tensor
- * - Both 2-D (matrix, matrix): standard matrix multiplication (m,k) x (k,n) -> (m,n)
- * - 2-D x 1-D (matrix, vector): matrix-vector product (m,k) x (k,) -> (m,)
- * - 1-D x 2-D (vector, matrix): vector-matrix product (k,) x (k,n) -> (n,)
- * - 3-D and higher: batch matrix multiplication, e.g. (b,m,k) x (b,k,n) -> (b,m,n)
- *
- * Other combinations (e.g., mixing a 1-D operand with a batched 3-D+ operand)
- * are not yet implemented and will throw a ShapeError.
- *
- * @param a - First tensor
- * @param b - Second tensor
- * @returns Dot product result
- */
-type NumericOut = Exclude<import("../tensor/Tensor").Tensor["data"], string[] | BigInt64Array>;
 
 /**
  * Register-blocked GEMM for unit inner strides: 2 output rows x 4 B-rows per
  * step. Each rowAcc load/store is amortized over 8 multiply-adds (vs 1 in the
  * plain i-k-j kernel), which is ~3x on large matrices.
+ *
+ * Every output element is accumulated in float64 in ascending `p` order, so
+ * the result matches a plain sequential dot product bit for bit.
  */
 function gemmBlocked(
   A: Float64Array | Float32Array,
@@ -76,12 +72,13 @@ function gemmBlocked(
   bOff: number,
   bS0: number,
   out: NumericOut,
+  oOff: number,
   m: number,
   k: number,
-  n: number
+  n: number,
+  r0: Float64Array,
+  r1: Float64Array
 ): void {
-  const r0 = new Float64Array(n);
-  const r1 = new Float64Array(n);
   let i = 0;
   for (; i + 2 <= m; i += 2) {
     r0.fill(0);
@@ -121,7 +118,7 @@ function gemmBlocked(
         r1[j] = (r1[j] as number) + a1 * x;
       }
     }
-    const rBase = i * n;
+    const rBase = oOff + i * n;
     for (let j = 0; j < n; j++) {
       out[rBase + j] = r0[j] as number;
       out[rBase + n + j] = r1[j] as number;
@@ -137,11 +134,17 @@ function gemmBlocked(
         r0[j] = (r0[j] as number) + aVal * (B[bB + j] as number);
       }
     }
-    const rBase = i * n;
+    const rBase = oOff + i * n;
     for (let j = 0; j < n; j++) out[rBase + j] = r0[j] as number;
   }
 }
 
+/**
+ * Strided i-k-j kernel for float64 operands with a float64 row accumulator.
+ *
+ * Zero entries of A are deliberately not skipped: `0 * Infinity` and
+ * `0 * NaN` must propagate NaN exactly like a reference matmul does.
+ */
 function gemmF64(
   A: Float64Array,
   aOff: number,
@@ -152,33 +155,33 @@ function gemmF64(
   bS0: number,
   bS1: number,
   out: NumericOut,
+  oOff: number,
   m: number,
   k: number,
-  n: number
+  n: number,
+  rowAcc: Float64Array
 ): void {
-  if (aS1 === 1 && bS1 === 1) {
-    gemmBlocked(A, aOff, aS0, B, bOff, bS0, out, m, k, n);
-    return;
-  }
-  const rowAcc = new Float64Array(n);
   for (let i = 0; i < m; i++) {
     rowAcc.fill(0);
     const aBase = aOff + i * aS0;
     for (let p = 0; p < k; p++) {
-      const aVal = A[aBase + p * aS1] ?? 0;
-      if (aVal === 0) continue;
+      const aVal = A[aBase + p * aS1] as number;
       const bBase = bOff + p * bS0;
       if (bS1 === 1) {
-        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j]!;
+        for (let j = 0; j < n; j++)
+          rowAcc[j] = (rowAcc[j] as number) + aVal * (B[bBase + j] as number);
       } else {
-        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j * bS1]!;
+        for (let j = 0; j < n; j++) {
+          rowAcc[j] = (rowAcc[j] as number) + aVal * (B[bBase + j * bS1] as number);
+        }
       }
     }
-    const rBase = i * n;
-    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+    const rBase = oOff + i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j] as number;
   }
 }
 
+/** Strided i-k-j kernel for float32 operands (float64 accumulation). */
 function gemmF32(
   A: Float32Array,
   aOff: number,
@@ -189,33 +192,33 @@ function gemmF32(
   bS0: number,
   bS1: number,
   out: NumericOut,
+  oOff: number,
   m: number,
   k: number,
-  n: number
+  n: number,
+  rowAcc: Float64Array
 ): void {
-  if (aS1 === 1 && bS1 === 1) {
-    gemmBlocked(A, aOff, aS0, B, bOff, bS0, out, m, k, n);
-    return;
-  }
-  const rowAcc = new Float64Array(n);
   for (let i = 0; i < m; i++) {
     rowAcc.fill(0);
     const aBase = aOff + i * aS0;
     for (let p = 0; p < k; p++) {
-      const aVal = A[aBase + p * aS1] ?? 0;
-      if (aVal === 0) continue;
+      const aVal = A[aBase + p * aS1] as number;
       const bBase = bOff + p * bS0;
       if (bS1 === 1) {
-        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j]!;
+        for (let j = 0; j < n; j++)
+          rowAcc[j] = (rowAcc[j] as number) + aVal * (B[bBase + j] as number);
       } else {
-        for (let j = 0; j < n; j++) rowAcc[j]! += aVal * B[bBase + j * bS1]!;
+        for (let j = 0; j < n; j++) {
+          rowAcc[j] = (rowAcc[j] as number) + aVal * (B[bBase + j * bS1] as number);
+        }
       }
     }
-    const rBase = i * n;
-    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+    const rBase = oOff + i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j] as number;
   }
 }
 
+/** Strided i-k-j kernel for any other pair of numeric typed arrays. */
 function gemmGeneric(
   A: ArrayLike<number>,
   aOff: number,
@@ -226,446 +229,362 @@ function gemmGeneric(
   bS0: number,
   bS1: number,
   out: NumericOut,
+  oOff: number,
   m: number,
   k: number,
-  n: number
+  n: number,
+  rowAcc: Float64Array
 ): void {
-  const rowAcc = new Float64Array(n);
   for (let i = 0; i < m; i++) {
     rowAcc.fill(0);
     const aBase = aOff + i * aS0;
     for (let p = 0; p < k; p++) {
-      const aVal = A[aBase + p * aS1] ?? 0;
-      if (aVal === 0) continue;
+      const aVal = A[aBase + p * aS1] as number;
       const bBase = bOff + p * bS0;
-      for (let j = 0; j < n; j++) rowAcc[j]! += aVal * (B[bBase + j * bS1] ?? 0);
+      for (let j = 0; j < n; j++) {
+        rowAcc[j] = (rowAcc[j] as number) + aVal * (B[bBase + j * bS1] as number);
+      }
     }
-    const rBase = i * n;
-    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j]!;
+    const rBase = oOff + i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j] as number;
   }
 }
 
-export function dot(a: Tensor, b: Tensor): Tensor {
-  const outDtype = resolveDotDtype(a.dtype, b.dtype);
-  const isBigInt = outDtype === "int64";
+/** Matrix-vector kernel (n === 1): one sequential float64 dot product per output row. */
+function gemv(
+  A: ArrayLike<number>,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: ArrayLike<number>,
+  bOff: number,
+  bS0: number,
+  out: NumericOut,
+  oOff: number,
+  m: number,
+  k: number
+): void {
+  for (let i = 0; i < m; i++) {
+    const aBase = aOff + i * aS0;
+    let sum = 0;
+    for (let p = 0; p < k; p++) {
+      sum += (A[aBase + p * aS1] as number) * (B[bOff + p * bS0] as number);
+    }
+    out[oOff + i] = sum;
+  }
+}
 
+/**
+ * int32 kernel with exact two's-complement wraparound (NumPy int32 semantics).
+ * Accumulating in float64 would lose the low bits once partial sums pass 2^53.
+ */
+function gemmInt32(
+  A: Int32Array,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: Int32Array,
+  bOff: number,
+  bS0: number,
+  bS1: number,
+  out: Int32Array,
+  oOff: number,
+  m: number,
+  k: number,
+  n: number,
+  rowAcc: Int32Array
+): void {
+  for (let i = 0; i < m; i++) {
+    rowAcc.fill(0);
+    const aBase = aOff + i * aS0;
+    for (let p = 0; p < k; p++) {
+      const aVal = A[aBase + p * aS1] as number;
+      const bBase = bOff + p * bS0;
+      for (let j = 0; j < n; j++) {
+        rowAcc[j] = ((rowAcc[j] as number) + Math.imul(aVal, B[bBase + j * bS1] as number)) | 0;
+      }
+    }
+    const rBase = oOff + i * n;
+    for (let j = 0; j < n; j++) out[rBase + j] = rowAcc[j] as number;
+  }
+}
+
+/** bool kernel: logical OR of ANDs (NumPy bool matmul). */
+function gemmBool(
+  A: Uint8Array,
+  aOff: number,
+  aS0: number,
+  aS1: number,
+  B: Uint8Array,
+  bOff: number,
+  bS0: number,
+  bS1: number,
+  out: Uint8Array,
+  oOff: number,
+  m: number,
+  k: number,
+  n: number
+): void {
+  for (let i = 0; i < m; i++) {
+    const aBase = aOff + i * aS0;
+    for (let j = 0; j < n; j++) {
+      let any = 0;
+      for (let p = 0; p < k; p++) {
+        if (A[aBase + p * aS1] !== 0 && B[bOff + p * bS0 + j * bS1] !== 0) {
+          any = 1;
+          break;
+        }
+      }
+      out[oOff + i * n + j] = any;
+    }
+  }
+}
+
+/** Flat offsets of every batch element, in row-major batch order. */
+function batchOffsetTable(
+  batchShape: readonly number[],
+  strides: readonly number[],
+  base: number
+): number[] {
+  let offsets = [base];
+  for (let d = 0; d < batchShape.length; d++) {
+    const dim = batchShape[d] ?? 0;
+    const stride = strides[d] ?? 0;
+    const next: number[] = new Array(offsets.length * dim);
+    let idx = 0;
+    for (const o of offsets) {
+      for (let i = 0; i < dim; i++) next[idx++] = o + i * stride;
+    }
+    offsets = next;
+  }
+  return offsets;
+}
+
+/**
+ * Shared implementation of `dot` and the strict 2-D `matmul`.
+ *
+ * Every supported shape combination is reduced to a batch of (m, k) x (k, n)
+ * products with explicit strides, so one set of kernels serves vectors,
+ * matrices and batches, and non-contiguous views are read in place.
+ *
+ * @internal
+ */
+export function contract(a: Tensor, b: Tensor, op: ContractionOp): Tensor {
+  return roundHalfResult(contractKernel(a, b, op));
+}
+
+function contractKernel(a: Tensor, b: Tensor, op: ContractionOp): Tensor {
+  const outDtype = resolveDotDtype(op, a.dtype, b.dtype);
+
+  const aData = a.data;
+  const bData = b.data;
+  if (Array.isArray(aData) || Array.isArray(bData)) {
+    throw new DTypeError(`${op} is not defined for string dtype`);
+  }
+
+  const plan = planMatmul(a, b, op);
+  const { k, n, outShape, aSM, aSK, bSK, bSN } = plan;
+  let { m, batchShape, aBatchStrides, bBatchStrides } = plan;
+
+  // A right operand shared by the whole batch (every batch stride is 0) lets
+  // the batch fold into the rows of `a` whenever its batch and row axes merge
+  // into one strided axis: (B, m, k) @ (k, n) is then a single (B*m, k) product.
+  if (batchShape.length > 0 && bBatchStrides.every((s) => s === 0)) {
+    let expected = aSM * m;
+    let foldable = true;
+    let rows = m;
+    for (let d = batchShape.length - 1; d >= 0; d--) {
+      const dim = batchShape[d] ?? 1;
+      if (dim === 1) continue;
+      if ((aBatchStrides[d] ?? 0) !== expected) {
+        foldable = false;
+        break;
+      }
+      rows *= dim;
+      expected *= dim;
+    }
+    if (foldable) {
+      m = rows;
+      batchShape = [];
+      aBatchStrides = [];
+      bBatchStrides = [];
+    }
+  }
+
+  let batchSize = 1;
+  for (const dim of batchShape) batchSize *= dim;
+
+  const aOffsets =
+    batchShape.length > 0 ? batchOffsetTable(batchShape, aBatchStrides, a.offset) : null;
+  const bOffsets =
+    batchShape.length > 0 ? batchOffsetTable(batchShape, bBatchStrides, b.offset) : null;
+
+  const Ctor = dtypeToTypedArrayCtor(outDtype);
+  const result = new Ctor(batchSize * m * n);
+  const blockSize = m * n;
+
+  if (blockSize > 0) {
+    if (outDtype === "int64") {
+      if (
+        !(aData instanceof BigInt64Array) ||
+        !(bData instanceof BigInt64Array) ||
+        !(result instanceof BigInt64Array)
+      ) {
+        throw new DTypeError(`${op} requires int64 dtype`);
+      }
+      for (let bi = 0; bi < batchSize; bi++) {
+        const aBase = aOffsets ? (aOffsets[bi] as number) : a.offset;
+        const bBase = bOffsets ? (bOffsets[bi] as number) : b.offset;
+        const oBase = bi * blockSize;
+        for (let i = 0; i < m; i++) {
+          for (let j = 0; j < n; j++) {
+            let sum = 0n;
+            for (let p = 0; p < k; p++) {
+              sum +=
+                getBigIntElement(aData, aBase + i * aSM + p * aSK) *
+                getBigIntElement(bData, bBase + p * bSK + j * bSN);
+            }
+            if (sum < INT64_MIN || sum > INT64_MAX) {
+              throw new DataValidationError(`int64 ${op} overflow`);
+            }
+            result[oBase + i * n + j] = sum;
+          }
+        }
+      }
+    } else {
+      if (
+        aData instanceof BigInt64Array ||
+        bData instanceof BigInt64Array ||
+        result instanceof BigInt64Array
+      ) {
+        throw new DTypeError(`${op} requires non-int64 dtype`);
+      }
+      // Scratch buffers are shared across all batch elements.
+      const r0 = new Float64Array(n);
+      const r1 = new Float64Array(n);
+      const rowAcc32 = outDtype === "int32" ? new Int32Array(n) : null;
+      for (let bi = 0; bi < batchSize; bi++) {
+        const aBase = aOffsets ? (aOffsets[bi] as number) : a.offset;
+        const bBase = bOffsets ? (bOffsets[bi] as number) : b.offset;
+        const oBase = bi * blockSize;
+        if (outDtype === "bool") {
+          gemmBool(
+            aData as Uint8Array,
+            aBase,
+            aSM,
+            aSK,
+            bData as Uint8Array,
+            bBase,
+            bSK,
+            bSN,
+            result as Uint8Array,
+            oBase,
+            m,
+            k,
+            n
+          );
+        } else if (outDtype === "int32") {
+          gemmInt32(
+            aData as Int32Array,
+            aBase,
+            aSM,
+            aSK,
+            bData as Int32Array,
+            bBase,
+            bSK,
+            bSN,
+            result as Int32Array,
+            oBase,
+            m,
+            k,
+            n,
+            rowAcc32 as Int32Array
+          );
+        } else if (n === 1) {
+          gemv(aData, aBase, aSM, aSK, bData, bBase, bSK, result, oBase, m, k);
+        } else if (aData instanceof Float64Array && bData instanceof Float64Array) {
+          if (aSK === 1 && bSN === 1) {
+            gemmBlocked(aData, aBase, aSM, bData, bBase, bSK, result, oBase, m, k, n, r0, r1);
+          } else {
+            gemmF64(aData, aBase, aSM, aSK, bData, bBase, bSK, bSN, result, oBase, m, k, n, r0);
+          }
+        } else if (aData instanceof Float32Array && bData instanceof Float32Array) {
+          if (aSK === 1 && bSN === 1) {
+            gemmBlocked(aData, aBase, aSM, bData, bBase, bSK, result, oBase, m, k, n, r0, r1);
+          } else {
+            gemmF32(aData, aBase, aSM, aSK, bData, bBase, bSK, bSN, result, oBase, m, k, n, r0);
+          }
+        } else {
+          gemmGeneric(aData, aBase, aSM, aSK, bData, bBase, bSK, bSN, result, oBase, m, k, n, r0);
+        }
+      }
+    }
+  }
+
+  const shape: Shape = outShape;
+  return TensorClass.fromTypedArray({
+    data: result,
+    shape,
+    dtype: outDtype,
+    device: a.device,
+  });
+}
+
+/**
+ * Compute dot product or matrix multiplication.
+ *
+ * Supported cases:
+ * - Both 1-D (vector, vector): inner product, returns a 0-d tensor
+ * - Both 2-D (matrix, matrix): standard matrix multiplication (m,k) x (k,n) -> (m,n)
+ * - 2-D x 1-D (matrix, vector): matrix-vector product (m,k) x (k,) -> (m,)
+ * - 1-D x 2-D (vector, matrix): vector-matrix product (k,) x (k,n) -> (n,)
+ * - 3-D and higher: batched matrix multiplication with `numpy.matmul` rules. The last
+ *   two axes are the matrices and the leading axes are batch dimensions, aligned from
+ *   the right and broadcast: two batch dimensions are compatible when they are equal or
+ *   one of them is 1, and a missing batch dimension counts as 1. For example
+ *   (b,m,k) x (b,k,n) -> (b,m,n), (1,m,k) x (3,k,n) -> (3,m,n),
+ *   (2,1,m,k) x (3,k,n) -> (2,3,m,n), and (b,m,k) x (k,n) -> (b,m,n).
+ * - 1-D with 3-D or higher: the vector is promoted like `numpy.matmul`, so
+ *   (b,m,k) x (k,) -> (b,m) and (k,) x (b,k,n) -> (b,n).
+ *
+ * Both operands must have the same dtype. The only mixed case allowed is
+ * float32 with float64, which gives float64. Float products are accumulated in
+ * float64. int32 results wrap around like NumPy, bool results are the logical
+ * product (OR of ANDs), and int64 results throw if they leave the int64 range.
+ * `0 * Infinity` and `0 * NaN` give NaN as usual.
+ *
+ * Unlike `numpy.dot`, 0-d operands are rejected (use `mul`), and N-D operands are
+ * multiplied as broadcast batches (the `numpy.matmul` rule) rather than summed over
+ * every leading axis of the left operand and the second-to-last axis of the right.
+ *
+ * @param a - First tensor
+ * @param b - Second tensor
+ * @returns Dot product result
+ *
+ * @throws {DTypeError} If a dtype is `string` or the dtypes are incompatible
+ * @throws {ShapeError} If an operand is 0-d, the inner dimensions differ, or the batch
+ * dimensions cannot be broadcast
+ * @throws {DataValidationError} If an int64 result overflows
+ *
+ * @example
+ * ```ts
+ * import { dot, ones, tensor } from "deepbox/ndarray";
+ *
+ * dot(tensor([1, 2, 3]), tensor([4, 5, 6])); // 32 (0-d tensor)
+ * dot(tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]])); // [[19, 22], [43, 50]]
+ *
+ * // Batch dimensions broadcast: (1, 2, 2) x (3, 2, 2) -> (3, 2, 2)
+ * dot(ones([1, 2, 2]), ones([3, 2, 2])).shape; // [3, 2, 2]
+ * ```
+ */
+export function dot(a: Tensor, b: Tensor): Tensor {
   if (a.device !== "cpu" || b.device !== "cpu") {
+    // Resolve the dtype first so unsupported dtypes report the same error on every device.
+    resolveDotDtype("dot", a.dtype, b.dtype);
     const onDevice = dispatchDot(a, b);
     if (onDevice) return onDevice;
   }
-
-  if (Array.isArray(a.data) || Array.isArray(b.data)) {
-    throw new DTypeError("dot is not defined for string dtype");
-  }
-  const aData = a.data;
-  const bData = b.data;
-
-  // Case 1: Both are 1-D vectors (inner product)
-  if (a.ndim === 1 && b.ndim === 1) {
-    if (a.shape[0] !== b.shape[0]) {
-      throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
-    }
-    const size = a.shape[0] ?? 0;
-    const aStride = a.strides[0] ?? 0;
-    const bStride = b.strides[0] ?? 0;
-    if (isBigInt) {
-      if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
-        throw new DTypeError("dot requires int64 dtype");
-      }
-      const bigA = aData;
-      const bigB = bData;
-      let sum = 0n;
-      for (let i = 0; i < size; i++) {
-        sum +=
-          getBigIntElement(bigA, a.offset + i * aStride) *
-          getBigIntElement(bigB, b.offset + i * bStride);
-      }
-      if (sum < INT64_MIN || sum > INT64_MAX) {
-        throw new DataValidationError("int64 dot overflow");
-      }
-      const result = new BigInt64Array(1);
-      result[0] = sum;
-      const scalarShape: Shape = [];
-      return TensorClass.fromTypedArray({
-        data: result,
-        shape: scalarShape,
-        dtype: "int64",
-        device: a.device,
-      });
-    }
-    if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
-      throw new DTypeError("dot requires non-int64 dtype");
-    }
-    const numA = aData;
-    const numB = bData;
-    let sum = 0;
-    for (let i = 0; i < size; i++) {
-      sum +=
-        getNumericElement(numA, a.offset + i * aStride) *
-        getNumericElement(numB, b.offset + i * bStride);
-    }
-    const Ctor = dtypeToTypedArrayCtor(outDtype);
-    const result = new Ctor(1);
-    result[0] = sum;
-    const scalarShape: Shape = [];
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: scalarShape,
-      dtype: outDtype,
-      device: a.device,
-    });
-  }
-
-  // Case 2: Both are 2-D matrices (matrix multiplication)
-  if (a.ndim === 2 && b.ndim === 2) {
-    const m = a.shape[0] ?? 0;
-    const k1 = a.shape[1] ?? 0;
-    const k2 = b.shape[0] ?? 0;
-    const n = b.shape[1] ?? 0;
-
-    if (k1 !== k2) {
-      throw new ShapeError(
-        `shapes ${a.shape} and ${b.shape} not aligned: ${k1} (dim 1) != ${k2} (dim 0)`
-      );
-    }
-
-    const outSize = m * n;
-    const Ctor = dtypeToTypedArrayCtor(outDtype);
-    const result = new Ctor(outSize);
-
-    if (isBigInt) {
-      if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
-        throw new DTypeError("dot requires int64 dtype");
-      }
-      if (!(result instanceof BigInt64Array)) {
-        throw new DTypeError("Internal error: expected int64 output buffer");
-      }
-      for (let i = 0; i < m; i++) {
-        for (let j = 0; j < n; j++) {
-          let sum = 0n;
-          for (let k = 0; k < k1; k++) {
-            const aVal = getBigIntElement(
-              aData,
-              a.offset + i * (a.strides[0] ?? 0) + k * (a.strides[1] ?? 0)
-            );
-            const bVal = getBigIntElement(
-              bData,
-              b.offset + k * (b.strides[0] ?? 0) + j * (b.strides[1] ?? 0)
-            );
-            sum += aVal * bVal;
-          }
-          if (sum < INT64_MIN || sum > INT64_MAX) {
-            throw new DataValidationError("int64 dot overflow");
-          }
-          result[i * n + j] = sum;
-        }
-      }
-    } else {
-      if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
-        throw new DTypeError("dot requires non-int64 dtype");
-      }
-      if (result instanceof BigInt64Array) {
-        throw new DTypeError("Internal error: unexpected int64 output buffer");
-      }
-      // Monomorphic i-k-j kernels with a float64 row accumulator (see
-      // gemmF64/gemmF32): avoids read-modify-write on the output per FLOP,
-      // walks B rows contiguously, and keeps each kernel's typed-array
-      // accesses monomorphic for V8.
-      const aS0 = a.strides[0] ?? 0;
-      const aS1 = a.strides[1] ?? 0;
-      const bS0 = b.strides[0] ?? 0;
-      const bS1 = b.strides[1] ?? 0;
-      if (aData instanceof Float64Array && bData instanceof Float64Array) {
-        gemmF64(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
-      } else if (aData instanceof Float32Array && bData instanceof Float32Array) {
-        gemmF32(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
-      } else {
-        gemmGeneric(aData, a.offset, aS0, aS1, bData, b.offset, bS0, bS1, result, m, k1, n);
-      }
-    }
-
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [m, n],
-      dtype: outDtype,
-      device: a.device,
-    });
-  }
-
-  // Case 3: Matrix-vector multiplication (2-D x 1-D)
-  if (a.ndim === 2 && b.ndim === 1) {
-    const m = a.shape[0] ?? 0;
-    const k1 = a.shape[1] ?? 0;
-    const k2 = b.shape[0] ?? 0;
-
-    if (k1 !== k2) {
-      throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
-    }
-
-    const Ctor = dtypeToTypedArrayCtor(outDtype);
-    const result = new Ctor(m);
-
-    if (isBigInt) {
-      if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
-        throw new DTypeError("dot requires int64 dtype");
-      }
-      if (!(result instanceof BigInt64Array)) {
-        throw new DTypeError("Internal error: expected int64 output buffer");
-      }
-      for (let i = 0; i < m; i++) {
-        let sum = 0n;
-        for (let k = 0; k < k1; k++) {
-          const aVal = getBigIntElement(
-            aData,
-            a.offset + i * (a.strides[0] ?? 0) + k * (a.strides[1] ?? 0)
-          );
-          const bVal = getBigIntElement(bData, b.offset + k * (b.strides[0] ?? 0));
-          sum += aVal * bVal;
-        }
-        if (sum < INT64_MIN || sum > INT64_MAX) {
-          throw new DataValidationError("int64 dot overflow");
-        }
-        result[i] = sum;
-      }
-    } else {
-      if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
-        throw new DTypeError("dot requires non-int64 dtype");
-      }
-      if (result instanceof BigInt64Array) {
-        throw new DTypeError("Internal error: unexpected int64 output buffer");
-      }
-      for (let i = 0; i < m; i++) {
-        let sum = 0;
-        for (let k = 0; k < k1; k++) {
-          const aVal = getNumericElement(
-            aData,
-            a.offset + i * (a.strides[0] ?? 0) + k * (a.strides[1] ?? 0)
-          );
-          const bVal = getNumericElement(bData, b.offset + k * (b.strides[0] ?? 0));
-          sum += aVal * bVal;
-        }
-        result[i] = sum;
-      }
-    }
-
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [m],
-      dtype: outDtype,
-      device: a.device,
-    });
-  }
-
-  // Case 4: Vector-matrix multiplication (1-D x 2-D)
-  if (a.ndim === 1 && b.ndim === 2) {
-    const k1 = a.shape[0] ?? 0;
-    const k2 = b.shape[0] ?? 0;
-    const n = b.shape[1] ?? 0;
-
-    if (k1 !== k2) {
-      throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
-    }
-
-    const Ctor = dtypeToTypedArrayCtor(outDtype);
-    const result = new Ctor(n);
-
-    if (isBigInt) {
-      if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
-        throw new DTypeError("dot requires int64 dtype");
-      }
-      if (!(result instanceof BigInt64Array)) {
-        throw new DTypeError("Internal error: expected int64 output buffer");
-      }
-      for (let j = 0; j < n; j++) {
-        let sum = 0n;
-        for (let k = 0; k < k1; k++) {
-          const aVal = getBigIntElement(aData, a.offset + k * (a.strides[0] ?? 0));
-          const bVal = getBigIntElement(
-            bData,
-            b.offset + k * (b.strides[0] ?? 0) + j * (b.strides[1] ?? 0)
-          );
-          sum += aVal * bVal;
-        }
-        if (sum < INT64_MIN || sum > INT64_MAX) {
-          throw new DataValidationError("int64 dot overflow");
-        }
-        result[j] = sum;
-      }
-    } else {
-      if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
-        throw new DTypeError("dot requires non-int64 dtype");
-      }
-      if (result instanceof BigInt64Array) {
-        throw new DTypeError("Internal error: unexpected int64 output buffer");
-      }
-      for (let j = 0; j < n; j++) {
-        let sum = 0;
-        for (let k = 0; k < k1; k++) {
-          const aVal = getNumericElement(aData, a.offset + k * (a.strides[0] ?? 0));
-          const bVal = getNumericElement(
-            bData,
-            b.offset + k * (b.strides[0] ?? 0) + j * (b.strides[1] ?? 0)
-          );
-          sum += aVal * bVal;
-        }
-        result[j] = sum;
-      }
-    }
-
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [n],
-      dtype: outDtype,
-      device: a.device,
-    });
-  }
-
-  // Case 5: Higher dimensional tensors (batched matmul)
-  if (a.ndim >= 3 || b.ndim >= 3) {
-    if (a.ndim < 2 || b.ndim < 2) {
-      throw new ShapeError(`dot not implemented for shapes ${a.shape} and ${b.shape}`);
-    }
-
-    const aBatchRank = Math.max(0, a.ndim - 2);
-    const bBatchRank = Math.max(0, b.ndim - 2);
-    const aBatchShape = a.shape.slice(0, aBatchRank);
-    const bBatchShape = b.shape.slice(0, bBatchRank);
-
-    let batchShape: number[];
-    if (aBatchRank > 0 && bBatchRank > 0) {
-      if (aBatchRank !== bBatchRank) {
-        throw new ShapeError(`batch dimensions don't match: [${aBatchShape}] vs [${bBatchShape}]`);
-      }
-      for (let i = 0; i < aBatchRank; i++) {
-        if (aBatchShape[i] !== bBatchShape[i]) {
-          throw new ShapeError(
-            `batch dimensions don't match: [${aBatchShape}] vs [${bBatchShape}]`
-          );
-        }
-      }
-      batchShape = aBatchShape;
-    } else if (aBatchRank > 0) {
-      batchShape = aBatchShape;
-    } else if (bBatchRank > 0) {
-      batchShape = bBatchShape;
-    } else {
-      throw new ShapeError(`dot not implemented for shapes ${a.shape} and ${b.shape}`);
-    }
-
-    const m = a.shape[a.ndim - 2] ?? 0;
-    const k1 = a.shape[a.ndim - 1] ?? 0;
-    const k2 = b.shape[b.ndim - 2] ?? 0;
-    const n = b.shape[b.ndim - 1] ?? 0;
-
-    if (k1 !== k2) {
-      throw new ShapeError(`shapes not aligned for matmul`);
-    }
-
-    let batchSize = 1;
-    for (const dim of batchShape) {
-      batchSize *= dim;
-    }
-
-    const outShape = batchShape.length === 0 ? [m, n] : [...batchShape, m, n];
-    const outSize = batchSize * m * n;
-    const Ctor = dtypeToTypedArrayCtor(outDtype);
-    const result = new Ctor(outSize);
-
-    const aStrideM = a.strides[a.ndim - 2];
-    const aStrideK = a.strides[a.ndim - 1];
-    const bStrideK = b.strides[b.ndim - 2];
-    const bStrideN = b.strides[b.ndim - 1];
-
-    if (aStrideM === undefined || aStrideK === undefined) {
-      throw new ShapeError("Internal error: missing strides for left operand");
-    }
-    if (bStrideK === undefined || bStrideN === undefined) {
-      throw new ShapeError("Internal error: missing strides for right operand");
-    }
-
-    const aBatchStrides = aBatchRank > 0 ? a.strides.slice(0, aBatchRank) : [];
-    const bBatchStrides = bBatchRank > 0 ? b.strides.slice(0, bBatchRank) : [];
-
-    const batchOffset = (
-      index: number,
-      shape: readonly number[],
-      strides: readonly number[],
-      baseOffset: number
-    ): number => {
-      if (shape.length === 0) return baseOffset;
-      let offset = baseOffset;
-      let remaining = index;
-      for (let d = shape.length - 1; d >= 0; d--) {
-        const dim = shape[d] ?? 0;
-        const stride = strides[d];
-        if (stride === undefined) {
-          throw new ShapeError("Internal error: missing batch stride");
-        }
-        if (dim === 0) {
-          return baseOffset;
-        }
-        const idx = remaining % dim;
-        remaining = Math.floor(remaining / dim);
-        offset += idx * stride;
-      }
-      return offset;
-    };
-
-    for (let b_idx = 0; b_idx < batchSize; b_idx++) {
-      const aOffset =
-        aBatchRank > 0 ? batchOffset(b_idx, batchShape, aBatchStrides, a.offset) : a.offset;
-      const bOffset =
-        bBatchRank > 0 ? batchOffset(b_idx, batchShape, bBatchStrides, b.offset) : b.offset;
-
-      for (let i = 0; i < m; i++) {
-        for (let j = 0; j < n; j++) {
-          if (isBigInt) {
-            if (!(aData instanceof BigInt64Array) || !(bData instanceof BigInt64Array)) {
-              throw new DTypeError("dot requires int64 dtype");
-            }
-            if (!(result instanceof BigInt64Array)) {
-              throw new DTypeError("Internal error: expected int64 output buffer");
-            }
-            let sum = 0n;
-            for (let k = 0; k < k1; k++) {
-              const aVal = getBigIntElement(aData, aOffset + i * aStrideM + k * aStrideK);
-              const bVal = getBigIntElement(bData, bOffset + k * bStrideK + j * bStrideN);
-              sum += aVal * bVal;
-            }
-            const outIndex = b_idx * (m * n) + i * n + j;
-            if (sum < INT64_MIN || sum > INT64_MAX) {
-              throw new DataValidationError("int64 dot overflow");
-            }
-            result[outIndex] = sum;
-          } else {
-            if (aData instanceof BigInt64Array || bData instanceof BigInt64Array) {
-              throw new DTypeError("dot requires non-int64 dtype");
-            }
-            if (result instanceof BigInt64Array) {
-              throw new DTypeError("Internal error: unexpected int64 output buffer");
-            }
-            let sum = 0;
-            for (let k = 0; k < k1; k++) {
-              const aVal = getNumericElement(aData, aOffset + i * aStrideM + k * aStrideK);
-              const bVal = getNumericElement(bData, bOffset + k * bStrideK + j * bStrideN);
-              sum += aVal * bVal;
-            }
-            const outIndex = b_idx * (m * n) + i * n + j;
-            result[outIndex] = sum;
-          }
-        }
-      }
-    }
-
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: outShape,
-      dtype: outDtype,
-      device: a.device,
-    });
-  }
-
-  throw new ShapeError(`dot not implemented for shapes ${a.shape} and ${b.shape}`);
+  return contract(a, b, "dot");
 }
 
 /**

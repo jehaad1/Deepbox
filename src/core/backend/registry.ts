@@ -1,16 +1,16 @@
 /**
- * Backend registry — manages the set of available execution backends.
+ * Backend registry. It manages the set of available execution backends.
  *
- * The CPU backend is registered automatically at module load time.
- * Future backends (WebGPU, WASM) can be registered via
- * {@link registerBackend}.
+ * The CPU backend is registered automatically at module load time. The
+ * WebGPU and WASM backends are opt-in: create one, `await backend.init()`,
+ * and pass it to {@link registerBackend}.
  *
  * @module core/backend
  * @see {@link https://deepbox.dev/docs/core-config | Config & backends}
  */
 
-import { DeviceError } from "../errors/index";
-import type { Device } from "../types/device";
+import { DeviceError, InvalidParameterError } from "../errors/index";
+import { DEVICES, type Device, isDevice } from "../types/device";
 import type { Backend } from "./Backend";
 import { CpuBackend } from "./CpuBackend";
 import {
@@ -22,7 +22,7 @@ import {
 
 const backends = new Map<Device, Backend>();
 
-// Register the CPU backend eagerly — it is always available.
+// Register the CPU backend eagerly. It is always available.
 backends.set("cpu", new CpuBackend());
 
 /**
@@ -45,7 +45,7 @@ export function getBackend(device: Device): Backend {
   if (!backend) {
     throw new DeviceError(
       `No backend registered for device "${device}". ` +
-        `Only the following devices have backends: ${[...backends.keys()].join(", ")}`
+        `Registered backends: ${formatRegisteredDevices()}`
     );
   }
   return backend;
@@ -55,19 +55,47 @@ export function getBackend(device: Device): Backend {
  * Register a new backend for a device.
  *
  * If a backend was previously registered for the same device it is
- * replaced (the old backend is **not** automatically disposed).
+ * replaced (the old backend is **not** automatically disposed). Register
+ * the backend after `await backend.init()`: tensors can only be created on
+ * a device whose backend reports `info().available === true`.
  *
  * @param device - Device the backend serves
  * @param backend - Backend implementation
+ * @throws {InvalidParameterError} If `device` is not a known device or
+ *   `backend` does not implement the {@link Backend} interface
  *
  * @example
  * ```ts
- * import { registerBackend } from 'deepbox/core';
+ * import { WasmBackend, registerBackend } from 'deepbox/core';
  *
- * registerBackend('wasm', myWasmBackend);
+ * const wasm = new WasmBackend();
+ * await wasm.init();
+ * registerBackend('wasm', wasm);
  * ```
  */
 export function registerBackend(device: Device, backend: Backend): void {
+  if (!isDevice(device)) {
+    throw new InvalidParameterError(
+      `Unknown device ${String(device)}. Known devices: ${DEVICES.join(", ")}`,
+      "device",
+      device
+    );
+  }
+  const candidate = backend as Partial<Backend> | null | undefined;
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    typeof candidate.info !== "function" ||
+    typeof candidate.supports !== "function" ||
+    typeof candidate.init !== "function" ||
+    typeof candidate.dispose !== "function"
+  ) {
+    throw new InvalidParameterError(
+      "backend must implement info(), supports(), init() and dispose()",
+      "backend",
+      backend
+    );
+  }
   backends.set(device, backend);
 }
 
@@ -120,7 +148,7 @@ export function isBackendAvailable(device: Device): boolean {
 /**
  * Remove a registered backend.
  *
- * The backend is **not** disposed — call `backend.dispose()` yourself if it
+ * The backend is **not** disposed. Call `backend.dispose()` yourself if it
  * holds resources. The CPU backend is mandatory and cannot be unregistered.
  *
  * @param device - Device whose backend should be removed

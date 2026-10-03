@@ -103,4 +103,4 @@ If you hit module resolution errors:
 
 ## License
 
-MIT — See the parent directory.
+MIT. See the LICENSE file in the repository root.

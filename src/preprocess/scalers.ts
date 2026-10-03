@@ -4,18 +4,27 @@ import {
   DTypeError,
   InvalidParameterError,
   NotFittedError,
+  ShapeError,
 } from "../core/errors";
-import { type Tensor, Tensor as TensorClass, tensor, zeros } from "../ndarray";
+import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { __random } from "../random/random";
 import {
   assert2D,
   assertNumericTensor,
-  createSeededRandom,
+  createRandomStream,
   getShape2D,
-  getStride1D,
   getStrides2D,
   shuffleIndicesInPlace,
 } from "./_internal";
+
+const EPS = Number.EPSILON;
+const SQRT2 = Math.SQRT2;
+const SQRT_PI = Math.sqrt(Math.PI);
+const TWO_OVER_SQRT_PI = 2 / SQRT_PI;
+
+// ---------------------------------------------------------------------------
+// Input handling helpers
+// ---------------------------------------------------------------------------
 
 function getNumericData(X: Tensor, name: string): ArrayLike<number | bigint> {
   if (X.dtype === "string") {
@@ -37,158 +46,250 @@ function parseBooleanOption(value: unknown, name: string, defaultValue: boolean)
   return value;
 }
 
+type DenseMatrix = { data: Float64Array; nSamples: number; nFeatures: number };
+
 /**
- * Read a 2-D numeric tensor into a dense row-major Float64Array (honouring
- * strides/offset), validating finiteness in the same pass. Returns the
- * buffer plus its dims. Replaces the old two-pass validate-then-nested-copy
- * (each element paid a `Number()` coercion, an undefined check, and a final
- * `tensor(nested)` re-validation) for the hot scaler transforms.
+ * Read a 2-D numeric tensor into a new dense row-major Float64Array (honouring
+ * strides and offset). With `requireFinite` the same pass rejects NaN and
+ * Infinity. The returned buffer is private to the caller and may be modified.
  */
-function denseRowMajorFinite(
-  X: Tensor,
-  name: string
-): { data: Float64Array; nSamples: number; nFeatures: number } {
+function denseRowMajor(X: Tensor, name: string, requireFinite: boolean): DenseMatrix {
   const [nSamples, nFeatures] = getShape2D(X);
   const src = getNumericData(X, name);
   const [stride0, stride1] = getStrides2D(X);
   const out = new Float64Array(nSamples * nFeatures);
   const offset = X.offset;
   let pos = 0;
-  if (stride1 === 1) {
-    for (let i = 0; i < nSamples; i++) {
-      let idx = offset + i * stride0;
-      for (let j = 0; j < nFeatures; j++) {
-        const v = Number(src[idx++]);
-        if (!Number.isFinite(v)) {
-          throw new DataValidationError(`${name} contains NaN or Infinity at index ${pos}`);
-        }
-        out[pos++] = v;
+  for (let i = 0; i < nSamples; i++) {
+    let idx = offset + i * stride0;
+    for (let j = 0; j < nFeatures; j++) {
+      const v = Number(src[idx]);
+      idx += stride1;
+      if (requireFinite && !Number.isFinite(v)) {
+        throw new DataValidationError(`${name} contains NaN or Infinity at index ${pos}`);
       }
-    }
-  } else {
-    for (let i = 0; i < nSamples; i++) {
-      const rowBase = offset + i * stride0;
-      for (let j = 0; j < nFeatures; j++) {
-        const v = Number(src[rowBase + j * stride1]);
-        if (!Number.isFinite(v)) {
-          throw new DataValidationError(`${name} contains NaN or Infinity at index ${pos}`);
-        }
-        out[pos++] = v;
-      }
+      out[pos++] = v;
     }
   }
   return { data: out, nSamples, nFeatures };
 }
 
-/** Read a fitted 1-D parameter tensor (mean_/scale_/…) into a Float64Array. */
-function dense1D(vec: Tensor, name: string, len: number): Float64Array {
-  const src = getNumericData(vec, name);
-  const stride = getStride1D(vec);
-  const offset = vec.offset;
-  const out = new Float64Array(len);
-  for (let j = 0; j < len; j++) out[j] = Number(src[offset + j * stride]);
+/** Validate and read the training matrix passed to `fit` / `partialFit`. */
+function readFitMatrix(X: Tensor): DenseMatrix {
+  if (X.size === 0) {
+    if (X.ndim === 2 && (X.shape[0] ?? 0) > 0) {
+      throw new InvalidParameterError("X must contain at least one feature", "X");
+    }
+    throw new InvalidParameterError("X must contain at least one sample", "X");
+  }
+  assert2D(X, "X");
+  assertNumericTensor(X, "X");
+  return denseRowMajor(X, "X", true);
+}
+
+/** Validate and read a matrix passed to `transform` / `inverseTransform`. */
+function readApplyMatrix(
+  X: Tensor,
+  expectedFeatures: number,
+  owner: string,
+  requireFinite: boolean
+): DenseMatrix {
+  assert2D(X, "X");
+  assertNumericTensor(X, "X");
+  const nFeatures = X.shape[1] ?? 0;
+  if (nFeatures !== expectedFeatures) {
+    throw new ShapeError(
+      `X has ${nFeatures} features, but ${owner} was fitted with ${expectedFeatures} features`,
+      { expected: [X.shape[0] ?? 0, expectedFeatures], received: X.shape, context: owner }
+    );
+  }
+  return denseRowMajor(X, "X", requireFinite);
+}
+
+function makeMatrix(
+  data: Float64Array,
+  nSamples: number,
+  nFeatures: number,
+  device: Tensor["device"]
+): Tensor {
+  return TensorClass.fromTypedArray({
+    data,
+    shape: [nSamples, nFeatures],
+    dtype: "float64",
+    device,
+  });
+}
+
+/** Copy a fitted per-feature array into a fresh 1-D float64 tensor. */
+function makeVector(values: Float64Array): Tensor {
+  return TensorClass.fromTypedArray({
+    data: values.slice(),
+    shape: [values.length],
+    dtype: "float64",
+    device: "cpu",
+  });
+}
+
+function assertSameFeatureCount(
+  nFeatures: number,
+  fittedFeatures: number,
+  owner: string,
+  method: string
+): void {
+  if (nFeatures !== fittedFeatures) {
+    throw new ShapeError(
+      `X has ${nFeatures} features, but ${owner}.${method} was previously called with ${fittedFeatures} features`,
+      { expected: [fittedFeatures], received: [nFeatures], context: owner }
+    );
+  }
+}
+
+/** Replace exact zeros by one so that constant features are left unscaled. */
+function nonZeroScale(values: Float64Array): Float64Array {
+  const out = new Float64Array(values.length);
+  for (let j = 0; j < values.length; j++) {
+    const v = values[j] as number;
+    out[j] = v === 0 ? 1 : v;
+  }
   return out;
 }
 
-function validateFiniteData(X: Tensor, name: string): void {
-  const [nSamples, nFeatures] = getShape2D(X);
-  const data = getNumericData(X, name);
-  const [stride0, stride1] = getStrides2D(X);
-  let flatIndex = 0;
+/**
+ * Linear interpolation that is exact at both ends and monotone, with the same
+ * branch split NumPy uses for percentiles. `lerp(a, a, t)` is exactly `a`.
+ */
+function lerp(a: number, b: number, t: number): number {
+  const d = b - a;
+  return t >= 0.5 ? b - d * (1 - t) : a + d * t;
+}
 
-  for (let i = 0; i < nSamples; i++) {
-    const rowBase = X.offset + i * stride0;
-    for (let j = 0; j < nFeatures; j++) {
-      const raw = data[rowBase + j * stride1];
-      if (raw === undefined) {
-        throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-      }
-      const val = Number(raw);
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError(`${name} contains NaN or Infinity at index ${flatIndex}`);
-      }
-      flatIndex += 1;
+/** Linear-interpolated quantile `q` in [0, 1] of an ascending sorted array. */
+function quantileSorted(sorted: Float64Array, q: number): number {
+  const n = sorted.length;
+  if (n === 1) return sorted[0] as number;
+  const position = q * (n - 1);
+  const lower = Math.floor(position);
+  if (lower >= n - 1) return sorted[n - 1] as number;
+  return lerp(sorted[lower] as number, sorted[lower + 1] as number, position - lower);
+}
+
+// ---------------------------------------------------------------------------
+// Normal distribution helpers (double precision)
+// ---------------------------------------------------------------------------
+
+/**
+ * Complementary error function with relative error around 1e-14 or better.
+ *
+ * Uses the Maclaurin series of erf for |x| < 1 and a continued fraction for
+ * larger |x|, so the tails keep full relative accuracy.
+ */
+function erfc(x: number): number {
+  if (Number.isNaN(x)) return Number.NaN;
+  const ax = Math.abs(x);
+  let result: number;
+  if (ax < 1) {
+    const x2 = ax * ax;
+    let term = ax;
+    let sum = ax;
+    for (let n = 1; n < 60; n++) {
+      term *= -x2 / n;
+      const add = term / (2 * n + 1);
+      sum += add;
+      if (Math.abs(add) < 1e-17 * Math.abs(sum)) break;
     }
+    result = 1 - TWO_OVER_SQRT_PI * sum;
+  } else if (ax > 27) {
+    result = 0;
+  } else {
+    let t = ax;
+    for (let k = 150; k >= 1; k--) t = ax + k / 2 / t;
+    result = Math.exp(-ax * ax) / (SQRT_PI * t);
   }
+  return x < 0 ? 2 - result : result;
 }
 
-function snapInverseValue(value: number): number {
-  if (!Number.isFinite(value)) return value;
-  const rounded = Math.round(value);
-  if (Math.abs(value - rounded) < 1e-12) return rounded;
-  const scaled = Math.round(value * 1e12) / 1e12;
-  if (Math.abs(value - scaled) < 1e-12) return scaled;
-  return value;
-}
-
-function normalQuantile(p: number): number {
-  if (!Number.isFinite(p) || p <= 0 || p >= 1) {
-    throw new InvalidParameterError(
-      "normalQuantile requires p in the open interval (0, 1)",
-      "p",
-      p
-    );
-  }
-  // Acklam's inverse normal CDF approximation.
-  const a1 = -3.969683028665376e1;
-  const a2 = 2.209460984245205e2;
-  const a3 = -2.759285104469687e2;
-  const a4 = 1.38357751867269e2;
-  const a5 = -3.066479806614716e1;
-  const a6 = 2.506628277459239;
-
-  const b1 = -5.447609879822406e1;
-  const b2 = 1.615858368580409e2;
-  const b3 = -1.556989798598866e2;
-  const b4 = 6.680131188771972e1;
-  const b5 = -1.328068155288572e1;
-
-  const c1 = -7.784894002430293e-3;
-  const c2 = -3.223964580411365e-1;
-  const c3 = -2.400758277161838;
-  const c4 = -2.549732539343734;
-  const c5 = 4.374664141464968;
-  const c6 = 2.938163982698783;
-
-  const d1 = 7.784695709041462e-3;
-  const d2 = 3.224671290700398e-1;
-  const d3 = 2.445134137142996;
-  const d4 = 3.754408661907416;
-
-  const plow = 0.02425;
-  const phigh = 1 - plow;
-
-  if (p < plow) {
-    const q = Math.sqrt(-2 * Math.log(p));
-    return (
-      (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
-      ((((d1 * q + d2) * q + d3) * q + d4) * q + 1)
-    );
-  }
-  if (p > phigh) {
-    const q = Math.sqrt(-2 * Math.log(1 - p));
-    return -(
-      (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
-      ((((d1 * q + d2) * q + d3) * q + d4) * q + 1)
-    );
-  }
-
-  const q = p - 0.5;
-  const r = q * q;
-  return (
-    ((((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q) /
-    (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1)
-  );
+function normalCdf(z: number): number {
+  return 0.5 * erfc(-z / SQRT2);
 }
 
 /**
- * Standardize features by removing mean and scaling to unit variance.
+ * Inverse of the standard normal CDF. Starts from Acklam's rational
+ * approximation (relative error about 1e-9) and polishes it with one Halley
+ * step against the accurate CDF above. Returns -Infinity / Infinity at 0 / 1.
+ */
+function normalQuantile(p: number): number {
+  if (Number.isNaN(p) || p < 0 || p > 1) return Number.NaN;
+  if (p === 0) return Number.NEGATIVE_INFINITY;
+  if (p === 1) return Number.POSITIVE_INFINITY;
+  if (p > 0.5) return -normalQuantile(1 - p);
+
+  const plow = 0.02425;
+  let z: number;
+  if (p < plow) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    z =
+      (((((-7.784894002430293e-3 * q + -3.223964580411365e-1) * q + -2.400758277161838) * q +
+        -2.549732539343734) *
+        q +
+        4.374664141464968) *
+        q +
+        2.938163982698783) /
+      ((((7.784695709041462e-3 * q + 3.224671290700398e-1) * q + 2.445134137142996) * q +
+        3.754408661907416) *
+        q +
+        1);
+  } else {
+    const q = p - 0.5;
+    const r = q * q;
+    z =
+      ((((((-3.969683028665376e1 * r + 2.209460984245205e2) * r + -2.759285104469687e2) * r +
+        1.38357751867269e2) *
+        r +
+        -3.066479806614716e1) *
+        r +
+        2.506628277459239) *
+        q) /
+      (((((-5.447609879822406e1 * r + 1.615858368580409e2) * r + -1.556989798598866e2) * r +
+        6.680131188771972e1) *
+        r +
+        -1.328068155288572e1) *
+        r +
+        1);
+  }
+
+  const e = normalCdf(z) - p;
+  const u = e * Math.sqrt(2 * Math.PI) * Math.exp((z * z) / 2);
+  if (Number.isFinite(u)) {
+    z -= u / (1 + (z * u) / 2);
+  }
+  return z;
+}
+
+/** Output of the normal QuantileTransformer is clipped here (as scikit-learn does). */
+const NORMAL_CLIP_PROBABILITY = 1e-7 - EPS;
+const NORMAL_CLIP_MIN = normalQuantile(NORMAL_CLIP_PROBABILITY);
+const NORMAL_CLIP_MAX = normalQuantile(1 - NORMAL_CLIP_PROBABILITY);
+
+/** The normal `inverseTransform` snaps probabilities closer than this to 0 or 1 to the data range ends. */
+const INVERSE_BOUNDS_THRESHOLD = 1e-7;
+
+// ---------------------------------------------------------------------------
+// StandardScaler
+// ---------------------------------------------------------------------------
+
+/**
+ * Standardize features by removing the mean and scaling to unit variance.
  *
- * **Formula**: z = (x - μ) / σ
+ * **Formula**: z = (x - μ) / σ, with σ the population standard deviation
+ * (divisor n, as in scikit-learn).
  *
- * **Attributes** (after fitting):
- * - `mean_`: Mean of each feature
- * - `scale_`: Standard deviation of each feature
+ * Features with zero variance are only centered; their scale is treated as 1.
+ * Statistics are accumulated in a numerically stable way, so
+ * {@link StandardScaler.partialFit} can be called on successive batches and
+ * gives the same result as a single `fit` on all rows.
+ *
+ * **Fitted attributes** (read-only getters): `mean`, `variance`, `scale`,
+ * `nSamplesSeen`, `nFeaturesIn`.
  *
  * @example
  * ```js
@@ -197,18 +298,19 @@ function normalQuantile(p: number): number {
  *
  * const X = tensor([[1, 2], [3, 4], [5, 6]]);
  * const scaler = new StandardScaler();
- * scaler.fit(X);
- * const XScaled = scaler.transform(X);
+ * const XScaled = scaler.fitTransform(X);
+ * const XBack = scaler.inverseTransform(XScaled);
  * ```
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class StandardScaler {
-  private fitted = false;
-  private mean_: Tensor | undefined;
-  private scale_: Tensor | undefined;
   private withMean: boolean;
   private withStd: boolean;
+  private nSamplesSeen_ = 0;
+  private nFeaturesIn_ = 0;
+  private runMean_: Float64Array | undefined;
+  private runM2_: Float64Array | undefined;
 
   /**
    * Creates a new StandardScaler.
@@ -217,6 +319,7 @@ export class StandardScaler {
    * @param options.withMean - Center data before scaling (default: true)
    * @param options.withStd - Scale data to unit variance (default: true)
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If an option is not a boolean
    */
   constructor(options: { withMean?: boolean; withStd?: boolean; copy?: boolean } = {}) {
     this.withMean = parseBooleanOption(options.withMean, "withMean", true);
@@ -224,221 +327,291 @@ export class StandardScaler {
     parseBooleanOption(options.copy, "copy", true);
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
-    }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+  private get fitted(): boolean {
+    return this.runMean_ !== undefined;
+  }
 
-    let means: number[] | undefined;
-    if (this.withMean || this.withStd) {
-      means = new Array<number>(nFeatures).fill(0);
+  /** Per-feature mean seen during fitting, or `undefined` if unfitted or `withMean` is false. */
+  get mean(): Tensor | undefined {
+    return this.withMean && this.runMean_ ? makeVector(this.runMean_) : undefined;
+  }
+
+  /** Per-feature population variance, or `undefined` if unfitted or `withStd` is false. */
+  get variance(): Tensor | undefined {
+    return this.withStd && this.runM2_ ? makeVector(this.varianceArray()) : undefined;
+  }
+
+  /** Per-feature scale (standard deviation, 1 for constant features), or `undefined` if unfitted or `withStd` is false. */
+  get scale(): Tensor | undefined {
+    return this.withStd && this.runM2_ ? makeVector(this.scaleArray()) : undefined;
+  }
+
+  /** Number of samples seen so far (0 when unfitted). */
+  get nSamplesSeen(): number {
+    return this.nSamplesSeen_;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  private varianceArray(): Float64Array {
+    const m2 = this.runM2_ as Float64Array;
+    const out = new Float64Array(m2.length);
+    const n = this.nSamplesSeen_;
+    for (let j = 0; j < m2.length; j++) out[j] = (m2[j] as number) / n;
+    return out;
+  }
+
+  private scaleArray(): Float64Array {
+    const variance = this.varianceArray();
+    const mean = this.runMean_ as Float64Array;
+    const n = this.nSamplesSeen_;
+    const out = new Float64Array(variance.length);
+    for (let j = 0; j < variance.length; j++) {
+      const v = variance[j] as number;
+      const m = mean[j] as number;
+      // A variance that is within rounding noise of zero means a constant feature.
+      const noiseBound = n * EPS * v + (n * m * EPS) ** 2;
+      out[j] = v <= noiseBound ? 1 : Math.sqrt(v);
+    }
+    return out;
+  }
+
+  private accumulate(batch: DenseMatrix, reset: boolean): void {
+    const { data, nSamples, nFeatures } = batch;
+    const batchMean = new Float64Array(nFeatures);
+    const lows = new Float64Array(nFeatures).fill(Number.POSITIVE_INFINITY);
+    const highs = new Float64Array(nFeatures).fill(Number.NEGATIVE_INFINITY);
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        let sum = 0;
-        for (let i = 0; i < nSamples; i++) {
-          const raw = data[X.offset + i * stride0 + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          sum += Number(raw);
-        }
-        if (means) {
-          means[j] = sum / nSamples;
-        }
+        const v = data[pos++] as number;
+        batchMean[j] = (batchMean[j] as number) + v;
+        if (v < (lows[j] as number)) lows[j] = v;
+        if (v > (highs[j] as number)) highs[j] = v;
+      }
+    }
+    for (let j = 0; j < nFeatures; j++) {
+      // A mean always lies between the smallest and largest value; the clamp
+      // removes summation round-off, so a constant feature has an exact mean.
+      const mean = (batchMean[j] as number) / nSamples;
+      batchMean[j] = Math.min(Math.max(mean, lows[j] as number), highs[j] as number);
+    }
+    const batchM2 = new Float64Array(nFeatures);
+    pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        const d = (data[pos++] as number) - (batchMean[j] as number);
+        batchM2[j] = (batchM2[j] as number) + d * d;
       }
     }
 
-    if (this.withStd) {
-      const stds = new Array<number>(nFeatures).fill(0);
+    const prevN = reset || !this.runMean_ || !this.runM2_ ? 0 : this.nSamplesSeen_;
+    let nextMean = batchMean;
+    let nextM2 = batchM2;
+    if (prevN > 0 && this.runMean_ && this.runM2_) {
+      const total = prevN + nSamples;
+      nextMean = new Float64Array(nFeatures);
+      nextM2 = new Float64Array(nFeatures);
       for (let j = 0; j < nFeatures; j++) {
-        const mean = means ? (means[j] ?? 0) : 0;
-        let sumSq = 0;
-        for (let i = 0; i < nSamples; i++) {
-          const raw = data[X.offset + i * stride0 + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          const val = Number(raw) - mean;
-          sumSq += val * val;
-        }
-        stds[j] = Math.sqrt(sumSq / nSamples);
+        const delta = (batchMean[j] as number) - (this.runMean_[j] as number);
+        nextMean[j] = (this.runMean_[j] as number) + (delta * nSamples) / total;
+        nextM2[j] =
+          (this.runM2_[j] as number) +
+          (batchM2[j] as number) +
+          (delta * delta * prevN * nSamples) / total;
       }
-      this.scale_ = tensor(stds, { dtype: "float64" });
-    } else {
-      this.scale_ = undefined;
     }
+    for (let j = 0; j < nFeatures; j++) {
+      if (!Number.isFinite(nextM2[j] as number)) {
+        throw new DataValidationError(
+          `Feature ${j} has values too large for its variance to be represented`
+        );
+      }
+    }
+    this.runMean_ = nextMean;
+    this.runM2_ = nextM2;
+    this.nSamplesSeen_ = prevN + nSamples;
+    this.nFeaturesIn_ = nFeatures;
+  }
 
-    this.mean_ = this.withMean && means ? tensor(means, { dtype: "float64" }) : undefined;
-
-    this.fitted = true;
+  /**
+   * Compute the mean and standard deviation of each feature, discarding any
+   * previous fit.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples or no features
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DTypeError} If X is not real numeric
+   * @throws {DataValidationError} If X contains NaN or Infinity, or a feature's variance would overflow
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    this.accumulate(readFitMatrix(X), true);
     return this;
   }
 
+  /**
+   * Update the running mean and variance with another batch of samples.
+   * Calling it on an unfitted scaler starts a new fit.
+   *
+   * @param X - Batch of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {ShapeError} If the number of features differs from earlier batches
+   * @throws {DataValidationError} If a feature's variance would overflow
+   */
+  partialFit(X: Tensor, _y?: Tensor): this {
+    const batch = readFitMatrix(X);
+    if (this.fitted) {
+      assertSameFeatureCount(batch.nFeatures, this.nFeaturesIn_, "StandardScaler", "partialFit");
+    }
+    this.accumulate(batch, false);
+    return this;
+  }
+
+  /**
+   * Center and scale X with the fitted statistics.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("StandardScaler must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const mean = this.mean_;
-    const scale = this.scale_;
-    if (this.withMean && !mean) {
-      throw new DeepboxError("StandardScaler internal error: missing mean_");
-    }
-    if (this.withStd && !scale) {
-      throw new DeepboxError("StandardScaler internal error: missing scale_");
-    }
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "StandardScaler",
+      true
+    );
+    const off = this.withMean ? (this.runMean_ as Float64Array) : new Float64Array(nFeatures);
+    const sc = this.withStd ? this.scaleArray() : new Float64Array(nFeatures).fill(1);
 
-    const { data, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
-
-    // Fold mean subtraction and 1/std into per-feature offset/scale vectors
-    // once, then apply them in a single dense pass. out = (x - off) * mul.
-    const off = this.withMean && mean ? dense1D(mean, "mean_", nFeatures) : null;
-    const mul = new Float64Array(nFeatures);
-    if (this.withStd && scale) {
-      const sc = dense1D(scale, "scale_", nFeatures);
-      for (let j = 0; j < nFeatures; j++) {
-        const s = sc[j] as number;
-        mul[j] = s === 0 ? 1 : 1 / s;
-      }
-    } else {
-      mul.fill(1);
-    }
-
-    const out = data; // transform in place over the freshly-allocated dense copy
     let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      if (off) {
-        for (let j = 0; j < nFeatures; j++) {
-          out[pos] = ((out[pos] as number) - (off[j] as number)) * (mul[j] as number);
-          pos++;
-        }
-      } else {
-        for (let j = 0; j < nFeatures; j++) {
-          out[pos] = (out[pos] as number) * (mul[j] as number);
-          pos++;
-        }
+      for (let j = 0; j < nFeatures; j++) {
+        data[pos] = ((data[pos] as number) - (off[j] as number)) / (sc[j] as number);
+        pos++;
       }
     }
-
-    return TensorClass.fromTypedArray({
-      data: out,
-      shape: [nSamples, nFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  fitTransform(X: Tensor): Tensor {
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Scaled data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
     return this.fit(X).transform(X);
   }
 
+  /**
+   * Undo the scaling: `x * scale + mean`. Results that are within a few
+   * rounding errors of an integer are returned as that integer, so integer
+   * data survives a round trip exactly.
+   *
+   * @param X - Scaled data of shape (n_samples, n_features)
+   * @returns Data in the original feature space
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   */
+  inverseTransform(X: Tensor): Tensor {
+    if (!this.fitted) {
+      throw new NotFittedError("StandardScaler must be fitted before inverseTransform");
+    }
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "StandardScaler",
+      false
+    );
+    const off = this.withMean ? (this.runMean_ as Float64Array) : new Float64Array(nFeatures);
+    const sc = this.withStd ? this.scaleArray() : new Float64Array(nFeatures).fill(1);
+
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        const scaled = (data[pos] as number) * (sc[j] as number);
+        const shift = off[j] as number;
+        data[pos] = snapToInteger(scaled + shift, Math.abs(scaled) + Math.abs(shift));
+        pos++;
+      }
+    }
+    return makeMatrix(data, nSamples, nFeatures, X.device);
+  }
+
+  /** Constructor options of this scaler. */
   getParams(): Record<string, unknown> {
     return { withMean: this.withMean, withStd: this.withStd };
   }
 
+  /**
+   * Change options. Fitted statistics are kept; they cover both options.
+   *
+   * @throws {InvalidParameterError} If a recognised option is not a boolean
+   */
   setParams(params: Record<string, unknown>): this {
-    if ("withMean" in params && typeof params["withMean"] === "boolean") {
-      this.withMean = params["withMean"];
+    if (params["withMean"] !== undefined) {
+      this.withMean = parseBooleanOption(params["withMean"], "withMean", this.withMean);
     }
-    if ("withStd" in params && typeof params["withStd"] === "boolean") {
-      this.withStd = params["withStd"];
+    if (params["withStd"] !== undefined) {
+      this.withStd = parseBooleanOption(params["withStd"], "withStd", this.withStd);
     }
     return this;
   }
 
+  /** Create an unfitted scaler with the same options. */
   clone(): StandardScaler {
-    return new StandardScaler(
-      this.getParams() as {
-        withMean?: boolean;
-        withStd?: boolean;
-        copy?: boolean;
-      }
-    );
-  }
-
-  inverseTransform(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("StandardScaler must be fitted before inverse_transform");
-    }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-    const mean = this.mean_;
-    const scale = this.scale_;
-    const meanData = mean ? getNumericData(mean, "mean_") : undefined;
-    const scaleData = scale ? getNumericData(scale, "scale_") : undefined;
-    const meanStride = mean ? getStride1D(mean) : 0;
-    const scaleStride = scale ? getStride1D(scale) : 0;
-
-    if (this.withMean && !mean) {
-      throw new DeepboxError("StandardScaler internal error: missing mean_");
-    }
-    if (this.withStd && !scale) {
-      throw new DeepboxError("StandardScaler internal error: missing scale_");
-    }
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
-    for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
-      for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let val = Number(raw);
-
-        if (this.withStd && scale && scaleData) {
-          const rawScale = scaleData[scale.offset + j * scaleStride];
-          if (rawScale === undefined) {
-            throw new DeepboxError("Internal error: scale tensor access out of bounds");
-          }
-          const std = Number(rawScale);
-          const safeStd = std === 0 ? 1 : std;
-          val *= safeStd;
-        }
-
-        if (this.withMean && mean && meanData) {
-          const meanValue = meanData[mean.offset + j * meanStride];
-          if (meanValue === undefined) {
-            throw new DeepboxError("Internal error: mean tensor access out of bounds");
-          }
-          val += Number(meanValue);
-        }
-
-        const resultRow = result[i];
-        if (resultRow === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        resultRow[j] = snapInverseValue(val);
-      }
-    }
-
-    return tensor(result, { dtype: "float64", device: X.device });
+    return new StandardScaler({ withMean: this.withMean, withStd: this.withStd });
   }
 }
 
 /**
- * Scale features to a range [min, max].
+ * Round `value` to the nearest integer when it lies within a few units of
+ * rounding error (relative to the magnitude of the operands that produced it).
+ */
+function snapToInteger(value: number, magnitude: number): number {
+  if (!Number.isFinite(value)) return value;
+  const rounded = Math.round(value);
+  return Math.abs(value - rounded) <= 4 * EPS * magnitude ? rounded : value;
+}
+
+// ---------------------------------------------------------------------------
+// MinMaxScaler
+// ---------------------------------------------------------------------------
+
+/**
+ * Scale each feature to a given range, by default [0, 1].
  *
  * **Formula**: X_scaled = (X - X.min) / (X.max - X.min) * (max - min) + min
+ *
+ * A feature with a single distinct value is shifted so that this value maps to
+ * `featureRange[0]`. Values outside the fitted range map outside the target
+ * range unless `clip` is set.
+ *
+ * **Fitted attributes** (read-only getters): `dataMin`, `dataMax`, `dataRange`,
+ * `scale`, `nSamplesSeen`, `nFeaturesIn`.
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class MinMaxScaler {
-  private fitted = false;
-  private dataMin_?: Tensor;
-  private dataMax_?: Tensor;
   private featureRange: [number, number];
   private clip: boolean;
+  private nSamplesSeen_ = 0;
+  private nFeaturesIn_ = 0;
+  private dataMin_: Float64Array | undefined;
+  private dataMax_: Float64Array | undefined;
 
   /**
    * Creates a new MinMaxScaler.
@@ -447,6 +620,7 @@ export class MinMaxScaler {
    * @param options.featureRange - Desired feature range [min, max] (default: [0, 1])
    * @param options.clip - Clip transformed values to featureRange (default: false)
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If featureRange is not a finite ascending pair
    */
   constructor(
     options: {
@@ -455,176 +629,273 @@ export class MinMaxScaler {
       copy?: boolean;
     } = {}
   ) {
-    this.featureRange = options.featureRange ?? [0, 1];
+    this.featureRange = validateFeatureRange(options.featureRange ?? [0, 1]);
     this.clip = parseBooleanOption(options.clip, "clip", false);
     parseBooleanOption(options.copy, "copy", true);
-    const [minRange, maxRange] = this.featureRange;
-    if (!Number.isFinite(minRange) || !Number.isFinite(maxRange) || minRange >= maxRange) {
-      throw new InvalidParameterError(
-        "featureRange must be [min, max] with min < max",
-        "featureRange",
-        this.featureRange
-      );
-    }
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
+  private get fitted(): boolean {
+    return this.dataMin_ !== undefined;
+  }
+
+  /** Per-feature minimum seen during fitting, or `undefined` if unfitted. */
+  get dataMin(): Tensor | undefined {
+    return this.dataMin_ ? makeVector(this.dataMin_) : undefined;
+  }
+
+  /** Per-feature maximum seen during fitting, or `undefined` if unfitted. */
+  get dataMax(): Tensor | undefined {
+    return this.dataMax_ ? makeVector(this.dataMax_) : undefined;
+  }
+
+  /** Per-feature range (max - min) seen during fitting, or `undefined` if unfitted. */
+  get dataRange(): Tensor | undefined {
+    return this.dataMin_ && this.dataMax_ ? makeVector(this.rangeArray()) : undefined;
+  }
+
+  /** Per-feature multiplier applied by `transform`, or `undefined` if unfitted. */
+  get scale(): Tensor | undefined {
+    if (!this.dataMin_ || !this.dataMax_) return undefined;
+    const [lo, hi] = this.featureRange;
+    const range = nonZeroScale(this.rangeArray());
+    const out = new Float64Array(range.length);
+    for (let j = 0; j < range.length; j++) out[j] = (hi - lo) / (range[j] as number);
+    return makeVector(out);
+  }
+
+  /** Number of samples seen so far (0 when unfitted). */
+  get nSamplesSeen(): number {
+    return this.nSamplesSeen_;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  private rangeArray(): Float64Array {
+    const lo = this.dataMin_ as Float64Array;
+    const hi = this.dataMax_ as Float64Array;
+    const out = new Float64Array(lo.length);
+    for (let j = 0; j < lo.length; j++) out[j] = (hi[j] as number) - (lo[j] as number);
+    return out;
+  }
+
+  private accumulate(batch: DenseMatrix, reset: boolean): void {
+    const { data, nSamples, nFeatures } = batch;
+    let mins: Float64Array;
+    let maxs: Float64Array;
+    if (reset || !this.dataMin_ || !this.dataMax_) {
+      mins = new Float64Array(nFeatures).fill(Number.POSITIVE_INFINITY);
+      maxs = new Float64Array(nFeatures).fill(Number.NEGATIVE_INFINITY);
+      this.nSamplesSeen_ = 0;
+    } else {
+      mins = this.dataMin_;
+      maxs = this.dataMax_;
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-
-    const mins = new Array<number>(nFeatures).fill(Number.POSITIVE_INFINITY);
-    const maxs = new Array<number>(nFeatures).fill(Number.NEGATIVE_INFINITY);
-
-    for (let j = 0; j < nFeatures; j++) {
-      for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const currentMin = mins[j];
-        const currentMax = maxs[j];
-        if (currentMin === undefined || currentMax === undefined) {
-          throw new DeepboxError("Internal error: min/max array access failed");
-        }
-        mins[j] = Math.min(currentMin, val);
-        maxs[j] = Math.max(currentMax, val);
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        const v = data[pos++] as number;
+        if (v < (mins[j] as number)) mins[j] = v;
+        if (v > (maxs[j] as number)) maxs[j] = v;
       }
     }
+    this.dataMin_ = mins;
+    this.dataMax_ = maxs;
+    this.nSamplesSeen_ += nSamples;
+    this.nFeaturesIn_ = nFeatures;
+  }
 
-    this.dataMin_ = tensor(mins, { dtype: "float64" });
-    this.dataMax_ = tensor(maxs, { dtype: "float64" });
-    this.fitted = true;
+  /**
+   * Compute the per-feature minimum and maximum, discarding any previous fit.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples or no features
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    this.accumulate(readFitMatrix(X), true);
     return this;
   }
 
+  /**
+   * Update the running minimum and maximum with another batch of samples.
+   *
+   * @param X - Batch of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {ShapeError} If the number of features differs from earlier batches
+   */
+  partialFit(X: Tensor, _y?: Tensor): this {
+    const batch = readFitMatrix(X);
+    if (this.fitted) {
+      assertSameFeatureCount(batch.nFeatures, this.nFeaturesIn_, "MinMaxScaler", "partialFit");
+    }
+    this.accumulate(batch, false);
+    return this;
+  }
+
+  /**
+   * Map X into the feature range using the fitted minimum and maximum.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("MinMaxScaler must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "MinMaxScaler",
+      true
+    );
     const [minRange, maxRange] = this.featureRange;
-    const dataMin = this.dataMin_;
-    const dataMax = this.dataMax_;
-    if (!dataMin || !dataMax) {
-      throw new DeepboxError("MinMaxScaler internal error: missing fitted min/max");
-    }
-
-    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
-    const minArr = dense1D(dataMin, "dataMin_", nFeatures);
-    const maxArr = dense1D(dataMax, "dataMax_", nFeatures);
-
-    // Per-feature affine map folded to out = x*mul + add (mul=0 for a
-    // zero-range feature so it collapses to the constant minRange).
-    const rangeSpan = maxRange - minRange;
-    const mul = new Float64Array(nFeatures);
-    const add = new Float64Array(nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      const min = minArr[j] as number;
-      const range = (maxArr[j] as number) - min;
-      if (range !== 0) {
-        const m = rangeSpan / range;
-        mul[j] = m;
-        add[j] = minRange - min * m;
-      } else {
-        mul[j] = 0;
-        add[j] = minRange;
-      }
-    }
-
+    const minArr = this.dataMin_ as Float64Array;
+    const maxArr = this.dataMax_ as Float64Array;
+    const range = nonZeroScale(this.rangeArray());
     const clip = this.clip;
+
+    // t is 0 at the fitted minimum and 1 at the fitted maximum; blending the
+    // two range ends keeps both of them exact.
     let pos = 0;
     for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        let scaled = (out[pos] as number) * (mul[j] as number) + (add[j] as number);
+        const x = data[pos] as number;
+        const t = Number.isFinite(range[j] as number)
+          ? (x - (minArr[j] as number)) / (range[j] as number)
+          : // max - min overflows: halve every term, which keeps the ratio and avoids Infinity.
+            (x / 2 - (minArr[j] as number) / 2) /
+            ((maxArr[j] as number) / 2 - (minArr[j] as number) / 2);
+        let scaled = minRange * (1 - t) + maxRange * t;
         if (clip) scaled = Math.max(minRange, Math.min(maxRange, scaled));
-        out[pos] = scaled;
-        pos++;
+        data[pos++] = scaled;
       }
     }
-
-    return TensorClass.fromTypedArray({
-      data: out,
-      shape: [nSamples, nFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  fitTransform(X: Tensor): Tensor {
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Scaled data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
     return this.fit(X).transform(X);
   }
 
+  /**
+   * Map data from the feature range back to the original feature space.
+   *
+   * @param X - Scaled data of shape (n_samples, n_features)
+   * @returns Data in the original feature space
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted) {
-      throw new NotFittedError("MinMaxScaler must be fitted before inverse_transform");
+      throw new NotFittedError("MinMaxScaler must be fitted before inverseTransform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "MinMaxScaler",
+      false
+    );
     const [minRange, maxRange] = this.featureRange;
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-    const dataMin = this.dataMin_;
-    const dataMax = this.dataMax_;
+    const span = maxRange - minRange;
+    const minArr = this.dataMin_ as Float64Array;
+    const maxArr = this.dataMax_ as Float64Array;
+    const range = nonZeroScale(this.rangeArray());
 
-    if (!dataMin || !dataMax) {
-      throw new DeepboxError("MinMaxScaler internal error: missing fitted min/max");
-    }
-    const minData = getNumericData(dataMin, "dataMin_");
-    const maxData = getNumericData(dataMax, "dataMax_");
-    const minStride = getStride1D(dataMin);
-    const maxStride = getStride1D(dataMax);
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const rawMin = minData[dataMin.offset + j * minStride];
-        const rawMax = maxData[dataMax.offset + j * maxStride];
-        if (rawMin === undefined || rawMax === undefined) {
-          throw new DeepboxError("Internal error: min/max tensor access out of bounds");
-        }
-        const min = Number(rawMin);
-        const max = Number(rawMax);
-        const range = max - min;
-
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = ((val - minRange) / (maxRange - minRange)) * range + min;
+        const u = ((data[pos] as number) - minRange) / span;
+        // max - min overflows: blend the two ends instead of multiplying by the range.
+        data[pos] = Number.isFinite(range[j] as number)
+          ? u * (range[j] as number) + (minArr[j] as number)
+          : (minArr[j] as number) * (1 - u) + (maxArr[j] as number) * u;
+        pos++;
       }
     }
+    return makeMatrix(data, nSamples, nFeatures, X.device);
+  }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+  /** Constructor options of this scaler. */
+  getParams(): Record<string, unknown> {
+    return { featureRange: [this.featureRange[0], this.featureRange[1]], clip: this.clip };
+  }
+
+  /**
+   * Change options. Fitted statistics are kept.
+   *
+   * @throws {InvalidParameterError} If a recognised option is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    if (params["featureRange"] !== undefined) {
+      this.featureRange = validateFeatureRange(params["featureRange"]);
+    }
+    if (params["clip"] !== undefined) {
+      this.clip = parseBooleanOption(params["clip"], "clip", this.clip);
+    }
+    return this;
+  }
+
+  /** Create an unfitted scaler with the same options. */
+  clone(): MinMaxScaler {
+    return new MinMaxScaler({ featureRange: [...this.featureRange], clip: this.clip });
   }
 }
 
+function validateFeatureRange(value: unknown): [number, number] {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    typeof value[0] !== "number" ||
+    typeof value[1] !== "number" ||
+    !Number.isFinite(value[0]) ||
+    !Number.isFinite(value[1]) ||
+    value[0] >= value[1]
+  ) {
+    throw new InvalidParameterError(
+      "featureRange must be [min, max] with min < max",
+      "featureRange",
+      value
+    );
+  }
+  return [value[0], value[1]];
+}
+
+// ---------------------------------------------------------------------------
+// MaxAbsScaler
+// ---------------------------------------------------------------------------
+
 /**
- * Scale features by maximum absolute value.
+ * Scale each feature by its maximum absolute value.
  *
- * Scales to range [-1, 1]. Suitable for data that is already centered at zero.
+ * The result lies in [-1, 1]. No centering is applied, so zeros stay zeros.
+ * Features that are entirely zero are left unchanged.
+ *
+ * **Fitted attributes** (read-only getters): `maxAbs`, `scale`,
+ * `nSamplesSeen`, `nFeaturesIn`.
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class MaxAbsScaler {
-  private fitted = false;
-  private maxAbs_?: Tensor;
+  private nSamplesSeen_ = 0;
+  private nFeaturesIn_ = 0;
+  private maxAbs_: Float64Array | undefined;
 
   /**
    * Creates a new MaxAbsScaler.
@@ -636,131 +907,218 @@ export class MaxAbsScaler {
     parseBooleanOption(options.copy, "copy", true);
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
+  private get fitted(): boolean {
+    return this.maxAbs_ !== undefined;
+  }
+
+  /** Per-feature maximum absolute value, or `undefined` if unfitted. */
+  get maxAbs(): Tensor | undefined {
+    return this.maxAbs_ ? makeVector(this.maxAbs_) : undefined;
+  }
+
+  /** Per-feature divisor applied by `transform` (1 for all-zero features), or `undefined` if unfitted. */
+  get scale(): Tensor | undefined {
+    return this.maxAbs_ ? makeVector(nonZeroScale(this.maxAbs_)) : undefined;
+  }
+
+  /** Number of samples seen so far (0 when unfitted). */
+  get nSamplesSeen(): number {
+    return this.nSamplesSeen_;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  private accumulate(batch: DenseMatrix, reset: boolean): void {
+    const { data, nSamples, nFeatures } = batch;
+    let maxAbs: Float64Array;
+    if (reset || !this.maxAbs_) {
+      maxAbs = new Float64Array(nFeatures);
+      this.nSamplesSeen_ = 0;
+    } else {
+      maxAbs = this.maxAbs_;
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-
-    const maxAbs = new Array<number>(nFeatures).fill(0);
-
-    for (let j = 0; j < nFeatures; j++) {
-      for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const currentMax = maxAbs[j];
-        if (currentMax === undefined) {
-          throw new DeepboxError("Internal error: maxAbs array access failed");
-        }
-        maxAbs[j] = Math.max(currentMax, Math.abs(Number(raw)));
+    let pos = 0;
+    for (let i = 0; i < nSamples; i++) {
+      for (let j = 0; j < nFeatures; j++) {
+        const a = Math.abs(data[pos++] as number);
+        if (a > (maxAbs[j] as number)) maxAbs[j] = a;
       }
     }
+    this.maxAbs_ = maxAbs;
+    this.nSamplesSeen_ += nSamples;
+    this.nFeaturesIn_ = nFeatures;
+  }
 
-    this.maxAbs_ = tensor(maxAbs, { dtype: "float64" });
-    this.fitted = true;
+  /**
+   * Compute the maximum absolute value of each feature, discarding any
+   * previous fit.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples or no features
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    this.accumulate(readFitMatrix(X), true);
     return this;
   }
 
+  /**
+   * Update the running maximum absolute values with another batch of samples.
+   *
+   * @param X - Batch of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {ShapeError} If the number of features differs from earlier batches
+   */
+  partialFit(X: Tensor, _y?: Tensor): this {
+    const batch = readFitMatrix(X);
+    if (this.fitted) {
+      assertSameFeatureCount(batch.nFeatures, this.nFeaturesIn_, "MaxAbsScaler", "partialFit");
+    }
+    this.accumulate(batch, false);
+    return this;
+  }
+
+  /**
+   * Divide each feature by its fitted maximum absolute value.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("MaxAbsScaler must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const maxAbs = this.maxAbs_;
-    if (!maxAbs) {
-      throw new DeepboxError("MaxAbsScaler internal error: missing fitted maxAbs");
-    }
-
-    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
-    const maxArr = dense1D(maxAbs, "maxAbs_", nFeatures);
-    const mul = new Float64Array(nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      const s = maxArr[j] as number;
-      mul[j] = s === 0 ? 1 : 1 / s;
-    }
-
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "MaxAbsScaler",
+      true
+    );
+    const sc = nonZeroScale(this.maxAbs_ as Float64Array);
     let pos = 0;
     for (let i = 0; i < nSamples; i++) {
       for (let j = 0; j < nFeatures; j++) {
-        out[pos] = (out[pos] as number) * (mul[j] as number);
+        data[pos] = (data[pos] as number) / (sc[j] as number);
         pos++;
       }
     }
-
-    return TensorClass.fromTypedArray({
-      data: out,
-      shape: [nSamples, nFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  fitTransform(X: Tensor): Tensor {
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Scaled data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
     return this.fit(X).transform(X);
   }
 
+  /**
+   * Multiply each feature by its fitted maximum absolute value.
+   *
+   * @param X - Scaled data of shape (n_samples, n_features)
+   * @returns Data in the original feature space
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted) {
-      throw new NotFittedError("MaxAbsScaler must be fitted before inverse_transform");
+      throw new NotFittedError("MaxAbsScaler must be fitted before inverseTransform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-    const maxAbs = this.maxAbs_;
-    if (!maxAbs) {
-      throw new DeepboxError("MaxAbsScaler internal error: missing fitted maxAbs");
-    }
-    const maxData = getNumericData(maxAbs, "maxAbs_");
-    const maxStride = getStride1D(maxAbs);
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "MaxAbsScaler",
+      false
+    );
+    const sc = nonZeroScale(this.maxAbs_ as Float64Array);
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const rawScale = maxData[maxAbs.offset + j * maxStride];
-        if (rawScale === undefined) {
-          throw new DeepboxError("Internal error: maxAbs tensor access out of bounds");
-        }
-        const scale = Number(rawScale);
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = val * scale;
+        data[pos] = (data[pos] as number) * (sc[j] as number);
+        pos++;
       }
     }
+    return makeMatrix(data, nSamples, nFeatures, X.device);
+  }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+  /** Constructor options of this scaler. */
+  getParams(): Record<string, unknown> {
+    return {};
+  }
+
+  /** This scaler has no options; present for API consistency. */
+  setParams(_params: Record<string, unknown>): this {
+    return this;
+  }
+
+  /** Create an unfitted scaler. */
+  clone(): MaxAbsScaler {
+    return new MaxAbsScaler();
   }
 }
 
+// ---------------------------------------------------------------------------
+// RobustScaler
+// ---------------------------------------------------------------------------
+
+function validateQuantileRange(value: unknown, unitVariance: boolean): [number, number] {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    typeof value[0] !== "number" ||
+    typeof value[1] !== "number" ||
+    !Number.isFinite(value[0]) ||
+    !Number.isFinite(value[1]) ||
+    value[0] < 0 ||
+    value[1] > 100 ||
+    value[0] >= value[1]
+  ) {
+    throw new InvalidParameterError(
+      "quantileRange must be a valid ascending percentile range",
+      "quantileRange",
+      value
+    );
+  }
+  if (unitVariance && (value[0] <= 0 || value[1] >= 100)) {
+    throw new InvalidParameterError(
+      "quantileRange must lie strictly between 0 and 100 when unitVariance is true",
+      "quantileRange",
+      value
+    );
+  }
+  return [value[0], value[1]];
+}
+
 /**
- * Robust scaler using median and IQR.
+ * Scale features using statistics that are less sensitive to outliers.
  *
- * Robust to outliers.
+ * Each feature has its median removed and is divided by an inter-quantile
+ * range (the IQR, from the 25th to the 75th percentile, by default).
+ * Quantiles use linear interpolation, like `numpy.percentile`. Features whose
+ * range is zero are only centered.
+ *
+ * **Fitted attributes** (read-only getters): `center`, `scale`, `nFeaturesIn`.
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class RobustScaler {
-  private fitted = false;
-  private center_: Tensor | undefined;
-  private scale_: Tensor | undefined;
+  private center_: Float64Array | undefined;
+  private scale_: Float64Array | undefined;
+  private nFeaturesIn_ = 0;
   private withCentering: boolean;
   private withScaling: boolean;
   private quantileRange: [number, number];
@@ -773,8 +1131,9 @@ export class RobustScaler {
    * @param options.withCentering - Center data using median (default: true)
    * @param options.withScaling - Scale data using IQR (default: true)
    * @param options.quantileRange - Quantile range for IQR as percentiles (default: [25, 75])
-   * @param options.unitVariance - Scale so that features have unit variance under normality (default: false)
+   * @param options.unitVariance - Divide the range by the same range of a standard normal, so that normally distributed features get unit variance (default: false). Requires a quantileRange strictly inside (0, 100).
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(
     options: {
@@ -787,205 +1146,224 @@ export class RobustScaler {
   ) {
     this.withCentering = parseBooleanOption(options.withCentering, "withCentering", true);
     this.withScaling = parseBooleanOption(options.withScaling, "withScaling", true);
-    this.quantileRange = options.quantileRange ?? [25, 75];
     this.unitVariance = parseBooleanOption(options.unitVariance, "unitVariance", false);
     parseBooleanOption(options.copy, "copy", true);
-    const [lower, upper] = this.quantileRange;
-    if (
-      !Number.isFinite(lower) ||
-      !Number.isFinite(upper) ||
-      lower < 0 ||
-      upper > 100 ||
-      lower >= upper
-    ) {
-      throw new InvalidParameterError(
-        "quantileRange must be a valid ascending percentile range",
-        "quantileRange",
-        this.quantileRange
-      );
-    }
+    this.quantileRange = validateQuantileRange(
+      options.quantileRange ?? [25, 75],
+      this.unitVariance
+    );
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
-    }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+  private get fitted(): boolean {
+    return this.center_ !== undefined;
+  }
 
-    const centers = new Array<number>(nFeatures).fill(0);
-    const scales = new Array<number>(nFeatures).fill(0);
+  /** Per-feature median, or `undefined` if unfitted or `withCentering` is false. */
+  get center(): Tensor | undefined {
+    return this.withCentering && this.center_ ? makeVector(this.center_) : undefined;
+  }
 
-    // Convert quantile range from percentiles to fractions
-    const [lowerPercentile, upperPercentile] = this.quantileRange;
-    const lowerFraction = lowerPercentile / 100;
-    const upperFraction = upperPercentile / 100;
+  /** Per-feature scale (1 where the range is zero), or `undefined` if unfitted or `withScaling` is false. */
+  get scale(): Tensor | undefined {
+    return this.withScaling && this.scale_ ? makeVector(nonZeroScale(this.scale_)) : undefined;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Compute the median and quantile range of each feature.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples or no features
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    const { data, nSamples, nFeatures } = readFitMatrix(X);
+    const centers = new Float64Array(nFeatures);
+    const scales = new Float64Array(nFeatures);
+
+    const lowerFraction = this.quantileRange[0] / 100;
+    const upperFraction = this.quantileRange[1] / 100;
     const normalizer = this.unitVariance
       ? normalQuantile(upperFraction) - normalQuantile(lowerFraction)
       : 1;
-    if (this.unitVariance && (!Number.isFinite(normalizer) || normalizer <= 0)) {
-      throw new DeepboxError("RobustScaler internal error: invalid unit variance normalizer");
-    }
 
-    // Reusable column buffer; typed numeric `.sort()` (comparator-free)
-    // replaces the per-feature `number[].push()` + `(a,b)=>a-b` sort.
-    const values = new Float64Array(nSamples);
-    const interpolate = (q: number): number => {
-      if (nSamples === 1) return values[0] as number;
-      const position = q * (nSamples - 1);
-      const lower = Math.floor(position);
-      const upper = Math.ceil(position);
-      const lowerValue = values[lower] as number;
-      if (upper === lower) return lowerValue;
-      const weight = position - lower;
-      return lowerValue * (1 - weight) + (values[upper] as number) * weight;
-    };
-
+    const column = new Float64Array(nSamples);
     for (let j = 0; j < nFeatures; j++) {
-      for (let i = 0; i < nSamples; i++) {
-        values[i] = Number(data[X.offset + i * stride0 + j * stride1]);
-      }
-      values.sort();
-
-      // Median for centering and IQR for scaling
-      centers[j] = interpolate(0.5);
-      const iqr = interpolate(upperFraction) - interpolate(lowerFraction);
-      scales[j] = this.unitVariance ? iqr / normalizer : iqr;
+      for (let i = 0; i < nSamples; i++) column[i] = data[i * nFeatures + j] as number;
+      column.sort();
+      centers[j] = quantileSorted(column, 0.5);
+      const range = quantileSorted(column, upperFraction) - quantileSorted(column, lowerFraction);
+      scales[j] = range / normalizer;
     }
 
-    this.center_ = this.withCentering ? tensor(centers, { dtype: "float64" }) : undefined;
-    this.scale_ = this.withScaling ? tensor(scales, { dtype: "float64" }) : undefined;
-    this.fitted = true;
+    this.center_ = centers;
+    this.scale_ = scales;
+    this.nFeaturesIn_ = nFeatures;
     return this;
   }
 
+  /**
+   * Remove the median and divide by the quantile range.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("RobustScaler must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const center = this.center_;
-    const scale = this.scale_;
-    if (this.withCentering && !center) {
-      throw new DeepboxError("RobustScaler internal error: missing center_");
-    }
-    if (this.withScaling && !scale) {
-      throw new DeepboxError("RobustScaler internal error: missing scale_");
-    }
-
-    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
-    const off = this.withCentering && center ? dense1D(center, "center_", nFeatures) : null;
-    const mul = new Float64Array(nFeatures);
-    if (this.withScaling && scale) {
-      const sc = dense1D(scale, "scale_", nFeatures);
-      for (let j = 0; j < nFeatures; j++) {
-        const s = sc[j] as number;
-        mul[j] = s === 0 ? 1 : 1 / s;
-      }
-    } else {
-      mul.fill(1);
-    }
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "RobustScaler",
+      true
+    );
+    const off = this.withCentering ? (this.center_ as Float64Array) : new Float64Array(nFeatures);
+    const sc = this.withScaling
+      ? nonZeroScale(this.scale_ as Float64Array)
+      : new Float64Array(nFeatures).fill(1);
 
     let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      if (off) {
-        for (let j = 0; j < nFeatures; j++) {
-          out[pos] = ((out[pos] as number) - (off[j] as number)) * (mul[j] as number);
-          pos++;
-        }
-      } else {
-        for (let j = 0; j < nFeatures; j++) {
-          out[pos] = (out[pos] as number) * (mul[j] as number);
-          pos++;
-        }
+      for (let j = 0; j < nFeatures; j++) {
+        data[pos] = ((data[pos] as number) - (off[j] as number)) / (sc[j] as number);
+        pos++;
       }
     }
-
-    return TensorClass.fromTypedArray({
-      data: out,
-      shape: [nSamples, nFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  fitTransform(X: Tensor): Tensor {
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Scaled data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
     return this.fit(X).transform(X);
   }
 
+  /**
+   * Undo the scaling: `x * scale + center`.
+   *
+   * @param X - Scaled data of shape (n_samples, n_features)
+   * @returns Data in the original feature space
+   * @throws {NotFittedError} If the scaler has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   */
   inverseTransform(X: Tensor): Tensor {
     if (!this.fitted) {
-      throw new NotFittedError("RobustScaler must be fitted before inverse_transform");
+      throw new NotFittedError("RobustScaler must be fitted before inverseTransform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-    const center = this.center_;
-    const scale = this.scale_;
-    const centerData = center ? getNumericData(center, "center_") : undefined;
-    const scaleData = scale ? getNumericData(scale, "scale_") : undefined;
-    const centerStride = center ? getStride1D(center) : 0;
-    const scaleStride = scale ? getStride1D(scale) : 0;
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "RobustScaler",
+      false
+    );
+    const off = this.withCentering ? (this.center_ as Float64Array) : new Float64Array(nFeatures);
+    const sc = this.withScaling
+      ? nonZeroScale(this.scale_ as Float64Array)
+      : new Float64Array(nFeatures).fill(1);
 
-    if (this.withCentering && !center) {
-      throw new DeepboxError("RobustScaler internal error: missing center_");
-    }
-    if (this.withScaling && !scale) {
-      throw new DeepboxError("RobustScaler internal error: missing scale_");
-    }
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let val = Number(raw);
-
-        if (this.withScaling && scale && scaleData) {
-          const rawScale = scaleData[scale.offset + j * scaleStride];
-          if (rawScale === undefined) {
-            throw new DeepboxError("Internal error: scale tensor access out of bounds");
-          }
-          const scaleValue = Number(rawScale);
-          const safeScale = scaleValue === 0 ? 1 : scaleValue;
-          val *= safeScale;
-        }
-
-        if (this.withCentering && center && centerData) {
-          const rawCenter = centerData[center.offset + j * centerStride];
-          if (rawCenter === undefined) {
-            throw new DeepboxError("Internal error: center tensor access out of bounds");
-          }
-          val += Number(rawCenter);
-        }
-
-        const resultRow = result[i];
-        if (resultRow === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        resultRow[j] = val;
+        data[pos] = (data[pos] as number) * (sc[j] as number) + (off[j] as number);
+        pos++;
       }
     }
+    return makeMatrix(data, nSamples, nFeatures, X.device);
+  }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+  /** Constructor options of this scaler. */
+  getParams(): Record<string, unknown> {
+    return {
+      withCentering: this.withCentering,
+      withScaling: this.withScaling,
+      quantileRange: [this.quantileRange[0], this.quantileRange[1]],
+      unitVariance: this.unitVariance,
+    };
+  }
+
+  /**
+   * Change options. Changing `quantileRange` or `unitVariance` discards the
+   * fitted state, because the stored scale depends on them.
+   *
+   * @throws {InvalidParameterError} If a recognised option is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    const withCentering = parseBooleanOption(
+      params["withCentering"],
+      "withCentering",
+      this.withCentering
+    );
+    const withScaling = parseBooleanOption(params["withScaling"], "withScaling", this.withScaling);
+    const unitVariance = parseBooleanOption(
+      params["unitVariance"],
+      "unitVariance",
+      this.unitVariance
+    );
+    const quantileRange = validateQuantileRange(
+      params["quantileRange"] ?? this.quantileRange,
+      unitVariance
+    );
+    const changesFit =
+      unitVariance !== this.unitVariance ||
+      quantileRange[0] !== this.quantileRange[0] ||
+      quantileRange[1] !== this.quantileRange[1];
+    this.withCentering = withCentering;
+    this.withScaling = withScaling;
+    this.unitVariance = unitVariance;
+    this.quantileRange = quantileRange;
+    if (changesFit) {
+      this.center_ = undefined;
+      this.scale_ = undefined;
+      this.nFeaturesIn_ = 0;
+    }
+    return this;
+  }
+
+  /** Create an unfitted scaler with the same options. */
+  clone(): RobustScaler {
+    return new RobustScaler({
+      withCentering: this.withCentering,
+      withScaling: this.withScaling,
+      quantileRange: [this.quantileRange[0], this.quantileRange[1]],
+      unitVariance: this.unitVariance,
+    });
   }
 }
 
+// ---------------------------------------------------------------------------
+// Normalizer
+// ---------------------------------------------------------------------------
+
 /**
- * Normalize samples to unit norm.
+ * Scale each sample (row) to unit norm.
  *
- * Scales each sample (row) to have unit norm.
+ * Rows whose norm is zero are left unchanged. The transformer is stateless:
+ * `fit` only validates its input.
+ *
+ * @example
+ * ```js
+ * import { Normalizer } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[3, 4], [1, 0]]);
+ * const Xn = new Normalizer({ norm: 'l2' }).transform(X); // [[0.6, 0.8], [1, 0]]
+ * ```
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
@@ -996,25 +1374,42 @@ export class Normalizer {
    * Creates a new Normalizer.
    *
    * @param options - Configuration options
-   * @param options.norm - Norm to use (default: "l2")
+   * @param options.norm - Norm to use: "l1", "l2" or "max" (default: "l2")
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If norm is not one of the supported values
    */
   constructor(options: { norm?: "l1" | "l2" | "max"; copy?: boolean } = {}) {
-    this.norm = options.norm ?? "l2";
-    if (this.norm !== "l1" && this.norm !== "l2" && this.norm !== "max") {
-      throw new InvalidParameterError("norm must be one of: l1, l2, max", "norm", this.norm);
-    }
+    this.norm = parseNorm(options.norm ?? "l2");
     parseBooleanOption(options.copy, "copy", true);
   }
 
-  fit(_X: Tensor): this {
+  /**
+   * Validate X. The normalizer has nothing to learn.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DTypeError} If X is not real numeric
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    assert2D(X, "X");
+    assertNumericTensor(X, "X");
     return this;
   }
 
+  /**
+   * Divide each row by its norm.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
     assert2D(X, "X");
     assertNumericTensor(X, "X");
-    const { data: out, nSamples, nFeatures } = denseRowMajorFinite(X, "X");
+    const { data: out, nSamples, nFeatures } = denseRowMajor(X, "X", true);
     const kind = this.norm;
 
     for (let i = 0; i < nSamples; i++) {
@@ -1026,58 +1421,141 @@ export class Normalizer {
           norm += v * v;
         }
         norm = Math.sqrt(norm);
+        // Squares overflow or underflow for very large or very small rows.
+        if (!Number.isFinite(norm) || norm < 1e-150) {
+          normalizeRowScaled(out, rowBase, nFeatures, true);
+          continue;
+        }
       } else if (kind === "l1") {
         for (let j = 0; j < nFeatures; j++) norm += Math.abs(out[rowBase + j] as number);
+        if (!Number.isFinite(norm)) {
+          normalizeRowScaled(out, rowBase, nFeatures, false);
+          continue;
+        }
       } else {
         for (let j = 0; j < nFeatures; j++) {
           norm = Math.max(norm, Math.abs(out[rowBase + j] as number));
         }
       }
       if (norm !== 0) {
-        const inv = 1 / norm;
         for (let j = 0; j < nFeatures; j++) {
-          out[rowBase + j] = (out[rowBase + j] as number) * inv;
+          out[rowBase + j] = (out[rowBase + j] as number) / norm;
         }
       }
     }
 
-    return TensorClass.fromTypedArray({
-      data: out,
-      shape: [nSamples, nFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return makeMatrix(out, nSamples, nFeatures, X.device);
   }
 
-  fitTransform(X: Tensor): Tensor {
-    return this.transform(X);
+  /**
+   * Transform X (there is nothing to fit).
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Normalized data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
+    return this.fit(X).transform(X);
+  }
+
+  /** Constructor options of this normalizer. */
+  getParams(): Record<string, unknown> {
+    return { norm: this.norm };
+  }
+
+  /**
+   * Change options.
+   *
+   * @throws {InvalidParameterError} If `norm` is not one of the supported values
+   */
+  setParams(params: Record<string, unknown>): this {
+    if (params["norm"] !== undefined) {
+      this.norm = parseNorm(params["norm"]);
+    }
+    return this;
+  }
+
+  /** Create a normalizer with the same options. */
+  clone(): Normalizer {
+    return new Normalizer({ norm: this.norm });
   }
 }
 
+function parseNorm(value: unknown): "l1" | "l2" | "max" {
+  if (value !== "l1" && value !== "l2" && value !== "max") {
+    throw new InvalidParameterError("norm must be one of: l1, l2, max", "norm", value);
+  }
+  return value;
+}
+
 /**
- * Transform features using quantiles.
+ * Normalize one row in place to unit L2 (`squares`) or L1 norm, working relative to
+ * its largest entry so that neither the norm nor its squares overflow or underflow.
+ */
+function normalizeRowScaled(
+  data: Float64Array,
+  start: number,
+  length: number,
+  squares: boolean
+): void {
+  let max = 0;
+  for (let j = 0; j < length; j++) max = Math.max(max, Math.abs(data[start + j] as number));
+  if (max === 0) return;
+  let sum = 0;
+  for (let j = 0; j < length; j++) {
+    const r = (data[start + j] as number) / max;
+    data[start + j] = r;
+    sum += squares ? r * r : Math.abs(r);
+  }
+  const unit = squares ? Math.sqrt(sum) : sum;
+  for (let j = 0; j < length; j++) data[start + j] = (data[start + j] as number) / unit;
+}
+
+// ---------------------------------------------------------------------------
+// QuantileTransformer
+// ---------------------------------------------------------------------------
+
+/**
+ * Transform features so that their distribution is uniform or normal.
  *
- * Maps to uniform or normal distribution.
+ * Each feature is mapped through its empirical quantile function, estimated
+ * from `nQuantiles` evenly spaced quantiles of the training data and
+ * interpolated linearly in between. Values outside the training range are
+ * mapped to the ends of the output range. Tied training values map to the
+ * average of the first and last quantile they cover. With
+ * `outputDistribution: "normal"` the output is clipped to about ±5.2.
+ *
+ * Unlike scikit-learn, `transform` does not snap values lying within an absolute
+ * distance of 1e-7 of the training minimum or maximum to the ends of the output range, because
+ * that tolerance depends on the data scale. Results differ from scikit-learn only for such values,
+ * by at most the local slope times 1e-7.
+ *
+ * **Fitted attributes** (read-only getters): `quantiles`, `references`,
+ * `nFeaturesIn`.
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class QuantileTransformer {
-  private fitted = false;
   private nQuantiles: number;
   private outputDistribution: "uniform" | "normal";
-  private quantiles_?: Map<number, { quantiles: number[]; references: number[] }>;
   private subsample: number | undefined;
   private randomState: number | undefined;
+  private nFeaturesIn_ = 0;
+  private nQuantilesFitted_ = 0;
+  /** Feature-major quantile table: feature j occupies [j * n, (j + 1) * n). */
+  private quantiles_: Float64Array | undefined;
+  private references_: Float64Array | undefined;
 
   /**
    * Creates a new QuantileTransformer.
    *
    * @param options - Configuration options
-   * @param options.nQuantiles - Number of quantiles to use (default: 1000)
+   * @param options.nQuantiles - Number of quantiles to use; reduced to the number of samples when larger (default: 1000)
    * @param options.outputDistribution - "uniform" or "normal" (default: "uniform")
-   * @param options.subsample - Subsample size for quantile estimation (default: use all samples)
+   * @param options.subsample - Maximum number of samples used to estimate the quantiles (default: use all samples)
    * @param options.randomState - Seed for subsampling reproducibility
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(
     options: {
@@ -1088,153 +1566,136 @@ export class QuantileTransformer {
       copy?: boolean;
     } = {}
   ) {
-    this.nQuantiles = options.nQuantiles ?? 1000;
-    this.outputDistribution = options.outputDistribution ?? "uniform";
-    this.subsample = options.subsample;
+    this.nQuantiles = parseNQuantiles(options.nQuantiles ?? 1000);
+    this.outputDistribution = parseOutputDistribution(options.outputDistribution ?? "uniform");
+    this.subsample = parseSubsample(options.subsample);
     this.randomState = options.randomState;
     parseBooleanOption(options.copy, "copy", true);
-    if (
-      !Number.isFinite(this.nQuantiles) ||
-      !Number.isInteger(this.nQuantiles) ||
-      this.nQuantiles < 2
-    ) {
-      throw new InvalidParameterError(
-        "nQuantiles must be at least 2",
-        "nQuantiles",
-        this.nQuantiles
-      );
-    }
-    if (this.outputDistribution !== "uniform" && this.outputDistribution !== "normal") {
-      throw new InvalidParameterError(
-        "outputDistribution must be 'uniform' or 'normal'",
-        "outputDistribution",
-        this.outputDistribution
-      );
-    }
-    if (this.subsample !== undefined) {
-      if (
-        !Number.isFinite(this.subsample) ||
-        !Number.isInteger(this.subsample) ||
-        this.subsample < 2
-      ) {
-        throw new InvalidParameterError(
-          "subsample must be an integer >= 2",
-          "subsample",
-          this.subsample
-        );
-      }
-    }
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
+  /** Fitted quantiles as a tensor of shape (n_quantiles, n_features), or `undefined` if unfitted. */
+  get quantiles(): Tensor | undefined {
+    if (!this.quantiles_) return undefined;
+    const n = this.nQuantilesFitted_;
+    const p = this.nFeaturesIn_;
+    const out = new Float64Array(n * p);
+    for (let j = 0; j < p; j++) {
+      for (let k = 0; k < n; k++) out[k * p + j] = this.quantiles_[j * n + k] as number;
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+    return makeMatrix(out, n, p, "cpu");
+  }
 
-    this.quantiles_ = new Map();
+  /** Probabilities that the fitted quantiles correspond to, or `undefined` if unfitted. */
+  get references(): Tensor | undefined {
+    return this.references_ ? makeVector(this.references_) : undefined;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Estimate the quantiles of each feature, discarding any previous fit.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples or no features
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    const { data, nSamples, nFeatures } = readFitMatrix(X);
+
     const sampleCount =
       this.subsample !== undefined ? Math.min(this.subsample, nSamples) : nSamples;
-    const nQuantilesEffective = Math.min(this.nQuantiles, sampleCount);
-    const references =
-      nQuantilesEffective <= 1
-        ? [0.5]
-        : Array.from({ length: nQuantilesEffective }, (_, i) => i / (nQuantilesEffective - 1));
+    const n = Math.min(this.nQuantiles, sampleCount);
+    const references = new Float64Array(n);
+    if (n === 1) {
+      references[0] = 0.5;
+    } else {
+      for (let i = 0; i < n; i++) references[i] = i / (n - 1);
+    }
 
     let sampleIndices: number[] | undefined;
     if (sampleCount < nSamples) {
-      sampleIndices = Array.from({ length: nSamples }, (_, i) => i);
+      const all = Array.from({ length: nSamples }, (_, i) => i);
       const random =
-        this.randomState !== undefined ? createSeededRandom(this.randomState) : __random;
-      shuffleIndicesInPlace(sampleIndices, random);
-      sampleIndices = sampleIndices.slice(0, sampleCount);
+        this.randomState !== undefined ? createRandomStream(this.randomState) : __random;
+      shuffleIndicesInPlace(all, random);
+      sampleIndices = all.slice(0, sampleCount);
     }
 
+    const quantiles = new Float64Array(nFeatures * n);
+    const column = new Float64Array(sampleCount);
     for (let j = 0; j < nFeatures; j++) {
-      const values: number[] = [];
-      if (sampleIndices) {
-        for (const idx of sampleIndices) {
-          const raw = data[X.offset + idx * stride0 + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          values.push(Number(raw));
-        }
-      } else {
-        for (let i = 0; i < nSamples; i++) {
-          const raw = data[X.offset + i * stride0 + j * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          values.push(Number(raw));
-        }
+      for (let k = 0; k < sampleCount; k++) {
+        const row = sampleIndices ? (sampleIndices[k] as number) : k;
+        column[k] = data[row * nFeatures + j] as number;
       }
-      const sorted = [...values].sort((a, b) => a - b);
-      const quantiles = references.map((q) => this.interpolateFromSorted(sorted, q));
-      this.quantiles_.set(j, { quantiles, references });
+      column.sort();
+      for (let k = 0; k < n; k++)
+        quantiles[j * n + k] = quantileSorted(column, references[k] as number);
     }
 
-    this.fitted = true;
+    this.quantiles_ = quantiles;
+    this.references_ = references;
+    this.nQuantilesFitted_ = n;
+    this.nFeaturesIn_ = nFeatures;
     return this;
   }
 
+  /**
+   * Map X to the output distribution.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the transformer has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
   transform(X: Tensor): Tensor {
-    if (!this.fitted || !this.quantiles_) {
+    if (!this.quantiles_ || !this.references_) {
       throw new NotFittedError("QuantileTransformer must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-
-    if (nSamples === 0) {
-      return zeros([0, nFeatures], { dtype: "float64" });
-    }
-
-    const result = new Array<number[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<number>(nFeatures);
-    }
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "QuantileTransformer",
+      true
+    );
+    const n = this.nQuantilesFitted_;
+    const normal = this.outputDistribution === "normal";
 
     for (let j = 0; j < nFeatures; j++) {
-      const feature = this.quantiles_.get(j);
-      if (!feature) {
-        throw new DeepboxError(`Internal error: missing fitted quantiles for feature ${j}`);
-      }
-
+      const base = j * n;
       for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const quantile = this.mapValueToQuantile(val, feature.quantiles, feature.references);
-
-        const row = result[i];
-        if (!row) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-
-        if (this.outputDistribution === "uniform") {
-          row[j] = quantile;
-        } else {
-          // Transform to normal distribution using inverse error function
-          // Clamp quantile to avoid numerical issues at boundaries
-          const clampedQuantile = Math.max(1e-7, Math.min(1 - 1e-7, quantile));
-          const z = Math.sqrt(2) * this.erfInv(2 * clampedQuantile - 1);
-          row[j] = z;
-        }
+        const pos = i * nFeatures + j;
+        const u = valueToProbability(
+          data[pos] as number,
+          this.quantiles_,
+          base,
+          n,
+          this.references_
+        );
+        data[pos] = normal
+          ? Math.max(NORMAL_CLIP_MIN, Math.min(NORMAL_CLIP_MAX, normalQuantile(u)))
+          : u;
       }
     }
+    return makeMatrix(data, nSamples, nFeatures, X.device);
+  }
 
-    return tensor(result, { dtype: "float64", device: X.device });
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Transformed data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
+    return this.fit(X).transform(X);
   }
 
   /**
@@ -1242,265 +1703,270 @@ export class QuantileTransformer {
    *
    * If `outputDistribution="normal"`, values are first mapped back to uniform
    * quantiles before being projected into the original data distribution.
+   * Values outside the output range map to the training minimum or maximum.
    *
    * @param X - Transformed data (2D tensor)
    * @returns Data in the original feature space
    * @throws {NotFittedError} If transformer is not fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN
    */
   inverseTransform(X: Tensor): Tensor {
-    if (!this.fitted || !this.quantiles_) {
-      throw new NotFittedError("QuantileTransformer must be fitted before inverse_transform");
+    if (!this.quantiles_) {
+      throw new NotFittedError("QuantileTransformer must be fitted before inverseTransform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
-
-    if (nSamples === 0) {
-      return zeros([0, nFeatures], { dtype: "float64" });
-    }
-
-    const result = new Array<number[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<number>(nFeatures);
-    }
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "QuantileTransformer",
+      false
+    );
+    const n = this.nQuantilesFitted_;
+    const normal = this.outputDistribution === "normal";
 
     for (let j = 0; j < nFeatures; j++) {
-      const feature = this.quantiles_.get(j);
-      if (!feature) {
-        throw new DeepboxError(`Internal error: missing fitted quantiles for feature ${j}`);
-      }
-
+      const base = j * n;
       for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
+        const pos = i * nFeatures + j;
+        const raw = data[pos] as number;
+        if (Number.isNaN(raw)) {
+          throw new DataValidationError(`X contains NaN at index ${pos}`);
         }
-        const value = Number(raw);
-        let quantile = this.outputDistribution === "normal" ? this.normalCdf(value) : value;
-
-        quantile = Math.max(0, Math.min(1, quantile));
-        const row = result[i];
-        if (!row) {
-          throw new DeepboxError("Internal error: result row access failed");
+        const p = Math.max(0, Math.min(1, normal ? normalCdf(raw) : raw));
+        // For the normal output, probabilities within INVERSE_BOUNDS_THRESHOLD of 0 or 1 are
+        // the clipped ends of the output range, so they map to the training minimum or maximum.
+        if (normal && p < INVERSE_BOUNDS_THRESHOLD) {
+          data[pos] = this.quantiles_[base] as number;
+        } else if (normal && p > 1 - INVERSE_BOUNDS_THRESHOLD) {
+          data[pos] = this.quantiles_[base + n - 1] as number;
+        } else {
+          data[pos] = probabilityToValue(p, this.quantiles_, base, n);
         }
-        row[j] = this.mapQuantileToValue(quantile, feature.quantiles, feature.references);
       }
     }
-
-    return tensor(result, { dtype: "float64", device: X.device });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  private erf(x: number): number {
-    // Abramowitz and Stegun approximation
-    const sign = x < 0 ? -1 : 1;
-    const absX = Math.abs(x);
-    const t = 1 / (1 + 0.3275911 * absX);
-    const a1 = 0.254829592;
-    const a2 = -0.284496736;
-    const a3 = 1.421413741;
-    const a4 = -1.453152027;
-    const a5 = 1.061405429;
-    const poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
-    return sign * (1 - poly * Math.exp(-absX * absX));
+  /** Constructor options of this transformer. */
+  getParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      nQuantiles: this.nQuantiles,
+      outputDistribution: this.outputDistribution,
+    };
+    if (this.subsample !== undefined) params["subsample"] = this.subsample;
+    if (this.randomState !== undefined) params["randomState"] = this.randomState;
+    return params;
   }
 
-  private normalCdf(z: number): number {
-    return 0.5 * (1 + this.erf(z / Math.sqrt(2)));
+  /**
+   * Change options. Changing `nQuantiles`, `outputDistribution`, `subsample`
+   * or `randomState` is only safe before fitting, so it discards the fitted
+   * state.
+   *
+   * @throws {InvalidParameterError} If a recognised option is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    let changed = false;
+    if (params["nQuantiles"] !== undefined) {
+      const v = parseNQuantiles(params["nQuantiles"]);
+      changed ||= v !== this.nQuantiles;
+      this.nQuantiles = v;
+    }
+    if (params["outputDistribution"] !== undefined) {
+      const v = parseOutputDistribution(params["outputDistribution"]);
+      changed ||= v !== this.outputDistribution;
+      this.outputDistribution = v;
+    }
+    if ("subsample" in params) {
+      const v = parseSubsample(params["subsample"]);
+      changed ||= v !== this.subsample;
+      this.subsample = v;
+    }
+    if ("randomState" in params) {
+      const v = params["randomState"];
+      if (v !== undefined && typeof v !== "number") {
+        throw new InvalidParameterError("randomState must be a number", "randomState", v);
+      }
+      changed ||= v !== this.randomState;
+      this.randomState = v;
+    }
+    if (changed) {
+      this.quantiles_ = undefined;
+      this.references_ = undefined;
+      this.nFeaturesIn_ = 0;
+      this.nQuantilesFitted_ = 0;
+    }
+    return this;
   }
 
-  private erfInv(x: number): number {
-    const a = 0.147;
-    const b = 2 / (Math.PI * a) + Math.log(1 - x * x) / 2;
-    const sign = x < 0 ? -1 : 1;
-    return sign * Math.sqrt(Math.sqrt(b * b - Math.log(1 - x * x) / a) - b);
-  }
-
-  private interpolateFromSorted(sorted: number[], q: number): number {
-    if (sorted.length === 0) {
-      throw new DeepboxError("Internal error: cannot interpolate empty sorted values");
-    }
-    if (sorted.length === 1) {
-      const only = sorted[0];
-      if (only === undefined) {
-        throw new DeepboxError("Internal error: missing sorted value");
-      }
-      return only;
-    }
-
-    const position = q * (sorted.length - 1);
-    const lower = Math.floor(position);
-    const upper = Math.ceil(position);
-    const lowerValue = sorted[lower];
-    const upperValue = sorted[upper];
-    if (lowerValue === undefined || upperValue === undefined) {
-      throw new DeepboxError("Internal error: quantile interpolation index out of bounds");
-    }
-
-    if (upper === lower) {
-      return lowerValue;
-    }
-
-    const weight = position - lower;
-    return lowerValue * (1 - weight) + upperValue * weight;
-  }
-
-  private mapValueToQuantile(value: number, quantiles: number[], references: number[]): number {
-    const n = quantiles.length;
-    if (n === 0) {
-      return 0;
-    }
-    if (n === 1) {
-      const onlyReference = references[0];
-      if (onlyReference === undefined) {
-        throw new DeepboxError("Internal error: missing quantile reference");
-      }
-      return onlyReference;
-    }
-
-    const firstQuantile = quantiles[0];
-    const lastQuantile = quantiles[n - 1];
-    if (firstQuantile === undefined || lastQuantile === undefined) {
-      throw new DeepboxError("Internal error: missing quantile endpoints");
-    }
-    if (value <= firstQuantile) {
-      return 0;
-    }
-    if (value >= lastQuantile) {
-      return 1;
-    }
-
-    let left = 0;
-    let right = n - 1;
-    while (left + 1 < right) {
-      const mid = Math.floor((left + right) / 2);
-      const midValue = quantiles[mid];
-      if (midValue === undefined) {
-        throw new DeepboxError("Internal error: missing quantile midpoint");
-      }
-      if (midValue <= value) {
-        left = mid;
-      } else {
-        right = mid;
-      }
-    }
-
-    const qLeft = quantiles[left];
-    const qRight = quantiles[right];
-    const rLeft = references[left];
-    const rRight = references[right];
-    if (
-      qLeft === undefined ||
-      qRight === undefined ||
-      rLeft === undefined ||
-      rRight === undefined
-    ) {
-      throw new DeepboxError("Internal error: missing quantile interpolation points");
-    }
-    if (qRight <= qLeft) {
-      return (rLeft + rRight) / 2;
-    }
-
-    const ratio = (value - qLeft) / (qRight - qLeft);
-    return rLeft + ratio * (rRight - rLeft);
-  }
-
-  private mapQuantileToValue(quantile: number, quantiles: number[], references: number[]): number {
-    const n = references.length;
-    if (n === 0) {
-      return 0;
-    }
-    if (n === 1) {
-      const onlyQuantile = quantiles[0];
-      if (onlyQuantile === undefined) {
-        throw new DeepboxError("Internal error: missing quantile value");
-      }
-      return onlyQuantile;
-    }
-
-    const firstRef = references[0];
-    const lastRef = references[n - 1];
-    if (firstRef === undefined || lastRef === undefined) {
-      throw new DeepboxError("Internal error: missing reference endpoints");
-    }
-    if (quantile <= firstRef) {
-      const firstQuantile = quantiles[0];
-      if (firstQuantile === undefined) {
-        throw new DeepboxError("Internal error: missing quantile endpoints");
-      }
-      return firstQuantile;
-    }
-    if (quantile >= lastRef) {
-      const lastQuantile = quantiles[n - 1];
-      if (lastQuantile === undefined) {
-        throw new DeepboxError("Internal error: missing quantile endpoints");
-      }
-      return lastQuantile;
-    }
-
-    let left = 0;
-    let right = n - 1;
-    while (left + 1 < right) {
-      const mid = Math.floor((left + right) / 2);
-      const midRef = references[mid];
-      if (midRef === undefined) {
-        throw new DeepboxError("Internal error: missing quantile reference");
-      }
-      if (midRef <= quantile) {
-        left = mid;
-      } else {
-        right = mid;
-      }
-    }
-
-    const rLeft = references[left];
-    const rRight = references[right];
-    const qLeft = quantiles[left];
-    const qRight = quantiles[right];
-    if (
-      rLeft === undefined ||
-      rRight === undefined ||
-      qLeft === undefined ||
-      qRight === undefined
-    ) {
-      throw new DeepboxError("Internal error: missing quantile interpolation points");
-    }
-    if (rRight <= rLeft) {
-      return (qLeft + qRight) / 2;
-    }
-    const ratio = (quantile - rLeft) / (rRight - rLeft);
-    return qLeft + ratio * (qRight - qLeft);
-  }
-
-  fitTransform(X: Tensor): Tensor {
-    return this.fit(X).transform(X);
+  /** Create an unfitted transformer with the same options. */
+  clone(): QuantileTransformer {
+    return new QuantileTransformer(
+      this.getParams() as ConstructorParameters<typeof QuantileTransformer>[0]
+    );
   }
 }
 
+function parseNQuantiles(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+    throw new InvalidParameterError("nQuantiles must be an integer >= 2", "nQuantiles", value);
+  }
+  return value;
+}
+
+function parseOutputDistribution(value: unknown): "uniform" | "normal" {
+  if (value !== "uniform" && value !== "normal") {
+    throw new InvalidParameterError(
+      "outputDistribution must be 'uniform' or 'normal'",
+      "outputDistribution",
+      value
+    );
+  }
+  return value;
+}
+
+function parseSubsample(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
+    throw new InvalidParameterError("subsample must be an integer >= 2", "subsample", value);
+  }
+  return value;
+}
+
 /**
- * Apply power transform to make data more Gaussian-like.
+ * Map a feature value to its empirical probability using the quantile table
+ * `qs[base .. base + n)`. Equivalent to averaging a forward and a reversed
+ * linear interpolation, so tied quantiles map to the mean of their references.
+ */
+function valueToProbability(
+  value: number,
+  qs: Float64Array,
+  base: number,
+  n: number,
+  refs: Float64Array
+): number {
+  if (n === 1) return refs[0] as number;
+  if (value <= (qs[base] as number)) return 0;
+  if (value >= (qs[base + n - 1] as number)) return 1;
+
+  // Invariant: qs[lo] < value <= qs[hi].
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >>> 1;
+    if ((qs[base + mid] as number) < value) lo = mid;
+    else hi = mid;
+  }
+  const qHi = qs[base + hi] as number;
+  if (qHi === value) {
+    // Find the last quantile equal to value (qs[n - 1] > value).
+    let a = hi;
+    let b = n - 1;
+    while (b - a > 1) {
+      const mid = (a + b) >>> 1;
+      if ((qs[base + mid] as number) <= value) a = mid;
+      else b = mid;
+    }
+    return 0.5 * ((refs[hi] as number) + (refs[a] as number));
+  }
+  const qLo = qs[base + lo] as number;
+  const rLo = refs[lo] as number;
+  return rLo + ((value - qLo) / (qHi - qLo)) * ((refs[hi] as number) - rLo);
+}
+
+/** Inverse of {@link valueToProbability} on the evenly spaced reference grid. */
+function probabilityToValue(p: number, qs: Float64Array, base: number, n: number): number {
+  if (n === 1) return qs[base] as number;
+  const position = p * (n - 1);
+  const lower = Math.min(Math.floor(position), n - 2);
+  return lerp(qs[base + lower] as number, qs[base + lower + 1] as number, position - lower);
+}
+
+// ---------------------------------------------------------------------------
+// PowerTransformer
+// ---------------------------------------------------------------------------
+
+function boxCox(x: number, lambda: number): number {
+  if (lambda === 1) return x - 1;
+  return Math.abs(lambda) < EPS ? Math.log(x) : Math.expm1(lambda * Math.log(x)) / lambda;
+}
+
+function yeoJohnson(x: number, lambda: number): number {
+  if (lambda === 1) return x;
+  if (x >= 0) {
+    return Math.abs(lambda) < EPS ? Math.log1p(x) : Math.expm1(lambda * Math.log1p(x)) / lambda;
+  }
+  const mu = 2 - lambda;
+  return Math.abs(mu) < EPS ? -Math.log1p(-x) : -Math.expm1(mu * Math.log1p(-x)) / mu;
+}
+
+function boxCoxInverse(y: number, lambda: number): number {
+  if (lambda === 1) {
+    if (y <= -1) {
+      throw new InvalidParameterError("Box-Cox inverse encountered an invalid value", "X", y);
+    }
+    return y + 1;
+  }
+  if (Math.abs(lambda) < EPS) return Math.exp(y);
+  const base = lambda * y + 1;
+  if (base <= 0) {
+    throw new InvalidParameterError("Box-Cox inverse encountered an invalid value", "X", y);
+  }
+  return Math.exp(Math.log1p(lambda * y) / lambda);
+}
+
+function yeoJohnsonInverse(y: number, lambda: number): number {
+  if (lambda === 1) return y;
+  if (y >= 0) {
+    if (Math.abs(lambda) < EPS) return Math.expm1(y);
+    if (lambda * y + 1 <= 0) {
+      throw new InvalidParameterError("Yeo-Johnson inverse encountered an invalid value", "X", y);
+    }
+    return Math.expm1(Math.log1p(lambda * y) / lambda);
+  }
+  const mu = 2 - lambda;
+  if (Math.abs(mu) < EPS) return -Math.expm1(-y);
+  if (1 - mu * y <= 0) {
+    throw new InvalidParameterError("Yeo-Johnson inverse encountered an invalid value", "X", y);
+  }
+  return -Math.expm1(Math.log1p(-mu * y) / mu);
+}
+
+/**
+ * Apply a power transform to make data more Gaussian-like.
  *
- * Supports Box-Cox and Yeo-Johnson transforms, with optional standardization.
+ * Supports Box-Cox (strictly positive data) and Yeo-Johnson (any real data).
+ * The exponent λ of each feature is chosen by maximum likelihood on the
+ * training data, searching λ in [-5, 5] and widening the search up to [-160, 160]
+ * when the optimum lies at the edge. With `standardize: true` the transformed
+ * features are additionally centered and scaled to unit variance.
+ *
+ * **Difference from scikit-learn:** `standardize` defaults to `false` here, while
+ * scikit-learn's `PowerTransformer` defaults to `True`. Pass `{ standardize: true }` to
+ * match scikit-learn. The default is kept for compatibility with earlier Deepbox releases.
+ *
+ * **Fitted attributes** (read-only getters): `lambdas`, `mean`, `scale`,
+ * `nFeaturesIn`.
  *
  * @see {@link https://deepbox.dev/docs/preprocess-scalers | Deepbox Scalers}
  */
 export class PowerTransformer {
-  private fitted = false;
   private method: "box-cox" | "yeo-johnson";
-  private lambdas_: number[] | undefined;
   private standardize: boolean;
-  private mean_: number[] | undefined;
-  private scale_: number[] | undefined;
+  private nFeaturesIn_ = 0;
+  private lambdas_: Float64Array | undefined;
+  private mean_: Float64Array | undefined;
+  private scale_: Float64Array | undefined;
 
   /**
    * Creates a new PowerTransformer.
    *
    * @param options - Configuration options
    * @param options.method - "box-cox" or "yeo-johnson" (default: "yeo-johnson")
-   * @param options.standardize - Whether to standardize transformed features (default: false)
+   * @param options.standardize - Whether to standardize transformed features (default: false;
+   *   scikit-learn defaults to true, so pass `true` to match it)
    * @param options.copy - Accepted for API parity; transforms are always out-of-place (default: true)
+   * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(
     options: {
@@ -1509,144 +1975,146 @@ export class PowerTransformer {
       copy?: boolean;
     } = {}
   ) {
-    this.method = options.method ?? "yeo-johnson";
-    if (this.method !== "box-cox" && this.method !== "yeo-johnson") {
-      throw new InvalidParameterError(
-        "method must be 'box-cox' or 'yeo-johnson'",
-        "method",
-        this.method
-      );
-    }
+    this.method = parsePowerMethod(options.method ?? "yeo-johnson");
     this.standardize = parseBooleanOption(options.standardize, "standardize", false);
     parseBooleanOption(options.copy, "copy", true);
   }
 
-  fit(X: Tensor): this {
-    if (X.size === 0) {
-      throw new InvalidParameterError("X must contain at least one sample", "X");
-    }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+  /** Fitted exponent of each feature, or `undefined` if unfitted. */
+  get lambdas(): Tensor | undefined {
+    return this.lambdas_ ? makeVector(this.lambdas_) : undefined;
+  }
 
-    const lambdas = new Array<number>(nFeatures);
-    const means = this.standardize ? new Array<number>(nFeatures).fill(0) : undefined;
-    const scales = this.standardize ? new Array<number>(nFeatures).fill(0) : undefined;
+  /** Mean of each transformed feature, or `undefined` if unfitted or `standardize` is false. */
+  get mean(): Tensor | undefined {
+    return this.standardize && this.mean_ ? makeVector(this.mean_) : undefined;
+  }
+
+  /** Standard deviation of each transformed feature (1 if constant), or `undefined` if unfitted or `standardize` is false. */
+  get scale(): Tensor | undefined {
+    return this.standardize && this.scale_ ? makeVector(this.scale_) : undefined;
+  }
+
+  /** Number of features seen during fitting (0 when unfitted). */
+  get nFeaturesIn(): number {
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Estimate the exponent of each feature by maximum likelihood.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns this
+   * @throws {InvalidParameterError} If X has no samples, or for Box-Cox if X has values <= 0
+   * @throws {ShapeError} If X is not 2-D
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    const { data, nSamples, nFeatures } = readFitMatrix(X);
+    const boxcox = this.method === "box-cox";
+
+    const lambdas = new Float64Array(nFeatures);
+    const means = new Float64Array(nFeatures);
+    const scales = new Float64Array(nFeatures);
+    const column = new Float64Array(nSamples);
+    const transformed = new Float64Array(nSamples);
 
     for (let j = 0; j < nFeatures; j++) {
-      const featureValues = new Array<number>(nSamples);
       for (let i = 0; i < nSamples; i++) {
-        const raw = data[X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const value = Number(raw);
-        if (this.method === "box-cox" && value <= 0) {
+        const value = data[i * nFeatures + j] as number;
+        if (boxcox && value <= 0) {
           throw new InvalidParameterError(
             `Box-Cox requires strictly positive values in fit data (feature ${j})`,
             "X",
             value
           );
         }
-        featureValues[i] = value;
+        column[i] = value;
       }
-      const lambda = this.optimizeLambda(featureValues);
+      const lambda = optimizeLambda(column, boxcox, transformed);
       lambdas[j] = lambda;
 
-      if (this.standardize && means && scales) {
-        let sum = 0;
-        // Pass 1: Mean
-        for (const value of featureValues) {
-          const transformed =
-            this.method === "box-cox"
-              ? this.boxCoxTransformValue(value, lambda)
-              : this.yeoJohnsonTransformValue(value, lambda);
-          sum += transformed;
-        }
-        const mean = sum / nSamples;
-        means[j] = mean;
-
-        // Pass 2: Variance (stable)
-        let sumSqDiff = 0;
-        for (const value of featureValues) {
-          const transformed =
-            this.method === "box-cox"
-              ? this.boxCoxTransformValue(value, lambda)
-              : this.yeoJohnsonTransformValue(value, lambda);
-          const diff = transformed - mean;
-          sumSqDiff += diff * diff;
-        }
-        const variance = sumSqDiff / nSamples;
-        const std = Math.sqrt(Math.max(variance, 0));
-        scales[j] = std === 0 ? 1 : std;
+      let maxAbs = 0;
+      let low = Number.POSITIVE_INFINITY;
+      let high = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < nSamples; i++) {
+        const t = boxcox
+          ? boxCox(column[i] as number, lambda)
+          : yeoJohnson(column[i] as number, lambda);
+        transformed[i] = t;
+        maxAbs = Math.max(maxAbs, Math.abs(t));
+        if (t < low) low = t;
+        if (t > high) high = t;
       }
+      // Work relative to the largest magnitude so that huge outputs cannot overflow.
+      const unit = maxAbs > 1e100 ? maxAbs : 1;
+      let sum = 0;
+      for (let i = 0; i < nSamples; i++) sum += (transformed[i] as number) / unit;
+      // The clamp removes summation round-off, so a constant feature has an exact mean.
+      const scaledMean = Math.min(Math.max(sum / nSamples, low / unit), high / unit);
+      let sumSq = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const d = (transformed[i] as number) / unit - scaledMean;
+        sumSq += d * d;
+      }
+      const variance = sumSq / nSamples;
+      // A variance within rounding noise of zero means a constant feature (as in StandardScaler).
+      const noiseBound = nSamples * EPS * variance + (nSamples * scaledMean * EPS) ** 2;
+      const std = variance <= noiseBound ? 0 : Math.sqrt(variance) * unit;
+      means[j] = scaledMean * unit;
+      scales[j] = std === 0 || !Number.isFinite(std) ? 1 : std;
     }
 
     this.lambdas_ = lambdas;
-    this.mean_ = this.standardize ? means : undefined;
-    this.scale_ = this.standardize ? scales : undefined;
-    this.fitted = true;
+    this.mean_ = means;
+    this.scale_ = scales;
+    this.nFeaturesIn_ = nFeatures;
     return this;
   }
 
+  /**
+   * Apply the fitted power transform.
+   *
+   * @param X - Data of shape (n_samples, n_features)
+   * @returns Float64 tensor of the same shape
+   * @throws {NotFittedError} If the transformer has not been fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {DataValidationError} If X contains NaN or Infinity
+   * @throws {InvalidParameterError} For Box-Cox, if X has values <= 0
+   */
   transform(X: Tensor): Tensor {
-    if (!this.fitted || !this.lambdas_) {
+    if (!this.lambdas_ || !this.mean_ || !this.scale_) {
       throw new NotFittedError("PowerTransformer must be fitted before transform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "PowerTransformer",
+      true
+    );
+    const boxcox = this.method === "box-cox";
+    const standardize = this.standardize;
 
-    if (this.standardize && (!this.mean_ || !this.scale_)) {
-      throw new DeepboxError("PowerTransformer internal error: missing standardization stats");
-    }
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        const lambda = this.lambdas_[j];
-        if (lambda === undefined) {
-          throw new DeepboxError(`Internal error: missing fitted lambda for feature ${j}`);
-        }
-
-        let transformed: number;
-        if (this.method === "box-cox") {
+        const val = data[pos] as number;
+        const lambda = this.lambdas_[j] as number;
+        let t: number;
+        if (boxcox) {
           if (val <= 0) {
             throw new InvalidParameterError("Box-Cox requires strictly positive values", "X", val);
           }
-          transformed = this.boxCoxTransformValue(val, lambda);
+          t = boxCox(val, lambda);
         } else {
-          transformed = this.yeoJohnsonTransformValue(val, lambda);
+          t = yeoJohnson(val, lambda);
         }
-
-        if (this.standardize && this.mean_ && this.scale_) {
-          const mean = this.mean_[j] ?? 0;
-          const scale = this.scale_[j] ?? 1;
-          transformed = (transformed - mean) / scale;
-        }
-
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = transformed;
+        if (standardize) t = (t - (this.mean_[j] as number)) / (this.scale_[j] as number);
+        data[pos++] = t;
       }
     }
-
-    return tensor(result, { dtype: "float64", device: X.device });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
   /**
@@ -1656,218 +2124,218 @@ export class PowerTransformer {
    * @param X - Transformed data (2D tensor)
    * @returns Data in the original feature space
    * @throws {NotFittedError} If transformer is not fitted
+   * @throws {ShapeError} If the number of features differs from the fit
+   * @throws {InvalidParameterError} If a value is outside the range of the transform
    */
   inverseTransform(X: Tensor): Tensor {
-    if (!this.fitted || !this.lambdas_) {
-      throw new NotFittedError("PowerTransformer must be fitted before inverse_transform");
+    if (!this.lambdas_ || !this.mean_ || !this.scale_) {
+      throw new NotFittedError("PowerTransformer must be fitted before inverseTransform");
     }
-    assert2D(X, "X");
-    assertNumericTensor(X, "X");
-    validateFiniteData(X, "X");
-    const [nSamples, nFeatures] = getShape2D(X);
-    const data = getNumericData(X, "X");
-    const [stride0, stride1] = getStrides2D(X);
+    const { data, nSamples, nFeatures } = readApplyMatrix(
+      X,
+      this.nFeaturesIn_,
+      "PowerTransformer",
+      false
+    );
+    const boxcox = this.method === "box-cox";
+    const standardize = this.standardize;
 
-    if (this.standardize && (!this.mean_ || !this.scale_)) {
-      throw new DeepboxError("PowerTransformer internal error: missing standardization stats");
-    }
-
-    const result = Array.from({ length: nSamples }, () => new Array<number>(nFeatures).fill(0));
-
+    let pos = 0;
     for (let i = 0; i < nSamples; i++) {
-      const rowBase = X.offset + i * stride0;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let val = Number(raw);
-
-        if (this.standardize && this.mean_ && this.scale_) {
-          const mean = this.mean_[j] ?? 0;
-          const scale = this.scale_[j] ?? 1;
-          val = val * scale + mean;
-        }
-
-        const lambda = this.lambdas_[j];
-        if (lambda === undefined) {
-          throw new DeepboxError(`Internal error: missing fitted lambda for feature ${j}`);
-        }
-
-        let inverted: number;
-        if (this.method === "box-cox") {
-          inverted = this.boxCoxInverseValue(val, lambda);
-        } else {
-          inverted = this.yeoJohnsonInverseValue(val, lambda);
-        }
-
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[j] = inverted;
+        let val = data[pos] as number;
+        if (standardize) val = val * (this.scale_[j] as number) + (this.mean_[j] as number);
+        const lambda = this.lambdas_[j] as number;
+        data[pos++] = boxcox ? boxCoxInverse(val, lambda) : yeoJohnsonInverse(val, lambda);
       }
     }
-
-    return tensor(result, { dtype: "float64", device: X.device });
+    return makeMatrix(data, nSamples, nFeatures, X.device);
   }
 
-  private boxCoxTransformValue(value: number, lambda: number): number {
-    return Math.abs(lambda) < 1e-12 ? Math.log(value) : (value ** lambda - 1) / lambda;
-  }
-
-  private yeoJohnsonTransformValue(value: number, lambda: number): number {
-    if (value >= 0) {
-      return Math.abs(lambda) < 1e-12 ? Math.log(value + 1) : ((value + 1) ** lambda - 1) / lambda;
-    }
-    const twoMinusLambda = 2 - lambda;
-    return Math.abs(twoMinusLambda) < 1e-12
-      ? -Math.log(1 - value)
-      : -((1 - value) ** twoMinusLambda - 1) / twoMinusLambda;
-  }
-
-  private boxCoxInverseValue(value: number, lambda: number): number {
-    if (Math.abs(lambda) < 1e-12) {
-      return Math.exp(value);
-    }
-    const base = value * lambda + 1;
-    if (base <= 0) {
-      throw new InvalidParameterError("Box-Cox inverse encountered invalid value", "X", value);
-    }
-    return base ** (1 / lambda);
-  }
-
-  private yeoJohnsonInverseValue(value: number, lambda: number): number {
-    if (value >= 0) {
-      if (Math.abs(lambda) < 1e-12) {
-        return Math.exp(value) - 1;
-      }
-      const base = value * lambda + 1;
-      if (base <= 0) {
-        throw new InvalidParameterError(
-          "Yeo-Johnson inverse encountered invalid value",
-          "X",
-          value
-        );
-      }
-      return base ** (1 / lambda) - 1;
-    }
-
-    const twoMinusLambda = 2 - lambda;
-    if (Math.abs(twoMinusLambda) < 1e-12) {
-      return 1 - Math.exp(-value);
-    }
-    const base = 1 - value * twoMinusLambda;
-    if (base <= 0) {
-      throw new InvalidParameterError("Yeo-Johnson inverse encountered invalid value", "X", value);
-    }
-    return 1 - base ** (1 / twoMinusLambda);
-  }
-
-  private logLikelihood(values: readonly number[], lambda: number): number {
-    const transformed = new Array<number>(values.length);
-    let jacobian = 0;
-
-    for (let i = 0; i < values.length; i++) {
-      const value = values[i];
-      if (value === undefined) {
-        throw new DeepboxError("Internal error: missing feature value during optimization");
-      }
-
-      let transformedValue: number;
-      if (this.method === "box-cox") {
-        if (value <= 0) {
-          return Number.NEGATIVE_INFINITY;
-        }
-        transformedValue = this.boxCoxTransformValue(value, lambda);
-        jacobian += (lambda - 1) * Math.log(value);
-      } else {
-        transformedValue = this.yeoJohnsonTransformValue(value, lambda);
-        jacobian +=
-          value >= 0 ? (lambda - 1) * Math.log(value + 1) : (1 - lambda) * Math.log(1 - value);
-      }
-
-      if (!Number.isFinite(transformedValue)) {
-        return Number.NEGATIVE_INFINITY;
-      }
-      transformed[i] = transformedValue;
-    }
-
-    let sum = 0;
-    for (const value of transformed) {
-      sum += value;
-    }
-    const mean = sum / transformed.length;
-
-    let varianceSum = 0;
-    for (const value of transformed) {
-      const delta = value - mean;
-      varianceSum += delta * delta;
-    }
-    const variance = varianceSum / transformed.length;
-    if (!Number.isFinite(variance) || variance <= 1e-15) {
-      return Number.NEGATIVE_INFINITY;
-    }
-
-    return -0.5 * transformed.length * Math.log(variance) + jacobian;
-  }
-
-  private optimizeLambda(values: readonly number[]): number {
-    if (values.length < 2) {
-      return 1;
-    }
-
-    let minValue = Number.POSITIVE_INFINITY;
-    let maxValue = Number.NEGATIVE_INFINITY;
-    for (const value of values) {
-      if (value < minValue) minValue = value;
-      if (value > maxValue) maxValue = value;
-    }
-
-    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue - minValue <= 1e-15) {
-      return 1;
-    }
-
-    let left = -5;
-    let right = 5;
-    const phi = (Math.sqrt(5) - 1) / 2;
-    let c = right - phi * (right - left);
-    let d = left + phi * (right - left);
-    let fc = this.logLikelihood(values, c);
-    let fd = this.logLikelihood(values, d);
-
-    for (let iter = 0; iter < 80; iter++) {
-      if (Math.abs(right - left) < 1e-6) break;
-      if (fc > fd) {
-        right = d;
-        d = c;
-        fd = fc;
-        c = right - phi * (right - left);
-        fc = this.logLikelihood(values, c);
-      } else {
-        left = c;
-        c = d;
-        fc = fd;
-        d = left + phi * (right - left);
-        fd = this.logLikelihood(values, d);
-      }
-    }
-
-    const candidates = [left, right, (left + right) / 2, 0, 1, 2, -2];
-    let bestLambda = 1;
-    let bestScore = Number.NEGATIVE_INFINITY;
-    for (const lambda of candidates) {
-      const score = this.logLikelihood(values, lambda);
-      if (score > bestScore) {
-        bestScore = score;
-        bestLambda = lambda;
-      }
-    }
-
-    return Number.isFinite(bestLambda) ? bestLambda : 1;
-  }
-
-  fitTransform(X: Tensor): Tensor {
+  /**
+   * Fit to X, then transform it.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored (present for API compatibility)
+   * @returns Transformed data
+   */
+  fitTransform(X: Tensor, _y?: Tensor): Tensor {
     return this.fit(X).transform(X);
   }
+
+  /** Constructor options of this transformer. */
+  getParams(): Record<string, unknown> {
+    return { method: this.method, standardize: this.standardize };
+  }
+
+  /**
+   * Change options. Changing `method` discards the fitted state; changing
+   * `standardize` keeps it.
+   *
+   * @throws {InvalidParameterError} If a recognised option is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    if (params["method"] !== undefined) {
+      const method = parsePowerMethod(params["method"]);
+      if (method !== this.method) {
+        this.method = method;
+        this.lambdas_ = undefined;
+        this.mean_ = undefined;
+        this.scale_ = undefined;
+        this.nFeaturesIn_ = 0;
+      }
+    }
+    if (params["standardize"] !== undefined) {
+      this.standardize = parseBooleanOption(params["standardize"], "standardize", this.standardize);
+    }
+    return this;
+  }
+
+  /** Create an unfitted transformer with the same options. */
+  clone(): PowerTransformer {
+    return new PowerTransformer({ method: this.method, standardize: this.standardize });
+  }
+}
+
+function parsePowerMethod(value: unknown): "box-cox" | "yeo-johnson" {
+  if (value !== "box-cox" && value !== "yeo-johnson") {
+    throw new InvalidParameterError("method must be 'box-cox' or 'yeo-johnson'", "method", value);
+  }
+  return value;
+}
+
+/** Smallest positive normal double; transformed variances below it are rejected. */
+const TINY_VARIANCE = 2.2250738585072014e-308;
+
+/** Transformed values above this (divided by the sample count) are treated as overflow. */
+const OVERFLOW_GUARD = 1e300;
+
+/**
+ * Profile log-likelihood of a power transform with exponent `lambda`
+ * (up to a constant). `jacobianSum` is the sum of log |dy/dx| terms that do
+ * not depend on lambda, see {@link optimizeLambda}.
+ */
+function logLikelihood(
+  values: Float64Array,
+  lambda: number,
+  boxcox: boolean,
+  jacobianSum: number,
+  scratch: Float64Array
+): number {
+  const n = values.length;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = values[i] as number;
+    const t = boxcox ? boxCox(v, lambda) : yeoJohnson(v, lambda);
+    // Reject exponents whose output is so large that its sum would overflow.
+    if (!Number.isFinite(t) || Math.abs(t) > OVERFLOW_GUARD / n) return Number.NEGATIVE_INFINITY;
+    scratch[i] = t;
+    sum += t;
+  }
+  const mean = sum / n;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const d = (scratch[i] as number) - mean;
+    sumSq += d * d;
+  }
+  const variance = sumSq / n;
+  if (!Number.isFinite(variance)) {
+    // For large lambda the transformed values are finite but their squares
+    // overflow (typical for tightly clustered data far from zero).
+    if (!boxcox || lambda <= 0) return Number.NEGATIVE_INFINITY;
+    const logVariance = boxCoxLogVariance(values, lambda);
+    if (!Number.isFinite(logVariance)) return Number.NEGATIVE_INFINITY;
+    return -0.5 * n * logVariance + (lambda - 1) * jacobianSum;
+  }
+  if (variance < TINY_VARIANCE) return Number.NEGATIVE_INFINITY;
+  return -0.5 * n * Math.log(variance) + (lambda - 1) * jacobianSum;
+}
+
+/**
+ * log Var((x^lambda - 1) / lambda) for lambda > 0 without forming x^lambda,
+ * by factoring out the largest power. Returns -Infinity for constant data.
+ */
+function boxCoxLogVariance(values: Float64Array, lambda: number): number {
+  const n = values.length;
+  let maxLog = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < n; i++) maxLog = Math.max(maxLog, lambda * Math.log(values[i] as number));
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += Math.exp(lambda * Math.log(values[i] as number) - maxLog);
+  const mean = sum / n;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const d = Math.exp(lambda * Math.log(values[i] as number) - maxLog) - mean;
+    sumSq += d * d;
+  }
+  const scaledVariance = sumSq / n;
+  if (scaledVariance <= 0) return Number.NEGATIVE_INFINITY;
+  return 2 * maxLog + Math.log(scaledVariance) - 2 * Math.log(lambda);
+}
+
+/** Golden-section maximisation of the log-likelihood over [lo, hi]. */
+function goldenSearch(
+  lo: number,
+  hi: number,
+  f: (lambda: number) => number
+): { lambda: number; score: number } {
+  const phi = (Math.sqrt(5) - 1) / 2;
+  let left = lo;
+  let right = hi;
+  let c = right - phi * (right - left);
+  let d = left + phi * (right - left);
+  let fc = f(c);
+  let fd = f(d);
+  for (let iter = 0; iter < 100 && right - left > 1e-9; iter++) {
+    // When both probes overflow, step back toward the finite region around 0.
+    const bothOverflow = fc === Number.NEGATIVE_INFINITY && fd === Number.NEGATIVE_INFINITY;
+    if (bothOverflow ? c + d > 0 : fc > fd) {
+      right = d;
+      d = c;
+      fd = fc;
+      c = right - phi * (right - left);
+      fc = f(c);
+    } else {
+      left = c;
+      c = d;
+      fc = fd;
+      d = left + phi * (right - left);
+      fd = f(d);
+    }
+  }
+  let best = { lambda: 1, score: Number.NEGATIVE_INFINITY };
+  for (const lambda of [left, right, (left + right) / 2]) {
+    const score = f(lambda);
+    if (score > best.score) best = { lambda, score };
+  }
+  return best;
+}
+
+/**
+ * Maximum-likelihood exponent for one feature. The log-likelihood is concave
+ * in lambda for both transforms, so a bracketed golden-section search finds
+ * the global optimum. Returns 1 (identity-like) for constant features.
+ */
+function optimizeLambda(values: Float64Array, boxcox: boolean, scratch: Float64Array): number {
+  const n = values.length;
+  if (n < 2) return 1;
+
+  let minValue = Number.POSITIVE_INFINITY;
+  let maxValue = Number.NEGATIVE_INFINITY;
+  let jacobianSum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = values[i] as number;
+    if (v < minValue) minValue = v;
+    if (v > maxValue) maxValue = v;
+    // d/dx of the transform is x^(lambda-1) (Box-Cox) or (1+|x|)^(sign(x)(lambda-1)).
+    jacobianSum += boxcox ? Math.log(v) : Math.sign(v) * Math.log1p(Math.abs(v));
+  }
+  if (minValue === maxValue) return 1;
+
+  const f = (lambda: number): number => logLikelihood(values, lambda, boxcox, jacobianSum, scratch);
+  let best = { lambda: 1, score: Number.NEGATIVE_INFINITY };
+  for (const limit of [5, 10, 20, 40, 80, 160]) {
+    best = goldenSearch(-limit, limit, f);
+    if (Math.abs(best.lambda) < 0.99 * limit || !Number.isFinite(best.score)) break;
+  }
+  return Number.isFinite(best.score) ? best.lambda : 1;
 }

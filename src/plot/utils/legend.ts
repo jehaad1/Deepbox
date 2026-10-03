@@ -5,7 +5,8 @@
 import type { LegendEntry } from "../types";
 
 /**
- * Normalize an optional legend label, returning null if not usable.
+ * Normalize an optional legend label: surrounding whitespace is removed, and `undefined`,
+ * non-strings and blank labels return null (no legend entry).
  * @internal
  */
 export function normalizeLegendLabel(label: string | undefined): string | null {
@@ -15,6 +16,8 @@ export function normalizeLegendLabel(label: string | undefined): string | null {
 }
 
 /**
+ * Builds a legend entry from a normalized label and its symbol options, or null when the label
+ * is null or empty so the drawable stays out of the legend.
  * @internal
  */
 export function buildLegendEntry(

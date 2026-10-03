@@ -35,11 +35,16 @@ export class BroadcastError extends DeepboxError {
   /** The second shape involved in the broadcast operation */
   readonly shape2: Shape;
 
-  constructor(shape1: Shape, shape2: Shape, context?: string) {
+  constructor(
+    shape1: Shape,
+    shape2: Shape,
+    context?: string,
+    options?: { readonly cause?: unknown }
+  ) {
     // Build context string if provided (e.g., "in matrix multiplication")
     const ctx = context ? ` (${context})` : "";
     // Create descriptive error message showing both incompatible shapes
-    super(`Shapes [${shape1}] and [${shape2}] cannot be broadcast together${ctx}`);
+    super(`Shapes [${shape1}] and [${shape2}] cannot be broadcast together${ctx}`, options);
     // Store shapes for programmatic error handling
     this.shape1 = cloneShape(shape1);
     this.shape2 = cloneShape(shape2);

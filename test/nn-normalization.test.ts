@@ -11,7 +11,7 @@ describe("deepbox/nn - Normalization", () => {
       [1, 2, 3],
       [4, 5, 6],
     ]);
-    const y = bn.forward(x);
+    const y = bn.forward(x) as GradTensor; // tracks gamma and beta, so a GradTensor
     expect(y.shape).toEqual([2, 3]);
 
     const arr = expectNumberArray2D(y.tensor.toArray(), "BatchNorm1d output");
@@ -73,7 +73,7 @@ describe("deepbox/nn - Normalization", () => {
       [3, 4],
     ]);
     bn.eval();
-    const y = bn.forward(x);
+    const y = bn.forward(x) as GradTensor;
     const arr = expectNumberArray2D(y.tensor.toArray(), "BatchNorm1d output");
     const means = [0, 0];
     for (const row of arr) {
@@ -104,8 +104,8 @@ describe("deepbox/nn - Normalization", () => {
       [1, 2, 3],
       [2, 4, 6],
     ]);
-    const y = ln.forward(x);
-    const rows = expectNumberArray2D(y.tensor.toArray(), "LayerNorm output");
+    const y = ln.forward(x); // no parameters, so a plain tensor
+    const rows = expectNumberArray2D(y.toArray(), "LayerNorm output");
     for (const row of rows) {
       const mean = (row[0] + row[1] + row[2]) / 3;
       const varVal = ((row[0] - mean) ** 2 + (row[1] - mean) ** 2 + (row[2] - mean) ** 2) / 3;
@@ -119,7 +119,7 @@ describe("deepbox/nn - Normalization", () => {
     const x = tensor([1, 2, 3]);
     const y = ln.forward(x);
     expect(y.shape).toEqual([3]);
-    const arr = expectNumberArray(y.tensor.toArray(), "LayerNorm output");
+    const arr = expectNumberArray(y.toArray(), "LayerNorm output");
     const mean = (arr[0] + arr[1] + arr[2]) / 3;
     const varVal = ((arr[0] - mean) ** 2 + (arr[1] - mean) ** 2 + (arr[2] - mean) ** 2) / 3;
     expect(mean).toBeCloseTo(0, 6);
@@ -140,7 +140,7 @@ describe("deepbox/nn - Normalization", () => {
     ]);
     const y = ln.forward(x);
     expect(y.shape).toEqual([2, 2, 2]);
-    const arr = expectNumberArray3D(y.tensor.toArray(), "LayerNorm output");
+    const arr = expectNumberArray3D(y.toArray(), "LayerNorm output");
     for (const batch of arr) {
       for (const row of batch) {
         const mean = (row[0] + row[1]) / 2;
@@ -177,7 +177,8 @@ describe("deepbox/nn - Normalization", () => {
 
   it("LayerNorm propagates gradients through a non-contiguous input", () => {
     const f64 = { dtype: "float64" as const };
-    const ln = new LayerNorm(3, { elementwiseAffine: false });
+    // float64 layer: the gradient check below needs double precision
+    const ln = new LayerNorm(3, { elementwiseAffine: false, dtype: "float64" });
     const x0 = [0.5, -1.2, 0.3, 2.1, 0.4, -0.7];
     // Build a non-contiguous (2,3) input via a (3,2) base + transpose, so the
     // autograd graph must survive the internal contiguous materialization.
@@ -186,7 +187,7 @@ describe("deepbox/nn - Normalization", () => {
       return { base: b, view: b.transpose([1, 0]) };
     };
     const w = GradTensor.fromTensor(tensor([1, 2, 3, 4, 5, 6], f64).reshape([2, 3]));
-    const weightedSum = (g: ReturnType<LayerNorm["forward"]>) => g.mul(w).sum();
+    const weightedSum = (g: GradTensor) => g.mul(w).sum();
 
     const { base, view } = mk(x0);
     weightedSum(ln.forward(view)).backward();

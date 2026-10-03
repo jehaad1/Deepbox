@@ -15,12 +15,12 @@ describe("ndarray reduction branches", () => {
     const empty = zeros([0, 2]);
     const reduced = sum(empty, 0);
     expect(reduced.shape).toEqual([2]);
-    expect(reduced.dtype).toBe("float64");
+    expect(reduced.dtype).toBe("float32");
     expect(reduced.toArray()).toEqual([0, 0]);
 
     const reducedKeep = sum(empty, 0, true);
     expect(reducedKeep.shape).toEqual([1, 2]);
-    expect(reducedKeep.dtype).toBe("float64");
+    expect(reducedKeep.dtype).toBe("float32");
     expect(reducedKeep.toArray()).toEqual([[0, 0]]);
 
     const big = tensor(new BigInt64Array([INT64_MAX, 1n]), { dtype: "int64" });

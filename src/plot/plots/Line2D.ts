@@ -14,10 +14,13 @@ import type {
 } from "../types";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
+import { positiveMinOfPoints } from "../utils/transforms";
 import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Connected line series. Samples with a non-finite x or y are not drawn and
+ * break the line into separate pieces.
  * @internal
  */
 export class Line2D implements Drawable {
@@ -43,6 +46,10 @@ export class Line2D implements Drawable {
     }
     this.linewidth = lw;
     this.label = normalizeLegendLabel(options.label);
+  }
+
+  getPositiveMin(): { readonly x: number; readonly y: number } {
+    return positiveMinOfPoints(this.x, this.y);
   }
 
   getDataRange(): DataRange | null {
@@ -74,16 +81,26 @@ export class Line2D implements Drawable {
   }
 
   drawSVG(ctx: SvgDrawContext): void {
-    const pts: string[] = [];
+    // Non-finite samples split the line into separate runs, the same way
+    // drawRaster skips the segments next to them (matplotlib also breaks at NaN).
+    let pts: string[] = [];
+    const flush = (): void => {
+      if (pts.length === 0) return;
+      ctx.push(
+        `<polyline fill="none" stroke="${escapeXml(this.color)}" stroke-width="${this.linewidth}" points="${pts.join(" ")}" />`
+      );
+      pts = [];
+    };
     for (let i = 0; i < this.x.length; i++) {
       const xi = this.x[i] ?? 0;
       const yi = this.y[i] ?? 0;
-      if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) continue;
+      if (!isFiniteNumber(xi) || !isFiniteNumber(yi)) {
+        flush();
+        continue;
+      }
       pts.push(`${ctx.transform.xToPx(xi).toFixed(2)},${ctx.transform.yToPx(yi).toFixed(2)}`);
     }
-    ctx.push(
-      `<polyline fill="none" stroke="${escapeXml(this.color)}" stroke-width="${this.linewidth}" points="${pts.join(" ")}" />`
-    );
+    flush();
   }
 
   drawRaster(ctx: RasterDrawContext): void {

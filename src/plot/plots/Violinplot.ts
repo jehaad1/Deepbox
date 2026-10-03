@@ -1,4 +1,8 @@
 /**
+ * Violin plot drawable: a Gaussian kernel density estimate mirrored around a position, with
+ * the quartiles marked.
+ *
+ * @module plot/plots/Violinplot
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
  */
 
@@ -14,11 +18,43 @@ import type {
 } from "../types";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
-import { calculateQuartiles, kernelDensityEstimation } from "../utils/statistics";
-import { isFiniteNumber } from "../utils/validation";
+import {
+  calculateQuartiles,
+  kernelDensityEstimation,
+  scottBandwidth,
+  silvermanBandwidth,
+} from "../utils/statistics";
 import { escapeXml } from "../utils/xml";
 
+/** Number of points at which the density is evaluated. */
+const KDE_POINTS = 100;
+
 /**
+ * Options of a violin plot: the common {@link PlotOptions} plus the layout and the density
+ * estimate.
+ */
+export type ViolinplotOptions = PlotOptions & {
+  /** x position of the violin (default 1). Used by `Axes.violinplot`; must be finite. */
+  readonly position?: number;
+  /** Largest width of the violin in x units (default 0.8). Must be positive and finite. */
+  readonly width?: number;
+  /**
+   * Kernel bandwidth of the density estimate: "silverman" (default, `(3n/4)^(-1/5) s`),
+   * "scott" (`n^(-1/5) s`, matplotlib's default) or a positive number, the standard deviation
+   * of the Gaussian kernel in data units.
+   */
+  readonly bandwidth?: "silverman" | "scott" | number;
+};
+
+/**
+ * Violin plot drawable.
+ *
+ * Non-finite input values are ignored. An empty input draws nothing; a non-empty input with no
+ * finite value throws. The density uses `options.bandwidth` (Silverman's rule by default) and is
+ * evaluated at 100 points spanning the data range extended by 10% on each side (by three
+ * bandwidths when all values are equal, so a constant sample still has a visible shape).
+ * The violin is centered on the `position` argument; `options.position` is only read by
+ * `Axes.violinplot`.
  * @internal
  */
 export class Violinplot implements Drawable {
@@ -35,17 +71,47 @@ export class Violinplot implements Drawable {
   readonly label: string | null;
   readonly hasData: boolean;
 
-  constructor(position: number, data: Float64Array, options: PlotOptions) {
+  constructor(position: number, data: Float64Array, options: ViolinplotOptions) {
+    if (!Number.isFinite(position)) {
+      throw new InvalidParameterError(
+        `violinplot position must be finite; received ${position}`,
+        "position",
+        position
+      );
+    }
+    const width = options.width ?? 0.8;
+    if (!Number.isFinite(width) || width <= 0) {
+      throw new InvalidParameterError(
+        `violinplot width must be a positive finite number; received ${width}`,
+        "width",
+        width
+      );
+    }
+    const rule = options.bandwidth ?? "silverman";
+    if (
+      rule !== "silverman" &&
+      rule !== "scott" &&
+      (typeof rule !== "number" || !Number.isFinite(rule) || rule <= 0)
+    ) {
+      throw new InvalidParameterError(
+        `violinplot bandwidth must be "silverman", "scott" or a positive number; received ${String(rule)}`,
+        "bandwidth",
+        rule
+      );
+    }
     this.position = position;
     this.color = normalizeColor(options.color, "#8c564b");
     this.edgecolor = normalizeColor(options.edgecolor, "#000000");
-    this.violinWidth = 0.8;
+    this.violinWidth = width;
     this.label = normalizeLegendLabel(options.label);
 
-    const sorted = Array.from(data)
-      .filter(isFiniteNumber)
-      .sort((a, b) => a - b);
-    const n = sorted.length;
+    const finite = new Float64Array(data.length);
+    let n = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] ?? Number.NaN;
+      if (Number.isFinite(v)) finite[n++] = v;
+    }
+    const sorted = finite.subarray(0, n).sort();
 
     if (n === 0) {
       if (data.length > 0) {
@@ -65,29 +131,38 @@ export class Violinplot implements Drawable {
     }
     this.hasData = true;
 
-    // Calculate quartiles
     const { q1, median, q3 } = calculateQuartiles(sorted);
     this.q1 = q1;
     this.median = median;
     this.q3 = q3;
 
-    // Calculate KDE for violin shape
+    // Evaluation grid: data range plus padding.
     const firstVal = sorted[0] ?? 0;
-    const lastVal = sorted[sorted.length - 1] ?? 0;
+    const lastVal = sorted[n - 1] ?? 0;
     const dataRange = lastVal - firstVal;
-    const padding = dataRange * 0.1;
+    const bandwidth =
+      typeof rule === "number"
+        ? rule
+        : rule === "scott"
+          ? scottBandwidth(sorted)
+          : silvermanBandwidth(sorted);
+    const padding = dataRange > 0 ? dataRange * 0.1 : 3 * bandwidth;
     const min = firstVal - padding;
     const max = lastVal + padding;
-
-    // Create points for KDE evaluation
-    const numPoints = 100;
-    const kdePoints: number[] = [];
-    for (let i = 0; i < numPoints; i++) {
-      kdePoints.push(min + (i / (numPoints - 1)) * (max - min));
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      throw new InvalidParameterError(
+        "violinplot data span is too large to evaluate a density",
+        "data",
+        data
+      );
     }
 
-    // Calculate KDE values
-    this.kdeValues = kernelDensityEstimation(sorted, kdePoints, 0);
+    const kdePoints: number[] = [];
+    for (let i = 0; i < KDE_POINTS; i++) {
+      kdePoints.push(min + (i / (KDE_POINTS - 1)) * (max - min));
+    }
+
+    this.kdeValues = kernelDensityEstimation(sorted, kdePoints, bandwidth);
     this.kdePoints = kdePoints;
   }
 
@@ -187,59 +262,31 @@ export class Violinplot implements Drawable {
     }
     if (maxKDE === 0) return;
 
-    // Simple raster rendering - draw filled polygons for violin
-    for (let i = 0; i < this.kdePoints.length - 1; i++) {
-      const y1 = this.kdePoints[i] ?? 0;
-      const y2 = this.kdePoints[i + 1] ?? 0;
-      const kde1 = this.kdeValues[i] ?? 0;
-      const kde2 = this.kdeValues[i + 1] ?? 0;
-
-      const width1 = (kde1 / maxKDE) * this.violinWidth;
-      const width2 = (kde2 / maxKDE) * this.violinWidth;
-
-      const xLeft1 = x - width1 / 2;
-      const xRight1 = x + width1 / 2;
-      const xLeft2 = x - width2 / 2;
-      const xRight2 = x + width2 / 2;
-
-      const pxLeft1 = Math.round(ctx.transform.xToPx(xLeft1));
-      const pxRight1 = Math.round(ctx.transform.xToPx(xRight1));
-      const pxLeft2 = Math.round(ctx.transform.xToPx(xLeft2));
-      const pxRight2 = Math.round(ctx.transform.xToPx(xRight2));
-
-      const py1 = Math.round(ctx.transform.yToPx(y1));
-      const py2 = Math.round(ctx.transform.yToPx(y2));
-
-      // Draw filled quadrilateral as two triangles
-      ctx.canvas.drawLineRGBA(pxLeft1, py1, pxRight1, py1, rgba.r, rgba.g, rgba.b, rgba.a);
-      ctx.canvas.drawLineRGBA(pxRight1, py1, pxRight2, py2, rgba.r, rgba.g, rgba.b, rgba.a);
-      ctx.canvas.drawLineRGBA(pxRight2, py2, pxLeft2, py2, rgba.r, rgba.g, rgba.b, rgba.a);
-      ctx.canvas.drawLineRGBA(pxLeft2, py2, pxLeft1, py1, rgba.r, rgba.g, rgba.b, rgba.a);
-
-      // Fill the area by drawing horizontal lines
-      const minY = Math.min(py1, py2);
-      const maxY = Math.max(py1, py2);
-      if (py1 === py2) {
-        const leftX = Math.min(pxLeft1, pxLeft2);
-        const rightX = Math.max(pxRight1, pxRight2);
-        ctx.canvas.drawLineRGBA(leftX, py1, rightX, py1, rgba.r, rgba.g, rgba.b, rgba.a);
-      } else {
-        for (let y = minY; y <= maxY; y++) {
-          const t = (y - py1) / (py2 - py1);
-          const leftX = pxLeft1 + t * (pxLeft2 - pxLeft1);
-          const rightX = pxRight1 + t * (pxRight2 - pxRight1);
-          ctx.canvas.drawLineRGBA(
-            Math.round(leftX),
-            y,
-            Math.round(rightX),
-            y,
-            rgba.r,
-            rgba.g,
-            rgba.b,
-            rgba.a
-          );
-        }
-      }
+    // Violin outline: left edge bottom to top, then right edge top to bottom.
+    const count = this.kdePoints.length;
+    const xs = new Float64Array(2 * count);
+    const ys = new Float64Array(2 * count);
+    for (let i = 0; i < count; i++) {
+      const half = (((this.kdeValues[i] ?? 0) / maxKDE) * this.violinWidth) / 2;
+      const py = ctx.transform.yToPx(this.kdePoints[i] ?? 0);
+      xs[i] = ctx.transform.xToPx(x - half);
+      ys[i] = py;
+      xs[2 * count - 1 - i] = ctx.transform.xToPx(x + half);
+      ys[2 * count - 1 - i] = py;
+    }
+    ctx.canvas.fillPolygonRGBA(xs, ys, rgba.r, rgba.g, rgba.b, rgba.a);
+    for (let i = 0; i < 2 * count; i++) {
+      const j = (i + 1) % (2 * count);
+      ctx.canvas.drawLineRGBA(
+        Math.round(xs[i] ?? 0),
+        Math.round(ys[i] ?? 0),
+        Math.round(xs[j] ?? 0),
+        Math.round(ys[j] ?? 0),
+        edge.r,
+        edge.g,
+        edge.b,
+        edge.a
+      );
     }
 
     // Draw quartile indicators

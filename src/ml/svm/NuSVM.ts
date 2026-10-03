@@ -1,124 +1,131 @@
 /**
  * Nu-parameterized SVM variants and One-Class SVM.
  *
- * - NuSVC: Classification SVM using nu parameter instead of C
- * - NuSVR: Regression SVM using nu parameter instead of epsilon
- * - OneClassSVM: Unsupervised outlier detection using one-class SVM
+ * - NuSVC: classification SVM using nu instead of C
+ * - NuSVR: regression SVM using nu instead of epsilon
+ * - OneClassSVM: unsupervised outlier detection
  *
+ * All three use the LIBSVM working-set SMO solver from `KernelSVM.ts`, so they agree with
+ * scikit-learn's `NuSVC`, `NuSVR` and `OneClassSVM` up to the solver tolerance.
+ *
+ * @module ml/svm/NuSVM
  * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 
-import { InvalidParameterError, NotFittedError, ShapeError } from "../../core";
+import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { __random } from "../../random/random";
 import {
-  assertContiguous,
+  toFloat64View,
   validateFitInputs,
   validatePredictInputs,
   validateUnsupervisedFitInputs,
 } from "../_validation";
 import type { Classifier, OutlierDetector, Regressor } from "../base";
+import {
+  accuracyOf,
+  ClassificationQ,
+  encodeLabels,
+  expansionPredict,
+  expansionTensors,
+  type GammaOption,
+  KernelExpansion,
+  type KernelType,
+  labelsToTensor,
+  mergeParams,
+  OvoModel,
+  optionOr,
+  ovoDecisionFunction,
+  ovoPredict,
+  ovoPredictProba,
+  type PairSolution,
+  parseC,
+  parseCacheSize,
+  parseCoef0,
+  parseDegree,
+  parseGamma,
+  parseKernel,
+  parseMaxIter,
+  parseNu,
+  parseTol,
+  RegressionQ,
+  r2Of,
+  regressionCoefficients,
+  resolveGamma,
+  type SvmKernelParams,
+  solveSmo,
+  warnNotConverged,
+} from "./KernelSVM";
 
-type KernelType = "rbf" | "linear" | "poly" | "sigmoid";
+type NuSvcConfig = {
+  nu: number;
+  kernel: KernelType;
+  gamma: GammaOption;
+  coef0: number;
+  degree: number;
+  maxIter: number;
+  tol: number;
+  cacheSize: number;
+};
 
-function kernelValue(
-  xi: number[],
-  xj: number[],
-  kernel: KernelType,
-  gamma: number,
-  coef0: number,
-  degree: number
-): number {
-  let dot = 0;
-  for (let k = 0; k < xi.length; k++) {
-    dot += (xi[k] ?? 0) * (xj[k] ?? 0);
-  }
-  switch (kernel) {
-    case "linear":
-      return dot;
-    case "rbf": {
-      let sqDist = 0;
-      for (let k = 0; k < xi.length; k++) {
-        const d = (xi[k] ?? 0) - (xj[k] ?? 0);
-        sqDist += d * d;
-      }
-      return Math.exp(-gamma * sqDist);
-    }
-    case "poly":
-      return (gamma * dot + coef0) ** degree;
-    case "sigmoid":
-      return Math.tanh(gamma * dot + coef0);
-    default:
-      return dot;
-  }
-}
+/** Constructor options of {@link NuSVC}. */
+export type NuSVCOptions = {
+  /**
+   * Upper bound on the fraction of margin errors and lower bound on the fraction of support
+   * vectors, in (0, 1] (default: 0.5). Some values are infeasible for unbalanced classes.
+   */
+  readonly nu?: number;
+  /** Kernel function (default: "rbf"). */
+  readonly kernel?: KernelType;
+  /** Kernel coefficient of `rbf`, `poly` and `sigmoid` (default: "scale"). */
+  readonly gamma?: GammaOption;
+  /** Independent term of the `poly` and `sigmoid` kernels (default: 0). */
+  readonly coef0?: number;
+  /** Degree of the `poly` kernel, an integer >= 1 (default: 3). */
+  readonly degree?: number;
+  /**
+   * Budget of SMO updates, expressed as passes over the data: the solver stops after at
+   * most `maxIter * n` working-set updates per binary problem (default: 1000).
+   */
+  readonly maxIter?: number;
+  /** Stopping tolerance on the maximal KKT violation (default: 1e-3). */
+  readonly tol?: number;
+  /** Size of the kernel row cache in megabytes (default: 200). */
+  readonly cacheSize?: number;
+};
 
-function computeKernelMatrix(
-  XData: number[][],
-  nSamples: number,
-  kernel: KernelType,
-  gamma: number,
-  coef0: number,
-  degree: number
-): Float64Array {
-  const K = new Float64Array(nSamples * nSamples);
-  for (let i = 0; i < nSamples; i++) {
-    for (let j = i; j < nSamples; j++) {
-      const val = kernelValue(XData[i]!, XData[j]!, kernel, gamma, coef0, degree);
-      K[i * nSamples + j] = val;
-      K[j * nSamples + i] = val;
-    }
-  }
-  return K;
-}
+const NU_SVC_KEYS = [
+  "nu",
+  "kernel",
+  "gamma",
+  "coef0",
+  "degree",
+  "maxIter",
+  "tol",
+  "cacheSize",
+] as const;
 
-function resolveGamma(
-  gammaOpt: number | "scale" | "auto",
-  nFeatures: number,
-  XData: number[][],
-  nSamples: number
-): number {
-  if (typeof gammaOpt === "number") return gammaOpt;
-  if (gammaOpt === "auto") return 1 / nFeatures;
-  let mean = 0;
-  const total = nSamples * nFeatures;
-  for (let i = 0; i < nSamples; i++) {
-    for (let j = 0; j < nFeatures; j++) {
-      mean += XData[i]![j] ?? 0;
-    }
-  }
-  mean /= total;
-  let variance = 0;
-  for (let i = 0; i < nSamples; i++) {
-    for (let j = 0; j < nFeatures; j++) {
-      const d = (XData[i]![j] ?? 0) - mean;
-      variance += d * d;
-    }
-  }
-  variance /= total;
-  return variance > 0 ? 1 / (nFeatures * variance) : 1;
-}
-
-function extractRows(X: Tensor, nSamples: number, nFeatures: number): number[][] {
-  const XData: number[][] = [];
-  for (let i = 0; i < nSamples; i++) {
-    const row: number[] = [];
-    for (let j = 0; j < nFeatures; j++) {
-      row.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-    }
-    XData.push(row);
-  }
-  return XData;
+function normalizeNuSvcConfig(o: Record<string, unknown>): NuSvcConfig {
+  return {
+    nu: optionOr(o, "nu", 0.5, parseNu),
+    kernel: optionOr(o, "kernel", "rbf", parseKernel),
+    gamma: optionOr<GammaOption>(o, "gamma", "scale", parseGamma),
+    coef0: optionOr(o, "coef0", 0, parseCoef0),
+    degree: optionOr(o, "degree", 3, parseDegree),
+    maxIter: optionOr(o, "maxIter", 1000, parseMaxIter),
+    tol: optionOr(o, "tol", 1e-3, parseTol),
+    cacheSize: optionOr(o, "cacheSize", 200, parseCacheSize),
+  };
 }
 
 /**
  * Nu-Support Vector Classification.
  *
- * Similar to SVC but uses the `nu` parameter (in (0, 1]) to control the number
- * of support vectors and margin errors, instead of `C`.
+ * Like {@link SVC} but `nu` in (0, 1] replaces `C`: it is an upper bound on the fraction
+ * of margin errors and a lower bound on the fraction of support vectors. More than two
+ * classes are handled with one-vs-one voting.
  *
- * `nu` is an upper bound on the fraction of margin errors and a lower bound
- * on the fraction of support vectors.
+ * `predictProba` returns a monotone squashing of the decision values, not calibrated
+ * probabilities.
  *
  * @example
  * ```ts
@@ -132,394 +139,288 @@ function extractRows(X: Tensor, nSamples: number, nFeatures: number): number[][]
  * clf.fit(X, y);
  * const predictions = clf.predict(X);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class NuSVC implements Classifier {
-  private nu: number;
-  private kernel: KernelType;
-  private gamma: number | "scale" | "auto";
-  private coef0: number;
-  private degree: number;
-  private maxIter: number;
-  private tol: number;
-
-  private gamma_: number = 1;
-  private supportVectors_?: number[][];
-  private supportAlphas_?: number[];
-  private supportLabels_?: number[];
-  private bias_ = 0;
-  private classLabels: number[] = [];
-  private models: Array<{
-    sv: number[][];
-    alphas: number[];
-    labels: number[];
-    bias: number;
-    posClass: number;
-  }> = [];
-  private nFeatures = 0;
-  private fitted = false;
+  private cfg: NuSvcConfig;
+  private model_: OvoModel | undefined;
 
   /**
-   * @param options.nu - Upper bound on fraction of margin errors and lower bound on fraction of support vectors (default: 0.5). Must be in (0, 1].
-   * @param options.kernel - Kernel type (default: "rbf")
-   * @param options.gamma - Kernel coefficient (default: "scale")
-   * @param options.coef0 - Independent term in kernel (default: 0)
-   * @param options.degree - Degree for poly kernel (default: 3)
-   * @param options.maxIter - Maximum number of iterations (default: 1000)
-   * @param options.tol - Tolerance for stopping criterion (default: 1e-3)
+   * @param options - Hyperparameters, see {@link NuSVCOptions}
+   * @throws {InvalidParameterError} If an option is out of range
    */
-  constructor(
-    options: {
-      readonly nu?: number;
-      readonly kernel?: KernelType;
-      readonly gamma?: number | "scale" | "auto";
-      readonly coef0?: number;
-      readonly degree?: number;
-      readonly maxIter?: number;
-      readonly tol?: number;
-    } = {}
-  ) {
-    this.nu = options.nu ?? 0.5;
-    this.kernel = options.kernel ?? "rbf";
-    this.gamma = options.gamma ?? "scale";
-    this.coef0 = options.coef0 ?? 0;
-    this.degree = options.degree ?? 3;
-    this.maxIter = options.maxIter ?? 1000;
-    this.tol = options.tol ?? 1e-3;
-
-    if (!Number.isFinite(this.nu) || this.nu <= 0 || this.nu > 1) {
-      throw new InvalidParameterError("nu must be in (0, 1]", "nu", this.nu);
-    }
-    if (!Number.isInteger(this.maxIter) || this.maxIter <= 0) {
-      throw new InvalidParameterError(
-        "maxIter must be a positive integer",
-        "maxIter",
-        this.maxIter
-      );
-    }
+  constructor(options: NuSVCOptions = {}) {
+    this.cfg = normalizeNuSvcConfig(options as Record<string, unknown>);
   }
 
-  private solveBinaryNuSMO(
-    XData: number[][],
-    yMapped: number[],
-    nSamples: number
-  ): { sv: number[][]; alphas: number[]; labels: number[]; bias: number } {
-    const K = computeKernelMatrix(
-      XData,
-      nSamples,
-      this.kernel,
-      this.gamma_,
-      this.coef0,
-      this.degree
-    );
-    // For nu-SVM, C_eff = 1/(nu * nSamples) gives an equivalent bound
-    const Ceff = 1 / (this.nu * nSamples);
-    const alphas = new Float64Array(nSamples);
-
-    // Initialize alphas to satisfy sum(alpha_i * y_i) = 0 and sum(alpha_i) = nu * n
-    const nPos = yMapped.filter((v) => v > 0).length;
-    const nNeg = nSamples - nPos;
-    const targetSum = this.nu * nSamples;
-    // Distribute alphas equally within each class
-    const alphaPos = Math.min(Ceff, targetSum / (2 * nPos));
-    const alphaNeg = Math.min(Ceff, targetSum / (2 * nNeg));
-    for (let i = 0; i < nSamples; i++) {
-      alphas[i] = (yMapped[i] ?? 0) > 0 ? alphaPos : alphaNeg;
+  private get fitted(): OvoModel {
+    if (this.model_ === undefined) {
+      throw new NotFittedError("NuSVC must be fitted before prediction");
     }
-
-    let b = 0;
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let numChanged = 0;
-
-      for (let i = 0; i < nSamples; i++) {
-        let fi = -b;
-        for (let j = 0; j < nSamples; j++) {
-          fi += (alphas[j] ?? 0) * (yMapped[j] ?? 0) * (K[j * nSamples + i] ?? 0);
-        }
-        const yi = yMapped[i] ?? 0;
-        const Ei = fi - yi;
-
-        if (
-          (yi * Ei < -this.tol && (alphas[i] ?? 0) < Ceff) ||
-          (yi * Ei > this.tol && (alphas[i] ?? 0) > 0)
-        ) {
-          let j = Math.floor(__random() * (nSamples - 1));
-          if (j >= i) j++;
-
-          let fj = -b;
-          for (let k = 0; k < nSamples; k++) {
-            fj += (alphas[k] ?? 0) * (yMapped[k] ?? 0) * (K[k * nSamples + j] ?? 0);
-          }
-          const yj = yMapped[j] ?? 0;
-          const Ej = fj - yj;
-
-          const alphaIOld = alphas[i] ?? 0;
-          const alphaJOld = alphas[j] ?? 0;
-
-          let L: number;
-          let H: number;
-          if (yi !== yj) {
-            L = Math.max(0, alphaJOld - alphaIOld);
-            H = Math.min(Ceff, Ceff + alphaJOld - alphaIOld);
-          } else {
-            L = Math.max(0, alphaIOld + alphaJOld - Ceff);
-            H = Math.min(Ceff, alphaIOld + alphaJOld);
-          }
-
-          if (Math.abs(L - H) < 1e-12) continue;
-
-          const eta =
-            2 * (K[i * nSamples + j] ?? 0) -
-            (K[i * nSamples + i] ?? 0) -
-            (K[j * nSamples + j] ?? 0);
-          if (eta >= 0) continue;
-
-          let newAlphaJ = alphaJOld - (yj * (Ei - Ej)) / eta;
-          newAlphaJ = Math.min(H, Math.max(L, newAlphaJ));
-
-          if (Math.abs(newAlphaJ - alphaJOld) < 1e-5) continue;
-
-          alphas[j] = newAlphaJ;
-          alphas[i] = alphaIOld + yi * yj * (alphaJOld - newAlphaJ);
-
-          const b1 =
-            b +
-            Ei +
-            yi * ((alphas[i] ?? 0) - alphaIOld) * (K[i * nSamples + i] ?? 0) +
-            yj * (newAlphaJ - alphaJOld) * (K[i * nSamples + j] ?? 0);
-          const b2 =
-            b +
-            Ej +
-            yi * ((alphas[i] ?? 0) - alphaIOld) * (K[i * nSamples + j] ?? 0) +
-            yj * (newAlphaJ - alphaJOld) * (K[j * nSamples + j] ?? 0);
-
-          if ((alphas[i] ?? 0) > 0 && (alphas[i] ?? 0) < Ceff) {
-            b = b1;
-          } else if (newAlphaJ > 0 && newAlphaJ < Ceff) {
-            b = b2;
-          } else {
-            b = (b1 + b2) / 2;
-          }
-
-          numChanged++;
-        }
-      }
-
-      if (numChanged === 0) break;
-    }
-
-    const sv: number[][] = [];
-    const svAlphas: number[] = [];
-    const svLabels: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      if ((alphas[i] ?? 0) > 1e-8) {
-        sv.push(XData[i]!);
-        svAlphas.push(alphas[i] ?? 0);
-        svLabels.push(yMapped[i] ?? 0);
-      }
-    }
-
-    return { sv, alphas: svAlphas, labels: svLabels, bias: b };
+    return this.model_;
   }
 
-  private decisionFn(
-    x: number[],
-    model: { sv: number[][]; alphas: number[]; labels: number[]; bias: number }
-  ): number {
-    let f = -model.bias;
-    for (let i = 0; i < model.sv.length; i++) {
-      f +=
-        (model.alphas[i] ?? 0) *
-        (model.labels[i] ?? 0) *
-        kernelValue(model.sv[i]!, x, this.kernel, this.gamma_, this.coef0, this.degree);
-    }
-    return f;
-  }
-
+  /**
+   * Fit the classifier.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Class labels of shape (n_samples,), at least two distinct values
+   * @returns this
+   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
+   * @throws {DataValidationError} If X or y contain NaN/Inf or the kernel overflows
+   * @throws {InvalidParameterError} If y has fewer than 2 classes or `nu` is infeasible for
+   *   a pair of classes
+   */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeatures = nFeatures;
-
-    const XData = extractRows(X, nSamples, nFeatures);
-    const yData: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      yData.push(Number(y.data[y.offset + i] ?? 0));
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const Xf = toFloat64View(X);
+    const { labels, index } = encodeLabels(toFloat64View(y));
+    if (labels.length < 2) {
+      throw new InvalidParameterError("NuSVC requires at least 2 classes", "y", labels.length);
     }
+    const { nu, tol, maxIter, cacheSize } = this.cfg;
+    const kp: SvmKernelParams = {
+      kernel: this.cfg.kernel,
+      gamma: resolveGamma(this.cfg.gamma, Xf, d),
+      coef0: this.cfg.coef0,
+      degree: this.cfg.degree,
+    };
 
-    this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
-    if (this.classLabels.length < 2) {
-      throw new InvalidParameterError(
-        "NuSVC requires at least 2 classes",
-        "y",
-        this.classLabels.length
-      );
-    }
-
-    this.gamma_ = resolveGamma(this.gamma, nFeatures, XData, nSamples);
-
-    if (this.classLabels.length === 2) {
-      const yMapped = yData.map((l) => (l === this.classLabels[0] ? -1 : 1));
-      const result = this.solveBinaryNuSMO(XData, yMapped, nSamples);
-      this.supportVectors_ = result.sv;
-      this.supportAlphas_ = result.alphas;
-      this.supportLabels_ = result.labels;
-      this.bias_ = result.bias;
-      this.models = [];
-    } else {
-      this.models = [];
-      for (const cls of this.classLabels) {
-        const yMapped = yData.map((l) => (l === cls ? 1 : -1));
-        const result = this.solveBinaryNuSMO(XData, yMapped, nSamples);
-        this.models.push({ ...result, posClass: cls });
+    // nu must be feasible for every pair of classes before any solver runs.
+    const counts = new Float64Array(labels.length);
+    for (let i = 0; i < n; i++) counts[index[i] as number]!++;
+    for (let a = 0; a < labels.length; a++) {
+      for (let b = a + 1; b < labels.length; b++) {
+        const na = counts[a] as number;
+        const nb = counts[b] as number;
+        if ((nu * (na + nb)) / 2 > Math.min(na, nb)) {
+          throw new InvalidParameterError(
+            `nu=${nu} is infeasible for classes ${labels[a]} and ${labels[b]} ` +
+              `(${na} and ${nb} samples); nu * (n_a + n_b) / 2 must not exceed min(n_a, n_b)`,
+            "nu",
+            nu
+          );
+        }
       }
     }
 
-    this.fitted = true;
+    const { model, converged } = OvoModel.fit(
+      Xf,
+      n,
+      d,
+      labels,
+      index,
+      kp,
+      (Xsub, m, ySub, _idx, a, b): PairSolution => {
+        const Q = new ClassificationQ(Xsub, m, d, ySub, kp, cacheSize);
+        const alpha = new Float64Array(m);
+        let sumPos = (nu * m) / 2;
+        let sumNeg = (nu * m) / 2;
+        for (let t = 0; t < m; t++) {
+          if (ySub[t] === 1) {
+            alpha[t] = Math.min(1, sumPos);
+            sumPos -= alpha[t] as number;
+          } else {
+            alpha[t] = Math.min(1, sumNeg);
+            sumNeg -= alpha[t] as number;
+          }
+        }
+        const res = solveSmo(
+          Q,
+          new Float64Array(m),
+          ySub,
+          alpha,
+          new Float64Array(m).fill(1),
+          tol,
+          maxIter * m,
+          true
+        );
+        // r is the margin scale of the solution. At the rounding level (relative to the size
+        // of the kernel expansion) the classes cannot be separated at this nu, and dividing
+        // by r would produce coefficients of order 1e16.
+        const scale = res.r;
+        let maxDiag = 0;
+        for (let t = 0; t < m; t++) maxDiag = Math.max(maxDiag, Q.QD[t] as number);
+        if (!(scale > 1e-10 * maxDiag * ((nu * m) / 2)) || !Number.isFinite(scale)) {
+          throw new DataValidationError(
+            `NuSVC found no margin between classes ${labels[a]} and ${labels[b]} at nu=${nu}; ` +
+              "the classes overlap too much for this nu (increase nu) or the data contains " +
+              "identical samples with different labels"
+          );
+        }
+        const coef = new Float64Array(m);
+        for (let t = 0; t < m; t++) {
+          coef[t] = ((alpha[t] as number) * (ySub[t] as number)) / scale;
+        }
+        return {
+          coef,
+          rho: res.rho / scale,
+          iterations: res.iterations,
+          converged: res.converged,
+        };
+      }
+    );
+    if (!converged) warnNotConverged("NuSVC", maxIter);
+
+    this.model_ = model;
     return this;
   }
 
+  /**
+   * Predict class labels by one-vs-one voting.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Labels of shape (n_samples,): int32 for integer classes, float64 otherwise
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X has wrong dimensions or feature count
+   * @throws {DataValidationError} If X contains NaN/Inf values
+   */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("NuSVC must be fitted before prediction");
-    }
-    validatePredictInputs(X, this.nFeatures, "NuSVC");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-      }
-
-      if (this.classLabels.length === 2) {
-        const d = this.decisionFn(xi, {
-          sv: this.supportVectors_!,
-          alphas: this.supportAlphas_!,
-          labels: this.supportLabels_!,
-          bias: this.bias_,
-        });
-        predictions.push(d >= 0 ? (this.classLabels[1] ?? 0) : (this.classLabels[0] ?? 0));
-      } else {
-        let bestC = 0;
-        let bestScore = -Infinity;
-        for (let c = 0; c < this.models.length; c++) {
-          const score = this.decisionFn(xi, this.models[c]!);
-          if (score > bestScore) {
-            bestScore = score;
-            bestC = c;
-          }
-        }
-        predictions.push(this.models[bestC]?.posClass ?? 0);
-      }
-    }
-
-    return tensor(predictions, { dtype: "int32" });
+    return ovoPredict(this.fitted, X, "NuSVC");
   }
 
+  /**
+   * Signed decision values.
+   *
+   * Two classes give shape (n_samples,) and a positive value means `classes[1]`. More classes
+   * give shape (n_samples, n_classes) of one-vs-rest scores.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  decisionFunction(X: Tensor): Tensor {
+    return ovoDecisionFunction(this.fitted, X, "NuSVC");
+  }
+
+  /**
+   * Class scores squashed into rows that sum to one. These are not calibrated probabilities.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Shape (n_samples, n_classes)
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   predictProba(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("NuSVC must be fitted before prediction");
-    }
-    validatePredictInputs(X, this.nFeatures, "NuSVC");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const nClasses = this.classLabels.length;
-    const proba: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-      }
-
-      if (nClasses === 2) {
-        const d = this.decisionFn(xi, {
-          sv: this.supportVectors_!,
-          alphas: this.supportAlphas_!,
-          labels: this.supportLabels_!,
-          bias: this.bias_,
-        });
-        const p1 = 1 / (1 + Math.exp(-d));
-        proba.push([1 - p1, p1]);
-      } else {
-        const scores: number[] = [];
-        for (const model of this.models) {
-          scores.push(1 / (1 + Math.exp(-this.decisionFn(xi, model))));
-        }
-        const total = scores.reduce((a, b) => a + b, 0) || 1;
-        proba.push(scores.map((s) => s / total));
-      }
-    }
-
-    return tensor(proba);
+    return ovoPredictProba(this.fitted, X, "NuSVC");
   }
 
+  /**
+   * Mean accuracy on the given data.
+   *
+   * @param X - Test samples of shape (n_samples, n_features)
+   * @param y - True labels of shape (n_samples,)
+   * @returns Accuracy in [0, 1]
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If y is not 1-dimensional or the sample counts differ
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf
+   */
   score(X: Tensor, y: Tensor): number {
     if (y.ndim !== 1) {
       throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
     }
-    assertContiguous(y, "y");
-    const predictions = this.predict(X);
-    let correct = 0;
-    for (let i = 0; i < y.size; i++) {
-      if (
-        Number(predictions.data[predictions.offset + i] ?? 0) === Number(y.data[y.offset + i] ?? 0)
-      ) {
-        correct++;
-      }
-    }
-    return correct / y.size;
+    return accuracyOf(this.predict(X), y);
   }
 
+  /** Sorted class labels seen during `fit`, or `undefined` before fitting. */
   get classes(): Tensor | undefined {
-    if (!this.fitted) return undefined;
-    return tensor(this.classLabels, { dtype: "int32" });
+    return this.model_ === undefined ? undefined : labelsToTensor(this.model_.labels);
   }
 
+  /** Support vectors, shape (n_SV, n_features), grouped by class. */
+  get supportVectors(): Tensor {
+    return this.fitted.supportVectorsTensor();
+  }
+
+  /** Indices of the support vectors in the training data, shape (n_SV,), dtype int32. */
+  get supportIndices(): Tensor {
+    return tensor(Int32Array.from(this.fitted.supportIndices), { dtype: "int32" });
+  }
+
+  /** Number of support vectors of each class, shape (n_classes,), dtype int32. */
+  get nSupport(): Tensor {
+    return tensor(Int32Array.from(this.fitted.nSupportPerClass), { dtype: "int32" });
+  }
+
+  /** Dual coefficients `alpha_i * y_i`, shape (n_classes - 1, n_SV), scikit-learn layout. */
+  get dualCoef(): Tensor {
+    return this.fitted.dualCoefTensor();
+  }
+
+  /** Decision-function offsets, one per class pair, scikit-learn sign convention. */
+  get intercept(): Tensor {
+    return this.fitted.interceptTensor();
+  }
+
+  /**
+   * Get hyperparameters.
+   *
+   * @returns Object that can be passed back to the constructor
+   */
   getParams(): Record<string, unknown> {
-    return {
-      nu: this.nu,
-      kernel: this.kernel,
-      gamma: this.gamma,
-      coef0: this.coef0,
-      degree: this.degree,
-    };
+    return { ...this.cfg };
   }
 
+  /**
+   * Set hyperparameters. The call is atomic: if any value is invalid nothing changes.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter is unknown or its value is invalid
+   */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "nu":
-          if (typeof value !== "number" || value <= 0 || value > 1) {
-            throw new InvalidParameterError("nu must be in (0, 1]", "nu", value);
-          }
-          this.nu = value;
-          break;
-        case "kernel":
-          if (value !== "rbf" && value !== "linear" && value !== "poly" && value !== "sigmoid") {
-            throw new InvalidParameterError("invalid kernel", "kernel", value);
-          }
-          this.kernel = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    this.cfg = normalizeNuSvcConfig(mergeParams(this.getParams(), params, NU_SVC_KEYS));
     return this;
   }
+
+  /** Create an unfitted copy with the same hyperparameters. */
+  clone(): NuSVC {
+    return new NuSVC(this.getParams() as NuSVCOptions);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NuSVR
+// ---------------------------------------------------------------------------
+
+/** Constructor options of {@link NuSVR}. */
+export type NuSVROptions = {
+  /**
+   * Upper bound on the fraction of training errors and lower bound on the fraction of
+   * support vectors, in (0, 1] (default: 0.5).
+   */
+  readonly nu?: number;
+  /** Penalty of errors, must be positive (default: 1.0). */
+  readonly C?: number;
+  /** Kernel function (default: "rbf"). */
+  readonly kernel?: KernelType;
+  /** Kernel coefficient of `rbf`, `poly` and `sigmoid` (default: "scale"). */
+  readonly gamma?: GammaOption;
+  /** Independent term of the `poly` and `sigmoid` kernels (default: 0). */
+  readonly coef0?: number;
+  /** Degree of the `poly` kernel, an integer >= 1 (default: 3). */
+  readonly degree?: number;
+  /** Budget of SMO updates in passes over the 2 * n dual variables (default: 1000). */
+  readonly maxIter?: number;
+  /** Stopping tolerance on the maximal KKT violation (default: 1e-3). */
+  readonly tol?: number;
+  /** Size of the kernel row cache in megabytes (default: 200). */
+  readonly cacheSize?: number;
+};
+
+type NuSvrConfig = NuSvcConfig & { C: number };
+
+const NU_SVR_KEYS = [...NU_SVC_KEYS, "C"] as const;
+
+function normalizeNuSvrConfig(o: Record<string, unknown>): NuSvrConfig {
+  return { ...normalizeNuSvcConfig(o), C: optionOr(o, "C", 1.0, parseC) };
 }
 
 /**
  * Nu-Support Vector Regression.
  *
- * Similar to SVR but uses `nu` to control the fraction of support vectors
- * instead of specifying epsilon directly.
+ * Like {@link SVR} but `nu` in (0, 1] controls the fraction of support vectors and the
+ * width of the insensitive tube is found by the solver instead of being given.
  *
  * @example
  * ```ts
@@ -533,250 +434,182 @@ export class NuSVC implements Classifier {
  * svr.fit(X, y);
  * const predictions = svr.predict(X);
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class NuSVR implements Regressor {
-  private nu: number;
-  private C: number;
-  private kernel: KernelType;
-  private gamma: number | "scale" | "auto";
-  private coef0: number;
-  private degree: number;
-  private maxIter: number;
-  private tol: number;
-
-  private gamma_: number = 1;
-  private supportVectors_?: number[][];
-  private supportAlphasDiff_?: number[];
-  private bias_ = 0;
-  private nFeatures = 0;
-  private fitted = false;
+  private cfg: NuSvrConfig;
+  private model_: KernelExpansion | undefined;
 
   /**
-   * @param options.nu - Fraction of support vectors (default: 0.5). Must be in (0, 1].
-   * @param options.C - Penalty parameter (default: 1.0)
-   * @param options.kernel - Kernel type (default: "rbf")
-   * @param options.gamma - Kernel coefficient (default: "scale")
+   * @param options - Hyperparameters, see {@link NuSVROptions}
+   * @throws {InvalidParameterError} If an option is out of range
    */
-  constructor(
-    options: {
-      readonly nu?: number;
-      readonly C?: number;
-      readonly kernel?: KernelType;
-      readonly gamma?: number | "scale" | "auto";
-      readonly coef0?: number;
-      readonly degree?: number;
-      readonly maxIter?: number;
-      readonly tol?: number;
-    } = {}
-  ) {
-    this.nu = options.nu ?? 0.5;
-    this.C = options.C ?? 1.0;
-    this.kernel = options.kernel ?? "rbf";
-    this.gamma = options.gamma ?? "scale";
-    this.coef0 = options.coef0 ?? 0;
-    this.degree = options.degree ?? 3;
-    this.maxIter = options.maxIter ?? 1000;
-    this.tol = options.tol ?? 1e-3;
-
-    if (!Number.isFinite(this.nu) || this.nu <= 0 || this.nu > 1) {
-      throw new InvalidParameterError("nu must be in (0, 1]", "nu", this.nu);
-    }
-    if (!Number.isFinite(this.C) || this.C <= 0) {
-      throw new InvalidParameterError("C must be positive", "C", this.C);
-    }
+  constructor(options: NuSVROptions = {}) {
+    this.cfg = normalizeNuSvrConfig(options as Record<string, unknown>);
   }
 
+  private get fitted(): KernelExpansion {
+    if (this.model_ === undefined) {
+      throw new NotFittedError("NuSVR must be fitted before prediction");
+    }
+    return this.model_;
+  }
+
+  /**
+   * Fit the regressor.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Targets of shape (n_samples,)
+   * @returns this
+   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
+   * @throws {DataValidationError} If X or y contain NaN/Inf or the kernel overflows
+   */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeatures = nFeatures;
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const Xf = toFloat64View(X);
+    const yv = toFloat64View(y);
+    const { nu, C: penalty } = this.cfg;
+    const kp: SvmKernelParams = {
+      kernel: this.cfg.kernel,
+      gamma: resolveGamma(this.cfg.gamma, Xf, d),
+      coef0: this.cfg.coef0,
+      degree: this.cfg.degree,
+    };
 
-    const XData = extractRows(X, nSamples, nFeatures);
-    const yData: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      yData.push(Number(y.data[y.offset + i] ?? 0));
+    const Q = new RegressionQ(Xf, n, d, kp, this.cfg.cacheSize);
+    const alpha = new Float64Array(2 * n);
+    const p = new Float64Array(2 * n);
+    const sign = new Int8Array(2 * n);
+    let sum = (penalty * nu * n) / 2;
+    for (let i = 0; i < n; i++) {
+      const a = Math.min(sum, penalty);
+      alpha[i] = a;
+      alpha[i + n] = a;
+      sum -= a;
+      p[i] = -(yv[i] as number);
+      p[i + n] = yv[i] as number;
+      sign[i] = 1;
+      sign[i + n] = -1;
     }
-
-    this.gamma_ = resolveGamma(this.gamma, nFeatures, XData, nSamples);
-
-    const K = computeKernelMatrix(
-      XData,
-      nSamples,
-      this.kernel,
-      this.gamma_,
-      this.coef0,
-      this.degree
+    const res = solveSmo(
+      Q,
+      p,
+      sign,
+      alpha,
+      new Float64Array(2 * n).fill(penalty),
+      this.cfg.tol,
+      this.cfg.maxIter * 2 * n,
+      true
     );
+    if (!res.converged) warnNotConverged("NuSVR", this.cfg.maxIter);
 
-    // Nu-SVR: epsilon is automatically determined from nu
-    // Approximate: epsilon ~ nu * range(y) / n
-    let yMin = Infinity;
-    let yMax = -Infinity;
-    for (const v of yData) {
-      if (v < yMin) yMin = v;
-      if (v > yMax) yMax = v;
-    }
-    const epsilon = (this.nu * (yMax - yMin)) / nSamples;
-    const Ceff = this.C / nSamples;
-
-    const alpha = new Float64Array(nSamples);
-    let b = 0;
-    const lr = 0.01;
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let maxChange = 0;
-      for (let i = 0; i < nSamples; i++) {
-        let fi = b;
-        for (let j = 0; j < nSamples; j++) {
-          fi += (alpha[j] ?? 0) * (K[j * nSamples + i] ?? 0);
-        }
-
-        const error = fi - (yData[i] ?? 0);
-        const absError = Math.abs(error);
-
-        if (absError <= epsilon) continue;
-
-        const grad = error > 0 ? 1 : -1;
-        const oldAlpha = alpha[i] ?? 0;
-        alpha[i] = oldAlpha - lr * (grad + oldAlpha / (this.C * nSamples));
-        alpha[i] = Math.min(Ceff, Math.max(-Ceff, alpha[i] ?? 0));
-
-        const change = Math.abs((alpha[i] ?? 0) - oldAlpha);
-        if (change > maxChange) maxChange = change;
-      }
-
-      let bSum = 0;
-      let bCount = 0;
-      for (let i = 0; i < nSamples; i++) {
-        const ai = alpha[i] ?? 0;
-        if (Math.abs(ai) > 1e-8 && Math.abs(ai) < Ceff - 1e-8) {
-          let fi = 0;
-          for (let j = 0; j < nSamples; j++) {
-            fi += (alpha[j] ?? 0) * (K[j * nSamples + i] ?? 0);
-          }
-          bSum += (yData[i] ?? 0) - fi;
-          bCount++;
-        }
-      }
-      if (bCount > 0) b = bSum / bCount;
-
-      if (maxChange < this.tol) break;
-    }
-
-    const sv: number[][] = [];
-    const svAlphas: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      if (Math.abs(alpha[i] ?? 0) > 1e-8) {
-        sv.push(XData[i]!);
-        svAlphas.push(alpha[i] ?? 0);
-      }
-    }
-    if (sv.length === 0) {
-      for (let i = 0; i < nSamples; i++) {
-        sv.push(XData[i]!);
-        svAlphas.push(alpha[i] ?? 0);
-      }
-    }
-
-    this.supportVectors_ = sv;
-    this.supportAlphasDiff_ = svAlphas;
-    this.bias_ = b;
-    this.fitted = true;
+    this.model_ = KernelExpansion.fromCoefficients(
+      Xf,
+      n,
+      d,
+      regressionCoefficients(res.alpha, n),
+      res.rho,
+      kp
+    );
     return this;
   }
 
+  /**
+   * Predict target values.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Predictions of shape (n_samples,), dtype float64
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X has wrong dimensions or feature count
+   * @throws {DataValidationError} If X contains NaN/Inf values
+   */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("NuSVR must be fitted before prediction");
-    }
-    validatePredictInputs(X, this.nFeatures, "NuSVR");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-      }
-      let f = this.bias_;
-      for (let s = 0; s < this.supportVectors_!.length; s++) {
-        f +=
-          (this.supportAlphasDiff_![s] ?? 0) *
-          kernelValue(
-            this.supportVectors_![s]!,
-            xi,
-            this.kernel,
-            this.gamma_,
-            this.coef0,
-            this.degree
-          );
-      }
-      predictions.push(f);
-    }
-
-    return tensor(predictions);
+    return expansionPredict(this.fitted, X, "NuSVR");
   }
 
+  /**
+   * Coefficient of determination R^2 on the given data.
+   *
+   * @param X - Test samples of shape (n_samples, n_features)
+   * @param y - True targets of shape (n_samples,)
+   * @returns R^2 (1 is perfect, can be negative); a constant y scores 1 or 0
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If y is not 1-dimensional or the sample counts differ
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf
+   */
   score(X: Tensor, y: Tensor): number {
     if (y.ndim !== 1) {
       throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
     }
-    assertContiguous(y, "y");
-    const predictions = this.predict(X);
-    let ssRes = 0;
-    let ssTot = 0;
-    let yMean = 0;
-    for (let i = 0; i < y.size; i++) {
-      yMean += Number(y.data[y.offset + i] ?? 0);
-    }
-    yMean /= y.size;
-    for (let i = 0; i < y.size; i++) {
-      const yVal = Number(y.data[y.offset + i] ?? 0);
-      const pVal = Number(predictions.data[predictions.offset + i] ?? 0);
-      ssRes += (yVal - pVal) ** 2;
-      ssTot += (yVal - yMean) ** 2;
-    }
-    return ssTot === 0 ? (ssRes === 0 ? 1.0 : 0.0) : 1 - ssRes / ssTot;
+    return r2Of(this.predict(X), y);
   }
 
+  /** Support vectors, shape (n_SV, n_features). */
+  get supportVectors(): Tensor {
+    return expansionTensors(this.fitted).supportVectors;
+  }
+
+  /** Indices of the support vectors in the training data, shape (n_SV,), dtype int32. */
+  get supportIndices(): Tensor {
+    return expansionTensors(this.fitted).supportIndices;
+  }
+
+  /** Dual coefficients `alpha_i - alpha_i*`, shape (1, n_SV). */
+  get dualCoef(): Tensor {
+    return expansionTensors(this.fitted).dualCoef;
+  }
+
+  /** Intercept of the decision function, shape (1,). */
+  get intercept(): Tensor {
+    return expansionTensors(this.fitted).intercept;
+  }
+
+  /**
+   * Get hyperparameters.
+   *
+   * @returns Object that can be passed back to the constructor
+   */
   getParams(): Record<string, unknown> {
-    return { nu: this.nu, C: this.C, kernel: this.kernel, gamma: this.gamma };
+    return { ...this.cfg };
   }
 
+  /**
+   * Set hyperparameters. The call is atomic: if any value is invalid nothing changes.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter is unknown or its value is invalid
+   */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "nu":
-          if (typeof value !== "number" || value <= 0 || value > 1) {
-            throw new InvalidParameterError("nu must be in (0, 1]", "nu", value);
-          }
-          this.nu = value;
-          break;
-        case "C":
-          if (typeof value !== "number" || value <= 0) {
-            throw new InvalidParameterError("C must be > 0", "C", value);
-          }
-          this.C = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    this.cfg = normalizeNuSvrConfig(mergeParams(this.getParams(), params, NU_SVR_KEYS));
     return this;
   }
+
+  /** Create an unfitted copy with the same hyperparameters. */
+  clone(): NuSVR {
+    return new NuSVR(this.getParams() as NuSVROptions);
+  }
 }
+
+// ---------------------------------------------------------------------------
+// OneClassSVM
+// ---------------------------------------------------------------------------
+
+/** Constructor options of {@link OneClassSVM}. */
+export type OneClassSVMOptions = NuSVCOptions;
 
 /**
  * One-Class SVM for unsupervised outlier detection.
  *
- * Estimates the support of a high-dimensional distribution and classifies
- * new points as inliers (+1) or outliers (-1).
+ * Learns a boundary that separates the data from the origin in kernel feature space
+ * (Scholkopf et al.). `nu` in (0, 1] bounds the fraction of training errors from above and
+ * the fraction of support vectors from below.
  *
- * Uses a simplified SMO approach on the one-class formulation where
- * the decision boundary separates the data from the origin in feature space.
+ * `scoreSamples` returns the raw kernel expansion `sum_i alpha_i K(sv_i, x)`,
+ * `decisionFunction` returns `scoreSamples(X) - offset`, and `predict` returns +1 where the
+ * decision function is `>= 0` and -1 elsewhere.
  *
  * @example
  * ```ts
@@ -789,272 +622,182 @@ export class NuSVR implements Regressor {
  * ocsvm.fit(X);
  * const labels = ocsvm.predict(X); // +1 inlier, -1 outlier
  * ```
+ *
+ * @see {@link https://deepbox.dev/docs/ml-svm | Deepbox SVM}
  */
 export class OneClassSVM implements OutlierDetector {
-  private nu: number;
-  private kernel: KernelType;
-  private gamma: number | "scale" | "auto";
-  private coef0: number;
-  private degree: number;
-  private maxIter: number;
-  private tol: number;
-
-  private gamma_: number = 1;
-  private supportVectors_?: number[][];
-  private supportAlphas_?: number[];
-  private rho_ = 0;
-  private nFeatures = 0;
-  private fitted = false;
+  private cfg: NuSvcConfig;
+  private model_: KernelExpansion | undefined;
 
   /**
-   * @param options.nu - Upper bound on fraction of outliers and lower bound on fraction of support vectors (default: 0.5)
-   * @param options.kernel - Kernel type (default: "rbf")
-   * @param options.gamma - Kernel coefficient (default: "scale")
+   * @param options - Hyperparameters, see {@link OneClassSVMOptions}
+   * @throws {InvalidParameterError} If an option is out of range
    */
-  constructor(
-    options: {
-      readonly nu?: number;
-      readonly kernel?: KernelType;
-      readonly gamma?: number | "scale" | "auto";
-      readonly coef0?: number;
-      readonly degree?: number;
-      readonly maxIter?: number;
-      readonly tol?: number;
-    } = {}
-  ) {
-    this.nu = options.nu ?? 0.5;
-    this.kernel = options.kernel ?? "rbf";
-    this.gamma = options.gamma ?? "scale";
-    this.coef0 = options.coef0 ?? 0;
-    this.degree = options.degree ?? 3;
-    this.maxIter = options.maxIter ?? 1000;
-    this.tol = options.tol ?? 1e-3;
-
-    if (!Number.isFinite(this.nu) || this.nu <= 0 || this.nu > 1) {
-      throw new InvalidParameterError("nu must be in (0, 1]", "nu", this.nu);
-    }
+  constructor(options: OneClassSVMOptions = {}) {
+    this.cfg = normalizeNuSvcConfig(options as Record<string, unknown>);
   }
 
-  fit(X: Tensor, _y?: Tensor): this {
-    validateUnsupervisedFitInputs(X);
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeatures = nFeatures;
-
-    const XData = extractRows(X, nSamples, nFeatures);
-    this.gamma_ = resolveGamma(this.gamma, nFeatures, XData, nSamples);
-
-    const K = computeKernelMatrix(
-      XData,
-      nSamples,
-      this.kernel,
-      this.gamma_,
-      this.coef0,
-      this.degree
-    );
-
-    // One-class SVM: all labels are +1, constraint sum(alpha) = 1
-    // Upper bound: alpha_i <= 1/(nu * n)
-    const upperBound = 1 / (this.nu * nSamples);
-    const alphas = new Float64Array(nSamples);
-
-    // Initialize: distribute alphas uniformly to sum = 1
-    const initAlpha = Math.min(upperBound, 1 / nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      alphas[i] = initAlpha;
-    }
-
-    // Simplified SMO for one-class SVM
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      let numChanged = 0;
-
-      for (let i = 0; i < nSamples; i++) {
-        // Compute f(x_i) = sum_j alpha_j K(x_j, x_i)
-        let fi = 0;
-        for (let j = 0; j < nSamples; j++) {
-          fi += (alphas[j] ?? 0) * (K[j * nSamples + i] ?? 0);
-        }
-
-        // Check KKT violations
-        const ai = alphas[i] ?? 0;
-        const kktViolation =
-          (ai < upperBound - 1e-8 && fi < this.rho_ - this.tol) ||
-          (ai > 1e-8 && fi > this.rho_ + this.tol);
-
-        if (!kktViolation) continue;
-
-        // Select j randomly
-        let j = Math.floor(__random() * (nSamples - 1));
-        if (j >= i) j++;
-
-        let fj = 0;
-        for (let k = 0; k < nSamples; k++) {
-          fj += (alphas[k] ?? 0) * (K[k * nSamples + j] ?? 0);
-        }
-
-        const alphaIOld = alphas[i] ?? 0;
-        const alphaJOld = alphas[j] ?? 0;
-
-        // Bounds: ensure sum stays constant
-        const L = Math.max(0, alphaIOld + alphaJOld - upperBound);
-        const H = Math.min(upperBound, alphaIOld + alphaJOld);
-
-        if (Math.abs(L - H) < 1e-12) continue;
-
-        const eta =
-          2 * (K[i * nSamples + j] ?? 0) - (K[i * nSamples + i] ?? 0) - (K[j * nSamples + j] ?? 0);
-        if (eta >= 0) continue;
-
-        let newAlphaJ = alphaJOld + (fi - fj) / eta;
-        newAlphaJ = Math.min(H, Math.max(L, newAlphaJ));
-
-        if (Math.abs(newAlphaJ - alphaJOld) < 1e-5) continue;
-
-        alphas[j] = newAlphaJ;
-        alphas[i] = alphaIOld + (alphaJOld - newAlphaJ);
-
-        numChanged++;
-      }
-
-      // Update rho: average f(x_i) for support vectors with 0 < alpha < upperBound
-      let rhoSum = 0;
-      let rhoCount = 0;
-      for (let i = 0; i < nSamples; i++) {
-        const ai = alphas[i] ?? 0;
-        if (ai > 1e-8 && ai < upperBound - 1e-8) {
-          let fi = 0;
-          for (let j = 0; j < nSamples; j++) {
-            fi += (alphas[j] ?? 0) * (K[j * nSamples + i] ?? 0);
-          }
-          rhoSum += fi;
-          rhoCount++;
-        }
-      }
-      if (rhoCount > 0) {
-        this.rho_ = rhoSum / rhoCount;
-      }
-
-      if (numChanged === 0) break;
-    }
-
-    // Extract support vectors
-    const sv: number[][] = [];
-    const svAlphas: number[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      if ((alphas[i] ?? 0) > 1e-8) {
-        sv.push(XData[i]!);
-        svAlphas.push(alphas[i] ?? 0);
-      }
-    }
-    if (sv.length === 0) {
-      for (let i = 0; i < nSamples; i++) {
-        sv.push(XData[i]!);
-        svAlphas.push(alphas[i] ?? 0);
-      }
-    }
-
-    this.supportVectors_ = sv;
-    this.supportAlphas_ = svAlphas;
-    this.fitted = true;
-    return this;
-  }
-
-  predict(X: Tensor): Tensor {
-    if (!this.fitted) {
+  private get fitted(): KernelExpansion {
+    if (this.model_ === undefined) {
       throw new NotFittedError("OneClassSVM must be fitted before prediction");
     }
-    validatePredictInputs(X, this.nFeatures, "OneClassSVM");
-
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const predictions: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-      }
-      let f = 0;
-      for (let s = 0; s < this.supportVectors_!.length; s++) {
-        f +=
-          (this.supportAlphas_![s] ?? 0) *
-          kernelValue(
-            this.supportVectors_![s]!,
-            xi,
-            this.kernel,
-            this.gamma_,
-            this.coef0,
-            this.degree
-          );
-      }
-      predictions.push(f >= this.rho_ ? 1 : -1);
-    }
-
-    return tensor(predictions, { dtype: "int32" });
+    return this.model_;
   }
 
-  fitPredict(X: Tensor, _y?: Tensor): Tensor {
-    this.fit(X);
-    return this.predict(X);
-  }
+  /**
+   * Fit the detector on inlier-dominated data.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored, present for API consistency
+   * @returns this
+   * @throws {ShapeError} If X is not 2D
+   * @throws {DataValidationError} If X is empty, contains NaN/Inf, or the kernel overflows
+   */
+  fit(X: Tensor, _y?: Tensor): this {
+    validateUnsupervisedFitInputs(X);
+    const n = X.shape[0] ?? 0;
+    const d = X.shape[1] ?? 0;
+    const Xf = toFloat64View(X);
+    const { nu } = this.cfg;
+    const kp: SvmKernelParams = {
+      kernel: this.cfg.kernel,
+      gamma: resolveGamma(this.cfg.gamma, Xf, d),
+      coef0: this.cfg.coef0,
+      degree: this.cfg.degree,
+    };
 
-  scoreSamples(X: Tensor): Tensor {
-    if (!this.fitted) {
-      throw new NotFittedError("OneClassSVM must be fitted before scoring");
-    }
-    validatePredictInputs(X, this.nFeatures, "OneClassSVM");
+    // LIBSVM scaling: 0 <= alpha_i <= 1 and sum(alpha) = nu * n.
+    const alpha = new Float64Array(n);
+    const full = Math.floor(nu * n);
+    for (let i = 0; i < full; i++) alpha[i] = 1;
+    if (full < n) alpha[full] = nu * n - full;
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const scores: number[] = [];
+    const Q = new ClassificationQ(Xf, n, d, new Int8Array(n).fill(1), kp, this.cfg.cacheSize);
+    const res = solveSmo(
+      Q,
+      new Float64Array(n),
+      new Int8Array(n).fill(1),
+      alpha,
+      new Float64Array(n).fill(1),
+      this.cfg.tol,
+      this.cfg.maxIter * n,
+      false
+    );
+    if (!res.converged) warnNotConverged("OneClassSVM", this.cfg.maxIter);
 
-    for (let i = 0; i < nSamples; i++) {
-      const xi: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        xi.push(Number(X.data[X.offset + i * nFeatures + j] ?? 0));
-      }
-      let f = 0;
-      for (let s = 0; s < this.supportVectors_!.length; s++) {
-        f +=
-          (this.supportAlphas_![s] ?? 0) *
-          kernelValue(
-            this.supportVectors_![s]!,
-            xi,
-            this.kernel,
-            this.gamma_,
-            this.coef0,
-            this.degree
-          );
-      }
-      scores.push(f - this.rho_);
-    }
-
-    return tensor(scores);
-  }
-
-  getParams(): Record<string, unknown> {
-    return { nu: this.nu, kernel: this.kernel, gamma: this.gamma };
-  }
-
-  setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "nu":
-          if (typeof value !== "number" || value <= 0 || value > 1) {
-            throw new InvalidParameterError("nu must be in (0, 1]", "nu", value);
-          }
-          this.nu = value;
-          break;
-        case "kernel":
-          if (value !== "rbf" && value !== "linear" && value !== "poly" && value !== "sigmoid") {
-            throw new InvalidParameterError("invalid kernel", "kernel", value);
-          }
-          this.kernel = value;
-          break;
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    this.model_ = KernelExpansion.fromCoefficients(Xf, n, d, res.alpha, res.rho, kp);
     return this;
+  }
+
+  private rawScores(X: Tensor): Float64Array {
+    const model = this.fitted;
+    validatePredictInputs(X, model.nFeatures, "OneClassSVM");
+    return model.raw(toFloat64View(X), X.shape[0] ?? 0);
+  }
+
+  /**
+   * Predict whether samples are inliers.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns +1 for inliers and -1 for outliers, shape (n_samples,), dtype int32
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X has wrong dimensions or feature count
+   * @throws {DataValidationError} If X contains NaN/Inf values
+   */
+  predict(X: Tensor): Tensor {
+    const scores = this.rawScores(X);
+    const rho = this.fitted.rho;
+    return tensor(
+      Int32Array.from(scores, (s) => (s - rho >= 0 ? 1 : -1)),
+      { dtype: "int32" }
+    );
+  }
+
+  /**
+   * Fit on `X`, then predict labels for the same samples.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param _y - Ignored, present for API consistency
+   * @returns +1 for inliers and -1 for outliers
+   */
+  fitPredict(X: Tensor, _y?: Tensor): Tensor {
+    return this.fit(X).predict(X);
+  }
+
+  /**
+   * Raw scores `sum_i alpha_i K(sv_i, x)`: lower values are more abnormal.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Scores of shape (n_samples,), dtype float64
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X has wrong dimensions or feature count
+   * @throws {DataValidationError} If X contains NaN/Inf values
+   */
+  scoreSamples(X: Tensor): Tensor {
+    return tensor(this.rawScores(X), { dtype: "float64" });
+  }
+
+  /**
+   * Signed distance to the decision boundary, `scoreSamples(X) - offset`: negative values are
+   * outliers.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Decision values of shape (n_samples,), dtype float64
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  decisionFunction(X: Tensor): Tensor {
+    const scores = this.rawScores(X);
+    const rho = this.fitted.rho;
+    for (let i = 0; i < scores.length; i++) scores[i] = (scores[i] as number) - rho;
+    return tensor(scores, { dtype: "float64" });
+  }
+
+  /**
+   * Decision threshold in `scoreSamples` units: samples scoring below it are outliers.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  get offset(): number {
+    return this.fitted.rho;
+  }
+
+  /** Support vectors, shape (n_SV, n_features). */
+  get supportVectors(): Tensor {
+    return expansionTensors(this.fitted).supportVectors;
+  }
+
+  /** Indices of the support vectors in the training data, shape (n_SV,), dtype int32. */
+  get supportIndices(): Tensor {
+    return expansionTensors(this.fitted).supportIndices;
+  }
+
+  /** Dual coefficients `alpha_i` (sum to `nu * n_samples`), shape (1, n_SV). */
+  get dualCoef(): Tensor {
+    return expansionTensors(this.fitted).dualCoef;
+  }
+
+  /**
+   * Get hyperparameters.
+   *
+   * @returns Object that can be passed back to the constructor
+   */
+  getParams(): Record<string, unknown> {
+    return { ...this.cfg };
+  }
+
+  /**
+   * Set hyperparameters. The call is atomic: if any value is invalid nothing changes.
+   *
+   * @param params - Parameters to set
+   * @throws {InvalidParameterError} If a parameter is unknown or its value is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    this.cfg = normalizeNuSvcConfig(mergeParams(this.getParams(), params, NU_SVC_KEYS));
+    return this;
+  }
+
+  /** Create an unfitted copy with the same hyperparameters. */
+  clone(): OneClassSVM {
+    return new OneClassSVM(this.getParams() as OneClassSVMOptions);
   }
 }

@@ -9,17 +9,123 @@
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { InvalidParameterError, NotFittedError, ShapeError } from "../../core";
+import { InvalidParameterError, NotFittedError } from "../../core";
+import { svd } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { r2ScoreOf } from "./LinearRegression";
+
+/** Constructor options of {@link BayesianRidge}. */
+export type BayesianRidgeOptions = {
+  /** Maximum number of evidence-maximization iterations (default: 300). */
+  readonly maxIter?: number;
+  /**
+   * Stop when the summed absolute change of the coefficients between two iterations is
+   * below this value (default: 1e-3).
+   */
+  readonly tol?: number;
+  /** Fit an intercept term (default: true). */
+  readonly fitIntercept?: boolean;
+  /** Initial noise precision. Defaults to `1 / (var(y) + eps)`. */
+  readonly alphaInit?: number;
+  /** Initial weight precision (default: 1). */
+  readonly lambdaInit?: number;
+  /** Shape parameter of the Gamma prior over the noise precision alpha (default: 1e-6). */
+  readonly alpha1?: number;
+  /** Rate parameter of the Gamma prior over the noise precision alpha (default: 1e-6). */
+  readonly alpha2?: number;
+  /** Shape parameter of the Gamma prior over the weight precision lambda (default: 1e-6). */
+  readonly lambda1?: number;
+  /** Rate parameter of the Gamma prior over the weight precision lambda (default: 1e-6). */
+  readonly lambda2?: number;
+  /** Record the log marginal likelihood at every iteration (default: false). */
+  readonly computeScore?: boolean;
+};
+
+type ResolvedOptions = {
+  maxIter: number;
+  tol: number;
+  fitIntercept: boolean;
+  alphaInit: number | undefined;
+  lambdaInit: number;
+  alpha1: number;
+  alpha2: number;
+  lambda1: number;
+  lambda2: number;
+  computeScore: boolean;
+};
+
+const OPTION_KEYS: readonly string[] = [
+  "maxIter",
+  "tol",
+  "fitIntercept",
+  "alphaInit",
+  "lambdaInit",
+  "alpha1",
+  "alpha2",
+  "lambda1",
+  "lambda2",
+  "computeScore",
+];
+
+function resolveOptions(options: BayesianRidgeOptions): ResolvedOptions {
+  const resolved: ResolvedOptions = {
+    maxIter: options.maxIter ?? 300,
+    tol: options.tol ?? 1e-3,
+    fitIntercept: options.fitIntercept ?? true,
+    alphaInit: options.alphaInit,
+    lambdaInit: options.lambdaInit ?? 1,
+    alpha1: options.alpha1 ?? 1e-6,
+    alpha2: options.alpha2 ?? 1e-6,
+    lambda1: options.lambda1 ?? 1e-6,
+    lambda2: options.lambda2 ?? 1e-6,
+    computeScore: options.computeScore ?? false,
+  };
+  if (!Number.isInteger(resolved.maxIter) || resolved.maxIter < 1) {
+    throw new InvalidParameterError(
+      "maxIter must be a positive integer",
+      "maxIter",
+      resolved.maxIter
+    );
+  }
+  if (!(resolved.tol >= 0) || !Number.isFinite(resolved.tol)) {
+    throw new InvalidParameterError(
+      "tol must be a non-negative finite number",
+      "tol",
+      resolved.tol
+    );
+  }
+  if (
+    resolved.alphaInit !== undefined &&
+    !(resolved.alphaInit > 0 && Number.isFinite(resolved.alphaInit))
+  ) {
+    throw new InvalidParameterError("alphaInit must be > 0", "alphaInit", resolved.alphaInit);
+  }
+  if (!(resolved.lambdaInit > 0 && Number.isFinite(resolved.lambdaInit))) {
+    throw new InvalidParameterError("lambdaInit must be > 0", "lambdaInit", resolved.lambdaInit);
+  }
+  for (const key of ["alpha1", "alpha2", "lambda1", "lambda2"] as const) {
+    const v = resolved[key];
+    if (!(v >= 0) || !Number.isFinite(v)) {
+      throw new InvalidParameterError(`${key} must be a non-negative finite number`, key, v);
+    }
+  }
+  return resolved;
+}
 
 /**
  * Bayesian Ridge Regression with automatic regularization.
  *
  * Iteratively updates the precision parameters alpha (noise) and
- * lambda (weights) using evidence maximization. Provides uncertainty
- * estimates via posterior covariance.
+ * lambda (weights) with MacKay's evidence maximization, using Gamma hyper-priors
+ * (`alpha1`, `alpha2`, `lambda1`, `lambda2`). The algorithm, defaults and stopping rule follow
+ * `sklearn.linear_model.BayesianRidge`. Uncertainty is available through the posterior
+ * covariance of the weights ({@link BayesianRidge.sigma}) and
+ * {@link BayesianRidge.predictWithStd}.
+ *
+ * Each iteration works on the singular value decomposition of the centered design matrix,
+ * so the cost per iteration does not depend on the number of samples.
  *
  * @example
  * ```ts
@@ -34,11 +140,7 @@ import type { Regressor } from "../base";
  * ```
  */
 export class BayesianRidge implements Regressor {
-  private readonly maxIter: number;
-  private readonly tol: number;
-  private readonly fitInterceptOpt: boolean;
-  private alphaInit: number;
-  private lambdaInit: number;
+  private opts: ResolvedOptions;
 
   private coef_?: Float64Array;
   private intercept_ = 0;
@@ -46,394 +148,395 @@ export class BayesianRidge implements Regressor {
   private lambda_ = 0; // weight precision
   private nFeaturesIn_ = 0;
   private nIter_ = 0;
+  private xMean_?: Float64Array;
+  private sigma_?: Float64Array;
+  private scores_: Float64Array | undefined;
   private fitted = false;
 
-  constructor(
-    options: {
-      readonly maxIter?: number;
-      readonly tol?: number;
-      readonly fitIntercept?: boolean;
-      readonly alphaInit?: number;
-      readonly lambdaInit?: number;
-    } = {}
-  ) {
-    this.maxIter = options.maxIter ?? 300;
-    this.tol = options.tol ?? 1e-3;
-    this.fitInterceptOpt = options.fitIntercept ?? true;
-    this.alphaInit = options.alphaInit ?? 1e-6;
-    this.lambdaInit = options.lambdaInit ?? 1e-6;
-
-    if (!Number.isInteger(this.maxIter) || this.maxIter < 1) {
-      throw new InvalidParameterError(
-        "maxIter must be a positive integer",
-        "maxIter",
-        this.maxIter
-      );
-    }
-    if (this.alphaInit <= 0) {
-      throw new InvalidParameterError("alphaInit must be > 0", "alphaInit", this.alphaInit);
-    }
-    if (this.lambdaInit <= 0) {
-      throw new InvalidParameterError("lambdaInit must be > 0", "lambdaInit", this.lambdaInit);
-    }
+  /**
+   * Create a new Bayesian Ridge model.
+   *
+   * @param options - Configuration options, see {@link BayesianRidgeOptions}
+   * @throws {InvalidParameterError} If an option is outside its valid range
+   */
+  constructor(options: BayesianRidgeOptions = {}) {
+    this.opts = resolveOptions(options);
   }
 
+  /**
+   * Fit the model by evidence maximization.
+   *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Target values of shape (n_samples,)
+   * @returns this - The fitted estimator
+   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    this.nFeaturesIn_ = nFeatures;
+    const n = X.shape[0] ?? 0;
+    const p = X.shape[1] ?? 0;
+    const { fitIntercept, maxIter, tol, alpha1, alpha2, lambda1, lambda2 } = this.opts;
 
-    // Extract data
-    const xData: Float64Array[] = [];
-    for (let i = 0; i < nSamples; i++) {
-      const row = new Float64Array(nFeatures);
-      for (let j = 0; j < nFeatures; j++) {
-        row[j] = Number(X.data[X.offset + i * nFeatures + j]);
-      }
-      xData.push(row);
-    }
-    const yData = new Float64Array(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      yData[i] = Number(y.data[y.offset + i]);
-    }
-
-    // Center data if fitting intercept
-    const xMean = new Float64Array(nFeatures);
+    const xRaw = toFloat64View(X);
+    const yRaw = toFloat64View(y);
+    const xc = Float64Array.from(xRaw);
+    const yc = Float64Array.from(yRaw);
+    const xMean = new Float64Array(p);
     let yMean = 0;
-    if (this.fitInterceptOpt) {
-      for (let j = 0; j < nFeatures; j++) {
-        let s = 0;
-        for (let i = 0; i < nSamples; i++) s += xData[i]![j] ?? 0;
-        xMean[j] = s / nSamples;
+    if (fitIntercept) {
+      for (let i = 0; i < n; i++) {
+        const base = i * p;
+        for (let j = 0; j < p; j++) xMean[j] = (xMean[j] as number) + (xc[base + j] as number);
+        yMean += yc[i] as number;
       }
-      for (let i = 0; i < nSamples; i++) {
-        yMean += yData[i] ?? 0;
-      }
-      yMean /= nSamples;
-
-      for (let i = 0; i < nSamples; i++) {
-        for (let j = 0; j < nFeatures; j++) {
-          xData[i]![j] = (xData[i]![j] ?? 0) - (xMean[j] ?? 0);
-        }
-        yData[i] = (yData[i] ?? 0) - yMean;
+      for (let j = 0; j < p; j++) xMean[j] = (xMean[j] as number) / n;
+      yMean /= n;
+      for (let i = 0; i < n; i++) {
+        const base = i * p;
+        for (let j = 0; j < p; j++) xc[base + j] = (xc[base + j] as number) - (xMean[j] as number);
+        yc[i] = (yc[i] as number) - yMean;
       }
     }
 
-    // Compute X^T X
-    const XtX = new Float64Array(nFeatures * nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      for (let k = j; k < nFeatures; k++) {
-        let s = 0;
-        for (let i = 0; i < nSamples; i++) {
-          s += (xData[i]![j] ?? 0) * (xData[i]![k] ?? 0);
-        }
-        XtX[j * nFeatures + k] = s;
-        XtX[k * nFeatures + j] = s;
-      }
+    // Variance of y about its mean, used for the default initial noise precision.
+    let yVar = 0;
+    {
+      let m = 0;
+      for (let i = 0; i < n; i++) m += yRaw[i] as number;
+      m /= n;
+      for (let i = 0; i < n; i++) yVar += ((yRaw[i] as number) - m) ** 2;
+      yVar /= n;
     }
 
-    // Compute X^T y
-    const Xty = new Float64Array(nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      let s = 0;
-      for (let i = 0; i < nSamples; i++) {
-        s += (xData[i]![j] ?? 0) * (yData[i] ?? 0);
-      }
-      Xty[j] = s;
+    // Thin SVD of the centered design matrix: X = U diag(s) Vt.
+    const [uT, sT, vtT] = svd(tensor(xc, { dtype: "float64" }).reshape([n, p]), false);
+    const U = toFloat64View(uT);
+    const s = toFloat64View(sT);
+    const Vt = toFloat64View(vtT);
+    const k = s.length;
+    const eig = new Float64Array(k);
+    for (let i = 0; i < k; i++) eig[i] = (s[i] as number) ** 2;
+
+    // U^T y and the part of y outside the column space of X.
+    const uty = new Float64Array(k);
+    for (let i = 0; i < n; i++) {
+      const yi = yc[i] as number;
+      const base = i * k;
+      for (let c = 0; c < k; c++) uty[c] = (uty[c] as number) + (U[base + c] as number) * yi;
+    }
+    let perpSS = 0;
+    for (let i = 0; i < n; i++) {
+      let proj = 0;
+      const base = i * k;
+      for (let c = 0; c < k; c++) proj += (U[base + c] as number) * (uty[c] as number);
+      perpSS += ((yc[i] as number) - proj) ** 2;
     }
 
-    // Compute eigenvalues of X^T X for efficient updates
-    // Use power iteration to get eigenvalues (simplified)
-    const eigenvalues = this.computeEigenvaluesXtX(XtX, nFeatures);
-
-    let alpha = this.alphaInit;
-    let lambda = this.lambdaInit;
-
-    for (let iter = 0; iter < this.maxIter; iter++) {
-      const prevAlpha = alpha;
-      const prevLambda = lambda;
-
-      // Compute posterior: Sigma = (alpha * X^T X + lambda * I)^{-1}
-      // w = alpha * Sigma * X^T y
-      const A = new Float64Array(nFeatures * nFeatures);
-      for (let j = 0; j < nFeatures; j++) {
-        for (let k = 0; k < nFeatures; k++) {
-          A[j * nFeatures + k] = alpha * (XtX[j * nFeatures + k] ?? 0);
-        }
-        A[j * nFeatures + j] = (A[j * nFeatures + j] ?? 0) + lambda;
+    // Posterior mean for given precisions, together with the residual sum of squares.
+    const updateCoef = (alpha: number, lambda: number): { coef: Float64Array; sse: number } => {
+      const ratio = lambda / alpha;
+      const coef = new Float64Array(p);
+      let sse = perpSS;
+      for (let c = 0; c < k; c++) {
+        const d = (eig[c] as number) + ratio;
+        const g = ((s[c] as number) * (uty[c] as number)) / d;
+        const base = c * p;
+        for (let j = 0; j < p; j++) coef[j] = (coef[j] as number) + g * (Vt[base + j] as number);
+        const shrink = (ratio / d) * (uty[c] as number);
+        sse += shrink * shrink;
       }
+      return { coef, sse };
+    };
 
-      // Solve A * w = alpha * X^T y using Cholesky-like approach
-      const Sigma = this.invertSymmetric(A, nFeatures);
-      const w = new Float64Array(nFeatures);
-      for (let j = 0; j < nFeatures; j++) {
-        let s = 0;
-        for (let k = 0; k < nFeatures; k++) {
-          s += (Sigma[j * nFeatures + k] ?? 0) * (Xty[k] ?? 0);
-        }
-        w[j] = alpha * s;
-      }
+    const logMarginalLikelihood = (
+      alpha: number,
+      lambda: number,
+      coef: Float64Array,
+      sse: number
+    ): number => {
+      let logdetSigma = (p - k) * Math.log(lambda);
+      for (let c = 0; c < k; c++) logdetSigma += Math.log(lambda + alpha * (eig[c] as number));
+      logdetSigma = -logdetSigma;
+      let coefSS = 0;
+      for (let j = 0; j < p; j++) coefSS += (coef[j] as number) ** 2;
+      let score = lambda1 * Math.log(lambda) - lambda2 * lambda;
+      score += alpha1 * Math.log(alpha) - alpha2 * alpha;
+      score +=
+        0.5 *
+        (p * Math.log(lambda) +
+          n * Math.log(alpha) -
+          alpha * sse -
+          lambda * coefSS +
+          logdetSigma -
+          n * Math.log(2 * Math.PI));
+      return score;
+    };
 
-      // Compute gamma = sum_i (alpha * eigenvalue_i) / (alpha * eigenvalue_i + lambda)
+    let alpha = this.opts.alphaInit ?? 1 / (yVar + Number.EPSILON);
+    let lambda = this.opts.lambdaInit;
+    const scores: number[] = [];
+    let coefOld: Float64Array | undefined;
+    let iter = 0;
+    for (; iter < maxIter; iter++) {
+      const { coef, sse } = updateCoef(alpha, lambda);
+      if (this.opts.computeScore) scores.push(logMarginalLikelihood(alpha, lambda, coef, sse));
+
+      // MacKay (1992) updates of the precisions.
       let gamma = 0;
-      for (let i = 0; i < nFeatures; i++) {
-        const aei = alpha * (eigenvalues[i] ?? 0);
-        gamma += aei / (aei + lambda);
+      for (let c = 0; c < k; c++) {
+        const ae = alpha * (eig[c] as number);
+        gamma += ae / (lambda + ae);
       }
+      let coefSS = 0;
+      for (let j = 0; j < p; j++) coefSS += (coef[j] as number) ** 2;
+      lambda = (gamma + 2 * lambda1) / (coefSS + 2 * lambda2);
+      alpha = (n - gamma + 2 * alpha1) / (sse + 2 * alpha2);
 
-      // Update alpha: alpha = n / (||y - Xw||^2 + trace(Sigma * X^T X) * alpha_old / alpha_old)
-      // Simplified: alpha = (n - gamma) / ||y - Xw||^2
-      let residualSS = 0;
-      for (let i = 0; i < nSamples; i++) {
-        let pred = 0;
-        for (let j = 0; j < nFeatures; j++) {
-          pred += (xData[i]![j] ?? 0) * (w[j] ?? 0);
+      if (iter !== 0 && coefOld !== undefined) {
+        let change = 0;
+        for (let j = 0; j < p; j++)
+          change += Math.abs((coefOld[j] as number) - (coef[j] as number));
+        if (change < tol) break;
+      }
+      coefOld = coef;
+    }
+    const nIter = Math.min(iter + 1, maxIter);
+
+    const final = updateCoef(alpha, lambda);
+    if (this.opts.computeScore) {
+      scores.push(logMarginalLikelihood(alpha, lambda, final.coef, final.sse));
+    }
+
+    // Posterior covariance (alpha X^T X + lambda I)^-1; directions outside the row space of X
+    // keep the prior variance 1 / lambda.
+    const sigma = new Float64Array(p * p);
+    for (let j = 0; j < p; j++) sigma[j * p + j] = 1 / lambda;
+    for (let c = 0; c < k; c++) {
+      const gainOverPrior = 1 / (alpha * (eig[c] as number) + lambda) - 1 / lambda;
+      const base = c * p;
+      for (let a = 0; a < p; a++) {
+        const va = (Vt[base + a] as number) * gainOverPrior;
+        for (let b = 0; b < p; b++) {
+          sigma[a * p + b] = (sigma[a * p + b] as number) + va * (Vt[base + b] as number);
         }
-        const r = (yData[i] ?? 0) - pred;
-        residualSS += r * r;
-      }
-
-      const newAlpha = residualSS > 1e-20 ? (nSamples - gamma) / residualSS : 1e10; // near-perfect fit => very high precision
-      alpha = Math.max(1e-10, Number.isFinite(newAlpha) ? newAlpha : 1e10);
-
-      // Update lambda: lambda = gamma / ||w||^2
-      let wNormSq = 0;
-      for (let j = 0; j < nFeatures; j++) {
-        wNormSq += (w[j] ?? 0) * (w[j] ?? 0);
-      }
-      const newLambda = gamma / Math.max(wNormSq, 1e-20);
-      lambda = Math.max(1e-10, Number.isFinite(newLambda) ? newLambda : 1e-10);
-
-      this.nIter_ = iter + 1;
-
-      // Check convergence
-      if (
-        Math.abs(alpha - prevAlpha) < this.tol * Math.max(1, alpha) &&
-        Math.abs(lambda - prevLambda) < this.tol * Math.max(1, lambda)
-      ) {
-        break;
       }
     }
 
-    // Final weights with converged alpha, lambda
-    const Afinal = new Float64Array(nFeatures * nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      for (let k = 0; k < nFeatures; k++) {
-        Afinal[j * nFeatures + k] = alpha * (XtX[j * nFeatures + k] ?? 0);
-      }
-      Afinal[j * nFeatures + j] = (Afinal[j * nFeatures + j] ?? 0) + lambda;
-    }
-    const Sigma = this.invertSymmetric(Afinal, nFeatures);
-    const w = new Float64Array(nFeatures);
-    for (let j = 0; j < nFeatures; j++) {
-      let s = 0;
-      for (let k = 0; k < nFeatures; k++) {
-        s += (Sigma[j * nFeatures + k] ?? 0) * (Xty[k] ?? 0);
-      }
-      w[j] = alpha * s;
-    }
+    let xMeanDotW = 0;
+    for (let j = 0; j < p; j++) xMeanDotW += (xMean[j] as number) * (final.coef[j] as number);
 
-    this.coef_ = w;
+    this.nFeaturesIn_ = p;
+    this.coef_ = final.coef;
+    this.intercept_ = fitIntercept ? yMean - xMeanDotW : 0;
     this.alpha_ = alpha;
     this.lambda_ = lambda;
-
-    // Compute intercept
-    if (this.fitInterceptOpt) {
-      let dot = 0;
-      for (let j = 0; j < nFeatures; j++) {
-        dot += (xMean[j] ?? 0) * (w[j] ?? 0);
-      }
-      this.intercept_ = yMean - dot;
-    } else {
-      this.intercept_ = 0;
-    }
-
+    this.nIter_ = nIter;
+    this.xMean_ = xMean;
+    this.sigma_ = sigma;
+    this.scores_ = this.opts.computeScore ? Float64Array.from(scores) : undefined;
     this.fitted = true;
     return this;
   }
 
-  private computeEigenvaluesXtX(XtX: Float64Array, n: number): Float64Array {
-    // Simple eigenvalue computation using Jacobi iteration (for small n)
-    // For large n this is slow but sufficient for typical ML use cases
-    const A = new Float64Array(XtX);
-    const eigenvalues = new Float64Array(n);
-
-    for (let sweep = 0; sweep < 100; sweep++) {
-      let offDiagSum = 0;
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          offDiagSum += Math.abs(A[i * n + j] ?? 0);
-        }
-      }
-      if (offDiagSum < 1e-12) break;
-
-      for (let p = 0; p < n; p++) {
-        for (let q = p + 1; q < n; q++) {
-          const apq = A[p * n + q] ?? 0;
-          if (Math.abs(apq) < 1e-15) continue;
-
-          const app = A[p * n + p] ?? 0;
-          const aqq = A[q * n + q] ?? 0;
-          const theta = 0.5 * Math.atan2(2 * apq, app - aqq);
-          const c = Math.cos(theta);
-          const s = Math.sin(theta);
-
-          // Apply Givens rotation
-          for (let i = 0; i < n; i++) {
-            const aip = A[i * n + p] ?? 0;
-            const aiq = A[i * n + q] ?? 0;
-            A[i * n + p] = c * aip + s * aiq;
-            A[i * n + q] = -s * aip + c * aiq;
-          }
-          for (let j = 0; j < n; j++) {
-            const apj = A[p * n + j] ?? 0;
-            const aqj = A[q * n + j] ?? 0;
-            A[p * n + j] = c * apj + s * aqj;
-            A[q * n + j] = -s * apj + c * aqj;
-          }
-        }
-      }
-    }
-
-    for (let i = 0; i < n; i++) {
-      eigenvalues[i] = Math.max(0, A[i * n + i] ?? 0);
-    }
-    return eigenvalues;
-  }
-
-  private invertSymmetric(A: Float64Array, n: number): Float64Array {
-    // Invert via Gauss-Jordan elimination
-    const aug = new Float64Array(n * 2 * n);
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        aug[i * 2 * n + j] = A[i * n + j] ?? 0;
-      }
-      aug[i * 2 * n + n + i] = 1;
-    }
-
-    for (let col = 0; col < n; col++) {
-      // Partial pivoting
-      let maxVal = Math.abs(aug[col * 2 * n + col] ?? 0);
-      let maxRow = col;
-      for (let row = col + 1; row < n; row++) {
-        const val = Math.abs(aug[row * 2 * n + col] ?? 0);
-        if (val > maxVal) {
-          maxVal = val;
-          maxRow = row;
-        }
-      }
-      if (maxRow !== col) {
-        for (let j = 0; j < 2 * n; j++) {
-          const tmp = aug[col * 2 * n + j] ?? 0;
-          aug[col * 2 * n + j] = aug[maxRow * 2 * n + j] ?? 0;
-          aug[maxRow * 2 * n + j] = tmp;
-        }
-      }
-
-      const pivot = aug[col * 2 * n + col] ?? 1;
-      if (Math.abs(pivot) < 1e-20) continue;
-
-      for (let j = 0; j < 2 * n; j++) {
-        aug[col * 2 * n + j] = (aug[col * 2 * n + j] ?? 0) / pivot;
-      }
-
-      for (let row = 0; row < n; row++) {
-        if (row === col) continue;
-        const factor = aug[row * 2 * n + col] ?? 0;
-        for (let j = 0; j < 2 * n; j++) {
-          aug[row * 2 * n + j] = (aug[row * 2 * n + j] ?? 0) - factor * (aug[col * 2 * n + j] ?? 0);
-        }
-      }
-    }
-
-    const inv = new Float64Array(n * n);
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        inv[i * n + j] = aug[i * 2 * n + n + j] ?? 0;
-      }
-    }
-    return inv;
-  }
-
+  /**
+   * Predict the posterior mean of the target.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Predictions of shape (n_samples,) as a float64 tensor
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X is not 2D or has the wrong number of features
+   */
   predict(X: Tensor): Tensor {
-    if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted before predict");
+    if (!this.fitted || !this.coef_) {
+      throw new NotFittedError("BayesianRidge must be fitted before predict");
+    }
     validatePredictInputs(X, this.nFeaturesIn_, "BayesianRidge");
 
-    const nSamples = X.shape[0] ?? 0;
-    const nFeatures = X.shape[1] ?? 0;
-    const w = this.coef_!;
-    const result = new Float64Array(nSamples);
-
-    for (let i = 0; i < nSamples; i++) {
-      let pred = this.fitInterceptOpt ? this.intercept_ : 0;
-      const rowBase = X.offset + i * nFeatures;
-      for (let j = 0; j < nFeatures; j++) {
-        pred += (w[j] ?? 0) * Number(X.data[rowBase + j] ?? 0);
-      }
+    const n = X.shape[0] ?? 0;
+    const p = X.shape[1] ?? 0;
+    const xv = toFloat64View(X);
+    const w = this.coef_;
+    const result = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let pred = this.intercept_;
+      const base = i * p;
+      for (let j = 0; j < p; j++) pred += (w[j] as number) * (xv[base + j] as number);
       result[i] = pred;
     }
-
-    return tensor(Array.from(result));
+    return tensor(result, { dtype: "float64" });
   }
 
-  score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    assertContiguous(y, "y");
-    const pred = this.predict(X);
-    const nSamples = y.size;
-
-    let yMean = 0;
-    for (let i = 0; i < nSamples; i++) yMean += Number(y.data[y.offset + i]);
-    yMean /= nSamples;
-
-    let ssRes = 0;
-    let ssTot = 0;
-    for (let i = 0; i < nSamples; i++) {
-      const yi = Number(y.data[y.offset + i]);
-      const pi = Number(pred.data[pred.offset + i]);
-      ssRes += (yi - pi) ** 2;
-      ssTot += (yi - yMean) ** 2;
+  /**
+   * Predict the posterior mean together with the standard deviation of the predictive
+   * distribution.
+   *
+   * The variance of a sample `x` is `(x - xMean)^T Sigma (x - xMean) + 1 / alpha`, where `xMean`
+   * is the training mean (zero when `fitIntercept` is false). Uncertainty in the intercept is not
+   * included. scikit-learn evaluates the quadratic form at the uncentered `x`, so its standard
+   * deviations differ when the features are not centered.
+   *
+   * @param X - Samples of shape (n_samples, n_features)
+   * @returns Object with `mean` and `std`, both of shape (n_samples,)
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If X is not 2D or has the wrong number of features
+   */
+  predictWithStd(X: Tensor): { mean: Tensor; std: Tensor } {
+    const mean = this.predict(X);
+    const sigma = this.sigma_ as Float64Array;
+    const xMean = this.xMean_ as Float64Array;
+    const n = X.shape[0] ?? 0;
+    const p = this.nFeaturesIn_;
+    const xv = toFloat64View(X);
+    const std = new Float64Array(n);
+    const d = new Float64Array(p);
+    for (let i = 0; i < n; i++) {
+      const base = i * p;
+      for (let j = 0; j < p; j++) d[j] = (xv[base + j] as number) - (xMean[j] as number);
+      let q = 0;
+      for (let a = 0; a < p; a++) {
+        let row = 0;
+        for (let b = 0; b < p; b++) row += (sigma[a * p + b] as number) * (d[b] as number);
+        q += (d[a] as number) * row;
+      }
+      std[i] = Math.sqrt(Math.max(0, q) + 1 / this.alpha_);
     }
-    return ssTot === 0 ? 0 : 1 - ssRes / ssTot;
+    return { mean, std: tensor(std, { dtype: "float64" }) };
   }
 
+  /**
+   * Coefficient of determination R² on the given data.
+   *
+   * A constant `y` scores 1 when predicted exactly and 0 otherwise.
+   *
+   * @param X - Test samples of shape (n_samples, n_features)
+   * @param y - True target values of shape (n_samples,)
+   * @returns R² score (1 is perfect, can be negative)
+   * @throws {NotFittedError} If the model has not been fitted
+   * @throws {ShapeError} If y is not 1-D or its length differs from the number of samples
+   */
+  score(X: Tensor, y: Tensor): number {
+    if (!this.fitted) {
+      throw new NotFittedError("BayesianRidge must be fitted before scoring");
+    }
+    return r2ScoreOf(y, () => this.predict(X));
+  }
+
+  /** Posterior mean of the weights, shape (n_features,). */
   get coef(): Float64Array {
     if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access coef");
-    return this.coef_!;
+    return this.coef_ as Float64Array;
   }
 
+  /**
+   * Posterior mean of the weights as a float64 tensor of shape (n_features,), the same type as
+   * `LinearRegression.coef`.
+   */
+  get coefTensor(): Tensor {
+    return tensor(Float64Array.from(this.coef), { dtype: "float64" });
+  }
+
+  /** Intercept term (0 when `fitIntercept` is false). */
   get intercept(): number {
     if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access intercept");
     return this.intercept_;
   }
 
+  /** Estimated precision of the noise. */
   get alpha(): number {
     if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access alpha");
     return this.alpha_;
   }
 
+  /** Estimated precision of the weights. */
   get lambda(): number {
     if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access lambda");
     return this.lambda_;
   }
 
+  /** Number of evidence-maximization iterations run by the last `fit`. */
   get nIter(): number {
     if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access nIter");
     return this.nIter_;
   }
 
-  getParams(): Record<string, unknown> {
-    return {
-      maxIter: this.maxIter,
-      tol: this.tol,
-      fitIntercept: this.fitInterceptOpt,
-      alphaInit: this.alphaInit,
-      lambdaInit: this.lambdaInit,
-    };
+  /** Posterior covariance matrix of the weights, shape (n_features, n_features). */
+  get sigma(): Tensor {
+    if (!this.fitted || !this.sigma_) {
+      throw new NotFittedError("BayesianRidge must be fitted to access sigma");
+    }
+    return tensor(Float64Array.from(this.sigma_), { dtype: "float64" }).reshape([
+      this.nFeaturesIn_,
+      this.nFeaturesIn_,
+    ]);
   }
 
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * Log marginal likelihood after every iteration plus the final value. Only recorded when the
+   * model was created with `computeScore: true`; empty otherwise.
+   */
+  get scores(): Float64Array {
+    if (!this.fitted) throw new NotFittedError("BayesianRidge must be fitted to access scores");
+    return this.scores_ ?? new Float64Array(0);
+  }
+
+  /** Number of features seen during `fit`. */
+  get nFeaturesIn(): number {
+    if (!this.fitted) {
+      throw new NotFittedError("BayesianRidge must be fitted to access nFeaturesIn");
+    }
+    return this.nFeaturesIn_;
+  }
+
+  /**
+   * Hyper-parameters of this estimator, with defaults filled in. `alphaInit` is omitted while it
+   * is derived from the data.
+   */
+  getParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      maxIter: this.opts.maxIter,
+      tol: this.opts.tol,
+      fitIntercept: this.opts.fitIntercept,
+      lambdaInit: this.opts.lambdaInit,
+      alpha1: this.opts.alpha1,
+      alpha2: this.opts.alpha2,
+      lambda1: this.opts.lambda1,
+      lambda2: this.opts.lambda2,
+      computeScore: this.opts.computeScore,
+    };
+    if (this.opts.alphaInit !== undefined) params["alphaInit"] = this.opts.alphaInit;
+    return params;
+  }
+
+  /**
+   * Set hyper-parameters. All values are validated before any is applied; pass `alphaInit:
+   * undefined` to go back to the data-derived initial noise precision.
+   *
+   * @param params - Parameters to change
+   * @returns this
+   * @throws {InvalidParameterError} If a name is unknown or a value is invalid
+   */
+  setParams(params: Record<string, unknown>): this {
+    const next: Record<string, unknown> = { ...this.opts };
+    for (const [key, value] of Object.entries(params)) {
+      if (!OPTION_KEYS.includes(key)) {
+        throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+      }
+      if (key === "fitIntercept" || key === "computeScore") {
+        if (typeof value !== "boolean") {
+          throw new InvalidParameterError(`${key} must be a boolean`, key, value);
+        }
+      } else if (value !== undefined && typeof value !== "number") {
+        throw new InvalidParameterError(`${key} must be a number`, key, value);
+      }
+      next[key] = value;
+    }
+    this.opts = resolveOptions(next as BayesianRidgeOptions);
     return this;
+  }
+
+  /** Create an unfitted copy with the same hyper-parameters. */
+  clone(): BayesianRidge {
+    return new BayesianRidge(this.getParams() as BayesianRidgeOptions);
   }
 }

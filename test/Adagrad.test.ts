@@ -59,10 +59,11 @@ describe("deepbox/optim - Adagrad", () => {
   });
 
   describe("step", () => {
-    it("should throw when gradient is missing", () => {
+    it("should skip a parameter whose gradient is null", () => {
       const p = parameter(tensor([1, 2, 3], { dtype: "float64" }));
       const optimizer = new Adagrad([p]);
-      expect(() => optimizer.step()).toThrow("Cannot optimize a parameter without a gradient");
+      expect(() => optimizer.step()).not.toThrow();
+      expect(Array.from(p.tensor.data as Float64Array)).toEqual([1, 2, 3]);
     });
 
     it("should update parameters with positive gradients", () => {

@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -26,7 +25,6 @@ import {
   assertHasGradFloat,
   assertInRange,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -70,7 +68,15 @@ type LAMBState = {
  * LAMB extends Adam with layer-wise adaptive learning rates, enabling
  * training with very large batch sizes (up to 64K for BERT).
  * It combines the benefits of Adam's per-element adaptivity with
- * LARS-style layer-wise trust ratios.
+ * LARS-style layer-wise trust ratios. Each parameter tensor is treated as one layer:
+ *
+ * ```
+ * r = m_hat / (sqrt(v_hat) + eps) + weightDecay * theta
+ * trust = ||theta|| / ||r||        (1 when either norm is zero)
+ * theta -= lr * trust * r
+ * ```
+ *
+ * where `m_hat` and `v_hat` are the bias-corrected Adam moment estimates.
  *
  * Reference: "Large Batch Optimization for Deep Learning: Training BERT in 76 Minutes"
  * (You et al., 2019)
@@ -96,12 +102,18 @@ type LAMBState = {
  * @category Optimizers
  */
 export class LAMB extends Optimizer<LAMBOptions, LAMBState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new LAMB optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 0.001)
+   * @param options.beta1 - Decay rate of the first moment, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Decay rate of the second moment, in [0, 1) (default: 0.999)
+   * @param options.eps - Term added to the denominator for numerical stability (default: 1e-6)
+   * @param options.weightDecay - Decoupled weight decay coefficient (default: 0.01)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<LAMBOptions>>,
     options: {
@@ -121,27 +133,14 @@ export class LAMB extends Optimizer<LAMBOptions, LAMBState> {
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(`Invalid group index: ${groupIdx}`, "groupIdx", groupIdx);
-    }
-    return group.options.lr;
-  }
-
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<LAMBOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is LAMBState {
@@ -152,24 +151,28 @@ export class LAMB extends Optimizer<LAMBOptions, LAMBState> {
     );
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
     if (closure) {
       loss = closure();
     }
 
-    this._stepCount++;
+    this.prepareStep("LAMB");
+    this.countStep();
 
     for (const group of this.paramGroups) {
       const { lr, beta1, beta2, eps, weightDecay } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the LAMB update (Adam step + layer-wise trust
         // ratio) from device-dispatched ops. The trust ratio is a device scalar
         // (norms are full reductions), kept resident and broadcast into the update.
@@ -245,33 +248,29 @@ export class LAMB extends Optimizer<LAMBOptions, LAMBState> {
         const biasCorrection1 = 1 - beta1 ** state.step;
         const biasCorrection2 = 1 - beta2 ** state.step;
 
-        // Compute Adam update direction and parameter norm
-        const update = new Float64Array(size);
+        const expAvg = state.expAvg;
+        const expAvgSq = state.expAvgSq;
+
+        // First pass: update the moments and accumulate ||theta||^2 and ||r||^2,
+        // where r is the Adam direction plus weight decay.
         let paramNormSq = 0;
         let updateNormSq = 0;
 
         for (let i = 0; i < size; i++) {
-          const gi = safeArrayAccess(grad, gradOffset + i, "LAMB gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "LAMB parameter");
-          assertFinite("gradient", gi);
-          assertFinite("parameter", pi);
-
-          const m = safeArrayAccess(state.expAvg, i, "LAMB expAvg");
-          const v = safeArrayAccess(state.expAvgSq, i, "LAMB expAvgSq");
+          const gi = grad[gradOffset + i] as number;
+          const pi = pData[pOff + i] as number;
+          if (!Number.isFinite(gi)) assertFinite("gradient", gi);
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
 
           // Update moments
-          const mNew = beta1 * m + (1 - beta1) * gi;
-          const vNew = beta2 * v + (1 - beta2) * gi * gi;
-          state.expAvg[i] = mNew;
-          state.expAvgSq[i] = vNew;
-
-          // Bias-corrected estimates
-          const mHat = mNew / biasCorrection1;
-          const vHat = vNew / biasCorrection2;
+          const mNew = beta1 * (expAvg[i] as number) + (1 - beta1) * gi;
+          const vNew = beta2 * (expAvgSq[i] as number) + (1 - beta2) * gi * gi;
+          expAvg[i] = mNew;
+          expAvgSq[i] = vNew;
 
           // Adam update + weight decay
-          const u = mHat / (Math.sqrt(vHat) + eps) + weightDecay * pi;
-          update[i] = u;
+          const u =
+            mNew / biasCorrection1 / (Math.sqrt(vNew / biasCorrection2) + eps) + weightDecay * pi;
 
           paramNormSq += pi * pi;
           updateNormSq += u * u;
@@ -286,11 +285,15 @@ export class LAMB extends Optimizer<LAMBOptions, LAMBState> {
           trustRatio = paramNorm / updateNorm;
         }
 
-        // Apply update
+        // Second pass: recompute r from the stored moments (parameters are unchanged
+        // until written here) instead of keeping a temporary buffer.
         const effectiveLr = lr * trustRatio;
         for (let i = 0; i < size; i++) {
-          const pi = safeArrayAccess(pData, pOff + i, "LAMB parameter");
-          pData[pOff + i] = pi - effectiveLr * (update[i] ?? 0);
+          const pi = pData[pOff + i] as number;
+          const mHat = (expAvg[i] as number) / biasCorrection1;
+          const vHat = (expAvgSq[i] as number) / biasCorrection2;
+          const u = mHat / (Math.sqrt(vHat) + eps) + weightDecay * pi;
+          pData[pOff + i] = pi - effectiveLr * u;
         }
       }
     }

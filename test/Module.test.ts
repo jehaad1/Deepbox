@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { DeviceError, DTypeError, InvalidParameterError, ShapeError } from "../src/core";
-import { addScalar, GradTensor, mulScalar, type Tensor, tensor } from "../src/ndarray";
+import {
+  type AnyTensor,
+  addScalar,
+  GradTensor,
+  mulScalar,
+  type Tensor,
+  tensor,
+} from "../src/ndarray";
 import { Linear, Module } from "../src/nn";
 
 // Create a simple test module
@@ -16,7 +23,7 @@ class SimpleModel extends Module {
     this.registerModule("fc2", this.fc2);
   }
 
-  forward(x: Tensor): Tensor {
+  forward(x: Tensor): AnyTensor {
     let out = this.fc1.forward(x);
     out = this.fc2.forward(out);
     return out;
@@ -479,18 +486,22 @@ describe("deepbox/nn - Module", () => {
   });
 
   describe("parameter freezing reference stability", () => {
-    it("should warn about reference stability - parameters are recreated", () => {
+    it("keeps parameter objects (optimizer references stay valid) when freezing", () => {
       const model = new SimpleModel();
       const originalParams = Array.from(model.parameters());
-      const originalIds = originalParams.map((p) => p);
 
       model.freezeParameters();
-      const newParams = Array.from(model.parameters());
+      const frozenParams = Array.from(model.parameters());
+      expect(frozenParams.length).toBe(originalParams.length);
+      for (let i = 0; i < originalParams.length; i++) {
+        expect(frozenParams[i]).toBe(originalParams[i]);
+        expect(originalParams[i]?.requiresGrad).toBe(false);
+      }
 
-      // After freezing, parameters are NEW objects (reference stability issue)
-      // This test documents the current behavior
-      for (let i = 0; i < originalIds.length; i++) {
-        expect(newParams[i]).not.toBe(originalIds[i]);
+      model.unfreezeParameters();
+      for (let i = 0; i < originalParams.length; i++) {
+        expect(Array.from(model.parameters())[i]).toBe(originalParams[i]);
+        expect(originalParams[i]?.requiresGrad).toBe(true);
       }
     });
 

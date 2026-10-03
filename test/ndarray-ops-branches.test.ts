@@ -43,7 +43,7 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
   it("covers trig BigInt path and range errors", () => {
     const big = tensor([0, 1], { dtype: "int64" });
     const out = sin(big);
-    expect(out.dtype).toBe("float64");
+    expect(out.dtype).toBe("float32");
 
     const tooBigSin = Tensor.fromTypedArray({
       data: new BigInt64Array([BigInt("9007199254740993")]),
@@ -59,7 +59,7 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
 
   it("covers math BigInt path and range errors", () => {
     const big = tensor([2, 3], { dtype: "int64" });
-    expect(square(big).dtype).toBe("float64");
+    expect(square(big).dtype).toBe("int64");
 
     const tooBigExp = Tensor.fromTypedArray({
       data: new BigInt64Array([BigInt("9007199254740993")]),
@@ -70,7 +70,7 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
     expect(() => exp(tooBigExp)).toThrow(/too large/i);
 
     const logOut = log(tensor([1, 2], { dtype: "int64" }));
-    expect(logOut.dtype).toBe("float64");
+    expect(logOut.dtype).toBe("float32");
   });
 
   it("covers activation error and BigInt paths", () => {
@@ -79,7 +79,7 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
 
     const big = tensor([-1, 0, 1], { dtype: "int64" });
     const out = sigmoid(big);
-    expect(out.dtype).toBe("float64");
+    expect(out.dtype).toBe("float32");
   });
 
   it("covers arithmetic branches and clip errors", () => {
@@ -91,14 +91,14 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
     const big = tensor([4, 2], { dtype: "int64" });
     const bigScalar = tensor(2, { dtype: "int64" });
     const divOut = div(big, bigScalar);
-    expect(divOut.dtype).toBe("float64");
+    expect(divOut.dtype).toBe("float32");
     expect(divOut.toArray()).toEqual([2, 1]);
     expect(floorDiv(big, bigScalar).toArray()).toEqual([2n, 1n]);
     expect(mod(big, bigScalar).toArray()).toEqual([0n, 0n]);
     expect(pow(big, bigScalar).toArray()).toEqual([16n, 4n]);
 
     const rec = reciprocal(tensor([0, 1], { dtype: "int64" }));
-    expect(rec.dtype).toBe("float64");
+    expect(rec.dtype).toBe("float32");
     expect(rec.toArray()).toEqual([Infinity, 1]);
 
     expect(() => clip(tensor([1, 2, 3]), 5, 2)).toThrow(/min/);
@@ -109,7 +109,7 @@ describe("deepbox/ndarray - Ops Branch Coverage", () => {
     const b = tensor([1, 3], { dtype: "int32" });
     expect(equal(a, b).toArray()).toEqual([1, 0]);
 
-    expect(() => isclose(a, b)).toThrow(/BigInt/);
+    expect(isclose(a, b).toArray()).toEqual([1, 0]);
     expect(allclose(tensor([1, 2]), tensor([1]))).toBe(false);
   });
 });

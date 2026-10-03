@@ -1,5 +1,5 @@
 """
-Benchmark 03 — Linear Algebra
+Benchmark 03: Linear Algebra
 NumPy / SciPy
 """
 
@@ -11,7 +11,7 @@ import scipy.linalg as la
 from utils import run, create_suite, header, footer
 
 suite = create_suite("linalg", "NumPy/SciPy")
-header("Benchmark 03 — Linear Algebra", "NumPy/SciPy")
+header("Benchmark 03: Linear Algebra", "NumPy/SciPy")
 
 # ── Matrix generators ───────────────────────────────────
 

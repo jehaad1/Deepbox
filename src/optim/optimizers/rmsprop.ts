@@ -35,6 +35,7 @@ import { Optimizer, type ParamGroup } from "../Optimizer";
  * @property weightDecay - Weight decay coefficient (L2 penalty)
  * @property momentum - Momentum factor
  * @property centered - Whether to use centered RMSprop variant
+ * @property maximize - Maximize the objective instead of minimizing it
  */
 type RMSpropOptions = {
   lr: number;
@@ -43,6 +44,7 @@ type RMSpropOptions = {
   weightDecay: number;
   momentum: number;
   centered: boolean;
+  maximize: boolean;
 };
 
 /**
@@ -69,6 +71,15 @@ type RMSpropState = {
  * average of recent gradient magnitudes. This helps with non-stationary objectives
  * and is particularly effective for RNNs.
  *
+ * The update follows PyTorch's `torch.optim.RMSprop`:
+ *
+ * ```
+ * v = alpha * v + (1 - alpha) * g^2
+ * avg = centered ? sqrt(v - gAvg^2) + eps : sqrt(v) + eps      (gAvg = EMA of g)
+ * buf = momentum * buf + g / avg                               (momentum > 0)
+ * param = param - lr * (momentum > 0 ? buf : g / avg)
+ * ```
+ *
  * @example
  * ```ts
  * import { RMSprop } from 'deepbox/optim';
@@ -91,17 +102,6 @@ type RMSpropState = {
  * @category Optimizers
  */
 export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
-  /** Internal counter tracking total number of optimization steps */
-  private _stepCount = 0;
-
-  /**
-   * Get the total number of optimization steps performed.
-   *
-   * @returns Number of steps taken
-   */
-  get stepCount(): number {
-    return this._stepCount;
-  }
   /**
    * Create a new RMSprop optimizer.
    *
@@ -113,6 +113,7 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
    * @param options.weightDecay - Weight decay coefficient (default: 0)
    * @param options.momentum - Momentum factor (default: 0)
    * @param options.centered - Use centered variant (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
    * @throws {InvalidParameterError} If a parameter is invalid
    */
   constructor(
@@ -124,6 +125,7 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
       readonly weightDecay?: number;
       readonly momentum?: number;
       readonly centered?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
     // Set default values for all options
@@ -134,52 +136,24 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
       weightDecay: options.weightDecay ?? 0,
       momentum: options.momentum ?? 0,
       centered: options.centered ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
+  }
 
-    // Validate all hyperparameters
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    if (!Number.isFinite(defaults.alpha) || defaults.alpha < 0 || defaults.alpha > 1) {
+  protected override validateOptions(options: Readonly<RMSpropOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    if (!Number.isFinite(options.alpha) || options.alpha < 0 || options.alpha > 1) {
       throw new InvalidParameterError(
-        `Invalid alpha: ${defaults.alpha} (must be in range [0, 1])`,
+        `Invalid alpha: ${options.alpha} (must be in range [0, 1])`,
         "alpha",
-        defaults.alpha
+        options.alpha
       );
     }
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
-    assertFiniteNonNegative("momentum value", defaults.momentum);
-  }
-
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
+    assertFiniteNonNegative("momentum value", options.momentum);
   }
 
   protected isState(state: Record<string, unknown>): state is RMSpropState {
@@ -196,6 +170,16 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
     return true;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional closure that reevaluates the model and returns the loss
+   * @returns Loss value if a closure is provided
+   * @throws {InvalidParameterError} If a group option is invalid or a gradient or
+   *   parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -204,28 +188,15 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("RMSprop");
+    this.countStep();
 
     // Update each parameter group
     for (const group of this.paramGroups) {
-      const { lr, alpha, eps, weightDecay, momentum, centered } = group.options;
+      const { lr, alpha, eps, weightDecay, momentum, centered, maximize } = group.options;
 
-      // Re-validate hyperparameters
-      assertFiniteNonNegative("learning rate", lr);
-      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
-        throw new InvalidParameterError(
-          `Invalid alpha: ${alpha} (must be in range [0, 1])`,
-          "alpha",
-          alpha
-        );
-      }
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-      assertFiniteNonNegative("momentum value", momentum);
-
-      // Update each parameter in the group
-      for (const param of group.params) {
+      // Update each trainable parameter in the group
+      for (const param of this.trainableParams(group)) {
         // Device path: keep the whole RMSprop update resident on the
         // accelerator by composing it from device-dispatched tensor ops.
         if (param.tensor.isDeviceTensor) {
@@ -236,7 +207,9 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
             dstate = { squareAvg: new Float64Array(0) };
             this.state.set(param, dstate);
           }
-          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const signed = maximize ? mulScalar(g, -1) : g;
+          const grad =
+            weightDecay !== 0 ? add(signed, mulScalar(param.tensor, weightDecay)) : signed;
           const sqPrev = dstate.squareAvgTensor;
           // v(t) = alpha * v(t-1) + (1 - alpha) * g^2
           const sqNew = sqPrev
@@ -252,8 +225,8 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
               : mulScalar(grad, 1 - alpha);
             dstate.gradAvgTensor = gAvgNew;
             avg = sub(sqNew, square(gAvgNew));
-            // denom = sqrt(max(avg, 0) + eps)
-            denom = sqrt(addScalar(deviceMaxScalar(avg, 0), eps));
+            // denom = sqrt(max(avg, 0)) + eps
+            denom = addScalar(sqrt(deviceMaxScalar(avg, 0)), eps);
           } else {
             // denom = sqrt(avg) + eps
             denom = addScalar(sqrt(avg), eps);
@@ -320,7 +293,7 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
           assertFinite("parameter", pi);
 
           // Apply weight decay to gradient if specified
-          let grad = gi;
+          let grad = maximize ? -gi : gi;
           if (weightDecay !== 0) {
             grad = grad + weightDecay * pi;
           }
@@ -344,7 +317,8 @@ export class RMSprop extends Optimizer<RMSpropOptions, RMSpropState> {
             avg = sqAvgNew - gAvgNew * gAvgNew;
           }
 
-          const denom = centered ? Math.sqrt(Math.max(avg, 0) + eps) : Math.sqrt(avg) + eps;
+          // The centered variance is non-negative in exact arithmetic; clamp the rounding noise.
+          const denom = Math.sqrt(centered ? Math.max(avg, 0) : avg) + eps;
           const normalizedGrad = grad / denom;
 
           // Apply momentum if specified

@@ -1,20 +1,15 @@
 /**
  * Neural network loss functions (`deepbox/nn` losses barrel).
  *
- * @see https://deepbox.dev/docs/nn-losses
+ * @see {@link https://deepbox.dev/docs/nn-losses | Deepbox documentation}
  */
-import {
-  DTypeError,
-  getElementAsNumber,
-  InvalidParameterError,
-  ShapeError,
-  shapesEqual,
-} from "../../core";
+import { DTypeError, InvalidParameterError, ShapeError, shapesEqual } from "../../core";
 import type { AnyTensor } from "../../ndarray";
 import {
   abs,
   add,
   clip,
+  customOp,
   GradTensor,
   log,
   mean,
@@ -28,13 +23,53 @@ import {
   Tensor,
   tensor,
 } from "../../ndarray";
-import { offsetFromFlatIndex } from "../../ndarray/tensor/strides";
-import { computeStrides } from "../../ndarray/tensor/Tensor";
+import {
+  asDtype,
+  classIndexLoss,
+  type LossReduction,
+  numbersOf,
+  numericDtype,
+  readClassWeights,
+  scalarValue,
+  validateReduction,
+} from "./cross_entropy";
 
+export type {
+  BinaryCrossEntropyWithLogitsOptions,
+  CrossEntropyLossOptions,
+  LossReduction,
+} from "./cross_entropy";
 export {
   binaryCrossEntropyWithLogitsLoss,
   crossEntropyLoss,
 } from "./cross_entropy";
+
+/** Options for {@link nllLoss}. */
+export interface NllLossOptions {
+  /** `"mean"` (default), `"sum"`, or `"none"` to return one loss per sample. */
+  readonly reduction?: LossReduction;
+  /**
+   * Per-class rescaling weights, length `n_classes`. With `"mean"` reduction the loss is
+   * divided by the sum of the target classes' weights, as in PyTorch.
+   */
+  readonly weight?: Tensor | readonly number[];
+  /** Class index to skip: such samples add no loss and are not counted by `"mean"`. */
+  readonly ignoreIndex?: number;
+}
+
+/** Options for {@link ctcLoss}. */
+export interface CtcLossOptions {
+  /** Index of the blank label (default: 0). */
+  readonly blank?: number;
+  /**
+   * `"mean"` (default) divides each sample's loss by its target length (at least 1) and
+   * averages over the batch, as PyTorch does. `"sum"` adds the raw losses; `"none"`
+   * returns one raw loss per sample.
+   */
+  readonly reduction?: LossReduction;
+  /** Replace infinite losses (inputs too short for the target) with zero (default: false). */
+  readonly zeroInfinity?: boolean;
+}
 
 function ensureSameShape(a: Tensor, b: Tensor, context: string): void {
   if (!shapesEqual(a.shape, b.shape)) {
@@ -57,27 +92,54 @@ function ensureNumeric(t: Tensor, context: string): void {
   }
 }
 
-type NumericTensorData = Exclude<Tensor["data"], string[]>;
-
-function validateReduction(reduction: "mean" | "sum" | "none", context: string): void {
-  if (reduction !== "mean" && reduction !== "sum" && reduction !== "none") {
-    throw new InvalidParameterError(
-      `${context} reduction must be 'mean', 'sum', or 'none'`,
-      "reduction",
-      reduction
-    );
-  }
+function toTensor(t: AnyTensor): Tensor {
+  return GradTensor.isGradTensor(t) ? t.tensor : t;
 }
 
-function readNumericFlat(
-  data: NumericTensorData,
-  flat: number,
-  logicalStrides: readonly number[],
-  strides: readonly number[],
-  offset: number
-): number {
-  const dataOffset = offsetFromFlatIndex(flat, logicalStrides, strides, offset);
-  return getElementAsNumber(data, dataOffset);
+/**
+ * Prepare the operands of an autograd loss: targets become a non-differentiable
+ * GradTensor of the prediction dtype, and operands of equal size but different rank
+ * (for example `(N, 1)` and `(N,)`) are reshaped to the lower rank instead of being
+ * broadcast into an `(N, N)` matrix.
+ */
+function gradOperands(
+  pred: GradTensor,
+  targets: AnyTensor,
+  context: string
+): [GradTensor, GradTensor] {
+  const dtype = numericDtype(pred, context);
+  let tgt = GradTensor.isGradTensor(targets)
+    ? targets
+    : GradTensor.fromTensor(targets, { requiresGrad: false });
+  numericDtype(tgt, context);
+  tgt = asDtype(tgt, dtype);
+  let p = pred;
+  if (!shapesEqual(p.shape, tgt.shape) && p.size === tgt.size) {
+    if (p.ndim > tgt.ndim) p = p.reshape([...tgt.shape]);
+    else if (tgt.ndim > p.ndim) tgt = tgt.reshape([...p.shape]);
+  }
+  return [p, tgt];
+}
+
+/** Float dtype of a loss computed from `t`: float64 stays float64, everything else is float32. */
+function lossDtypeOf(t: Tensor): "float32" | "float64" {
+  return t.dtype === "float64" ? "float64" : "float32";
+}
+
+function newLossBuffer(dtype: "float32" | "float64", size: number): Float32Array | Float64Array {
+  return dtype === "float64" ? new Float64Array(size) : new Float32Array(size);
+}
+
+function reduceLoss(loss: Tensor, reduction: LossReduction): Tensor {
+  if (reduction === "none") return loss;
+  if (reduction === "sum") return sum(loss);
+  return mean(loss);
+}
+
+function reduceGradLoss(loss: GradTensor, reduction: LossReduction): GradTensor {
+  if (reduction === "none") return loss;
+  if (reduction === "sum") return loss.sum();
+  return loss.mean();
 }
 
 /**
@@ -98,6 +160,10 @@ function readNumericFlat(
  * - Penalizes large errors more heavily (quadratic)
  * - Differentiable everywhere
  *
+ * Passing a GradTensor as `predictions` returns a GradTensor that supports `.backward()`.
+ * Operands with the same number of elements but different rank (for example `(N, 1)`
+ * and `(N,)`) are matched element for element rather than broadcast.
+ *
  * @param predictions - Predicted values
  * @param targets - True target values
  * @param reduction - How to reduce the loss: 'mean', 'sum', or 'none'
@@ -115,39 +181,34 @@ function readNumericFlat(
  *
  * @category Loss Functions
  */
-export function mseLoss(
-  predictions: Tensor,
-  targets: Tensor,
-  reduction?: "mean" | "sum" | "none"
-): Tensor;
+export function mseLoss(predictions: Tensor, targets: Tensor, reduction?: LossReduction): Tensor;
 export function mseLoss(
   predictions: GradTensor,
-  targets: GradTensor,
-  reduction?: "mean" | "sum" | "none"
+  targets: AnyTensor,
+  reduction?: LossReduction
 ): GradTensor;
 export function mseLoss(
   predictions: AnyTensor,
   targets: AnyTensor,
-  reduction: "mean" | "sum" | "none" = "mean"
+  reduction?: LossReduction
+): AnyTensor;
+export function mseLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
+  reduction: LossReduction = "mean"
 ): AnyTensor {
   validateReduction(reduction, "mseLoss");
 
-  // GradTensor path — preserves computation graph for .backward()
+  // GradTensor path: preserves computation graph for .backward()
   if (GradTensor.isGradTensor(predictions)) {
-    const pred = predictions;
-    const tgt = GradTensor.isGradTensor(targets)
-      ? targets
-      : GradTensor.fromTensor(targets as Tensor, { requiresGrad: false });
+    const [pred, tgt] = gradOperands(predictions, targets, "mseLoss");
     const diff = pred.sub(tgt);
-    const squared = diff.mul(diff);
-    if (reduction === "none") return squared;
-    if (reduction === "sum") return squared.sum();
-    return squared.mean();
+    return reduceGradLoss(diff.mul(diff), reduction);
   }
 
   // Plain Tensor path
-  let preds = predictions as Tensor;
-  let tgts = GradTensor.isGradTensor(targets) ? targets.tensor : (targets as Tensor);
+  let preds = predictions;
+  let tgts = toTensor(targets);
   ensureNumeric(preds, "mseLoss");
   ensureNumeric(tgts, "mseLoss");
   [preds, tgts] = alignShapes(preds, tgts);
@@ -155,14 +216,7 @@ export function mseLoss(
 
   const diff = sub(preds, tgts);
   const squaredDiff = pow(diff, tensor(2, { dtype: diff.dtype, device: diff.device }));
-
-  if (reduction === "none") {
-    return squaredDiff;
-  }
-  if (reduction === "sum") {
-    return sum(squaredDiff);
-  }
-  return mean(squaredDiff);
+  return reduceLoss(squaredDiff, reduction);
 }
 
 /**
@@ -175,12 +229,14 @@ export function mseLoss(
  *
  * **Use Cases:**
  * - Regression tasks where outliers should have less influence
- * - More robust to outliers than MSE
+ * - Less sensitive to outliers than MSE
  *
  * **Properties:**
  * - Always non-negative
  * - Linear penalty for errors
  * - Less sensitive to outliers than MSE
+ *
+ * Passing a GradTensor as `predictions` returns a GradTensor that supports `.backward()`.
  *
  * @param predictions - Predicted values
  * @param targets - True target values
@@ -189,52 +245,37 @@ export function mseLoss(
  *
  * @category Loss Functions
  */
-export function maeLoss(
-  predictions: Tensor,
-  targets: Tensor,
-  reduction?: "mean" | "sum" | "none"
-): Tensor;
+export function maeLoss(predictions: Tensor, targets: Tensor, reduction?: LossReduction): Tensor;
 export function maeLoss(
   predictions: GradTensor,
-  targets: GradTensor,
-  reduction?: "mean" | "sum" | "none"
+  targets: AnyTensor,
+  reduction?: LossReduction
 ): GradTensor;
 export function maeLoss(
   predictions: AnyTensor,
   targets: AnyTensor,
-  reduction: "mean" | "sum" | "none" = "mean"
+  reduction?: LossReduction
+): AnyTensor;
+export function maeLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
+  reduction: LossReduction = "mean"
 ): AnyTensor {
   validateReduction(reduction, "maeLoss");
 
   if (GradTensor.isGradTensor(predictions)) {
-    const pred = predictions;
-    const tgt = GradTensor.isGradTensor(targets)
-      ? targets
-      : GradTensor.fromTensor(targets as Tensor, { requiresGrad: false });
-    const diff = pred.sub(tgt);
-    const absDiff = diff.abs();
-    if (reduction === "none") return absDiff;
-    if (reduction === "sum") return absDiff.sum();
-    return absDiff.mean();
+    const [pred, tgt] = gradOperands(predictions, targets, "maeLoss");
+    return reduceGradLoss(pred.sub(tgt).abs(), reduction);
   }
 
-  let preds = predictions as Tensor;
-  let tgts = GradTensor.isGradTensor(targets) ? targets.tensor : (targets as Tensor);
+  let preds = predictions;
+  let tgts = toTensor(targets);
   ensureNumeric(preds, "maeLoss");
   ensureNumeric(tgts, "maeLoss");
   [preds, tgts] = alignShapes(preds, tgts);
   ensureSameShape(preds, tgts, "maeLoss");
 
-  const diff = sub(preds, tgts);
-  const absDiff = abs(diff);
-
-  if (reduction === "none") {
-    return absDiff;
-  }
-  if (reduction === "sum") {
-    return sum(absDiff);
-  }
-  return mean(absDiff);
+  return reduceLoss(abs(sub(preds, tgts)), reduction);
 }
 
 /**
@@ -253,7 +294,9 @@ export function maeLoss(
  * **Properties:**
  * - Requires predictions in range (0, 1) - use sigmoid activation
  * - Targets should be 0 or 1
- * - Numerically stable with epsilon for log
+ * - Predictions are clipped to `[1e-7, 1 - 1e-7]` before the logarithm, so the loss is
+ *   finite (at most about 16.1 per element) and saturated predictions get no gradient.
+ *   When you have logits, prefer `binaryCrossEntropyWithLogitsLoss`.
  *
  * @param predictions - Predicted probabilities (0 to 1)
  * @param targets - True binary labels (0 or 1)
@@ -265,46 +308,44 @@ export function maeLoss(
 export function binaryCrossEntropyLoss(
   predictions: Tensor,
   targets: Tensor,
-  reduction?: "mean" | "sum" | "none"
+  reduction?: LossReduction
 ): Tensor;
 export function binaryCrossEntropyLoss(
   predictions: GradTensor,
-  targets: GradTensor,
-  reduction?: "mean" | "sum" | "none"
+  targets: AnyTensor,
+  reduction?: LossReduction
 ): GradTensor;
 export function binaryCrossEntropyLoss(
   predictions: AnyTensor,
   targets: AnyTensor,
-  reduction: "mean" | "sum" | "none" = "mean"
+  reduction?: LossReduction
+): AnyTensor;
+export function binaryCrossEntropyLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
+  reduction: LossReduction = "mean"
 ): AnyTensor {
   validateReduction(reduction, "binaryCrossEntropyLoss");
 
   if (GradTensor.isGradTensor(predictions)) {
-    const pred = predictions;
-    const tgt = GradTensor.isGradTensor(targets)
-      ? targets
-      : GradTensor.fromTensor(targets as Tensor, { requiresGrad: false });
+    const [pred, tgt] = gradOperands(predictions, targets, "binaryCrossEntropyLoss");
     const epsilon = 1e-7;
     const predClamped = pred.clip(epsilon, 1 - epsilon);
     const logPred = predClamped.log();
     const term1 = tgt.mul(logPred);
-    const one = GradTensor.scalar(1, {
-      dtype: pred.dtype === "float64" ? "float64" : (pred.dtype as "float32"),
-    });
+    const one = GradTensor.scalar(1, { dtype: numericDtype(pred, "binaryCrossEntropyLoss") });
     const oneMinusTargets = one.sub(tgt);
     const oneMinusPred = one.sub(predClamped);
     const logOneMinusPred = oneMinusPred.log();
     const term2 = oneMinusTargets.mul(logOneMinusPred);
-    const loss = term1.add(term2).neg();
-    if (reduction === "none") return loss;
-    if (reduction === "sum") return loss.sum();
-    return loss.mean();
+    return reduceGradLoss(term1.add(term2).neg(), reduction);
   }
 
-  const preds = predictions as Tensor;
-  const tgts = GradTensor.isGradTensor(targets) ? targets.tensor : (targets as Tensor);
+  let preds = predictions;
+  let tgts = toTensor(targets);
   ensureNumeric(preds, "binaryCrossEntropyLoss");
   ensureNumeric(tgts, "binaryCrossEntropyLoss");
+  [preds, tgts] = alignShapes(preds, tgts);
   ensureSameShape(preds, tgts, "binaryCrossEntropyLoss");
 
   const epsilon = 1e-7;
@@ -322,15 +363,7 @@ export function binaryCrossEntropyLoss(
   const logOneMinusPred = log(oneMinusPred);
   const term2 = mul(oneMinusTargets, logOneMinusPred);
 
-  const loss = neg(add(term1, term2));
-
-  if (reduction === "none") {
-    return loss;
-  }
-  if (reduction === "sum") {
-    return sum(loss);
-  }
-  return mean(loss);
+  return reduceLoss(neg(add(term1, term2)), reduction);
 }
 
 /**
@@ -346,6 +379,8 @@ export function binaryCrossEntropyLoss(
  * - When you want error in same units as target
  * - More interpretable than MSE
  *
+ * The gradient is undefined (NaN) at a perfect fit, where the square root is taken at 0.
+ *
  * @param predictions - Predicted values
  * @param targets - True target values
  * @returns Scalar loss value
@@ -353,22 +388,20 @@ export function binaryCrossEntropyLoss(
  * @category Loss Functions
  */
 export function rmseLoss(predictions: Tensor, targets: Tensor): Tensor;
-export function rmseLoss(predictions: GradTensor, targets: GradTensor): GradTensor;
+export function rmseLoss(predictions: GradTensor, targets: AnyTensor): GradTensor;
+export function rmseLoss(predictions: AnyTensor, targets: AnyTensor): AnyTensor;
 export function rmseLoss(predictions: AnyTensor, targets: AnyTensor): AnyTensor {
   if (GradTensor.isGradTensor(predictions)) {
-    const pred = predictions;
-    const tgt = GradTensor.isGradTensor(targets)
-      ? targets
-      : GradTensor.fromTensor(targets as Tensor, { requiresGrad: false });
+    const [pred, tgt] = gradOperands(predictions, targets, "rmseLoss");
     const diff = pred.sub(tgt);
-    const squared = diff.mul(diff);
-    return squared.mean().sqrt();
+    return diff.mul(diff).mean().sqrt();
   }
 
-  const preds = predictions as Tensor;
-  const tgts = GradTensor.isGradTensor(targets) ? targets.tensor : (targets as Tensor);
+  let preds = predictions;
+  let tgts = toTensor(targets);
   ensureNumeric(preds, "rmseLoss");
   ensureNumeric(tgts, "rmseLoss");
+  [preds, tgts] = alignShapes(preds, tgts);
   ensureSameShape(preds, tgts, "rmseLoss");
 
   const mse = mseLoss(preds, tgts, "mean");
@@ -387,16 +420,18 @@ export function rmseLoss(predictions: AnyTensor, targets: AnyTensor): AnyTensor 
  *
  * **Use Cases:**
  * - Regression with outliers
- * - Robust to outliers while maintaining MSE benefits for small errors
+ * - Limits the influence of outliers while keeping MSE behavior for small errors
  *
  * **Properties:**
  * - Quadratic for small errors (like MSE)
  * - Linear for large errors (like MAE)
  * - Controlled by delta parameter
  *
+ * Passing a GradTensor as `predictions` returns a GradTensor that supports `.backward()`.
+ *
  * @param predictions - Predicted values
  * @param targets - True target values
- * @param delta - Threshold where loss transitions from quadratic to linear
+ * @param delta - Threshold where loss transitions from quadratic to linear (must be positive)
  * @param reduction - How to reduce the loss: 'mean', 'sum', or 'none'
  * @returns Scalar loss value (or tensor if reduction='none')
  *
@@ -405,52 +440,64 @@ export function rmseLoss(predictions: AnyTensor, targets: AnyTensor): AnyTensor 
 export function huberLoss(
   predictions: Tensor,
   targets: Tensor,
+  delta?: number,
+  reduction?: LossReduction
+): Tensor;
+export function huberLoss(
+  predictions: GradTensor,
+  targets: AnyTensor,
+  delta?: number,
+  reduction?: LossReduction
+): GradTensor;
+export function huberLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
+  delta?: number,
+  reduction?: LossReduction
+): AnyTensor;
+export function huberLoss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
   delta = 1.0,
-  reduction: "mean" | "sum" | "none" = "mean"
-): Tensor {
+  reduction: LossReduction = "mean"
+): AnyTensor {
   validateReduction(reduction, "huberLoss");
-  ensureNumeric(predictions, "huberLoss");
-  ensureNumeric(targets, "huberLoss");
-  [predictions, targets] = alignShapes(predictions, targets);
-  ensureSameShape(predictions, targets, "huberLoss");
-
   if (!Number.isFinite(delta) || delta <= 0) {
     throw new InvalidParameterError(`delta must be positive; got ${delta}`, "delta", delta);
   }
 
-  const diff = sub(predictions, targets);
-  const absDiff = abs(diff);
-
-  const absData = absDiff.data;
-  if (Array.isArray(absData)) {
-    throw new DTypeError("huberLoss does not support string dtype");
-  }
-  const dtype = predictions.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(diff.size) : new Float32Array(diff.size);
-  const logicalStrides = computeStrides(absDiff.shape);
-  for (let i = 0; i < diff.size; i++) {
-    const absVal = readNumericFlat(absData, i, logicalStrides, absDiff.strides, absDiff.offset);
-    if (absVal <= delta) {
-      lossData[i] = 0.5 * absVal * absVal;
-    } else {
-      lossData[i] = delta * (absVal - 0.5 * delta);
-    }
+  if (GradTensor.isGradTensor(predictions)) {
+    const [pred, tgt] = gradOperands(predictions, targets, "huberLoss");
+    // With c = min(|a|, delta): huber(a) = 0.5 * c^2 + delta * (|a| - c).
+    const absDiff = pred.sub(tgt).abs();
+    const c = absDiff.clip(0, delta);
+    const dtype = numericDtype(pred, "huberLoss");
+    const half = GradTensor.scalar(0.5, { dtype });
+    const deltaT = GradTensor.scalar(delta, { dtype });
+    const loss = half.mul(c.mul(c)).add(deltaT.mul(absDiff.sub(c)));
+    return reduceGradLoss(loss, reduction);
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: predictions.shape,
-    dtype,
-    device: predictions.device,
-  });
+  let preds = predictions;
+  let tgts = toTensor(targets);
+  ensureNumeric(preds, "huberLoss");
+  ensureNumeric(tgts, "huberLoss");
+  [preds, tgts] = alignShapes(preds, tgts);
+  ensureSameShape(preds, tgts, "huberLoss");
 
-  if (reduction === "none") {
-    return loss;
+  const p = numbersOf(preds, "huberLoss");
+  const t = numbersOf(tgts, "huberLoss");
+  const dtype = lossDtypeOf(preds);
+  const lossData = newLossBuffer(dtype, preds.size);
+  for (let i = 0; i < preds.size; i++) {
+    const absVal = Math.abs((p[i] ?? 0) - (t[i] ?? 0));
+    lossData[i] = absVal <= delta ? 0.5 * absVal * absVal : delta * (absVal - 0.5 * delta);
   }
-  if (reduction === "sum") {
-    return sum(loss);
-  }
-  return mean(loss);
+
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: preds.shape, dtype, device: preds.device }),
+    reduction
+  );
 }
 
 /**
@@ -460,72 +507,80 @@ export function huberLoss(
  *
  * **Formula**: NLL = -sum(log_probs[i][target[i]]) / N
  *
+ * With class weights `w` and `"mean"` reduction the sum is divided by `sum(w[target[i]])`
+ * instead of N, as in PyTorch. Passing a GradTensor as `logProbs` returns a GradTensor
+ * that supports `.backward()`.
+ *
  * @param logProbs - Log-probabilities of shape (N, C) where C = number of classes
- * @param targets - Class indices of shape (N,) with values in [0, C)
- * @param reduction - How to reduce the loss
+ * @param targets - Class indices of shape (N,): integers in [0, C)
+ * @param reductionOrOptions - Reduction (`"mean"` default) or an options object with
+ *   `reduction`, per-class `weight` and `ignoreIndex`
+ * @throws {InvalidParameterError} If a target is not an integer in [0, C)
  *
  * @category Loss Functions
  */
 export function nllLoss(
   logProbs: Tensor,
   targets: Tensor,
-  reduction: "mean" | "sum" | "none" = "mean"
-): Tensor {
+  reductionOrOptions?: LossReduction | NllLossOptions
+): Tensor;
+export function nllLoss(
+  logProbs: GradTensor,
+  targets: AnyTensor,
+  reductionOrOptions?: LossReduction | NllLossOptions
+): GradTensor;
+export function nllLoss(
+  logProbs: AnyTensor,
+  targets: AnyTensor,
+  reductionOrOptions?: LossReduction | NllLossOptions
+): AnyTensor;
+export function nllLoss(
+  logProbs: AnyTensor,
+  targets: AnyTensor,
+  reductionOrOptions: LossReduction | NllLossOptions = "mean"
+): AnyTensor {
+  const options: NllLossOptions =
+    typeof reductionOrOptions === "string" ? { reduction: reductionOrOptions } : reductionOrOptions;
+  const reduction = options.reduction ?? "mean";
   validateReduction(reduction, "nllLoss");
-  ensureNumeric(logProbs, "nllLoss");
-  ensureNumeric(targets, "nllLoss");
-
-  if (logProbs.ndim !== 2) {
-    throw new ShapeError(`nllLoss expects 2D log-probabilities; got ${logProbs.ndim}D`);
-  }
-  if (targets.ndim !== 1) {
-    throw new ShapeError(`nllLoss expects 1D targets; got ${targets.ndim}D`);
-  }
-
-  const N = logProbs.shape[0] ?? 0;
-  const C = logProbs.shape[1] ?? 0;
-
-  if ((targets.shape[0] ?? 0) !== N) {
-    throw new ShapeError(`targets length ${targets.shape[0]} doesn't match batch size ${N}`);
-  }
-
-  const logData = logProbs.data;
-  const tgtData = targets.data;
-  if (Array.isArray(logData) || Array.isArray(tgtData)) {
-    throw new DTypeError("nllLoss does not support string dtype");
-  }
-
-  const logStrides = computeStrides(logProbs.shape);
-  const tgtStrides = computeStrides(targets.shape);
-  const dtype = logProbs.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(N) : new Float32Array(N);
-
-  for (let i = 0; i < N; i++) {
-    const tgtIdx = Math.round(
-      readNumericFlat(tgtData, i, tgtStrides, targets.strides, targets.offset)
+  const ignoreIndex = options.ignoreIndex;
+  if (ignoreIndex !== undefined && !Number.isInteger(ignoreIndex)) {
+    throw new InvalidParameterError(
+      `ignoreIndex must be an integer; got ${String(ignoreIndex)}`,
+      "ignoreIndex",
+      ignoreIndex
     );
-    if (tgtIdx < 0 || tgtIdx >= C) {
-      throw new InvalidParameterError(
-        `nllLoss target index ${tgtIdx} out of range [0, ${C})`,
-        "targets",
-        tgtIdx
-      );
-    }
-    const flatIdx = i * C + tgtIdx;
-    const logVal = readNumericFlat(logData, flatIdx, logStrides, logProbs.strides, logProbs.offset);
-    lossData[i] = -logVal;
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: [N],
-    dtype,
-    device: logProbs.device,
-  });
+  const lp = GradTensor.isGradTensor(logProbs) ? logProbs : GradTensor.fromTensor(logProbs);
+  const tgt = toTensor(targets);
+  numericDtype(lp, "nllLoss");
+  ensureNumeric(tgt, "nllLoss");
 
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  return mean(loss);
+  if (lp.ndim !== 2) {
+    throw new ShapeError(`nllLoss expects 2D log-probabilities; got ${lp.ndim}D`);
+  }
+  if (tgt.ndim !== 1) {
+    throw new ShapeError(`nllLoss expects 1D targets; got ${tgt.ndim}D`);
+  }
+
+  const N = lp.shape[0] ?? 0;
+  const C = lp.shape[1] ?? 0;
+
+  if ((tgt.shape[0] ?? 0) !== N) {
+    throw new ShapeError(`targets length ${tgt.shape[0]} doesn't match batch size ${N}`);
+  }
+  if (C === 0) {
+    throw new ShapeError("nllLoss expects at least one class; got 0 columns");
+  }
+
+  const loss = classIndexLoss(lp, tgt, {
+    reduction,
+    weight: options.weight === undefined ? null : readClassWeights(options.weight, C),
+    ignoreIndex,
+    labelSmoothing: 0,
+  });
+  return GradTensor.isGradTensor(logProbs) || GradTensor.isGradTensor(targets) ? loss : loss.tensor;
 }
 
 /**
@@ -535,76 +590,129 @@ export function nllLoss(
  *
  * **Formula**: KL(P || Q) = sum(P * (log(P) - log(Q)))
  *
- * Input should be log-probabilities, target should be probabilities.
+ * Input should be log-probabilities, target should be probabilities (or
+ * log-probabilities when `logTarget` is true). Terms with a target of exactly 0 are
+ * 0, by the convention 0 * log(0) = 0. A negative or NaN target gives NaN.
+ *
+ * Reductions: `"mean"` averages over all elements, `"batchmean"` divides the sum by the
+ * size of the first dimension (the mathematically correct KL per sample), `"sum"` adds
+ * everything, `"none"` keeps the element-wise terms.
+ *
+ * Passing a GradTensor as `input` returns a GradTensor; gradients flow to `input` only
+ * (the target is treated as a constant).
  *
  * @param input - Log-probabilities (from LogSoftmax)
  * @param target - Target probability distribution
  * @param reduction - How to reduce the loss
+ * @param logTarget - Whether `target` holds log-probabilities (default: false)
  *
  * @category Loss Functions
  */
 export function klDivLoss(
   input: Tensor,
   target: Tensor,
-  reduction: "mean" | "sum" | "batchmean" | "none" = "mean"
-): Tensor {
-  ensureNumeric(input, "klDivLoss");
-  ensureNumeric(target, "klDivLoss");
-  [input, target] = alignShapes(input, target);
-  ensureSameShape(input, target, "klDivLoss");
-
-  // KL(target || input) = target * (log(target) - input)
-  // Since input is already log-probs, and target is probs:
-  // loss = target * (log(target) - input)
-  // We skip terms where target == 0 (0 * log(0) = 0 by convention)
-  const tgtData = target.data;
-  const inpData = input.data;
-  if (Array.isArray(tgtData) || Array.isArray(inpData)) {
-    throw new DTypeError("klDivLoss does not support string dtype");
+  reduction?: LossReduction | "batchmean",
+  logTarget?: boolean
+): Tensor;
+export function klDivLoss(
+  input: GradTensor,
+  target: AnyTensor,
+  reduction?: LossReduction | "batchmean",
+  logTarget?: boolean
+): GradTensor;
+export function klDivLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  reduction?: LossReduction | "batchmean",
+  logTarget?: boolean
+): AnyTensor;
+export function klDivLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  reduction: LossReduction | "batchmean" = "mean",
+  logTarget = false
+): AnyTensor {
+  if (reduction !== "batchmean") {
+    validateReduction(reduction, "klDivLoss");
   }
+  const inputIsGrad = GradTensor.isGradTensor(input);
+  let inp = toTensor(input);
+  let tgt = toTensor(target);
+  ensureNumeric(inp, "klDivLoss");
+  ensureNumeric(tgt, "klDivLoss");
+  [inp, tgt] = alignShapes(inp, tgt);
+  ensureSameShape(inp, tgt, "klDivLoss");
 
-  const dtype = input.dtype === "float64" ? "float64" : "float32";
-  const lossData =
-    dtype === "float64" ? new Float64Array(input.size) : new Float32Array(input.size);
-  const inpStrides = computeStrides(input.shape);
-  const tgtStrides = computeStrides(target.shape);
-
-  for (let i = 0; i < input.size; i++) {
-    const t = readNumericFlat(tgtData, i, tgtStrides, target.strides, target.offset);
-    const q = readNumericFlat(inpData, i, inpStrides, input.strides, input.offset);
-    if (t > 0) {
-      lossData[i] = t * (Math.log(t) - q);
+  // loss = target * (log(target) - input), or exp(t) * (t - input) with log targets.
+  // Terms whose target is exactly 0 are 0 (0 * log(0) = 0 by convention).
+  const q = numbersOf(inp, "klDivLoss");
+  const t = numbersOf(tgt, "klDivLoss");
+  const size = inp.size;
+  const dtype = lossDtypeOf(inp);
+  const lossData = newLossBuffer(dtype, size);
+  const prob = logTarget ? new Float64Array(size) : null;
+  for (let i = 0; i < size; i++) {
+    const ti = t[i] ?? 0;
+    const qi = q[i] ?? 0;
+    if (logTarget) {
+      const p = Math.exp(ti);
+      if (prob) prob[i] = p;
+      lossData[i] = p === 0 ? 0 : p * (ti - qi);
+    } else {
+      lossData[i] = ti === 0 ? 0 : ti * (Math.log(ti) - qi);
     }
   }
 
   const loss = Tensor.fromTypedArray({
     data: lossData,
-    shape: input.shape,
+    shape: inp.shape,
     dtype,
-    device: input.device,
+    device: inp.device,
   });
 
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  if (reduction === "batchmean") {
-    const batchSize = input.shape[0] ?? 1;
-    const totalLoss = sum(loss);
-    const totalData = totalLoss.data;
-    if (Array.isArray(totalData)) {
-      throw new DTypeError("klDivLoss does not support string dtype");
-    }
-    const totalVal = getElementAsNumber(totalData, 0);
+  // batchmean divides the total by the batch size; the others reuse the shared reducers.
+  const batchSize = inp.shape[0] ?? 1;
+  const reduceTensor = (l: Tensor): Tensor => {
+    if (reduction !== "batchmean") return reduceLoss(l, reduction);
+    const total = scalarValue(sum(l), "klDivLoss");
     return Tensor.fromTypedArray({
-      data:
-        dtype === "float64"
-          ? new Float64Array([totalVal / batchSize])
-          : new Float32Array([totalVal / batchSize]),
+      data: newLossBuffer(dtype, 1).fill(total / batchSize),
       shape: [],
       dtype,
-      device: input.device,
+      device: inp.device,
     });
+  };
+
+  if (!inputIsGrad) {
+    return reduceTensor(loss);
   }
-  return mean(loss);
+
+  // Autograd: d loss / d input = -target (or -exp(target) for log targets).
+  const grads = new Float64Array(size);
+  for (let i = 0; i < size; i++) {
+    const p = prob ? (prob[i] ?? 0) : (t[i] ?? 0);
+    grads[i] = p === 0 ? 0 : -p;
+  }
+  const shape = [...inp.shape];
+  const elementwise = customOp(loss, [
+    [
+      input as GradTensor,
+      (g: Tensor): Tensor => {
+        const go = numbersOf(g, "klDivLoss");
+        const out = newLossBuffer(dtype, size);
+        for (let i = 0; i < size; i++) {
+          out[i] = (go[i] ?? 0) * (grads[i] ?? 0);
+        }
+        return Tensor.fromTypedArray({ data: out, shape, dtype, device: inp.device });
+      },
+    ],
+  ]);
+  if (reduction === "batchmean") {
+    return elementwise
+      .sum()
+      .div(GradTensor.scalar(batchSize, { dtype: numericDtype(elementwise, "klDivLoss") }));
+  }
+  return reduceGradLoss(elementwise, reduction);
 }
 
 /**
@@ -616,9 +724,12 @@ export function klDivLoss(
  *      = |x| - 0.5 * beta     otherwise
  * ```
  *
+ * With `beta = 0` this is the L1 loss. Passing a GradTensor as `predictions` returns a
+ * GradTensor that supports `.backward()`.
+ *
  * @param predictions - Predicted values
  * @param targets - Target values
- * @param beta - Threshold for switching between L1 and L2 (default: 1.0)
+ * @param beta - Threshold for switching between L1 and L2, non-negative (default: 1.0)
  * @param reduction - How to reduce the loss
  *
  * @category Loss Functions
@@ -626,49 +737,63 @@ export function klDivLoss(
 export function smoothL1Loss(
   predictions: Tensor,
   targets: Tensor,
+  beta?: number,
+  reduction?: LossReduction
+): Tensor;
+export function smoothL1Loss(
+  predictions: GradTensor,
+  targets: AnyTensor,
+  beta?: number,
+  reduction?: LossReduction
+): GradTensor;
+export function smoothL1Loss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
+  beta?: number,
+  reduction?: LossReduction
+): AnyTensor;
+export function smoothL1Loss(
+  predictions: AnyTensor,
+  targets: AnyTensor,
   beta = 1.0,
-  reduction: "mean" | "sum" | "none" = "mean"
-): Tensor {
+  reduction: LossReduction = "mean"
+): AnyTensor {
   validateReduction(reduction, "smoothL1Loss");
-  ensureNumeric(predictions, "smoothL1Loss");
-  ensureNumeric(targets, "smoothL1Loss");
-  [predictions, targets] = alignShapes(predictions, targets);
-  ensureSameShape(predictions, targets, "smoothL1Loss");
-
-  if (!Number.isFinite(beta) || beta <= 0) {
-    throw new InvalidParameterError(`beta must be positive; got ${beta}`, "beta", beta);
+  if (!Number.isFinite(beta) || beta < 0) {
+    throw new InvalidParameterError(`beta must be non-negative; got ${beta}`, "beta", beta);
   }
 
-  const diff = sub(predictions, targets);
-  const absDiff = abs(diff);
-  const absData = absDiff.data;
-  if (Array.isArray(absData)) {
-    throw new DTypeError("smoothL1Loss does not support string dtype");
+  if (GradTensor.isGradTensor(predictions)) {
+    const [pred, tgt] = gradOperands(predictions, targets, "smoothL1Loss");
+    const absDiff = pred.sub(tgt).abs();
+    if (beta === 0) return reduceGradLoss(absDiff, reduction);
+    // With c = min(|x|, beta): loss = 0.5 * c^2 / beta + (|x| - c).
+    const c = absDiff.clip(0, beta);
+    const dtype = numericDtype(pred, "smoothL1Loss");
+    const halfOverBeta = GradTensor.scalar(0.5 / beta, { dtype });
+    return reduceGradLoss(halfOverBeta.mul(c.mul(c)).add(absDiff.sub(c)), reduction);
   }
 
-  const dtype = predictions.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(diff.size) : new Float32Array(diff.size);
-  const logicalStrides = computeStrides(absDiff.shape);
+  let preds = predictions;
+  let tgts = toTensor(targets);
+  ensureNumeric(preds, "smoothL1Loss");
+  ensureNumeric(tgts, "smoothL1Loss");
+  [preds, tgts] = alignShapes(preds, tgts);
+  ensureSameShape(preds, tgts, "smoothL1Loss");
 
-  for (let i = 0; i < diff.size; i++) {
-    const absVal = readNumericFlat(absData, i, logicalStrides, absDiff.strides, absDiff.offset);
-    if (absVal < beta) {
-      lossData[i] = (0.5 * absVal * absVal) / beta;
-    } else {
-      lossData[i] = absVal - 0.5 * beta;
-    }
+  const p = numbersOf(preds, "smoothL1Loss");
+  const t = numbersOf(tgts, "smoothL1Loss");
+  const dtype = lossDtypeOf(preds);
+  const lossData = newLossBuffer(dtype, preds.size);
+  for (let i = 0; i < preds.size; i++) {
+    const absVal = Math.abs((p[i] ?? 0) - (t[i] ?? 0));
+    lossData[i] = absVal < beta ? (0.5 * absVal * absVal) / beta : absVal - 0.5 * beta;
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: predictions.shape,
-    dtype,
-    device: predictions.device,
-  });
-
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  return mean(loss);
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: preds.shape, dtype, device: preds.device }),
+    reduction
+  );
 }
 
 /**
@@ -680,11 +805,15 @@ export function smoothL1Loss(
  *      = max(0, cos(x1, x2) - margin) if y == -1
  * ```
  *
- * @param x1 - First input tensor
- * @param x2 - Second input tensor
- * @param y - Labels: 1 (similar) or -1 (dissimilar)
+ * The cosine is `dot(x1, x2) / sqrt((|x1|^2 + 1e-12) * (|x2|^2 + 1e-12))`, as in PyTorch.
+ *
+ * @param x1 - First input, shape (N, D) or (D,)
+ * @param x2 - Second input, same shape as `x1`
+ * @param y - Labels: 1 (similar) or -1 (dissimilar), one per row of `x1`
  * @param margin - Margin for dissimilar pairs (default: 0)
  * @param reduction - How to reduce the loss
+ * @throws {ShapeError} If `x1` and `x2` differ in shape, have more than 2 dimensions, or `y` has the wrong length
+ * @throws {InvalidParameterError} If a label is neither 1 nor -1
  *
  * @category Loss Functions
  */
@@ -693,137 +822,295 @@ export function cosineEmbeddingLoss(
   x2: Tensor,
   y: Tensor,
   margin = 0,
-  reduction: "mean" | "sum" | "none" = "mean"
+  reduction: LossReduction = "mean"
 ): Tensor {
   validateReduction(reduction, "cosineEmbeddingLoss");
   ensureNumeric(x1, "cosineEmbeddingLoss");
   ensureNumeric(x2, "cosineEmbeddingLoss");
   ensureNumeric(y, "cosineEmbeddingLoss");
 
-  if (x1.ndim < 1 || x2.ndim < 1) {
-    throw new ShapeError("cosineEmbeddingLoss expects at least 1D inputs");
+  if (x1.ndim < 1 || x1.ndim > 2) {
+    throw new ShapeError(`cosineEmbeddingLoss expects 1D or 2D inputs; got ${x1.ndim}D`);
   }
-
-  const x1Data = x1.data;
-  const x2Data = x2.data;
-  const yData = y.data;
-  if (Array.isArray(x1Data) || Array.isArray(x2Data) || Array.isArray(yData)) {
-    throw new DTypeError("cosineEmbeddingLoss does not support string dtype");
-  }
+  ensureSameShape(x1, x2, "cosineEmbeddingLoss (x1 vs x2)");
 
   // For 2D inputs: (N, D), compute cosine similarity per row
   // For 1D inputs: (D,), compute single cosine similarity
-  const batchSize = x1.ndim >= 2 ? (x1.shape[0] ?? 1) : 1;
-  const dim = x1.ndim >= 2 ? (x1.shape[1] ?? 1) : (x1.shape[0] ?? 1);
+  const batchSize = x1.ndim === 2 ? (x1.shape[0] ?? 1) : 1;
+  const dim = x1.ndim === 2 ? (x1.shape[1] ?? 1) : (x1.shape[0] ?? 1);
+  if (y.size !== batchSize) {
+    throw new ShapeError(
+      `cosineEmbeddingLoss expects ${batchSize} label(s) (one per row of x1); got ${y.size}`
+    );
+  }
 
-  const dtype = x1.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(batchSize) : new Float32Array(batchSize);
-  const x1Strides = computeStrides(x1.shape);
-  const x2Strides = computeStrides(x2.shape);
-  const yStrides = computeStrides(y.shape);
+  const a = numbersOf(x1, "cosineEmbeddingLoss");
+  const b = numbersOf(x2, "cosineEmbeddingLoss");
+  const labels = numbersOf(y, "cosineEmbeddingLoss");
+  const EPS = 1e-12;
 
-  for (let b = 0; b < batchSize; b++) {
-    // Compute cosine similarity for this batch element
-    let dot = 0,
-      norm1 = 0,
-      norm2 = 0;
+  const dtype = lossDtypeOf(x1);
+  const lossData = newLossBuffer(dtype, batchSize);
+
+  for (let r = 0; r < batchSize; r++) {
+    const label = labels[r] ?? Number.NaN;
+    if (label !== 1 && label !== -1) {
+      throw new InvalidParameterError(
+        `cosineEmbeddingLoss labels must be 1 or -1; got ${label} at index ${r}`,
+        "y",
+        label
+      );
+    }
+    let dot = 0;
+    let norm1 = 0;
+    let norm2 = 0;
     for (let d = 0; d < dim; d++) {
-      const flatIdx = b * dim + d;
-      const v1 = readNumericFlat(x1Data, flatIdx, x1Strides, x1.strides, x1.offset);
-      const v2 = readNumericFlat(x2Data, flatIdx, x2Strides, x2.strides, x2.offset);
+      const v1 = a[r * dim + d] ?? 0;
+      const v2 = b[r * dim + d] ?? 0;
       dot += v1 * v2;
       norm1 += v1 * v1;
       norm2 += v2 * v2;
     }
-    const cosSim = dot / (Math.sqrt(norm1) * Math.sqrt(norm2) + 1e-8);
-
-    const label = readNumericFlat(yData, b, yStrides, y.strides, y.offset);
-    if (label === 1) {
-      lossData[b] = 1 - cosSim;
-    } else {
-      lossData[b] = Math.max(0, cosSim - margin);
-    }
+    const cosSim = dot / Math.sqrt((norm1 + EPS) * (norm2 + EPS));
+    lossData[r] = label === 1 ? 1 - cosSim : Math.max(0, cosSim - margin);
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: [batchSize],
-    dtype,
-    device: x1.device,
-  });
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: [batchSize], dtype, device: x1.device }),
+    reduction
+  );
+}
 
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  return mean(loss);
+/** Options for {@link tripletMarginLoss}. */
+export interface TripletMarginLossOptions {
+  /** Margin between the positive and the negative distance (default: 1). */
+  readonly margin?: number;
+  /** Norm degree of the pairwise distance: a positive number or `Infinity` (default: 2). */
+  readonly p?: number;
+  /** Small constant added to the difference before the norm, as in PyTorch (default: 1e-6). */
+  readonly eps?: number;
+  /**
+   * Use the distance swap of Balntas et al. (2016): the negative distance becomes
+   * `min(d(anchor, negative), d(positive, negative))` (default: false).
+   */
+  readonly swap?: boolean;
+  /** `"mean"` (default), `"sum"`, or `"none"` to return one loss per row. */
+  readonly reduction?: LossReduction;
+}
+
+/** Row-wise `p`-norm of `a - b + eps` over the last axis (PyTorch's `pairwise_distance`). */
+function tripletDistances(
+  a: ArrayLike<number>,
+  b: ArrayLike<number>,
+  rows: number,
+  dim: number,
+  p: number,
+  eps: number
+): Float64Array {
+  const out = new Float64Array(rows);
+  for (let r = 0; r < rows; r++) {
+    let acc = 0;
+    for (let d = 0; d < dim; d++) {
+      const diff = Math.abs((a[r * dim + d] ?? 0) - (b[r * dim + d] ?? 0) + eps);
+      if (p === 2) acc += diff * diff;
+      else if (p === 1) acc += diff;
+      else if (p === Number.POSITIVE_INFINITY) acc = Math.max(acc, diff);
+      else acc += diff ** p;
+    }
+    out[r] =
+      p === 2 ? Math.sqrt(acc) : p === 1 || p === Number.POSITIVE_INFINITY ? acc : acc ** (1 / p);
+  }
+  return out;
+}
+
+/**
+ * Apply `root` to the non-negative `s` so that entries equal to zero get the gradient 0
+ * instead of an infinite slope times a zero upstream gradient (NaN). PyTorch's norm also
+ * uses the subgradient 0 at the origin. Only needed when `eps` is 0.
+ */
+function rootWithZeroGrad(s: GradTensor, root: (x: GradTensor) => GradTensor): GradTensor {
+  const values = numbersOf(s.tensor, "tripletMarginLoss");
+  const dtype = s.dtype === "float64" ? "float64" : "float32";
+  const data =
+    dtype === "float64" ? new Float64Array(values.length) : new Float32Array(values.length);
+  for (let i = 0; i < values.length; i++) data[i] = values[i] === 0 ? 1 : 0;
+  const mask = GradTensor.fromTensor(
+    Tensor.fromTypedArray({ data, shape: [...s.shape], dtype, device: s.tensor.device }),
+    { requiresGrad: false }
+  );
+  const keep = mask.neg().add(GradTensor.scalar(1, { dtype }));
+  return root(s.add(mask)).mul(keep);
+}
+
+/** Differentiable row-wise `p`-norm of `a - b + eps` over the last axis. */
+function tripletGradDistance(
+  a: GradTensor,
+  b: GradTensor,
+  p: number,
+  eps: GradTensor,
+  zeroSafe: boolean
+): GradTensor {
+  const diff = a.sub(b).add(eps);
+  if (p === 2) {
+    const squares = diff.mul(diff).sum(-1);
+    return zeroSafe ? rootWithZeroGrad(squares, (x) => x.sqrt()) : squares.sqrt();
+  }
+  if (p === 1) return diff.abs().sum(-1);
+  if (p === Number.POSITIVE_INFINITY) return diff.abs().max(-1);
+  const powered = diff.abs().pow(p).sum(-1);
+  return zeroSafe ? rootWithZeroGrad(powered, (x) => x.pow(1 / p)) : powered.pow(1 / p);
 }
 
 /**
  * Triplet Margin Loss for metric learning.
  *
- * **Formula**: loss = max(0, d(anchor, positive) - d(anchor, negative) + margin)
+ * **Formula**: `loss = max(0, d(anchor, positive) - d(anchor, negative) + margin)`
  *
- * @param anchor - Anchor embeddings
- * @param positive - Positive (similar) embeddings
- * @param negative - Negative (dissimilar) embeddings
- * @param margin - Margin between positive and negative distances (default: 1.0)
- * @param reduction - How to reduce the loss
+ * `d(x, y)` is the `p`-norm (Euclidean by default) of `x - y + eps` taken over the last axis,
+ * as in PyTorch's `triplet_margin_loss`; the small `eps` keeps the distance differentiable
+ * when two rows coincide. With `swap`, the negative distance is replaced by the smaller of
+ * `d(anchor, negative)` and `d(positive, negative)`.
+ *
+ * If any of the three inputs is a `GradTensor` the loss is a `GradTensor` that supports
+ * `.backward()`. Inputs are 1-D `(D,)` (one triplet, scalar loss) or 2-D `(N, D)` (one loss per
+ * row). For compatibility the margin and the reduction can also be passed positionally.
+ *
+ * @param anchor - Anchor embeddings, shape (N, D) or (D,)
+ * @param positive - Positive (similar) embeddings, same shape as `anchor`
+ * @param negative - Negative (dissimilar) embeddings, same shape as `anchor`
+ * @param marginOrOptions - Margin (default: 1.0), or an options object
+ *   ({@link TripletMarginLossOptions})
+ * @param reduction - How to reduce the loss (positional form only; default: `"mean"`)
+ * @throws {ShapeError} If the three inputs differ in shape or have more than 2 dimensions
+ * @throws {InvalidParameterError} If `margin`, `p` or `eps` is invalid
+ *
+ * @example
+ * ```ts
+ * import { tripletMarginLoss } from 'deepbox/nn';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const anchor = tensor([[0, 0], [1, 1]]);
+ * const positive = tensor([[0, 1], [1, 2]]);
+ * const negative = tensor([[3, 3], [4, 4]]);
+ * const loss = tripletMarginLoss(anchor, positive, negative, { margin: 1, swap: true });
+ * ```
  *
  * @category Loss Functions
  */
 export function tripletMarginLoss(
+  anchor: GradTensor,
+  positive: AnyTensor,
+  negative: AnyTensor,
+  marginOrOptions?: number | TripletMarginLossOptions,
+  reduction?: LossReduction
+): GradTensor;
+export function tripletMarginLoss(
   anchor: Tensor,
   positive: Tensor,
   negative: Tensor,
-  margin = 1.0,
-  reduction: "mean" | "sum" | "none" = "mean"
-): Tensor {
+  marginOrOptions?: number | TripletMarginLossOptions,
+  reduction?: LossReduction
+): Tensor;
+export function tripletMarginLoss(
+  anchor: AnyTensor,
+  positive: AnyTensor,
+  negative: AnyTensor,
+  marginOrOptions?: number | TripletMarginLossOptions,
+  reduction?: LossReduction
+): AnyTensor;
+export function tripletMarginLoss(
+  anchor: AnyTensor,
+  positive: AnyTensor,
+  negative: AnyTensor,
+  marginOrOptions: number | TripletMarginLossOptions = 1.0,
+  reductionArg: LossReduction = "mean"
+): AnyTensor {
+  const options: TripletMarginLossOptions =
+    typeof marginOrOptions === "object" && marginOrOptions !== null
+      ? marginOrOptions
+      : { margin: marginOrOptions, reduction: reductionArg };
+  const margin = options.margin ?? 1.0;
+  const p = options.p ?? 2;
+  const eps = options.eps ?? 1e-6;
+  const swap = options.swap ?? false;
+  const reduction = options.reduction ?? "mean";
+
   validateReduction(reduction, "tripletMarginLoss");
-  ensureNumeric(anchor, "tripletMarginLoss");
-  ensureNumeric(positive, "tripletMarginLoss");
-  ensureNumeric(negative, "tripletMarginLoss");
-  ensureSameShape(anchor, positive, "tripletMarginLoss (anchor vs positive)");
-  ensureSameShape(anchor, negative, "tripletMarginLoss (anchor vs negative)");
-
-  const ancData = anchor.data;
-  const posData = positive.data;
-  const negData = negative.data;
-  if (Array.isArray(ancData) || Array.isArray(posData) || Array.isArray(negData)) {
-    throw new DTypeError("tripletMarginLoss does not support string dtype");
+  if (typeof margin !== "number" || !Number.isFinite(margin)) {
+    throw new InvalidParameterError("margin must be a finite number", "margin", margin);
+  }
+  if (typeof p !== "number" || Number.isNaN(p) || p <= 0) {
+    throw new InvalidParameterError("p must be a positive number", "p", p);
+  }
+  if (typeof eps !== "number" || !Number.isFinite(eps) || eps < 0) {
+    throw new InvalidParameterError("eps must be a non-negative finite number", "eps", eps);
   }
 
-  const batchSize = anchor.ndim >= 2 ? (anchor.shape[0] ?? 1) : 1;
-  const dim = anchor.ndim >= 2 ? (anchor.shape[1] ?? 1) : (anchor.shape[0] ?? 1);
+  const a = toTensor(anchor);
+  const pos = toTensor(positive);
+  const neg = toTensor(negative);
+  ensureNumeric(a, "tripletMarginLoss");
+  ensureNumeric(pos, "tripletMarginLoss");
+  ensureNumeric(neg, "tripletMarginLoss");
+  ensureSameShape(a, pos, "tripletMarginLoss (anchor vs positive)");
+  ensureSameShape(a, neg, "tripletMarginLoss (anchor vs negative)");
+  if (a.ndim < 1 || a.ndim > 2) {
+    throw new ShapeError(`tripletMarginLoss expects 1D or 2D inputs; got ${a.ndim}D`);
+  }
 
-  const dtype = anchor.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(batchSize) : new Float32Array(batchSize);
-  const ancStrides = computeStrides(anchor.shape);
-  const posStrides = computeStrides(positive.shape);
-  const negStrides = computeStrides(negative.shape);
+  const dtype = lossDtypeOf(a);
+  const batchSize = a.ndim === 2 ? (a.shape[0] ?? 1) : 1;
+  const dim = a.ndim === 2 ? (a.shape[1] ?? 1) : (a.shape[0] ?? 1);
 
-  for (let b = 0; b < batchSize; b++) {
-    let distPos = 0,
-      distNeg = 0;
-    for (let d = 0; d < dim; d++) {
-      const flatIdx = b * dim + d;
-      const a = readNumericFlat(ancData, flatIdx, ancStrides, anchor.strides, anchor.offset);
-      const p = readNumericFlat(posData, flatIdx, posStrides, positive.strides, positive.offset);
-      const n = readNumericFlat(negData, flatIdx, negStrides, negative.strides, negative.offset);
-      distPos += (a - p) * (a - p);
-      distNeg += (a - n) * (a - n);
+  if (
+    GradTensor.isGradTensor(anchor) ||
+    GradTensor.isGradTensor(positive) ||
+    GradTensor.isGradTensor(negative)
+  ) {
+    const toGrad = (t: AnyTensor): GradTensor =>
+      asDtype(
+        GradTensor.isGradTensor(t) ? t : GradTensor.fromTensor(t, { requiresGrad: false }),
+        dtype
+      );
+    const ga = toGrad(anchor);
+    const gp = toGrad(positive);
+    const gn = toGrad(negative);
+    const epsT = GradTensor.scalar(eps, { dtype });
+    const zeroSafe = eps === 0;
+    const distPos = tripletGradDistance(ga, gp, p, epsT, zeroSafe);
+    let distNeg = tripletGradDistance(ga, gn, p, epsT, zeroSafe);
+    if (swap) {
+      // min(a, b) = a - relu(a - b)
+      const distSwap = tripletGradDistance(gp, gn, p, epsT, zeroSafe);
+      distNeg = distNeg.sub(distNeg.sub(distSwap).relu());
     }
-    lossData[b] = Math.max(0, Math.sqrt(distPos) - Math.sqrt(distNeg) + margin);
+    const loss = distPos.sub(distNeg).add(GradTensor.scalar(margin, { dtype })).relu();
+    return reduceGradLoss(loss, reduction);
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: [batchSize],
-    dtype,
-    device: anchor.device,
-  });
+  const anc = numbersOf(a, "tripletMarginLoss");
+  const posData = numbersOf(pos, "tripletMarginLoss");
+  const negData = numbersOf(neg, "tripletMarginLoss");
+  const distPos = tripletDistances(anc, posData, batchSize, dim, p, eps);
+  const distNeg = tripletDistances(anc, negData, batchSize, dim, p, eps);
+  if (swap) {
+    const distSwap = tripletDistances(posData, negData, batchSize, dim, p, eps);
+    for (let r = 0; r < batchSize; r++) {
+      distNeg[r] = Math.min(distNeg[r] as number, distSwap[r] as number);
+    }
+  }
 
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  return mean(loss);
+  const lossData = newLossBuffer(dtype, batchSize);
+  for (let r = 0; r < batchSize; r++) {
+    lossData[r] = Math.max(0, (distPos[r] as number) - (distNeg[r] as number) + margin);
+  }
+
+  // One triplet (1-D input) gives a scalar, like PyTorch.
+  const shape = a.ndim === 2 ? [batchSize] : [];
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape, dtype, device: a.device }),
+    reduction
+  );
 }
 
 /**
@@ -838,14 +1125,20 @@ export function tripletMarginLoss(
  * - Probabilistic regression where the model predicts both mean and variance
  * - Heteroscedastic regression (varying noise)
  *
+ * `variance` may have the same shape as `input`, the shape of `input` with the last
+ * dimension removed, or the shape of `input` with the last dimension set to 1 (one
+ * variance shared by all outputs of a sample). Variances below `eps` are clamped to `eps`.
+ *
  * @param input - Predicted means
  * @param target - Target values
- * @param variance - Predicted variances (must be positive)
+ * @param variance - Predicted variances (must be non-negative)
  * @param options - Configuration options
  * @param options.full - Include constant log(2π) term (default: false)
  * @param options.eps - Small value for clamping variance (default: 1e-6)
  * @param options.reduction - How to reduce: 'mean', 'sum', or 'none'
  * @returns Loss value
+ * @throws {InvalidParameterError} If `variance` contains a negative value
+ * @throws {ShapeError} If `variance` has an incompatible shape
  *
  * @category Loss Functions
  */
@@ -856,7 +1149,7 @@ export function gaussianNLLLoss(
   options: {
     full?: boolean;
     eps?: number;
-    reduction?: "mean" | "sum" | "none";
+    reduction?: LossReduction;
   } = {}
 ): Tensor {
   const { full = false, eps = 1e-6, reduction = "mean" } = options;
@@ -865,35 +1158,48 @@ export function gaussianNLLLoss(
   ensureNumeric(target, "gaussianNLLLoss");
   ensureNumeric(variance, "gaussianNLLLoss");
   ensureSameShape(input, target, "gaussianNLLLoss (input vs target)");
-  ensureSameShape(input, variance, "gaussianNLLLoss (input vs variance)");
 
   if (!Number.isFinite(eps) || eps < 0) {
     throw new InvalidParameterError(`eps must be non-negative; got ${eps}`, "eps", eps);
   }
 
-  const inpData = input.data;
-  const tgtData = target.data;
-  const varData = variance.data;
-  if (Array.isArray(inpData) || Array.isArray(tgtData) || Array.isArray(varData)) {
-    throw new DTypeError("gaussianNLLLoss does not support string dtype");
+  // How variance entries map onto input elements: one per element, one per row
+  // (variance without the last dimension), or one per row with a trailing 1.
+  const lastDim = input.shape[input.ndim - 1] ?? 1;
+  const leading = input.shape.slice(0, -1);
+  let varStep: "element" | "row";
+  if (shapesEqual(variance.shape, input.shape)) {
+    varStep = "element";
+  } else if (
+    input.ndim >= 1 &&
+    (shapesEqual(variance.shape, leading) || shapesEqual(variance.shape, [...leading, 1]))
+  ) {
+    varStep = "row";
+  } else {
+    throw new ShapeError(
+      `Shape mismatch in gaussianNLLLoss (input vs variance): [${input.shape}] vs [${variance.shape}]`
+    );
   }
 
-  const dtype = input.dtype === "float64" ? "float64" : "float32";
-  const lossData =
-    dtype === "float64" ? new Float64Array(input.size) : new Float32Array(input.size);
-  const inpStrides = computeStrides(input.shape);
-  const tgtStrides = computeStrides(target.shape);
-  const varStrides = computeStrides(variance.shape);
+  const mu = numbersOf(input, "gaussianNLLLoss");
+  const tg = numbersOf(target, "gaussianNLLLoss");
+  const vr = numbersOf(variance, "gaussianNLLLoss");
+  for (let i = 0; i < vr.length; i++) {
+    if ((vr[i] ?? 0) < 0) {
+      throw new InvalidParameterError("variance must be non-negative", "variance", vr[i]);
+    }
+  }
+
+  const dtype = lossDtypeOf(input);
+  const lossData = newLossBuffer(dtype, input.size);
   const LOG2PI = Math.log(2 * Math.PI);
 
   for (let i = 0; i < input.size; i++) {
-    const mu = readNumericFlat(inpData, i, inpStrides, input.strides, input.offset);
-    const t = readNumericFlat(tgtData, i, tgtStrides, target.strides, target.offset);
-    let v = readNumericFlat(varData, i, varStrides, variance.strides, variance.offset);
+    let v = vr[varStep === "element" ? i : Math.floor(i / lastDim)] ?? 0;
     // Clamp variance to eps
     if (v < eps) v = eps;
 
-    const diff = mu - t;
+    const diff = (mu[i] ?? 0) - (tg[i] ?? 0);
     let lossVal = 0.5 * (Math.log(v) + (diff * diff) / v);
     if (full) {
       lossVal += 0.5 * LOG2PI;
@@ -901,16 +1207,10 @@ export function gaussianNLLLoss(
     lossData[i] = lossVal;
   }
 
-  const lossT = Tensor.fromTypedArray({
-    data: lossData,
-    shape: input.shape,
-    dtype,
-    device: input.device,
-  });
-
-  if (reduction === "none") return lossT;
-  if (reduction === "sum") return sum(lossT);
-  return mean(lossT);
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: input.shape, dtype, device: input.device }),
+    reduction
+  );
 }
 
 /**
@@ -947,7 +1247,7 @@ export function poissonNLLLoss(
     logInput?: boolean;
     full?: boolean;
     eps?: number;
-    reduction?: "mean" | "sum" | "none";
+    reduction?: LossReduction;
   } = {}
 ): Tensor {
   const { logInput = true, full = false, eps = 1e-8, reduction = "mean" } = options;
@@ -956,51 +1256,32 @@ export function poissonNLLLoss(
   ensureNumeric(target, "poissonNLLLoss");
   ensureSameShape(input, target, "poissonNLLLoss");
 
-  const inpData = input.data;
-  const tgtData = target.data;
-  if (Array.isArray(inpData) || Array.isArray(tgtData)) {
-    throw new DTypeError("poissonNLLLoss does not support string dtype");
-  }
+  const inp = numbersOf(input, "poissonNLLLoss");
+  const tg = numbersOf(target, "poissonNLLLoss");
 
-  const dtype = input.dtype === "float64" ? "float64" : "float32";
-  const lossData =
-    dtype === "float64" ? new Float64Array(input.size) : new Float32Array(input.size);
-  const inpStrides = computeStrides(input.shape);
-  const tgtStrides = computeStrides(target.shape);
+  const dtype = lossDtypeOf(input);
+  const lossData = newLossBuffer(dtype, input.size);
 
   for (let i = 0; i < input.size; i++) {
-    const inp = readNumericFlat(inpData, i, inpStrides, input.strides, input.offset);
-    const tgt = readNumericFlat(tgtData, i, tgtStrides, target.strides, target.offset);
+    const x = inp[i] ?? 0;
+    const tgt = tg[i] ?? 0;
 
-    let lossVal: number;
-    if (logInput) {
-      // loss = exp(input) - target * input
-      lossVal = Math.exp(inp) - tgt * inp;
-    } else {
-      // loss = input - target * log(input + eps)
-      lossVal = inp - tgt * Math.log(inp + eps);
-    }
+    let lossVal = logInput
+      ? Math.exp(x) - tgt * x // exp(input) - target * input
+      : x - tgt * Math.log(x + eps); // input - target * log(input + eps)
 
-    if (full) {
-      // Add Stirling approximation: target * log(target) - target + 0.5 * log(2π * target)
-      if (tgt > 1) {
-        lossVal += tgt * Math.log(tgt) - tgt + 0.5 * Math.log(2 * Math.PI * tgt);
-      }
+    if (full && tgt > 1) {
+      // Stirling approximation: target * log(target) - target + 0.5 * log(2π * target)
+      lossVal += tgt * Math.log(tgt) - tgt + 0.5 * Math.log(2 * Math.PI * tgt);
     }
 
     lossData[i] = lossVal;
   }
 
-  const lossT = Tensor.fromTypedArray({
-    data: lossData,
-    shape: input.shape,
-    dtype,
-    device: input.device,
-  });
-
-  if (reduction === "none") return lossT;
-  if (reduction === "sum") return sum(lossT);
-  return mean(lossT);
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: input.shape, dtype, device: input.device }),
+    reduction
+  );
 }
 
 /**
@@ -1014,6 +1295,22 @@ function logSumExp(a: number, b: number): number {
 }
 
 /**
+ * Read a vector of non-negative integer lengths, rejecting fractional values.
+ */
+function readLengths(t: Tensor, name: string, context: string): number[] {
+  const values = numbersOf(t, context);
+  const out: number[] = [];
+  for (let i = 0; i < t.size; i++) {
+    const v = values[i] ?? Number.NaN;
+    if (!Number.isInteger(v)) {
+      throw new InvalidParameterError(`${name}[${i}] = ${v} must be an integer`, name, v);
+    }
+    out.push(v);
+  }
+  return out;
+}
+
+/**
  * Connectionist Temporal Classification (CTC) Loss.
  *
  * CTC loss for sequence-to-sequence models where the alignment between
@@ -1022,15 +1319,23 @@ function logSumExp(a: number, b: number): number {
  * **Algorithm**: Forward (alpha) computation in log-space over an extended
  * label sequence with interleaved blanks.
  *
+ * With the default `"mean"` reduction each sample's loss is divided by its target
+ * length (at least 1) before averaging over the batch, matching PyTorch's `CTCLoss`.
+ * A sample whose input is too short to emit its target has an infinite loss unless
+ * `zeroInfinity` is set. Target length 0 is allowed (the loss is then the
+ * negative log-probability of emitting only blanks).
+ *
  * @param logProbs - Log-probabilities of shape (T, N, C) where T = input
  *   length (time steps), N = batch size, C = number of classes (including blank)
- * @param targets - Concatenated target sequences (1D tensor of length = sum of
- *   all target lengths). Values must be in [0, C) and must not equal `blank`.
+ * @param targets - Either the concatenated target sequences (1D, length at least the sum of
+ *   all target lengths) or a padded matrix of shape (N, S). Values must be in [0, C) and
+ *   must not equal `blank`.
  * @param inputLengths - Lengths of each input sequence, shape (N,)
  * @param targetLengths - Lengths of each target sequence, shape (N,)
  * @param options - Configuration options
  * @param options.blank - Index of the blank label (default: 0)
  * @param options.reduction - How to reduce the loss: 'mean', 'sum', or 'none'
+ * @param options.zeroInfinity - Replace infinite losses with zero (default: false)
  * @returns Loss value
  *
  * @category Loss Functions
@@ -1040,12 +1345,9 @@ export function ctcLoss(
   targets: Tensor,
   inputLengths: Tensor,
   targetLengths: Tensor,
-  options: {
-    blank?: number;
-    reduction?: "mean" | "sum" | "none";
-  } = {}
+  options: CtcLossOptions = {}
 ): Tensor {
-  const { blank = 0, reduction = "mean" } = options;
+  const { blank = 0, reduction = "mean", zeroInfinity = false } = options;
   validateReduction(reduction, "ctcLoss");
   ensureNumeric(logProbs, "ctcLoss");
   ensureNumeric(targets, "ctcLoss");
@@ -1055,8 +1357,8 @@ export function ctcLoss(
   if (logProbs.ndim !== 3) {
     throw new ShapeError(`ctcLoss expects 3D logProbs (T, N, C); got ${logProbs.ndim}D`);
   }
-  if (targets.ndim !== 1) {
-    throw new ShapeError(`ctcLoss expects 1D targets; got ${targets.ndim}D`);
+  if (targets.ndim !== 1 && targets.ndim !== 2) {
+    throw new ShapeError(`ctcLoss expects 1D or 2D targets; got ${targets.ndim}D`);
   }
   if (inputLengths.ndim !== 1) {
     throw new ShapeError(`ctcLoss expects 1D inputLengths; got ${inputLengths.ndim}D`);
@@ -1079,6 +1381,9 @@ export function ctcLoss(
       `targetLengths length ${targetLengths.shape[0]} doesn't match batch size ${N}`
     );
   }
+  if (targets.ndim === 2 && (targets.shape[0] ?? 0) !== N) {
+    throw new ShapeError(`padded targets have ${targets.shape[0]} rows but batch size is ${N}`);
+  }
 
   if (!Number.isInteger(blank) || blank < 0 || blank >= C) {
     throw new InvalidParameterError(
@@ -1088,58 +1393,56 @@ export function ctcLoss(
     );
   }
 
-  const lpData = logProbs.data;
-  const tgtData = targets.data;
-  const ilData = inputLengths.data;
-  const tlData = targetLengths.data;
-  if (
-    Array.isArray(lpData) ||
-    Array.isArray(tgtData) ||
-    Array.isArray(ilData) ||
-    Array.isArray(tlData)
-  ) {
-    throw new DTypeError("ctcLoss does not support string dtype");
-  }
+  const lp = numbersOf(logProbs, "ctcLoss");
+  const tgt = numbersOf(targets, "ctcLoss");
+  const inLens = readLengths(inputLengths, "inputLengths", "ctcLoss");
+  const tgtLens = readLengths(targetLengths, "targetLengths", "ctcLoss");
 
-  const lpStrides = computeStrides(logProbs.shape);
-  const tgtStrides = computeStrides(targets.shape);
-  const ilStrides = computeStrides(inputLengths.shape);
-  const tlStrides = computeStrides(targetLengths.shape);
-
-  const dtype = logProbs.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(N) : new Float32Array(N);
-
-  let targetOffset = 0;
+  const padded = targets.ndim === 2;
+  const paddedWidth = padded ? (targets.shape[1] ?? 0) : 0;
+  let totalTargets = 0;
   for (let b = 0; b < N; b++) {
-    const inpLen = Math.round(
-      readNumericFlat(ilData, b, ilStrides, inputLengths.strides, inputLengths.offset)
-    );
-    const tgtLen = Math.round(
-      readNumericFlat(tlData, b, tlStrides, targetLengths.strides, targetLengths.offset)
-    );
-
-    if (inpLen < 1 || inpLen > T) {
+    const tgtLen = tgtLens[b] ?? 0;
+    if (tgtLen < 0 || (padded && tgtLen > paddedWidth)) {
       throw new InvalidParameterError(
-        `inputLengths[${b}] = ${inpLen} out of range [1, ${T}]`,
-        "inputLengths",
-        inpLen
-      );
-    }
-    if (tgtLen < 1) {
-      throw new InvalidParameterError(
-        `targetLengths[${b}] = ${tgtLen} must be >= 1`,
+        padded
+          ? `targetLengths[${b}] = ${tgtLen} out of range [0, ${paddedWidth}]`
+          : `targetLengths[${b}] = ${tgtLen} must be >= 0`,
         "targetLengths",
         tgtLen
       );
     }
+    totalTargets += tgtLen;
+  }
+  if (!padded && totalTargets > targets.size) {
+    throw new ShapeError(
+      `targets has ${targets.size} elements but targetLengths sum to ${totalTargets}`
+    );
+  }
+
+  const dtype = lossDtypeOf(logProbs);
+  const lossData = newLossBuffer(dtype, N);
+  const NEG_INF = -Infinity;
+
+  let targetOffset = 0;
+  for (let b = 0; b < N; b++) {
+    const inpLen = inLens[b] ?? 0;
+    const tgtLen = tgtLens[b] ?? 0;
+
+    if (inpLen < 0 || inpLen > T) {
+      throw new InvalidParameterError(
+        `inputLengths[${b}] = ${inpLen} out of range [0, ${T}]`,
+        "inputLengths",
+        inpLen
+      );
+    }
 
     // Read target labels for this batch element
+    const labelBase = padded ? b * paddedWidth : targetOffset;
     const labels: number[] = [];
     for (let i = 0; i < tgtLen; i++) {
-      const label = Math.round(
-        readNumericFlat(tgtData, targetOffset + i, tgtStrides, targets.strides, targets.offset)
-      );
-      if (label < 0 || label >= C) {
+      const label = tgt[labelBase + i] ?? Number.NaN;
+      if (!Number.isInteger(label) || label < 0 || label >= C) {
         throw new InvalidParameterError(
           `target label ${label} out of range [0, ${C})`,
           "targets",
@@ -1160,77 +1463,58 @@ export function ctcLoss(
     // Extended label sequence with interleaved blanks:
     // [blank, l0, blank, l1, blank, ..., l_{L-1}, blank]
     const S = 2 * tgtLen + 1;
-    const extLabels: number[] = [];
+    const extLabels = new Int32Array(S);
     for (let s = 0; s < S; s++) {
-      if (s % 2 === 0) {
-        extLabels.push(blank);
-      } else {
-        extLabels.push(labels[(s - 1) / 2] ?? 0);
+      extLabels[s] = s % 2 === 0 ? blank : (labels[(s - 1) / 2] ?? 0);
+    }
+
+    let lossValue: number;
+    if (inpLen === 0) {
+      // No frames: the empty target has probability 1, anything else 0.
+      lossValue = tgtLen === 0 ? 0 : Infinity;
+    } else if (inpLen < tgtLen) {
+      lossValue = Infinity;
+    } else {
+      // Forward algorithm in log-space
+      let prev = new Float64Array(S).fill(NEG_INF);
+      let curr = new Float64Array(S);
+      const at = (t: number, label: number): number => lp[(t * N + b) * C + label] ?? NEG_INF;
+
+      // Initialization at t=0: can start at s=0 (blank) or s=1 (first label)
+      prev[0] = at(0, extLabels[0] ?? blank);
+      if (S > 1) {
+        prev[1] = at(0, extLabels[1] ?? blank);
       }
-    }
 
-    if (inpLen < tgtLen) {
-      lossData[b] = Infinity;
-      continue;
-    }
+      for (let t = 1; t < inpLen; t++) {
+        for (let s = 0; s < S; s++) {
+          let logAlpha = prev[s] ?? NEG_INF;
 
-    // Forward algorithm in log-space
-    const NEG_INF = -Infinity;
-    let prev = new Float64Array(S);
-    prev.fill(NEG_INF);
-
-    // Initialization at t=0: can start at s=0 (blank) or s=1 (first label)
-    prev[0] = readNumericFlat(
-      lpData,
-      0 * N * C + b * C + (extLabels[0] ?? 0),
-      lpStrides,
-      logProbs.strides,
-      logProbs.offset
-    );
-    if (S > 1) {
-      prev[1] = readNumericFlat(
-        lpData,
-        0 * N * C + b * C + (extLabels[1] ?? 0),
-        lpStrides,
-        logProbs.strides,
-        logProbs.offset
-      );
-    }
-
-    for (let t = 1; t < inpLen; t++) {
-      const curr = new Float64Array(S);
-      curr.fill(NEG_INF);
-
-      for (let s = 0; s < S; s++) {
-        let logAlpha: number = prev[s] ?? NEG_INF;
-
-        if (s > 0) {
-          logAlpha = logSumExp(logAlpha, prev[s - 1] ?? NEG_INF);
-        }
-
-        if (s > 1) {
-          const currLabel = extLabels[s] ?? 0;
-          const prevPrevLabel = extLabels[s - 2] ?? 0;
-          if (currLabel !== blank && currLabel !== prevPrevLabel) {
-            logAlpha = logSumExp(logAlpha, prev[s - 2] ?? NEG_INF);
+          if (s > 0) {
+            logAlpha = logSumExp(logAlpha, prev[s - 1] ?? NEG_INF);
           }
-        }
 
-        const lp = readNumericFlat(
-          lpData,
-          t * N * C + b * C + (extLabels[s] ?? 0),
-          lpStrides,
-          logProbs.strides,
-          logProbs.offset
-        );
-        curr[s] = logAlpha + lp;
+          if (s > 1) {
+            const currLabel = extLabels[s] ?? blank;
+            if (currLabel !== blank && currLabel !== extLabels[s - 2]) {
+              logAlpha = logSumExp(logAlpha, prev[s - 2] ?? NEG_INF);
+            }
+          }
+
+          curr[s] = logAlpha + at(t, extLabels[s] ?? blank);
+        }
+        [prev, curr] = [curr, prev];
       }
-      prev = curr;
+
+      // Total log-probability
+      lossValue = -logSumExp(prev[S - 1] ?? NEG_INF, S > 1 ? (prev[S - 2] ?? NEG_INF) : NEG_INF);
     }
 
-    // Total log-probability
-    const logProb = logSumExp(prev[S - 1] ?? NEG_INF, prev[S - 2] ?? NEG_INF);
-    lossData[b] = -logProb;
+    if (zeroInfinity && lossValue === Infinity) {
+      lossValue = 0;
+    }
+    // PyTorch's "mean" normalizes by the target length before averaging over the batch.
+    lossData[b] = reduction === "mean" ? lossValue / Math.max(tgtLen, 1) : lossValue;
   }
 
   const ctcLossT = Tensor.fromTypedArray({
@@ -1240,9 +1524,7 @@ export function ctcLoss(
     device: logProbs.device,
   });
 
-  if (reduction === "none") return ctcLossT;
-  if (reduction === "sum") return sum(ctcLossT);
-  return mean(ctcLossT);
+  return reduceLoss(ctcLossT, reduction);
 }
 
 /**
@@ -1255,6 +1537,10 @@ export function ctcLoss(
  *
  * If y == 1, x1 should be ranked higher (larger) than x2.
  * If y == -1, x2 should be ranked higher (larger) than x1.
+ *
+ * `x1` and `x2` must have the same shape. `y` must have that shape too, or contain a
+ * single element that applies to every pair. Passing a GradTensor as `x1` returns a
+ * GradTensor that supports `.backward()`.
  *
  * @param x1 - First input tensor
  * @param x2 - Second input tensor (same shape as x1)
@@ -1269,94 +1555,88 @@ export function marginRankingLoss(
   x2: Tensor,
   y: Tensor,
   margin?: number,
-  reduction?: "mean" | "sum" | "none"
+  reduction?: LossReduction
 ): Tensor;
 export function marginRankingLoss(
   x1: GradTensor,
-  x2: GradTensor,
-  y: GradTensor,
+  x2: AnyTensor,
+  y: AnyTensor,
   margin?: number,
-  reduction?: "mean" | "sum" | "none"
+  reduction?: LossReduction
 ): GradTensor;
 export function marginRankingLoss(
   x1: AnyTensor,
   x2: AnyTensor,
   y: AnyTensor,
+  margin?: number,
+  reduction?: LossReduction
+): AnyTensor;
+export function marginRankingLoss(
+  x1: AnyTensor,
+  x2: AnyTensor,
+  y: AnyTensor,
   margin = 0,
-  reduction: "mean" | "sum" | "none" = "mean"
+  reduction: LossReduction = "mean"
 ): AnyTensor {
   validateReduction(reduction, "marginRankingLoss");
 
+  const x2Tensor = toTensor(x2);
+  const yTensor = toTensor(y);
+  if (!shapesEqual(toTensor(x1).shape, x2Tensor.shape)) {
+    throw new ShapeError(
+      `marginRankingLoss: x1 and x2 must have the same shape; got [${toTensor(x1).shape}] vs [${x2Tensor.shape}]`
+    );
+  }
+  if (
+    !shapesEqual(x2Tensor.shape, yTensor.shape) &&
+    yTensor.size !== 1 &&
+    yTensor.size !== x2Tensor.size
+  ) {
+    throw new ShapeError(
+      `marginRankingLoss: y must have as many elements as x1 or a single element; got [${yTensor.shape}] vs [${x2Tensor.shape}]`
+    );
+  }
+
   if (GradTensor.isGradTensor(x1)) {
-    const a = x1;
-    const b = GradTensor.isGradTensor(x2)
-      ? x2
-      : GradTensor.fromTensor(x2 as Tensor, { requiresGrad: false });
-    const label = GradTensor.isGradTensor(y)
-      ? y
-      : GradTensor.fromTensor(y as Tensor, { requiresGrad: false });
-    const diff = a.sub(b);
-    const marginScalar = GradTensor.scalar(margin, {
-      dtype: a.dtype === "float64" ? "float64" : (a.dtype as "float32"),
-    });
-    const lossRaw = diff.mul(label).neg().add(marginScalar);
-    const lossRelu = lossRaw.abs().add(lossRaw).mul(GradTensor.scalar(0.5));
-    if (reduction === "none") return lossRelu;
-    if (reduction === "sum") return lossRelu.sum();
-    return lossRelu.mean();
+    const dtype = numericDtype(x1, "marginRankingLoss");
+    const b = asDtype(
+      GradTensor.isGradTensor(x2) ? x2 : GradTensor.fromTensor(x2, { requiresGrad: false }),
+      dtype
+    );
+    let label = asDtype(
+      GradTensor.isGradTensor(y) ? y : GradTensor.fromTensor(y, { requiresGrad: false }),
+      dtype
+    );
+    if (label.size > 1 && !shapesEqual(label.shape, x1.shape)) {
+      // Same element count, different shape (for example (N, 1) vs (N,)): match element-wise.
+      label = label.reshape([...x1.shape]);
+    }
+    const marginScalar = GradTensor.scalar(margin, { dtype });
+    // max(0, -y * (x1 - x2) + margin)
+    const loss = x1.sub(b).mul(label).neg().add(marginScalar).relu();
+    return reduceGradLoss(loss, reduction);
   }
 
-  let x1t = x1 as Tensor;
-  let x2t = x2 as Tensor;
-  let yt = y as Tensor;
-  if (GradTensor.isGradTensor(x1t)) x1t = x1t.tensor;
-  if (GradTensor.isGradTensor(x2t)) x2t = x2t.tensor;
-  if (GradTensor.isGradTensor(yt)) yt = yt.tensor;
+  const x1t = toTensor(x1);
   ensureNumeric(x1t, "marginRankingLoss");
-  ensureNumeric(x2t, "marginRankingLoss");
-  ensureNumeric(yt, "marginRankingLoss");
+  ensureNumeric(x2Tensor, "marginRankingLoss");
+  ensureNumeric(yTensor, "marginRankingLoss");
 
-  if (!shapesEqual(x1t.shape, x2t.shape)) {
-    throw new ShapeError(
-      `marginRankingLoss: x1 and x2 must have the same shape; got [${x1t.shape}] vs [${x2t.shape}]`
-    );
-  }
-  if (!shapesEqual(x1t.shape, yt.shape) && yt.size !== x1t.size) {
-    throw new ShapeError(
-      `marginRankingLoss: y must be broadcastable to x1 shape; got [${yt.shape}] vs [${x1t.shape}]`
-    );
-  }
-
-  const x1Data = x1t.data;
-  const x2Data = x2t.data;
-  const yData = yt.data;
-  if (Array.isArray(x1Data) || Array.isArray(x2Data) || Array.isArray(yData)) {
-    throw new DTypeError("marginRankingLoss does not support string dtype");
-  }
+  const a = numbersOf(x1t, "marginRankingLoss");
+  const b = numbersOf(x2Tensor, "marginRankingLoss");
+  const labels = numbersOf(yTensor, "marginRankingLoss");
+  const single = yTensor.size === 1;
 
   const n = x1t.size;
-  const dtype = x1t.dtype === "float64" ? "float64" : "float32";
-  const lossData = dtype === "float64" ? new Float64Array(n) : new Float32Array(n);
-
-  const x1Strides = computeStrides(x1t.shape);
-  const x2Strides = computeStrides(x2t.shape);
-  const yStrides = computeStrides(yt.shape);
-
+  const dtype = lossDtypeOf(x1t);
+  const lossData = newLossBuffer(dtype, n);
   for (let i = 0; i < n; i++) {
-    const v1 = readNumericFlat(x1Data, i, x1Strides, x1t.strides, x1t.offset);
-    const v2 = readNumericFlat(x2Data, i, x2Strides, x2t.strides, x2t.offset);
-    const label = readNumericFlat(yData, yt.size === 1 ? 0 : i, yStrides, yt.strides, yt.offset);
-    lossData[i] = Math.max(0, -label * (v1 - v2) + margin);
+    const label = labels[single ? 0 : i] ?? 0;
+    lossData[i] = Math.max(0, -label * ((a[i] ?? 0) - (b[i] ?? 0)) + margin);
   }
 
-  const loss = Tensor.fromTypedArray({
-    data: lossData,
-    shape: x1t.shape.slice(),
-    dtype,
-    device: x1t.device,
-  });
-
-  if (reduction === "none") return loss;
-  if (reduction === "sum") return sum(loss);
-  return mean(loss);
+  return reduceLoss(
+    Tensor.fromTypedArray({ data: lossData, shape: x1t.shape.slice(), dtype, device: x1t.device }),
+    reduction
+  );
 }

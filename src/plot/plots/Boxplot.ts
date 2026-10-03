@@ -19,6 +19,12 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Box-and-whisker plot of one sample.
+ *
+ * Quartiles use linear interpolation (matplotlib/NumPy default). Whiskers reach
+ * the most extreme values within 1.5 * IQR of the box and never retreat inside
+ * it; values beyond the whiskers are drawn as outlier points. Non-finite values
+ * are ignored.
  * @internal
  */
 export class Boxplot implements Drawable {
@@ -37,16 +43,31 @@ export class Boxplot implements Drawable {
   readonly hasData: boolean;
 
   constructor(position: number, data: Float64Array, options: PlotOptions) {
+    if (!Number.isFinite(position)) {
+      throw new InvalidParameterError(
+        `boxplot position must be finite; received ${position}`,
+        "position",
+        position
+      );
+    }
     this.position = position;
     this.color = normalizeColor(options.color, "#8c564b");
     this.edgecolor = normalizeColor(options.edgecolor, "#000000");
     this.boxWidth = 0.5;
     this.label = normalizeLegendLabel(options.label);
 
-    const sorted = Array.from(data)
-      .filter(isFiniteNumber)
-      .sort((a, b) => a - b);
-    const n = sorted.length;
+    // Sort a typed copy (numeric order, no comparator calls) of the finite values.
+    let finiteCount = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (isFiniteNumber(data[i] ?? 0)) finiteCount++;
+    }
+    const finite = new Float64Array(finiteCount);
+    for (let i = 0, k = 0; i < data.length; i++) {
+      const v = data[i] ?? 0;
+      if (isFiniteNumber(v)) finite[k++] = v;
+    }
+    finite.sort();
+    const n = finite.length;
 
     if (n === 0) {
       if (data.length > 0) {
@@ -68,12 +89,12 @@ export class Boxplot implements Drawable {
     this.hasData = true;
 
     // Use proper statistical calculations
-    const { q1, median, q3 } = calculateQuartiles(sorted);
+    const { q1, median, q3 } = calculateQuartiles(finite);
     this.q1 = q1;
     this.median = median;
     this.q3 = q3;
 
-    const { lowerWhisker, upperWhisker, outliers } = calculateWhiskers(sorted, q1, q3);
+    const { lowerWhisker, upperWhisker, outliers } = calculateWhiskers(finite, q1, q3);
     this.whiskerLow = lowerWhisker;
     this.whiskerHigh = upperWhisker;
     this.outliers = outliers;

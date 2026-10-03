@@ -3,10 +3,10 @@ import { tensor } from "../src/ndarray";
 import { kendalltau, pearsonr, spearmanr } from "../src/stats/correlation";
 
 describe("stats correlation branches 2", () => {
-  it("pearsonr returns NaN pvalue for df <= 0", () => {
+  it("pearsonr returns p = 1 for two samples, as scipy does (df = 0)", () => {
     const [r, p] = pearsonr(tensor([1, 2]), tensor([1, 2]));
     expect(r).toBeCloseTo(1, 6);
-    expect(Number.isNaN(p)).toBe(true);
+    expect(p).toBe(1);
   });
 
   it("spearmanr handles df <= 0", () => {

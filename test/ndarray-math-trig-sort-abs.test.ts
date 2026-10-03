@@ -62,7 +62,8 @@ describe("deepbox/ndarray - Math, Trig, Sorting, Abs", () => {
     ]);
     const tT = transpose(t);
     const out = exp(tT);
-    const expected = toNum2D(tT.toArray()).map((row) => row.map((v) => Math.exp(v)));
+    const expected = toNum2D(tT.toArray()).map((row) => row.map((v) => Math.fround(Math.exp(v))));
+    expect(out.dtype).toBe("float32");
     expect(out.toArray()).toEqual(expected);
   });
 
@@ -72,11 +73,11 @@ describe("deepbox/ndarray - Math, Trig, Sorting, Abs", () => {
     expect(absOut.dtype).toBe("int64");
     expect(absOut.toArray()).toEqual([1n, 2n, 3n]);
     const expOut = exp(t);
-    expect(expOut.dtype).toBe("float64");
+    expect(expOut.dtype).toBe("float32");
     const logOut = log(tensor([1, 2], { dtype: "int64" }));
-    expect(logOut.dtype).toBe("float64");
+    expect(logOut.dtype).toBe("float32");
     const sqrtOut = sqrt(tensor([1, 4], { dtype: "int64" }));
-    expect(sqrtOut.dtype).toBe("float64");
+    expect(sqrtOut.dtype).toBe("float32");
   });
 
   it("computes trigonometric functions", () => {
@@ -124,7 +125,7 @@ describe("deepbox/ndarray - Math, Trig, Sorting, Abs", () => {
       [1, 2],
       [3, 4],
     ]);
-    // N-D sort is now supported — sort along last axis by default
+    // N-D sort is now supported: it sorts along the last axis by default
     expect(sort(t).toArray()).toEqual([
       [1, 2],
       [3, 4],

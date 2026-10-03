@@ -15,11 +15,13 @@ function cloneShape(shape: Shape): Shape {
  * @property expected - The expected shape
  * @property received - The actual shape that was received
  * @property context - Additional context about where the error occurred
+ * @property cause - Underlying error, if the mismatch was triggered by one
  */
 export type ShapeErrorDetails = {
   readonly expected?: Shape;
   readonly received?: Shape;
   readonly context?: string;
+  readonly cause?: unknown;
 };
 
 /**
@@ -46,7 +48,7 @@ export class ShapeError extends DeepboxError {
 
   constructor(message: string, details: ShapeErrorDetails = {}) {
     // Call parent constructor with error message
-    super(message);
+    super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
     // Store optional shape details for programmatic error handling
     this.expected = details.expected === undefined ? undefined : cloneShape(details.expected);
     this.received = details.received === undefined ? undefined : cloneShape(details.received);
@@ -66,7 +68,7 @@ export class ShapeError extends DeepboxError {
    * @example
    * ```ts
    * throw ShapeError.mismatch([3, 4], [3, 5], 'matrix multiplication');
-   * // Error: Shape mismatch (matrix multiplication): expected [3,4], received [3,5]
+   * // ShapeError: Shape mismatch (matrix multiplication): expected [3,4], received [3,5]
    * ```
    */
   static mismatch(expected: Shape, received: Shape, context?: string): ShapeError {

@@ -1,8 +1,8 @@
-# DataLoader — Batching & Shuffling
+# DataLoader: Batching & Shuffling
 
 > **View online:** https://deepbox.dev/examples/31-dataloader
 
-Demonstrates the DataLoader class for efficient batch iteration over datasets.
+`DataLoader` splits a dataset into batches, with optional shuffling, and is the usual way to feed a training loop. The example covers batching, a seeded shuffle, `reshuffleEachIteration`, `dropLast` and loading without labels.
 
 ## Deepbox Modules Used
 
@@ -19,4 +19,5 @@ npm run example:31
 
 ## Output
 
-- Console output showing batched iteration, shuffling, dropLast, and label-free inference
+- Console output only: batch shapes, the sample order of seeded shuffles, the number of batches with `dropLast`, and batches without labels.
+- A seed alone repeats the same order in every epoch. Add `reshuffleEachIteration: true` for a new, still reproducible, order each epoch.

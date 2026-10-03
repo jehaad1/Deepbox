@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -23,7 +22,6 @@ import {
   assertHasGradFloat,
   assertInRange,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -32,6 +30,7 @@ type AdaDeltaOptions = {
   readonly rho: number;
   readonly eps: number;
   readonly weightDecay: number;
+  maximize: boolean;
 };
 
 type AdaDeltaState = {
@@ -43,12 +42,22 @@ type AdaDeltaState = {
 };
 
 /**
- * AdaDelta optimizer.
+ * AdaDelta optimizer (Zeiler, 2012).
  *
- * Implements AdaDelta algorithm - an extension of Adagrad that seeks to reduce
- * its aggressive, monotonically decreasing learning rate. AdaDelta adapts learning
- * rates based on a moving window of gradient updates, rather than accumulating all
- * past gradients.
+ * AdaDelta is an extension of Adagrad that avoids its monotonically shrinking
+ * learning rate. It keeps exponential moving averages of the squared gradients and
+ * of the squared parameter updates, and scales each step by the ratio of their
+ * root-mean-squares. The update follows `torch.optim.Adadelta`:
+ *
+ * ```
+ * v = rho * v + (1 - rho) * g^2
+ * delta = sqrt(acc + eps) / sqrt(v + eps) * g
+ * acc = rho * acc + (1 - rho) * delta^2
+ * theta -= lr * delta
+ * ```
+ *
+ * When `weightDecay` is non-zero, `weightDecay * theta` is added to the gradient
+ * (L2 penalty) before the update.
  *
  * @example
  * ```ts
@@ -71,11 +80,18 @@ type AdaDeltaState = {
  * @category Optimizers
  */
 export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
+  /**
+   * Create a new AdaDelta optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Coefficient applied to the computed update (default: 1.0)
+   * @param options.rho - Decay rate of the moving averages, in [0, 1) (default: 0.9)
+   * @param options.eps - Term added to the denominators for numerical stability (default: 1e-6)
+   * @param options.weightDecay - L2 penalty coefficient (default: 0)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<AdaDeltaOptions>>,
     options: {
@@ -83,6 +99,7 @@ export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
       readonly rho?: number;
       readonly eps?: number;
       readonly weightDecay?: number;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -90,51 +107,32 @@ export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
       rho: options.rho ?? 0.9,
       eps: options.eps ?? 1e-6,
       weightDecay: options.weightDecay ?? 0,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    // Validate hyperparameters
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("rho", defaults.rho, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<AdaDeltaOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("rho", options.rho, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is AdaDeltaState {
     return state["squareAvg"] instanceof Float64Array && state["accDelta"] instanceof Float64Array;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -142,23 +140,20 @@ export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("AdaDelta");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, rho, eps, weightDecay } = group.options;
+      const { lr, rho, eps, weightDecay, maximize } = group.options;
 
       // Re-validate hyperparameters
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("rho", rho, 0, 1);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
 
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the AdaDelta update from device-dispatched ops.
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { squareAvg: new Float64Array(0), accDelta: new Float64Array(0) };
@@ -208,34 +203,36 @@ export class AdaDelta extends Optimizer<AdaDeltaOptions, AdaDeltaState> {
         assertBufferSize(state.squareAvg, size, "AdaDelta squareAvg");
         assertBufferSize(state.accDelta, size, "AdaDelta accDelta");
 
+        const squareAvg = state.squareAvg;
+        const accDelta = state.accDelta;
         for (let i = 0; i < size; i++) {
-          const gi0 = safeArrayAccess(gradData, gOff + i, "AdaDelta gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "AdaDelta parameter");
-          assertFinite("gradient", gi0);
-          assertFinite("parameter", pi);
+          const rawGi = gradData[gOff + i] as number;
+          const pi = pData[pOff + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi0 = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
 
-          // Apply weight decay
+          // L2 weight decay
           const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
 
-          // Update square average: E[g²](t) = ρ * E[g²](t-1) + (1 - ρ) * g(t)²
-          const sq = safeArrayAccess(state.squareAvg, i, "AdaDelta squareAvg");
-          const sqNew = rho * sq + (1 - rho) * gi * gi;
-          state.squareAvg[i] = sqNew;
+          // E[g^2](t) = rho * E[g^2](t-1) + (1 - rho) * g(t)^2
+          const sqNew = rho * (squareAvg[i] as number) + (1 - rho) * gi * gi;
+          squareAvg[i] = sqNew;
 
-          // Compute RMS[g](t) = √(E[g²](t) + ε)
+          // RMS[g](t) = sqrt(E[g^2](t) + eps)
           const std = Math.sqrt(sqNew + eps);
 
-          // Compute RMS[Δθ](t-1) = √(E[Δθ²](t-1) + ε)
-          const accD = safeArrayAccess(state.accDelta, i, "AdaDelta accDelta");
+          // RMS[delta](t-1) = sqrt(E[delta^2](t-1) + eps)
+          const accD = accDelta[i] as number;
           const rmsUpdate = Math.sqrt(accD + eps);
 
-          // Compute parameter update: Δθ(t) = -RMS[Δθ](t-1) / RMS[g](t) * g(t)
+          // delta(t) = RMS[delta](t-1) / RMS[g](t) * g(t)
           const delta = (rmsUpdate / std) * gi;
 
-          // Update accumulated delta: E[Δθ²](t) = ρ * E[Δθ²](t-1) + (1 - ρ) * Δθ(t)²
-          state.accDelta[i] = rho * accD + (1 - rho) * delta * delta;
+          // E[delta^2](t) = rho * E[delta^2](t-1) + (1 - rho) * delta(t)^2
+          accDelta[i] = rho * accD + (1 - rho) * delta * delta;
 
-          // Update parameter: θ(t+1) = θ(t) - lr * Δθ(t)
+          // theta(t+1) = theta(t) - lr * delta(t)
           pData[pOff + i] = pi - lr * delta;
         }
       }

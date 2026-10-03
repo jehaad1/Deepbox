@@ -82,16 +82,16 @@ describe("deepbox/ndarray - Extra Ops Coverage", () => {
     const b = tensor([2, 1], { dtype: "int64" });
     expect(add(a, b).toArray()).toEqual([3n, 3n]);
     const divOut = div(a, b);
-    expect(divOut.dtype).toBe("float64");
+    expect(divOut.dtype).toBe("float32");
     expect(divOut.toArray()).toEqual([0.5, 2]);
     expect(equal(a, b).toArray()).toEqual([0, 0]);
     expect(greater(a, b).toArray()).toEqual([0, 1]);
   });
 
-  it("throws on dtype mismatch or non-broadcastable shapes", () => {
+  it("promotes mixed dtypes and throws on non-broadcastable shapes", () => {
     const a = tensor([1], { dtype: "float32" });
     const b = tensor([1], { dtype: "int32" });
-    expect(() => add(a, b)).toThrow();
+    expect(add(a, b).dtype).toBe("float32");
     const c = tensor([
       [1, 2],
       [3, 4],

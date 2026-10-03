@@ -6,10 +6,33 @@ import {
   ShapeError,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertContiguous, validateFitInputs, validatePredictInputs } from "../_validation";
+import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import {
+  assertContiguous,
+  toFloat64View,
+  validateFitInputs,
+  validatePredictInputs,
+} from "../_validation";
 import type { Classifier, Regressor } from "../base";
+import {
+  checkCcpAlpha,
+  checkClassWeight,
+  checkMaxLeafNodes,
+  checkMinImpurityDecrease,
+  classWeightPerClass,
+  combineWeights,
+  type ExpandResult,
+  growTreeBestFirst,
+  positiveWeightIndices,
+  pruneTree,
+  readSampleWeight,
+  splitIsWorthwhile,
+  type TreeClassWeight,
+  type TreeGrowthOptions,
+} from "./_growth";
 
-type TreeNode = {
+/** @internal */
+export type TreeNode = {
   readonly isLeaf: boolean;
   readonly prediction?: number | undefined;
   readonly classProbabilities?: number[] | undefined;
@@ -17,13 +40,721 @@ type TreeNode = {
   readonly threshold?: number;
   readonly left?: TreeNode;
   readonly right?: TreeNode;
+  /** Number of training samples that reached this node. */
+  readonly nSamples?: number;
   // Weighted impurity decrease at this split (n*imp - nL*impL - nR*impR),
   // recorded so feature_importances_ is the standard MDI (mean decrease in
   // impurity) rather than a raw split count.
   readonly weightedImpurityDecrease?: number;
+  /** Impurity of the node (Gini, base-2 entropy, or the variance of the targets). */
+  readonly impurity?: number;
+  /** Sum of the sample weights that reached the node (the sample count without weights). */
+  readonly weightedNSamples?: number;
+  /**
+   * Only kept while a tree is grown with `ccpAlpha > 0`: the leaf this split node becomes when
+   * it is pruned.
+   */
+  readonly collapsed?: TreeNode;
 };
 
+/**
+ * Impurity criterion used by the classification trees.
+ *
+ * `"log_loss"` is an alias of `"entropy"`; both use the base-2 Shannon entropy, as scikit-learn
+ * does (this matters for `minImpurityDecrease` and `ccpAlpha`).
+ */
 export type ClassificationCriterion = "gini" | "entropy" | "log_loss";
+
+/**
+ * Number of features examined at every split: an exact count, `"sqrt"`
+ * (`floor(sqrt(nFeatures))`) or `"log2"` (`floor(log2(nFeatures))`), never below 1.
+ */
+export type TreeMaxFeatures = number | "sqrt" | "log2";
+
+/** Options of {@link DecisionTreeClassifier}. */
+export type DecisionTreeClassifierOptions = {
+  /** Maximum depth of the tree; `Infinity` grows it until the leaves are pure. Default 10. */
+  readonly maxDepth?: number;
+  /** Minimum number of samples a node needs to be split. Default 2. */
+  readonly minSamplesSplit?: number;
+  /** Minimum number of samples every leaf must keep. Default 1. */
+  readonly minSamplesLeaf?: number;
+  /** Features examined per split. Default: all features. */
+  readonly maxFeatures?: TreeMaxFeatures;
+  /** Seed for the random feature subsets. Without it the global Deepbox generator is used. */
+  readonly randomState?: number;
+  /** Split quality measure. Default `"gini"`. */
+  readonly criterion?: ClassificationCriterion;
+  /**
+   * Class weights, `"balanced"` or a map from class label to weight. They multiply the
+   * `sampleWeight` given to `fit`. Default: all classes weigh 1.
+   */
+  readonly classWeight?: TreeClassWeight;
+} & TreeGrowthOptions;
+
+/** Options of {@link DecisionTreeRegressor}. */
+export type DecisionTreeRegressorOptions = {
+  /** Maximum depth of the tree; `Infinity` grows it until the leaves are pure. Default 10. */
+  readonly maxDepth?: number;
+  /** Minimum number of samples a node needs to be split. Default 2. */
+  readonly minSamplesSplit?: number;
+  /** Minimum number of samples every leaf must keep. Default 1. */
+  readonly minSamplesLeaf?: number;
+  /** Features examined per split. Default: all features. */
+  readonly maxFeatures?: TreeMaxFeatures;
+  /** Seed for the random feature subsets. Without it the global Deepbox generator is used. */
+  readonly randomState?: number;
+} & TreeGrowthOptions;
+
+// ---------------------------------------------------------------------------
+// Shared helpers (also used by ExtraTrees.ts; not part of the public API)
+// ---------------------------------------------------------------------------
+
+/**
+ * Random source for one `fit` call: a private seeded stream when `randomState` is set
+ * (SplitMix64-expanded, so consecutive seeds give unrelated streams), the global Deepbox
+ * generator otherwise. Shared by the trees, the forests, the boosting and bagging ensembles and
+ * the stochastic linear models.
+ *
+ * @internal
+ */
+export function createTreeRng(randomState: number | undefined): () => number {
+  if (randomState === undefined) return __random;
+  const generator = new __SeededRandom(__seedToUint64(randomState));
+  return () => generator.next();
+}
+
+/** @internal */
+export function checkTreeMaxDepth(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !((Number.isInteger(value) && value >= 1) || value === Number.POSITIVE_INFINITY)
+  ) {
+    throw new InvalidParameterError(
+      `maxDepth must be an integer >= 1 or Infinity; received ${String(value)}`,
+      "maxDepth",
+      value
+    );
+  }
+  return value;
+}
+
+/** @internal */
+export function checkTreeInteger(name: string, value: unknown, min: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
+    throw new InvalidParameterError(
+      `${name} must be an integer >= ${min}; received ${String(value)}`,
+      name,
+      value
+    );
+  }
+  return value;
+}
+
+/** @internal */
+export function checkTreeMaxFeatures(value: unknown): TreeMaxFeatures | undefined {
+  if (value === undefined || value === "sqrt" || value === "log2") return value;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new InvalidParameterError(
+      `maxFeatures must be an integer >= 1, "sqrt" or "log2"; received ${String(value)}`,
+      "maxFeatures",
+      value
+    );
+  }
+  return value;
+}
+
+/** @internal */
+export function checkTreeRandomState(value: unknown): number | undefined {
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw new InvalidParameterError(
+      `randomState must be a finite number; received ${String(value)}`,
+      "randomState",
+      value
+    );
+  }
+  return value;
+}
+
+/** @internal */
+export function checkTreeCriterion(value: unknown): ClassificationCriterion {
+  if (value !== "gini" && value !== "entropy" && value !== "log_loss") {
+    throw new InvalidParameterError(
+      `criterion must be "gini", "entropy", or "log_loss"; received ${String(value)}`,
+      "criterion",
+      value
+    );
+  }
+  return value;
+}
+
+/**
+ * Number of candidate features per split for a `maxFeatures` setting.
+ * `undefined` means every feature.
+ *
+ * @internal
+ */
+export function resolveTreeMaxFeatures(
+  maxFeatures: TreeMaxFeatures | undefined,
+  nFeatures: number
+): number {
+  if (maxFeatures === undefined) return nFeatures;
+  if (typeof maxFeatures === "number") return Math.max(1, Math.min(maxFeatures, nFeatures));
+  if (maxFeatures === "sqrt") return Math.max(1, Math.floor(Math.sqrt(nFeatures)));
+  return Math.max(1, Math.floor(Math.log2(nFeatures)));
+}
+
+/**
+ * dtype of a label tensor: `int32` when every label is an integer that fits, `float64`
+ * otherwise (so fractional labels are not silently truncated).
+ *
+ * @internal
+ */
+export function treeLabelDType(labels: ArrayLike<number>): "int32" | "float64" {
+  for (let i = 0; i < labels.length; i++) {
+    const v = labels[i] as number;
+    if (!Number.isInteger(v) || v < -2147483648 || v > 2147483647) return "float64";
+  }
+  return "int32";
+}
+
+/** @internal */
+export function treeLabelTensor(values: ArrayLike<number>, dtype: "int32" | "float64"): Tensor {
+  return dtype === "int32"
+    ? tensor(Int32Array.from(values), { dtype: "int32" })
+    : tensor(Float64Array.from(values), { dtype: "float64" });
+}
+
+/**
+ * Draws the features examined at one node: the first `limit` draws come from a lazy
+ * Fisher-Yates shuffle, and callers keep drawing while no usable (non-constant) feature has
+ * been seen, as scikit-learn does. Without a limit the features are visited in index order.
+ *
+ * @internal
+ */
+export class TreeFeatureSampler {
+  private readonly perm: Int32Array | undefined;
+
+  constructor(
+    readonly nFeatures: number,
+    readonly limit: number,
+    private readonly rng: () => number
+  ) {
+    if (limit < nFeatures) {
+      this.perm = new Int32Array(nFeatures);
+      for (let i = 0; i < nFeatures; i++) this.perm[i] = i;
+    }
+  }
+
+  /** Feature at draw position `visited` (0-based, strictly increasing within one node). */
+  draw(visited: number): number {
+    const perm = this.perm;
+    if (perm === undefined) return visited;
+    const j = visited + __randomBelow(this.rng, this.nFeatures - visited);
+    const f = perm[j] as number;
+    perm[j] = perm[visited] as number;
+    perm[visited] = f;
+    return f;
+  }
+}
+
+/**
+ * Row-major `(n, d)` data to a feature-major (column-contiguous) `Float64Array`.
+ *
+ * @internal
+ */
+export function toColumnMajor(rowMajor: Float64Array, n: number, d: number): Float64Array {
+  const out = new Float64Array(n * d);
+  for (let i = 0; i < n; i++) {
+    const base = i * d;
+    for (let j = 0; j < d; j++) out[j * n + i] = rowMajor[base + j] as number;
+  }
+  return out;
+}
+
+/** Midpoint of two adjacent distinct values that always lies in `[lo, hi)`. */
+function splitThreshold(lo: number, hi: number): number {
+  const mid = lo / 2 + hi / 2;
+  return mid >= lo && mid < hi ? mid : lo;
+}
+
+/**
+ * Leaf reached by `x[base..base + d)`; throws if the tree is malformed.
+ *
+ * @internal
+ */
+export function descend(root: TreeNode, x: Float64Array, base: number): TreeNode {
+  let node = root;
+  while (!node.isLeaf) {
+    const next =
+      (x[base + (node.featureIndex ?? 0)] as number) <= (node.threshold ?? 0)
+        ? node.left
+        : node.right;
+    if (!next) throw new DeepboxError("Corrupted tree: internal node is missing a child");
+    node = next;
+  }
+  return node;
+}
+
+function treeDepth(root: TreeNode): number {
+  let deepest = 0;
+  const stack: Array<[TreeNode, number]> = [[root, 0]];
+  for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
+    const [node, depth] = top;
+    if (depth > deepest) deepest = depth;
+    if (node.left) stack.push([node.left, depth + 1]);
+    if (node.right) stack.push([node.right, depth + 1]);
+  }
+  return deepest;
+}
+
+function treeLeafCount(root: TreeNode): number {
+  let leaves = 0;
+  const stack: TreeNode[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    if (node.isLeaf) {
+      leaves++;
+      continue;
+    }
+    if (node.left) stack.push(node.left);
+    if (node.right) stack.push(node.right);
+  }
+  return leaves;
+}
+
+/** A tree node while it is being built (children are attached afterwards). @internal */
+export type MutableTreeNode = { -readonly [K in keyof TreeNode]: TreeNode[K] };
+
+/**
+ * Builds a tree without recursion, so very deep trees (`maxDepth: Infinity` on data that splits
+ * off a few samples at a time) cannot overflow the call stack. `expand` turns the samples of one
+ * node into either a leaf or a split node plus the samples of its two children; nodes are
+ * expanded in pre-order (a node, its whole left subtree, then its right subtree), the same order
+ * as a recursive build, so seeded random draws are unaffected.
+ *
+ * With `maxLeafNodes` the tree grows best-first instead (see {@link growTreeBestFirst}); with
+ * `ccpAlpha > 0` the finished tree is pruned (see {@link pruneTree}).
+ *
+ * @internal
+ */
+export function growTree(
+  rootIndices: Int32Array,
+  expand: (indices: Int32Array, depth: number) => ExpandResult,
+  growth: {
+    readonly maxLeafNodes?: number | undefined;
+    readonly ccpAlpha?: number | undefined;
+  } = {}
+): TreeNode {
+  const ccpAlpha = growth.ccpAlpha ?? 0;
+  const prune = ccpAlpha > 0;
+  // Keeps the leaf a split node turns into when it is pruned.
+  const expandKeeping = (indices: Int32Array, depth: number): ExpandResult => {
+    const result = expand(indices, depth);
+    if (prune && result.leaf !== undefined) result.node.collapsed = result.leaf();
+    return result;
+  };
+  const expandFn = prune ? expandKeeping : expand;
+
+  let root: TreeNode;
+  if (growth.maxLeafNodes !== undefined) {
+    root = growTreeBestFirst(rootIndices, expandFn, growth.maxLeafNodes);
+  } else {
+    let first: TreeNode | undefined;
+    type Job = { indices: Int32Array; depth: number; attach: (node: TreeNode) => void };
+    const stack: Job[] = [
+      {
+        indices: rootIndices,
+        depth: 0,
+        attach: (node) => {
+          first = node;
+        },
+      },
+    ];
+    for (let job = stack.pop(); job !== undefined; job = stack.pop()) {
+      const { node, children } = expandFn(job.indices, job.depth);
+      job.attach(node);
+      if (children) {
+        stack.push({
+          indices: children[1],
+          depth: job.depth + 1,
+          attach: (child) => {
+            node.right = child;
+          },
+        });
+        stack.push({
+          indices: children[0],
+          depth: job.depth + 1,
+          attach: (child) => {
+            node.left = child;
+          },
+        });
+      }
+    }
+    root = first as unknown as TreeNode;
+  }
+  return prune ? pruneTree(root, ccpAlpha) : root;
+}
+
+/** @internal */
+export function normalizedImportances(tree: TreeNode, nFeatures: number): Tensor {
+  const importances = new Float64Array(nFeatures);
+  accumulateImportances(tree, importances);
+  let total = 0;
+  for (let i = 0; i < nFeatures; i++) total += importances[i] as number;
+  if (total > 0) {
+    for (let i = 0; i < nFeatures; i++) importances[i] = (importances[i] as number) / total;
+  }
+  return tensor(importances, { dtype: "float64" });
+}
+
+function accumulateImportances(root: TreeNode, importances: Float64Array): void {
+  const stack: TreeNode[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    if (node.isLeaf) continue;
+    const fi = node.featureIndex ?? 0;
+    if (fi < importances.length) {
+      // Mean decrease in impurity: the weighted impurity drop of every split on the
+      // feature (scikit-learn convention), not a raw split count.
+      importances[fi] = (importances[fi] as number) + (node.weightedImpurityDecrease ?? 0);
+    }
+    if (node.left) stack.push(node.left);
+    if (node.right) stack.push(node.right);
+  }
+}
+
+/**
+ * Split `indices` into the samples with `x[feature] <= threshold` and the rest.
+ *
+ * @internal
+ */
+export function partitionIndices(
+  xc: Float64Array,
+  base: number,
+  indices: Int32Array,
+  threshold: number
+): [Int32Array, Int32Array] {
+  const n = indices.length;
+  let nLeft = 0;
+  for (let i = 0; i < n; i++) {
+    if ((xc[base + (indices[i] as number)] as number) <= threshold) nLeft++;
+  }
+  const left = new Int32Array(nLeft);
+  const right = new Int32Array(n - nLeft);
+  let l = 0;
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    const idx = indices[i] as number;
+    if ((xc[base + idx] as number) <= threshold) left[l++] = idx;
+    else right[r++] = idx;
+  }
+  return [left, right];
+}
+
+/**
+ * Common validation of the y tensor shared by the `score` methods.
+ *
+ * @internal
+ */
+export function readScoreTargets(y: Tensor): Float64Array {
+  if (y.ndim !== 1) {
+    throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
+  }
+  assertContiguous(y, "y");
+  const values = toFloat64View(y);
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) {
+      throw new DataValidationError("y contains non-finite values (NaN or Inf)");
+    }
+  }
+  if (values.length === 0) {
+    throw new DataValidationError("y must contain at least one sample");
+  }
+  return values;
+}
+
+const treeSortF32 = new Float32Array(1);
+const treeSortU32 = new Uint32Array(treeSortF32.buffer);
+let treeSortPacked = new Float64Array(0);
+
+const treeSortF64 = new Float64Array(1);
+const treeSortF64Words = new Uint32Array(treeSortF64.buffer);
+const TREE_SORT_HIGH_WORD = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1 ? 1 : 0;
+const treeSortCounts = new Uint32Array(256);
+let treeSortKeyHigh = new Uint32Array(0);
+let treeSortKeyLow = new Uint32Array(0);
+let treeSortScratch = new Int32Array(0);
+
+/** Column length from which the radix sort beats the comparator sort. */
+const TREE_RADIX_MIN = 96;
+
+/**
+ * Stable ascending sort of `positions[0..n)` by `col[pos]` for float64 columns that are not
+ * float32-exact, with an LSD radix sort on the order-preserving 64-bit encoding of the values
+ * (bytes whose value is the same for every element are skipped). `positions` must hold the
+ * identity permutation `0..n-1` on entry. `-0` sorts before `+0`; the two compare equal in the
+ * split search, so the ordering of the tree is not affected.
+ */
+function radixSortPositions(col: Float64Array, positions: Int32Array, n: number): void {
+  if (treeSortKeyHigh.length < n) {
+    const size = Math.max(n, 1024);
+    treeSortKeyHigh = new Uint32Array(size);
+    treeSortKeyLow = new Uint32Array(size);
+    treeSortScratch = new Int32Array(size);
+  }
+  const keyHigh = treeSortKeyHigh;
+  const keyLow = treeSortKeyLow;
+  const low = 1 - TREE_SORT_HIGH_WORD;
+  for (let i = 0; i < n; i++) {
+    treeSortF64[0] = col[i] as number;
+    let hi = treeSortF64Words[TREE_SORT_HIGH_WORD] as number;
+    let lo = treeSortF64Words[low] as number;
+    if (hi & 0x80000000) {
+      hi = ~hi >>> 0;
+      lo = ~lo >>> 0;
+    } else {
+      hi = (hi | 0x80000000) >>> 0;
+    }
+    keyHigh[i] = hi;
+    keyLow[i] = lo;
+  }
+
+  const counts = treeSortCounts;
+  let src: Int32Array = positions;
+  let dst: Int32Array = treeSortScratch;
+  for (let pass = 0; pass < 8; pass++) {
+    const word = pass < 4 ? keyLow : keyHigh;
+    const shift = (pass & 3) * 8;
+    counts.fill(0);
+    for (let i = 0; i < n; i++) {
+      const bucket = ((word[src[i] as number] as number) >>> shift) & 255;
+      counts[bucket] = (counts[bucket] as number) + 1;
+    }
+    let skip = false;
+    let offset = 0;
+    for (let b = 0; b < 256; b++) {
+      const c = counts[b] as number;
+      if (c === n) {
+        skip = true;
+        break;
+      }
+      counts[b] = offset;
+      offset += c;
+    }
+    if (skip) continue;
+    for (let i = 0; i < n; i++) {
+      const id = src[i] as number;
+      const bucket = ((word[id] as number) >>> shift) & 255;
+      const at = counts[bucket] as number;
+      dst[at] = id;
+      counts[bucket] = at + 1;
+    }
+    const swap = src;
+    src = dst;
+    dst = swap;
+  }
+  if (src !== positions) positions.set(src.subarray(0, n));
+}
+
+/**
+ * Sort `positions[0..n)` ascending by `col[pos]`, stably.
+ *
+ * When every column value is float32-exact (the common case: features come
+ * from float32 tensors), values are bit-encoded into order-preserving
+ * integers and packed with the position into a Float64Array so V8's
+ * comparator-free typed sort applies (~3x faster than a comparator sort).
+ * Otherwise long columns use a radix sort on the float64 bits and short ones a stable
+ * comparator sort. All paths produce the same ordering of distinct values and keep the original
+ * order of equal values. `positions` must hold the identity permutation `0..n-1` on entry.
+ *
+ * @internal
+ */
+export function sortPositionsByColumn(col: Float64Array, positions: Int32Array, n: number): void {
+  // Already sorted (sorted time series, or the child of a split on this very feature): the
+  // identity permutation the callers start from is the stable result.
+  let sorted = true;
+  for (let i = 1; i < n; i++) {
+    if ((col[i] as number) < (col[i - 1] as number)) {
+      sorted = false;
+      break;
+    }
+  }
+  if (sorted) return;
+  let packable = n <= 2097152;
+  if (packable) {
+    for (let i = 0; i < n; i++) {
+      const v = col[i]!;
+      if (Math.fround(v) !== v) {
+        packable = false;
+        break;
+      }
+    }
+  }
+  if (packable) {
+    if (treeSortPacked.length < n) treeSortPacked = new Float64Array(Math.max(n, 1024));
+    const packed = treeSortPacked.subarray(0, n);
+    for (let i = 0; i < n; i++) {
+      treeSortF32[0] = col[i]!;
+      const bits = treeSortU32[0]! >>> 0;
+      const enc = bits & 0x80000000 ? ~bits >>> 0 : (bits | 0x80000000) >>> 0;
+      packed[i] = enc * 2097152 + i;
+    }
+    packed.sort();
+    for (let i = 0; i < n; i++) {
+      const key = packed[i]!;
+      positions[i] = key - Math.floor(key / 2097152) * 2097152;
+    }
+    return;
+  }
+  if (n >= TREE_RADIX_MIN) {
+    radixSortPositions(col, positions, n);
+    return;
+  }
+  positions.subarray(0, n).sort((a, b) => col[a]! - col[b]!);
+}
+
+/**
+ * Leaf for a node with per-class weighted sample `counts` (`weight` is their sum, `n` the number
+ * of samples). The predicted label is the class with the largest weight; ties go to the smallest
+ * label (`labels` is sorted ascending).
+ *
+ * @internal
+ */
+export function classLeaf(
+  counts: Float64Array,
+  weight: number,
+  n: number,
+  labels: readonly number[],
+  impurity: number
+): TreeNode {
+  const probabilities = new Array<number>(counts.length);
+  let best = 0;
+  for (let c = 0; c < counts.length; c++) {
+    const count = counts[c] as number;
+    probabilities[c] = count / weight;
+    if (count > (counts[best] as number)) best = c;
+  }
+  return {
+    isLeaf: true,
+    prediction: labels[best] as number,
+    classProbabilities: probabilities,
+    nSamples: n,
+    weightedNSamples: weight,
+    impurity,
+  };
+}
+
+/**
+ * Impurity of a node from its weighted class `counts` (`weight` is their sum): Gini, or the
+ * base-2 entropy.
+ *
+ * @internal
+ */
+export function classImpurity(counts: Float64Array, weight: number, isGini: boolean): number {
+  let sum = 0;
+  for (let c = 0; c < counts.length; c++) {
+    const count = counts[c] as number;
+    if (count <= 0) continue;
+    if (isGini) sum += count * count;
+    else sum -= count * Math.log2(count / weight);
+  }
+  return isGini ? 1 - sum / (weight * weight) : sum / weight;
+}
+
+/**
+ * Weighted mean (compensated with a second pass), minimum, maximum, total weight and variance
+ * (the regression impurity) of `y` over `indices`. `weights` are indexed like `y`; without them
+ * every sample weighs 1.
+ *
+ * @internal
+ */
+export function nodeTargetStats(
+  y: Float64Array,
+  indices: Int32Array,
+  weights?: Float64Array
+): { mean: number; lo: number; hi: number; weight: number; impurity: number } {
+  const n = indices.length;
+  let lo = Number.POSITIVE_INFINITY;
+  let hi = Number.NEGATIVE_INFINITY;
+  if (weights === undefined) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = y[indices[i] as number] as number;
+      sum += v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    const mean = sum / n;
+    let correction = 0;
+    let squares = 0;
+    for (let i = 0; i < n; i++) {
+      const d = (y[indices[i] as number] as number) - mean;
+      correction += d;
+      squares += d * d;
+    }
+    const variance = Math.max(0, squares - (correction * correction) / n) / n;
+    return { mean: mean + correction / n, lo, hi, weight: n, impurity: variance };
+  }
+  let sum = 0;
+  let weight = 0;
+  for (let i = 0; i < n; i++) {
+    const idx = indices[i] as number;
+    const v = y[idx] as number;
+    const w = weights[idx] as number;
+    sum += w * v;
+    weight += w;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const mean = sum / weight;
+  let correction = 0;
+  let squares = 0;
+  for (let i = 0; i < n; i++) {
+    const idx = indices[i] as number;
+    const w = weights[idx] as number;
+    const d = (y[idx] as number) - mean;
+    correction += w * d;
+    squares += w * d * d;
+  }
+  const variance = Math.max(0, squares - (correction * correction) / weight) / weight;
+  return { mean: mean + correction / weight, lo, hi, weight, impurity: variance };
+}
+
+/** @internal */
+export type SplitResult = {
+  readonly feature: number;
+  readonly threshold: number;
+  readonly decrease: number;
+};
+
+/** Copy of a `classWeight` setting, so `getParams` does not expose the internal map. */
+function copyClassWeight(value: TreeClassWeight | undefined): TreeClassWeight | undefined {
+  return value === undefined || typeof value === "string" ? value : { ...value };
+}
+
+// ---------------------------------------------------------------------------
+// Classifier
+// ---------------------------------------------------------------------------
+
+type ClassifierContext = {
+  readonly xc: Float64Array;
+  readonly nSamples: number;
+  readonly yCode: Int32Array;
+  readonly nClasses: number;
+  readonly labels: readonly number[];
+  /** Per-sample weights (`sampleWeight * classWeight`), `undefined` when every sample weighs 1. */
+  readonly weights: Float64Array | undefined;
+  /** Sum of the weights of all samples the tree is grown on. */
+  readonly totalWeight: number;
+  readonly sampler: TreeFeatureSampler;
+  // Scratch buffers, sized once per fit and reused by every node.
+  readonly col: Float64Array;
+  readonly positions: Int32Array;
+  readonly localLabels: Int32Array;
+  readonly remap: Int32Array;
+  readonly totalLocal: Float64Array;
+  readonly leftCounts: Float64Array;
+  readonly rightCounts: Float64Array;
+};
 
 /**
  * Decision Tree Classifier.
@@ -32,9 +763,15 @@ export type ClassificationCriterion = "gini" | "entropy" | "log_loss";
  * inferred from the data features.
  *
  * **Algorithm**: CART (Classification and Regression Trees)
- * - Uses Gini impurity for classification
- * - Recursively splits data based on feature thresholds
- * - Supports max_depth and min_samples_split for regularization
+ * - Splits on Gini impurity (default) or Shannon entropy
+ * - Recursively splits data based on feature thresholds (`x <= threshold` goes left)
+ * - Supports `maxDepth`, `minSamplesSplit`, `minSamplesLeaf`, `minImpurityDecrease`,
+ *   `maxLeafNodes` (best-first growth) and `ccpAlpha` (cost-complexity pruning) for regularization
+ * - `fit` accepts per-sample weights and the `classWeight` option weights whole classes
+ * - Ties between equally good classes resolve to the smallest class label
+ *
+ * Class labels may be any finite numbers. `predict` and `classes` are `int32` when all labels
+ * are integers and `float64` otherwise.
  *
  * @example
  * ```ts
@@ -51,549 +788,376 @@ export type ClassificationCriterion = "gini" | "entropy" | "log_loss";
  *
  * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
-/**
- * Sort `positions[0..n)` ascending by `col[pos]`, stably.
- *
- * When every column value is float32-exact (the common case: features come
- * from float32 tensors), values are bit-encoded into order-preserving
- * integers and packed with the position into a Float64Array so V8's
- * comparator-free typed sort applies (~3x faster than a comparator sort).
- * Otherwise falls back to a stable comparator sort. Both paths produce
- * identical orderings.
- */
-const treeSortF32 = new Float32Array(1);
-const treeSortU32 = new Uint32Array(treeSortF32.buffer);
-
-function sortPositionsByColumn(col: Float64Array, positions: Int32Array, n: number): void {
-  let packable = n <= 2097152;
-  if (packable) {
-    for (let i = 0; i < n; i++) {
-      const v = col[i]!;
-      if (Math.fround(v) !== v) {
-        packable = false;
-        break;
-      }
-    }
-  }
-  if (packable) {
-    const packed = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      treeSortF32[0] = col[i]!;
-      const bits = treeSortU32[0]! >>> 0;
-      const enc = bits & 0x80000000 ? ~bits >>> 0 : (bits | 0x80000000) >>> 0;
-      packed[i] = enc * 2097152 + i;
-    }
-    packed.sort();
-    for (let i = 0; i < n; i++) {
-      const key = packed[i]!;
-      positions[i] = key - Math.floor(key / 2097152) * 2097152;
-    }
-    return;
-  }
-  positions.sort((a, b) => col[a]! - col[b]!);
-}
-
 export class DecisionTreeClassifier implements Classifier {
   private maxDepth: number;
   private minSamplesSplit: number;
   private minSamplesLeaf: number;
-  private maxFeatures: number | undefined;
+  private maxFeatures: TreeMaxFeatures | undefined;
   private randomState: number | undefined;
-  private criterion: "gini" | "entropy" | "log_loss";
+  private criterion: ClassificationCriterion;
+  private minImpurityDecrease: number;
+  private maxLeafNodes: number | undefined;
+  private ccpAlpha: number;
+  private classWeight: TreeClassWeight | undefined;
 
   private tree?: TreeNode;
   private nFeatures?: number;
   private classLabels?: number[];
+  private labelDType: "int32" | "float64" = "int32";
   private fitted = false;
 
-  constructor(
-    options: {
-      readonly maxDepth?: number;
-      readonly minSamplesSplit?: number;
-      readonly minSamplesLeaf?: number;
-      readonly maxFeatures?: number;
-      readonly randomState?: number;
-      readonly criterion?: "gini" | "entropy" | "log_loss";
-    } = {}
-  ) {
-    this.maxDepth = options.maxDepth ?? 10;
-    this.minSamplesSplit = options.minSamplesSplit ?? 2;
-    this.minSamplesLeaf = options.minSamplesLeaf ?? 1;
-    this.criterion = options.criterion ?? "gini";
-    if (options.maxFeatures !== undefined) {
-      this.maxFeatures = options.maxFeatures;
-    }
-    if (options.randomState !== undefined) {
-      this.randomState = options.randomState;
-    }
-
-    if (this.randomState !== undefined && !Number.isFinite(this.randomState)) {
-      throw new InvalidParameterError(
-        `randomState must be a finite number; received ${String(this.randomState)}`,
-        "randomState",
-        this.randomState
-      );
-    }
-
-    if (!Number.isInteger(this.maxDepth) || this.maxDepth < 1) {
-      throw new InvalidParameterError(
-        `maxDepth must be an integer >= 1; received ${this.maxDepth}`,
-        "maxDepth",
-        this.maxDepth
-      );
-    }
-    if (!Number.isInteger(this.minSamplesSplit) || this.minSamplesSplit < 2) {
-      throw new InvalidParameterError(
-        `minSamplesSplit must be an integer >= 2; received ${this.minSamplesSplit}`,
-        "minSamplesSplit",
-        this.minSamplesSplit
-      );
-    }
-    if (!Number.isInteger(this.minSamplesLeaf) || this.minSamplesLeaf < 1) {
-      throw new InvalidParameterError(
-        `minSamplesLeaf must be an integer >= 1; received ${this.minSamplesLeaf}`,
-        "minSamplesLeaf",
-        this.minSamplesLeaf
-      );
-    }
-    if (
-      this.maxFeatures !== undefined &&
-      (!Number.isInteger(this.maxFeatures) || this.maxFeatures < 1)
-    ) {
-      throw new InvalidParameterError(
-        `maxFeatures must be an integer >= 1; received ${this.maxFeatures}`,
-        "maxFeatures",
-        this.maxFeatures
-      );
-    }
-  }
-
-  // One RNG per fit(), advanced across all node splits. Creating a fresh RNG
-  // per split (the old behavior) re-seeded from randomState every node and so
-  // evaluated the identical maxFeatures subset at every node, silently
-  // degrading seeded forests into a fixed random-subspace ensemble.
-  private activeRng: (() => number) | undefined;
-
-  private getRng(): () => number {
-    if (this.randomState === undefined) {
-      return Math.random;
-    }
-    let seed = this.randomState >>> 0;
-    return () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
+  /**
+   * @param options - Hyperparameters, see {@link DecisionTreeClassifierOptions}
+   * @throws {InvalidParameterError} If an option is out of range
+   */
+  constructor(options: DecisionTreeClassifierOptions = {}) {
+    this.maxDepth = checkTreeMaxDepth(options.maxDepth ?? 10);
+    this.minSamplesSplit = checkTreeInteger("minSamplesSplit", options.minSamplesSplit ?? 2, 2);
+    this.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", options.minSamplesLeaf ?? 1, 1);
+    this.criterion = checkTreeCriterion(options.criterion ?? "gini");
+    this.maxFeatures = checkTreeMaxFeatures(options.maxFeatures);
+    this.randomState = checkTreeRandomState(options.randomState);
+    this.minImpurityDecrease = checkMinImpurityDecrease(options.minImpurityDecrease ?? 0);
+    this.maxLeafNodes = checkMaxLeafNodes(options.maxLeafNodes);
+    this.ccpAlpha = checkCcpAlpha(options.ccpAlpha ?? 0);
+    this.classWeight = checkClassWeight(options.classWeight, false) as TreeClassWeight | undefined;
   }
 
   /**
    * Build a decision tree classifier from the training set (X, y).
    *
+   * Every sample counts with its weight: the impurity of a node, the split search, the class
+   * probabilities of the leaves and `minImpurityDecrease` all use weighted class counts, while
+   * `minSamplesSplit` and `minSamplesLeaf` still count samples. Samples with weight 0 are
+   * ignored. The weight of a sample is `sampleWeight[i] * classWeight[y[i]]`.
+   *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target class labels of shape (n_samples,)
+   * @param sampleWeight - Optional non-negative weights of shape (n_samples,)
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If `sampleWeight` is not 1D with one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or the weights are negative,
+   *   not finite or all zero
+   * @throws {InvalidParameterError} If `classWeight` names a label that is not in y
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
-    this.nFeatures = nFeatures;
+    const xc = toColumnMajor(toFloat64View(X), nSamples, nFeatures);
+    const yv = toFloat64View(y);
 
-    // Extract data as arrays
-    const XData: number[][] = [];
-    const yData: number[] = [];
+    const labels = [...new Set(yv)].sort((a, b) => a - b);
+    const codeOf = new Map<number, number>();
+    for (let i = 0; i < labels.length; i++) codeOf.set(labels[i] as number, i);
+    const yCode = new Int32Array(nSamples);
+    for (let i = 0; i < nSamples; i++) yCode[i] = codeOf.get(yv[i] as number) as number;
 
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      XData.push(row);
-      yData.push(Number(y.data[y.offset + i]));
+    const nClasses = labels.length;
+    let weights = sampleWeight;
+    if (this.classWeight !== undefined) {
+      const classCounts = new Float64Array(nClasses);
+      for (let i = 0; i < nSamples; i++) classCounts[yCode[i] as number]! += 1;
+      weights = combineWeights(
+        sampleWeight,
+        classWeightPerClass(this.classWeight, labels, classCounts, nSamples),
+        yCode
+      );
     }
+    const indices = positiveWeightIndices(nSamples, weights);
+    if (indices.length === 0) {
+      throw new DataValidationError("every sample has a weight of zero");
+    }
+    let totalWeight = 0;
+    for (let i = 0; i < indices.length; i++) {
+      totalWeight += weights === undefined ? 1 : (weights[indices[i] as number] as number);
+    }
+    const ctx: ClassifierContext = {
+      xc,
+      nSamples,
+      yCode,
+      nClasses,
+      labels,
+      weights,
+      totalWeight,
+      sampler: new TreeFeatureSampler(
+        nFeatures,
+        resolveTreeMaxFeatures(this.maxFeatures, nFeatures),
+        createTreeRng(this.randomState)
+      ),
+      col: new Float64Array(nSamples),
+      positions: new Int32Array(nSamples),
+      localLabels: new Int32Array(nSamples),
+      remap: new Int32Array(nClasses),
+      totalLocal: new Float64Array(nClasses),
+      leftCounts: new Float64Array(nClasses),
+      rightCounts: new Float64Array(nClasses),
+    };
 
-    // Get unique classes
-    this.classLabels = [...new Set(yData)].sort((a, b) => a - b);
-
-    // Build tree (single RNG shared across all node splits)
-    this.activeRng = this.getRng();
-    const indices = Array.from({ length: nSamples }, (_, i) => i);
-    this.tree = this.buildTree(XData, yData, indices, 0);
+    this.tree = growTree(indices, (idx, depth) => this.expandNode(ctx, idx, depth), {
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
+    });
+    this.nFeatures = nFeatures;
+    this.classLabels = labels;
+    this.labelDType = treeLabelDType(labels);
     this.fitted = true;
-
     return this;
   }
 
-  private buildTree(
-    XData: number[][],
-    yData: number[],
-    indices: number[],
-    depth: number
-  ): TreeNode {
+  private expandNode(ctx: ClassifierContext, indices: Int32Array, depth: number): ExpandResult {
     const n = indices.length;
-
-    // Check stopping conditions
-    if (depth >= this.maxDepth || n < this.minSamplesSplit || n < this.minSamplesLeaf) {
-      return {
-        isLeaf: true,
-        prediction: this.getMajorityClass(yData, indices),
-        classProbabilities: this.getClassProbabilities(yData, indices),
-      };
-    }
-
-    // Check if all samples have same class
-    const classes = new Set(indices.map((i) => yData[i]));
-    if (classes.size === 1) {
-      const firstIdx = indices[0] ?? 0;
-      return {
-        isLeaf: true,
-        prediction: yData[firstIdx] ?? 0,
-        classProbabilities: this.getClassProbabilities(yData, indices),
-      };
-    }
-
-    // Find best split
-    const { featureIndex, threshold, leftIndices, rightIndices } = this.findBestSplit(
-      XData,
-      yData,
-      indices
-    );
-
-    if (leftIndices.length === 0 || rightIndices.length === 0) {
-      return {
-        isLeaf: true,
-        prediction: this.getMajorityClass(yData, indices),
-        classProbabilities: this.getClassProbabilities(yData, indices),
-      };
-    }
-
-    // Recursively build subtrees
-    const left = this.buildTree(XData, yData, leftIndices, depth + 1);
-    const right = this.buildTree(XData, yData, rightIndices, depth + 1);
-
-    const countsOf = (idxs: number[]): Map<number, number> => {
-      const m = new Map<number, number>();
-      for (const i of idxs) m.set(yData[i] ?? 0, (m.get(yData[i] ?? 0) ?? 0) + 1);
-      return m;
-    };
-    const nodeImp = this.impurityFromCounts(countsOf(indices), indices.length);
-    const leftImp = this.impurityFromCounts(countsOf(leftIndices), leftIndices.length);
-    const rightImp = this.impurityFromCounts(countsOf(rightIndices), rightIndices.length);
-    const weightedImpurityDecrease =
-      indices.length * nodeImp - leftIndices.length * leftImp - rightIndices.length * rightImp;
-
-    return {
-      isLeaf: false,
-      featureIndex,
-      threshold,
-      left,
-      right,
-      weightedImpurityDecrease,
-    };
-  }
-
-  private getMajorityClass(yData: number[], indices: number[]): number {
-    const counts = new Map<number, number>();
-    for (const i of indices) {
-      const label = yData[i] ?? 0;
-      counts.set(label, (counts.get(label) ?? 0) + 1);
-    }
-
-    let maxCount = 0;
-    let maxLabel = 0;
-    for (const [label, count] of counts) {
-      if (count > maxCount) {
-        maxCount = count;
-        maxLabel = label;
+    const counts = new Float64Array(ctx.nClasses);
+    const { weights } = ctx;
+    let weight = n;
+    if (weights === undefined) {
+      for (let i = 0; i < n; i++) counts[ctx.yCode[indices[i] as number] as number]! += 1;
+    } else {
+      weight = 0;
+      for (let i = 0; i < n; i++) {
+        const idx = indices[i] as number;
+        const w = weights[idx] as number;
+        counts[ctx.yCode[idx] as number]! += w;
+        weight += w;
       }
     }
-    return maxLabel;
-  }
 
-  private getClassProbabilities(yData: number[], indices: number[]): number[] {
-    const labels = this.classLabels ?? [];
-    if (labels.length === 0 || indices.length === 0) {
-      return [];
-    }
-
-    const labelIndex = new Map<number, number>();
-    for (let i = 0; i < labels.length; i++) {
-      const v = labels[i];
-      if (v !== undefined) labelIndex.set(v, i);
-    }
-
-    const counts = new Array<number>(labels.length).fill(0);
-    for (const index of indices) {
-      const label = yData[index] ?? 0;
-      const idx = labelIndex.get(label);
-      if (idx !== undefined) counts[idx] = (counts[idx] ?? 0) + 1;
-    }
-
-    const invN = 1 / indices.length;
-    return counts.map((c) => c * invN);
-  }
-
-  private findBestSplit(
-    XData: number[][],
-    yData: number[],
-    indices: number[]
-  ): {
-    featureIndex: number;
-    threshold: number;
-    leftIndices: number[];
-    rightIndices: number[];
-  } {
-    let bestGini = Infinity;
-    let bestFeature = 0;
-    let bestThreshold = 0;
-    let bestLeft: number[] = [];
-    let bestRight: number[] = [];
-
-    const nFeatures = XData[0]?.length ?? 0;
-    let featureIndices = Array.from({ length: nFeatures }, (_, i) => i);
-
-    if (this.maxFeatures !== undefined && this.maxFeatures < nFeatures) {
-      const rng = this.activeRng ?? this.getRng();
-      // Fisher-Yates shuffle partial
-      for (let i = 0; i < this.maxFeatures; i++) {
-        const j = i + Math.floor(rng() * (nFeatures - i));
-        const temp = featureIndices[i];
-        if (temp !== undefined) {
-          const swapVal = featureIndices[j];
-          if (swapVal !== undefined) {
-            featureIndices[i] = swapVal;
-            featureIndices[j] = temp;
-          }
-        }
-      }
-      featureIndices = featureIndices.slice(0, this.maxFeatures);
-    }
-
-    const n = indices.length;
-    // Encode labels into a compact 0..k-1 code space once, so the scan loop
-    // uses typed count arrays instead of Maps (which dominated fit time).
-    const labelToCode = new Map<number, number>();
-    const localLabels = new Int32Array(n);
-    for (let i = 0; i < n; i++) {
-      const label = yData[indices[i]!] ?? 0;
-      let code = labelToCode.get(label);
-      if (code === undefined) {
-        code = labelToCode.size;
-        labelToCode.set(label, code);
-      }
-      localLabels[i] = code;
-    }
-    const k = labelToCode.size;
-    const totalCountsArr = new Float64Array(k);
-    for (let i = 0; i < n; i++) totalCountsArr[localLabels[i]!]! += 1;
+    let present = 0;
+    for (let c = 0; c < ctx.nClasses; c++) if ((counts[c] as number) > 0) present++;
 
     const isGini = this.criterion === "gini";
-    const impurityArr = (counts: Float64Array, size: number): number => {
-      if (isGini) {
-        let imp = 1.0;
-        for (let c = 0; c < k; c++) {
-          const pC = counts[c]! / size;
-          imp -= pC * pC;
-        }
-        return imp;
-      }
-      let entropy = 0;
-      for (let c = 0; c < k; c++) {
-        const count = counts[c]!;
-        if (count === 0) continue;
-        const pC = count / size;
-        entropy -= pC * Math.log2(pC);
-      }
-      return entropy;
+    const impurity = present === 1 ? 0 : classImpurity(counts, weight, isGini);
+    const makeLeaf = (): TreeNode => classLeaf(counts, weight, n, ctx.labels, impurity);
+
+    if (
+      depth >= this.maxDepth ||
+      n < this.minSamplesSplit ||
+      n < 2 * this.minSamplesLeaf ||
+      present === 1
+    ) {
+      return { node: makeLeaf() };
+    }
+
+    const split = this.findBestSplit(ctx, indices, counts, weight, present);
+    if (split === undefined) return { node: makeLeaf() };
+    if (!splitIsWorthwhile(split.decrease, ctx.totalWeight, this.minImpurityDecrease)) {
+      return { node: makeLeaf() };
+    }
+
+    const children = partitionIndices(
+      ctx.xc,
+      split.feature * ctx.nSamples,
+      indices,
+      split.threshold
+    );
+    if (children[0].length === 0 || children[1].length === 0) {
+      return { node: makeLeaf() };
+    }
+    return {
+      node: {
+        isLeaf: false,
+        featureIndex: split.feature,
+        threshold: split.threshold,
+        nSamples: n,
+        weightedImpurityDecrease: split.decrease,
+        impurity,
+        weightedNSamples: weight,
+      },
+      children,
+      leaf: makeLeaf,
     };
+  }
 
-    const col = new Float64Array(n);
-    const positions = new Int32Array(n);
-    const leftCountsArr = new Float64Array(k);
-    const rightCountsArr = new Float64Array(k);
+  /**
+   * Exhaustive search for the split with the lowest weighted child impurity.
+   * `counts` are the weighted class counts of the node and `weight` their sum.
+   * Returns `undefined` when no feature offers a valid split.
+   */
+  private findBestSplit(
+    ctx: ClassifierContext,
+    indices: Int32Array,
+    counts: Float64Array,
+    weight: number,
+    present: number
+  ): SplitResult | undefined {
+    const n = indices.length;
+    const { xc, nSamples, col, positions, localLabels, remap, totalLocal, weights } = ctx;
+    const { leftCounts, rightCounts, sampler } = ctx;
+    const minLeaf = this.minSamplesLeaf;
+    const isGini = this.criterion === "gini";
 
-    for (const f of featureIndices) {
-      // Extract the feature column once; the sort comparator then reads a
-      // monomorphic typed array instead of nested arrays.
-      for (let i = 0; i < n; i++) {
-        col[i] = XData[indices[i]!]?.[f] ?? 0;
-        positions[i] = i;
+    // Compact the classes present at this node into 0..present-1 so the scan loop
+    // touches small typed arrays.
+    let k = 0;
+    for (let c = 0; c < ctx.nClasses; c++) {
+      const count = counts[c] as number;
+      if (count > 0) {
+        remap[c] = k;
+        totalLocal[k] = count;
+        k++;
       }
+    }
+    for (let i = 0; i < n; i++) {
+      localLabels[i] = remap[ctx.yCode[indices[i] as number] as number] as number;
+    }
+
+    let totalSq = 0;
+    let nodeEntropy = 0;
+    for (let c = 0; c < present; c++) {
+      const count = totalLocal[c] as number;
+      totalSq += count * count;
+      nodeEntropy -= count * Math.log2(count / weight);
+    }
+
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let bestFeature = -1;
+    let bestThreshold = 0;
+
+    let visited = 0;
+    let usable = 0;
+    while (visited < sampler.nFeatures && usable < sampler.limit) {
+      const f = sampler.draw(visited);
+      visited++;
+
+      const base = f * nSamples;
+      let lo = Number.POSITIVE_INFINITY;
+      let hi = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < n; i++) {
+        const v = xc[base + (indices[i] as number)] as number;
+        col[i] = v;
+        positions[i] = i;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      if (lo === hi) continue; // constant here: cannot split, and does not use up the budget
+      usable++;
+
       sortPositionsByColumn(col, positions, n);
 
-      leftCountsArr.fill(0);
-      rightCountsArr.set(totalCountsArr);
-      let leftSize = 0;
-      let rightSize = n;
+      for (let c = 0; c < k; c++) {
+        leftCounts[c] = 0;
+        rightCounts[c] = totalLocal[c] as number;
+      }
+      // Without sample weights the sums of squared class counts are exact integers, so the Gini
+      // score below is computed without accumulated rounding error.
+      let leftSq = 0;
+      let rightSq = totalSq;
+      let leftWeight = 0;
 
       for (let i = 0; i < n - 1; i++) {
-        const pos = positions[i]!;
-        const label = localLabels[pos]!;
-        const val = col[pos]!;
-        const nextVal = col[positions[i + 1]!]!;
+        const pos = positions[i] as number;
+        const label = localLabels[pos] as number;
+        const lc = leftCounts[label] as number;
+        const rc = rightCounts[label] as number;
+        let w = 1;
+        if (weights === undefined) {
+          leftSq += 2 * lc + 1;
+          rightSq -= 2 * rc - 1;
+        } else {
+          w = weights[indices[pos] as number] as number;
+          leftSq += w * (2 * lc + w);
+          rightSq -= w * (2 * rc - w);
+        }
+        leftCounts[label] = lc + w;
+        rightCounts[label] = rc - w;
+        leftWeight += w;
 
-        rightCountsArr[label]! -= 1;
-        rightSize--;
-        leftCountsArr[label]! += 1;
-        leftSize++;
+        const val = col[pos] as number;
+        const nextVal = col[positions[i + 1] as number] as number;
+        if (val === nextVal) continue; // cannot split between equal values
 
-        if (val === nextVal) continue; // Cannot split between same values
+        const leftSize = i + 1;
+        const rightSize = n - leftSize;
+        if (leftSize < minLeaf || rightSize < minLeaf) continue;
+        const rightWeight = weight - leftWeight;
+        if (!(rightWeight > 0)) continue;
 
-        if (leftSize < this.minSamplesLeaf || rightSize < this.minSamplesLeaf) continue;
+        let score: number;
+        if (isGini) {
+          // Maximizing sum_side(sumsq / weight) minimizes the weighted Gini impurity.
+          score = leftSq / leftWeight + rightSq / rightWeight;
+        } else {
+          let childEntropy = 0;
+          for (let c = 0; c < k; c++) {
+            const l = leftCounts[c] as number;
+            if (l > 0) childEntropy -= l * Math.log2(l / leftWeight);
+            const r = rightCounts[c] as number;
+            if (r > 0) childEntropy -= r * Math.log2(r / rightWeight);
+          }
+          score = -childEntropy;
+        }
 
-        // Weighted impurity using the configured criterion (gini or
-        // entropy/log_loss), not always gini.
-        const leftImp = impurityArr(leftCountsArr, leftSize);
-        const rightImp = impurityArr(rightCountsArr, rightSize);
-        const weightedGini = (leftSize * leftImp + rightSize * rightImp) / n;
-
-        if (weightedGini < bestGini) {
-          bestGini = weightedGini;
+        if (score > bestScore) {
+          bestScore = score;
           bestFeature = f;
-          bestThreshold = (val + nextVal) / 2;
-          bestLeft = new Array(i + 1);
-          for (let q = 0; q <= i; q++) bestLeft[q] = indices[positions[q]!]!;
-          bestRight = new Array(n - i - 1);
-          for (let q = i + 1; q < n; q++) bestRight[q - i - 1] = indices[positions[q]!]!;
+          bestThreshold = splitThreshold(val, nextVal);
         }
       }
     }
 
+    if (bestFeature < 0) return undefined;
+    // weight * impurity(node) - sum_side(weight_side * impurity(side)), both criteria.
+    const decrease = isGini ? bestScore - totalSq / weight : nodeEntropy + bestScore;
     return {
-      featureIndex: bestFeature,
+      feature: bestFeature,
       threshold: bestThreshold,
-      leftIndices: bestLeft,
-      rightIndices: bestRight,
+      decrease: Math.max(0, decrease),
     };
-  }
-
-  private giniFromCounts(counts: Map<number, number>, n: number): number {
-    let impurity = 1.0;
-    for (const count of counts.values()) {
-      const p = count / n;
-      impurity -= p * p;
-    }
-    return impurity;
-  }
-
-  /** Node impurity under the configured criterion. */
-  private impurityFromCounts(counts: Map<number, number>, n: number): number {
-    if (this.criterion === "gini") return this.giniFromCounts(counts, n);
-    // entropy / log_loss: -sum p log2 p
-    let entropy = 0;
-    for (const count of counts.values()) {
-      if (count === 0) continue;
-      const p = count / n;
-      entropy -= p * Math.log2(p);
-    }
-    return entropy;
   }
 
   /**
    * Predict class labels for samples in X.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted class labels of shape (n_samples,)
+   * @returns Predicted class labels of shape (n_samples,): `int32` when all classes are
+   *   integers, `float64` otherwise
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted || !this.tree) {
-      throw new NotFittedError("DecisionTreeClassifier must be fitted before prediction");
-    }
-
+    const tree = this.requireTree();
     validatePredictInputs(X, this.nFeatures ?? 0, "DecisionTreeClassifier");
 
-    const predictions: number[] = [];
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-
+    const x = toFloat64View(X);
+    const out = new Float64Array(nSamples);
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      predictions.push(this.predictSample(sample, this.tree));
+      out[i] = descend(tree, x, i * nFeatures).prediction ?? 0;
     }
-
-    return tensor(predictions, { dtype: "int32" });
-  }
-
-  private predictSample(sample: number[], node: TreeNode): number {
-    let current = node;
-    while (!current.isLeaf) {
-      const featureValue = sample[current.featureIndex ?? 0] ?? 0;
-      if (featureValue <= (current.threshold ?? 0)) {
-        if (!current.left)
-          throw new DeepboxError("Corrupted tree: Internal node missing left child");
-        current = current.left;
-      } else {
-        if (!current.right)
-          throw new DeepboxError("Corrupted tree: Internal node missing right child");
-        current = current.right;
-      }
-    }
-    return current.prediction ?? 0;
+    return treeLabelTensor(out, this.labelDType);
   }
 
   /**
    * Predict class probabilities for samples in X.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Class probability matrix of shape (n_samples, n_classes)
+   * @returns `float64` class probability matrix of shape (n_samples, n_classes); columns
+   *   follow {@link DecisionTreeClassifier.classes}
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predictProba(X: Tensor): Tensor {
-    if (!this.fitted || !this.tree || !this.classLabels) {
-      throw new NotFittedError("DecisionTreeClassifier must be fitted before prediction");
-    }
-
+    const tree = this.requireTree();
     validatePredictInputs(X, this.nFeatures ?? 0, "DecisionTreeClassifier");
-    assertContiguous(X, "X");
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-    const nClasses = this.classLabels.length;
-
-    const proba: number[][] = [];
+    const nClasses = this.classLabels?.length ?? 0;
+    const x = toFloat64View(X);
+    const out = new Float64Array(nSamples * nClasses);
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-
-      const leaf = this.predictLeaf(sample, this.tree);
-      const row = leaf.classProbabilities
-        ? [...leaf.classProbabilities]
-        : new Array(nClasses).fill(0);
-      proba.push(row);
+      const probabilities = descend(tree, x, i * nFeatures).classProbabilities;
+      if (probabilities) out.set(probabilities, i * nClasses);
     }
-
-    return tensor(proba);
-  }
-
-  private predictLeaf(sample: number[], node: TreeNode): TreeNode {
-    if (node.isLeaf) {
-      return node;
-    }
-
-    const featureValue = sample[node.featureIndex ?? 0] ?? 0;
-    if (featureValue <= (node.threshold ?? 0)) {
-      if (!node.left) {
-        return node;
-      }
-      return this.predictLeaf(sample, node.left);
-    }
-    if (!node.right) {
-      return node;
-    }
-    return this.predictLeaf(sample, node.right);
+    return tensor(out, { dtype: "float64" }).reshape([nSamples, nClasses]);
   }
 
   /**
@@ -604,44 +1168,35 @@ export class DecisionTreeClassifier implements Classifier {
    * @returns Accuracy score in range [0, 1]
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf values
    */
   score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const predictions = this.predict(X);
-    if (predictions.size !== y.size) {
+    this.requireTree();
+    const truth = readScoreTargets(y);
+    const predictions = toFloat64View(this.predict(X));
+    if (predictions.length !== truth.length) {
       throw new ShapeError(
-        `X and y must have the same number of samples; got X=${predictions.size}, y=${y.size}`
+        `X and y must have the same number of samples; got X=${predictions.length}, y=${truth.length}`
       );
     }
     let correct = 0;
-    for (let i = 0; i < y.size; i++) {
-      if (Number(predictions.data[predictions.offset + i]) === Number(y.data[y.offset + i])) {
-        correct++;
-      }
+    for (let i = 0; i < truth.length; i++) {
+      if (predictions[i] === truth[i]) correct++;
     }
-    return correct / y.size;
+    return correct / truth.length;
   }
 
   /**
    * Get the unique class labels discovered during fitting.
    *
-   * @returns Tensor of class labels or undefined if not fitted
+   * @returns Sorted class labels (`int32` for integer labels, `float64` otherwise), or
+   *   undefined if not fitted
    */
   get classes(): Tensor | undefined {
     if (!this.fitted || !this.classLabels) {
       return undefined;
     }
-    return tensor(this.classLabels, { dtype: "int32" });
+    return treeLabelTensor(this.classLabels, this.labelDType);
   }
 
   /**
@@ -657,78 +1212,71 @@ export class DecisionTreeClassifier implements Classifier {
       maxFeatures: this.maxFeatures,
       randomState: this.randomState,
       criterion: this.criterion,
+      minImpurityDecrease: this.minImpurityDecrease,
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
+      classWeight: copyClassWeight(this.classWeight),
     };
   }
 
   /**
-   * Set the parameters of this estimator.
+   * Set the parameters of this estimator. Either all given parameters are applied or, if one
+   * is invalid, none.
    *
    * @param params - Parameters to set
+   * @returns this
    * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
   setParams(params: Record<string, unknown>): this {
+    const next = {
+      maxDepth: this.maxDepth,
+      minSamplesSplit: this.minSamplesSplit,
+      minSamplesLeaf: this.minSamplesLeaf,
+      maxFeatures: this.maxFeatures,
+      randomState: this.randomState,
+      criterion: this.criterion,
+      minImpurityDecrease: this.minImpurityDecrease,
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
+      classWeight: this.classWeight,
+    };
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "maxDepth":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
-          }
-          this.maxDepth = value;
+          next.maxDepth = checkTreeMaxDepth(value);
           break;
         case "minSamplesSplit":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
-            throw new InvalidParameterError(
-              "minSamplesSplit must be an integer >= 2",
-              "minSamplesSplit",
-              value
-            );
-          }
-          this.minSamplesSplit = value;
+          next.minSamplesSplit = checkTreeInteger("minSamplesSplit", value, 2);
           break;
         case "minSamplesLeaf":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "minSamplesLeaf must be an integer >= 1",
-              "minSamplesLeaf",
-              value
-            );
-          }
-          this.minSamplesLeaf = value;
+          next.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", value, 1);
           break;
         case "maxFeatures":
-          if (value !== undefined && (typeof value !== "number" || value < 1)) {
-            throw new InvalidParameterError(
-              "maxFeatures must be an integer >= 1 or undefined",
-              "maxFeatures",
-              value
-            );
-          }
-          this.maxFeatures = value;
+          next.maxFeatures = checkTreeMaxFeatures(value);
           break;
         case "criterion":
-          if (value !== "gini" && value !== "entropy" && value !== "log_loss") {
-            throw new InvalidParameterError(
-              `criterion must be "gini", "entropy", or "log_loss"; received ${String(value)}`,
-              "criterion",
-              value
-            );
-          }
-          this.criterion = value;
+          next.criterion = checkTreeCriterion(value);
           break;
         case "randomState":
-          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
-            throw new InvalidParameterError(
-              "randomState must be a finite number",
-              "randomState",
-              value
-            );
-          }
-          this.randomState = value;
+          next.randomState = checkTreeRandomState(value);
+          break;
+        case "minImpurityDecrease":
+          next.minImpurityDecrease = checkMinImpurityDecrease(value);
+          break;
+        case "maxLeafNodes":
+          next.maxLeafNodes = checkMaxLeafNodes(value);
+          break;
+        case "ccpAlpha":
+          next.ccpAlpha = checkCcpAlpha(value);
+          break;
+        case "classWeight":
+          next.classWeight = checkClassWeight(value, false) as TreeClassWeight | undefined;
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
+    Object.assign(this, next);
     return this;
   }
 
@@ -742,44 +1290,88 @@ export class DecisionTreeClassifier implements Classifier {
     return this.nFeatures;
   }
 
+  /**
+   * Depth of the fitted tree (a single leaf has depth 0).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  getDepth(): number {
+    return treeDepth(this.requireTree());
+  }
+
+  /**
+   * Number of leaves of the fitted tree.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  getNLeaves(): number {
+    return treeLeafCount(this.requireTree());
+  }
+
+  /**
+   * Normalized mean decrease in impurity per feature (sums to 1, or all zeros when the tree
+   * never split).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get featureImportances(): Tensor {
     if (!this.fitted || !this.tree || this.nFeatures === undefined) {
       throw new NotFittedError(
         "DecisionTreeClassifier must be fitted to access feature_importances_"
       );
     }
-    const importances = new Array<number>(this.nFeatures).fill(0);
-    computeFeatureImportances(this.tree, importances);
-    let total = 0;
-    for (let i = 0; i < importances.length; i++) {
-      total += importances[i] ?? 0;
-    }
-    if (total > 0) {
-      for (let i = 0; i < importances.length; i++) {
-        importances[i] = (importances[i] ?? 0) / total;
-      }
-    }
-    return tensor(importances);
+    return normalizedImportances(this.tree, this.nFeatures);
   }
 
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   */
   clone(): DecisionTreeClassifier {
-    return new DecisionTreeClassifier(
-      this.getParams() as {
-        maxDepth?: number;
-        minSamplesSplit?: number;
-        minSamplesLeaf?: number;
-        maxFeatures?: number;
-        randomState?: number;
-        criterion?: "gini" | "entropy" | "log_loss";
-      }
-    );
+    return new DecisionTreeClassifier(this.getParams() as DecisionTreeClassifierOptions);
+  }
+
+  private requireTree(): TreeNode {
+    if (!this.fitted || !this.tree) {
+      throw new NotFittedError("DecisionTreeClassifier must be fitted before prediction");
+    }
+    return this.tree;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Regressor
+// ---------------------------------------------------------------------------
+
+type RegressorContext = {
+  readonly xc: Float64Array;
+  readonly nSamples: number;
+  readonly y: Float64Array;
+  /** Per-sample weights, `undefined` when every sample weighs 1. */
+  readonly weights: Float64Array | undefined;
+  /** Sum of the weights of all samples the tree is grown on. */
+  readonly totalWeight: number;
+  readonly sampler: TreeFeatureSampler;
+  readonly col: Float64Array;
+  readonly positions: Int32Array;
+  readonly yLocal: Float64Array;
+};
 
 /**
  * Decision Tree Regressor.
  *
- * Uses MSE reduction to find optimal splits for regression tasks.
+ * Uses MSE reduction to find optimal splits for regression tasks. Leaves predict the mean
+ * target of their training samples; `predict` returns `float64`.
+ *
+ * @example
+ * ```ts
+ * import { DecisionTreeRegressor } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[1], [2], [3], [4]]);
+ * const y = tensor([1.5, 1.7, 3.1, 3.3]);
+ * const reg = new DecisionTreeRegressor({ maxDepth: 2 }).fit(X, y);
+ * const predictions = reg.predict(X);
+ * ```
  *
  * @see {@link https://deepbox.dev/docs/ml-tree | Deepbox Decision Trees}
  */
@@ -787,297 +1379,218 @@ export class DecisionTreeRegressor implements Regressor {
   private maxDepth: number;
   private minSamplesSplit: number;
   private minSamplesLeaf: number;
-  private maxFeatures: number | undefined;
+  private maxFeatures: TreeMaxFeatures | undefined;
   private randomState: number | undefined;
+  private minImpurityDecrease: number;
+  private maxLeafNodes: number | undefined;
+  private ccpAlpha: number;
 
   private tree?: TreeNode;
   private nFeatures?: number;
   private fitted = false;
 
-  constructor(
-    options: {
-      readonly maxDepth?: number;
-      readonly minSamplesSplit?: number;
-      readonly minSamplesLeaf?: number;
-      readonly maxFeatures?: number;
-      readonly randomState?: number;
-    } = {}
-  ) {
-    this.maxDepth = options.maxDepth ?? 10;
-    this.minSamplesSplit = options.minSamplesSplit ?? 2;
-    this.minSamplesLeaf = options.minSamplesLeaf ?? 1;
-    if (options.maxFeatures !== undefined) {
-      this.maxFeatures = options.maxFeatures;
-    }
-    if (options.randomState !== undefined) {
-      this.randomState = options.randomState;
-    }
-
-    if (this.randomState !== undefined && !Number.isFinite(this.randomState)) {
-      throw new InvalidParameterError(
-        `randomState must be a finite number; received ${String(this.randomState)}`,
-        "randomState",
-        this.randomState
-      );
-    }
-
-    if (!Number.isInteger(this.maxDepth) || this.maxDepth < 1) {
-      throw new InvalidParameterError(
-        `maxDepth must be an integer >= 1; received ${this.maxDepth}`,
-        "maxDepth",
-        this.maxDepth
-      );
-    }
-    if (!Number.isInteger(this.minSamplesSplit) || this.minSamplesSplit < 2) {
-      throw new InvalidParameterError(
-        `minSamplesSplit must be an integer >= 2; received ${this.minSamplesSplit}`,
-        "minSamplesSplit",
-        this.minSamplesSplit
-      );
-    }
-    if (!Number.isInteger(this.minSamplesLeaf) || this.minSamplesLeaf < 1) {
-      throw new InvalidParameterError(
-        `minSamplesLeaf must be an integer >= 1; received ${this.minSamplesLeaf}`,
-        "minSamplesLeaf",
-        this.minSamplesLeaf
-      );
-    }
-    if (
-      this.maxFeatures !== undefined &&
-      (!Number.isInteger(this.maxFeatures) || this.maxFeatures < 1)
-    ) {
-      throw new InvalidParameterError(
-        `maxFeatures must be an integer >= 1; received ${this.maxFeatures}`,
-        "maxFeatures",
-        this.maxFeatures
-      );
-    }
-  }
-
-  // One RNG per fit(), advanced across all node splits (see the classifier
-  // for why a per-split RNG froze the feature subset).
-  private activeRng: (() => number) | undefined;
-
-  private getRng(): () => number {
-    if (this.randomState === undefined) {
-      return Math.random;
-    }
-    let seed = this.randomState >>> 0;
-    return () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
+  /**
+   * @param options - Hyperparameters, see {@link DecisionTreeRegressorOptions}
+   * @throws {InvalidParameterError} If an option is out of range
+   */
+  constructor(options: DecisionTreeRegressorOptions = {}) {
+    this.maxDepth = checkTreeMaxDepth(options.maxDepth ?? 10);
+    this.minSamplesSplit = checkTreeInteger("minSamplesSplit", options.minSamplesSplit ?? 2, 2);
+    this.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", options.minSamplesLeaf ?? 1, 1);
+    this.maxFeatures = checkTreeMaxFeatures(options.maxFeatures);
+    this.randomState = checkTreeRandomState(options.randomState);
+    this.minImpurityDecrease = checkMinImpurityDecrease(options.minImpurityDecrease ?? 0);
+    this.maxLeafNodes = checkMaxLeafNodes(options.maxLeafNodes);
+    this.ccpAlpha = checkCcpAlpha(options.ccpAlpha ?? 0);
   }
 
   /**
    * Build a decision tree regressor from the training set (X, y).
    *
+   * With `sampleWeight` the node means, the impurity and the split search use weighted sums,
+   * while `minSamplesSplit` and `minSamplesLeaf` still count samples. Samples with weight 0 are
+   * ignored.
+   *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional non-negative weights of shape (n_samples,)
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If `sampleWeight` is not 1D with one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or the weights are negative,
+   *   not finite or all zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
-    assertContiguous(X, "X");
-    assertContiguous(y, "y");
-
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-
-    this.nFeatures = nFeatures;
-
-    const XData: number[][] = [];
-    const yData: number[] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        row.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      XData.push(row);
-      yData.push(Number(y.data[y.offset + i]));
+    const weights = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
+    const indices = positiveWeightIndices(nSamples, weights);
+    let totalWeight = 0;
+    for (let i = 0; i < indices.length; i++) {
+      totalWeight += weights === undefined ? 1 : (weights[indices[i] as number] as number);
     }
 
-    this.activeRng = this.getRng();
-    const indices = Array.from({ length: nSamples }, (_, i) => i);
-    this.tree = this.buildTree(XData, yData, indices, 0);
-    this.fitted = true;
+    const ctx: RegressorContext = {
+      xc: toColumnMajor(toFloat64View(X), nSamples, nFeatures),
+      nSamples,
+      y: toFloat64View(y),
+      weights,
+      totalWeight,
+      sampler: new TreeFeatureSampler(
+        nFeatures,
+        resolveTreeMaxFeatures(this.maxFeatures, nFeatures),
+        createTreeRng(this.randomState)
+      ),
+      col: new Float64Array(nSamples),
+      positions: new Int32Array(nSamples),
+      yLocal: new Float64Array(nSamples),
+    };
 
+    this.tree = growTree(indices, (idx, depth) => this.expandNode(ctx, idx, depth), {
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
+    });
+    this.nFeatures = nFeatures;
+    this.fitted = true;
     return this;
   }
 
-  private buildTree(
-    XData: number[][],
-    yData: number[],
-    indices: number[],
-    depth: number
-  ): TreeNode {
+  private expandNode(ctx: RegressorContext, indices: Int32Array, depth: number): ExpandResult {
     const n = indices.length;
-    if (n === 0) {
-      throw new DataValidationError("Cannot build a decision tree from an empty dataset");
+    const { y, yLocal, weights } = ctx;
+
+    const { mean, lo, hi, weight, impurity } = nodeTargetStats(y, indices, weights);
+    const leaf: TreeNode = {
+      isLeaf: true,
+      prediction: mean,
+      nSamples: n,
+      weightedNSamples: weight,
+      impurity,
+    };
+
+    if (
+      depth >= this.maxDepth ||
+      n < this.minSamplesSplit ||
+      n < 2 * this.minSamplesLeaf ||
+      lo === hi
+    ) {
+      return { node: leaf };
     }
 
-    if (depth >= this.maxDepth || n < this.minSamplesSplit || n < this.minSamplesLeaf) {
-      return { isLeaf: true, prediction: this.getMean(yData, indices) };
+    // Targets centered on the node mean keep the split scores free of the cancellation
+    // that sumL^2/nL + sumR^2/nR suffers when |mean| dwarfs the spread.
+    for (let i = 0; i < n; i++) yLocal[i] = (y[indices[i] as number] as number) - mean;
+
+    const split = this.findBestSplit(ctx, indices, weight);
+    if (split === undefined) return { node: leaf };
+    if (!splitIsWorthwhile(split.decrease, ctx.totalWeight, this.minImpurityDecrease)) {
+      return { node: leaf };
     }
 
-    const { featureIndex, threshold, leftIndices, rightIndices } = this.findBestSplit(
-      XData,
-      yData,
-      indices
+    const children = partitionIndices(
+      ctx.xc,
+      split.feature * ctx.nSamples,
+      indices,
+      split.threshold
     );
-
-    if (leftIndices.length === 0 || rightIndices.length === 0) {
-      return { isLeaf: true, prediction: this.getMean(yData, indices) };
-    }
-
-    const left = this.buildTree(XData, yData, leftIndices, depth + 1);
-    const right = this.buildTree(XData, yData, rightIndices, depth + 1);
-
-    const mse = (idxs: number[]): number => {
-      if (idxs.length === 0) return 0;
-      const mean = this.getMean(yData, idxs);
-      let s = 0;
-      for (const i of idxs) {
-        const d = (yData[i] ?? 0) - mean;
-        s += d * d;
-      }
-      return s / idxs.length;
-    };
-    const weightedImpurityDecrease =
-      indices.length * mse(indices) -
-      leftIndices.length * mse(leftIndices) -
-      rightIndices.length * mse(rightIndices);
-
+    if (children[0].length === 0 || children[1].length === 0) return { node: leaf };
     return {
-      isLeaf: false,
-      featureIndex,
-      threshold,
-      left,
-      right,
-      weightedImpurityDecrease,
+      node: {
+        isLeaf: false,
+        featureIndex: split.feature,
+        threshold: split.threshold,
+        nSamples: n,
+        weightedImpurityDecrease: split.decrease,
+        impurity,
+        weightedNSamples: weight,
+      },
+      children,
+      leaf: () => leaf,
     };
   }
 
-  private getMean(yData: number[], indices: number[]): number {
-    let sum = 0;
-    for (const i of indices) {
-      sum += yData[i] ?? 0;
-    }
-    return sum / indices.length;
-  }
-
+  /**
+   * Split search over the node's centered targets in `ctx.yLocal[0..n)`; `weight` is the sum of
+   * the sample weights of the node.
+   */
   private findBestSplit(
-    XData: number[][],
-    yData: number[],
-    indices: number[]
-  ): {
-    featureIndex: number;
-    threshold: number;
-    leftIndices: number[];
-    rightIndices: number[];
-  } {
-    let bestScore = -Infinity; // We maximize the proxy score
-    let bestFeature = 0;
-    let bestThreshold = 0;
-    let bestLeft: number[] = [];
-    let bestRight: number[] = [];
-
-    const nFeatures = XData[0]?.length ?? 0;
-    let featureIndices = Array.from({ length: nFeatures }, (_, i) => i);
-
-    if (this.maxFeatures !== undefined && this.maxFeatures < nFeatures) {
-      const rng = this.activeRng ?? this.getRng();
-      for (let i = 0; i < this.maxFeatures; i++) {
-        const j = i + Math.floor(rng() * (nFeatures - i));
-        const a = featureIndices[i];
-        const b = featureIndices[j];
-        if (a === undefined || b === undefined) {
-          throw new DeepboxError(`Internal error: featureIndices out of bounds: i=${i}, j=${j}`);
-        }
-        featureIndices[i] = b;
-        featureIndices[j] = a;
-      }
-      featureIndices = featureIndices.slice(0, this.maxFeatures);
-    }
-
+    ctx: RegressorContext,
+    indices: Int32Array,
+    weight: number
+  ): SplitResult | undefined {
     const n = indices.length;
-    let totalSum = 0;
+    const { xc, nSamples, col, positions, yLocal, sampler, weights } = ctx;
+    const minLeaf = this.minSamplesLeaf;
 
-    for (const i of indices) {
-      const yVal = yData[i] ?? 0;
-      totalSum += yVal;
+    let totalSum = 0;
+    for (let i = 0; i < n; i++) {
+      const w = weights === undefined ? 1 : (weights[indices[i] as number] as number);
+      totalSum += w * (yLocal[i] as number);
     }
 
-    // Column extraction + local-position sort: the comparator reads a
-    // monomorphic typed array instead of nested arrays (see classifier).
-    const col = new Float64Array(n);
-    const yLocal = new Float64Array(n);
-    const positions = new Int32Array(n);
-    for (let i = 0; i < n; i++) yLocal[i] = yData[indices[i]!] ?? 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let bestFeature = -1;
+    let bestThreshold = 0;
 
-    for (const f of featureIndices) {
+    let visited = 0;
+    let usable = 0;
+    while (visited < sampler.nFeatures && usable < sampler.limit) {
+      const f = sampler.draw(visited);
+      visited++;
+
+      const base = f * nSamples;
+      let lo = Number.POSITIVE_INFINITY;
+      let hi = Number.NEGATIVE_INFINITY;
       for (let i = 0; i < n; i++) {
-        col[i] = XData[indices[i]!]?.[f] ?? 0;
+        const v = xc[base + (indices[i] as number)] as number;
+        col[i] = v;
         positions[i] = i;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
       }
+      if (lo === hi) continue;
+      usable++;
+
       sortPositionsByColumn(col, positions, n);
 
       let leftSum = 0;
-      let leftCnt = 0;
-      let rightSum = totalSum;
-      let rightCnt = n;
-
+      let leftWeight = 0;
       for (let i = 0; i < n - 1; i++) {
-        const pos = positions[i]!;
-        const val = col[pos]!;
-        const nextVal = col[positions[i + 1]!]!;
-        const yVal = yLocal[pos]!;
+        const pos = positions[i] as number;
+        const w = weights === undefined ? 1 : (weights[indices[pos] as number] as number);
+        leftSum += w * (yLocal[pos] as number);
+        leftWeight += w;
 
-        // Move from Right to Left
-        leftSum += yVal;
-        leftCnt++;
-        rightSum -= yVal;
-        rightCnt--;
+        const val = col[pos] as number;
+        const nextVal = col[positions[i + 1] as number] as number;
+        if (val === nextVal) continue; // cannot split between equal values
 
-        if (val === nextVal) continue; // Cannot split between same values
+        const leftCnt = i + 1;
+        const rightCnt = n - leftCnt;
+        if (leftCnt < minLeaf || rightCnt < minLeaf) continue;
+        const rightWeight = weight - leftWeight;
+        if (!(rightWeight > 0)) continue;
 
-        if (leftCnt < this.minSamplesLeaf || rightCnt < this.minSamplesLeaf) continue;
-
-        // Proxy score to maximize: (SumL^2 / nL) + (SumR^2 / nR)
-        // This is equivalent to minimizing weighted MSE
-        const score = (leftSum * leftSum) / leftCnt + (rightSum * rightSum) / rightCnt;
-
+        // Maximizing sumL^2/WL + sumR^2/WR minimizes the weighted child MSE.
+        const rightSum = totalSum - leftSum;
+        const score = (leftSum * leftSum) / leftWeight + (rightSum * rightSum) / rightWeight;
         if (score > bestScore) {
           bestScore = score;
           bestFeature = f;
-          bestThreshold = (val + nextVal) / 2;
-          bestLeft = new Array(i + 1);
-          for (let q = 0; q <= i; q++) bestLeft[q] = indices[positions[q]!]!;
-          bestRight = new Array(n - i - 1);
-          for (let q = i + 1; q < n; q++) bestRight[q - i - 1] = indices[positions[q]!]!;
+          bestThreshold = splitThreshold(val, nextVal);
         }
       }
     }
 
-    // If no split found (e.g. pure node or all features constant), return empty
-    if (bestScore === -Infinity) {
-      return {
-        featureIndex: 0,
-        threshold: 0,
-        leftIndices: [],
-        rightIndices: [],
-      };
-    }
-
+    if (bestFeature < 0) return undefined;
+    // W * mse(node) - WL * mse(left) - WR * mse(right) on the centered targets.
     return {
-      featureIndex: bestFeature,
+      feature: bestFeature,
       threshold: bestThreshold,
-      leftIndices: bestLeft,
-      rightIndices: bestRight,
+      decrease: Math.max(0, bestScore - (totalSum * totalSum) / weight),
     };
   }
 
@@ -1085,114 +1598,101 @@ export class DecisionTreeRegressor implements Regressor {
    * Predict target values for samples in X.
    *
    * @param X - Samples of shape (n_samples, n_features)
-   * @returns Predicted values of shape (n_samples,)
+   * @returns `float64` predictions of shape (n_samples,)
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If X has wrong dimensions or feature count
    * @throws {DataValidationError} If X contains NaN/Inf values
    */
   predict(X: Tensor): Tensor {
-    if (!this.fitted || !this.tree) {
-      throw new NotFittedError("DecisionTreeRegressor must be fitted before prediction");
-    }
-
+    const tree = this.requireTree();
     validatePredictInputs(X, this.nFeatures ?? 0, "DecisionTreeRegressor");
-    assertContiguous(X, "X");
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
-
-    const predictions: number[] = [];
-
+    const x = toFloat64View(X);
+    const out = new Float64Array(nSamples);
     for (let i = 0; i < nSamples; i++) {
-      const sample: number[] = [];
-      for (let j = 0; j < nFeatures; j++) {
-        sample.push(Number(X.data[X.offset + i * nFeatures + j]));
-      }
-      predictions.push(this.predictSample(sample, this.tree));
+      out[i] = descend(tree, x, i * nFeatures).prediction ?? 0;
     }
-
-    return tensor(predictions);
+    return tensor(out, { dtype: "float64" });
   }
 
   /**
    * Rewrite each leaf's prediction via `fn(oldValue)`. Used by gradient
    * boosting to apply the TreeBoost Newton leaf-value update so that both
-   * training and inference use the corrected terminal values.
+   * training and inference use the corrected terminal values. Leaves are visited
+   * left to right (depth first).
    */
   remapLeaves(fn: (leafValue: number) => number): void {
     if (!this.tree) return;
-    const walk = (node: TreeNode): TreeNode => {
-      if (node.isLeaf) {
-        return { ...node, prediction: fn(node.prediction ?? 0) };
+    const copyOf = (node: TreeNode): MutableTreeNode =>
+      node.isLeaf ? { ...node, prediction: fn(node.prediction ?? 0) } : { ...node };
+    let root: MutableTreeNode | undefined;
+    type Job = { source: TreeNode; attach: (copy: MutableTreeNode) => void };
+    const stack: Job[] = [
+      {
+        source: this.tree,
+        attach: (copy) => {
+          root = copy;
+        },
+      },
+    ];
+    for (let job = stack.pop(); job !== undefined; job = stack.pop()) {
+      const copy = copyOf(job.source);
+      job.attach(copy);
+      const { left, right } = job.source;
+      if (right) {
+        stack.push({
+          source: right,
+          attach: (child) => {
+            copy.right = child;
+          },
+        });
       }
-      return {
-        ...node,
-        ...(node.left ? { left: walk(node.left) } : {}),
-        ...(node.right ? { right: walk(node.right) } : {}),
-      };
-    };
-    this.tree = walk(this.tree);
-  }
-
-  private predictSample(sample: number[], node: TreeNode): number {
-    if (node.isLeaf) {
-      return node.prediction ?? 0;
+      if (left) {
+        stack.push({
+          source: left,
+          attach: (child) => {
+            copy.left = child;
+          },
+        });
+      }
     }
-
-    const featureValue = sample[node.featureIndex ?? 0] ?? 0;
-    if (featureValue <= (node.threshold ?? 0)) {
-      if (!node.left) throw new DeepboxError("Corrupted tree: Internal node missing left child");
-      return this.predictSample(sample, node.left);
-    } else {
-      if (!node.right) throw new DeepboxError("Corrupted tree: Internal node missing right child");
-      return this.predictSample(sample, node.right);
-    }
+    this.tree = root as unknown as TreeNode;
   }
 
   /**
    * Return the R² score on the given test data and target values.
    *
-   * R² = 1 - SS_res / SS_tot.
+   * R² = 1 - SS_res / SS_tot. When all targets are equal the score is 1 for a perfect
+   * prediction and 0 otherwise.
    *
    * @param X - Test samples of shape (n_samples, n_features)
    * @param y - True target values of shape (n_samples,)
    * @returns R² score (best possible is 1.0, can be negative)
    * @throws {NotFittedError} If the model has not been fitted
    * @throws {ShapeError} If y is not 1-dimensional or sample counts mismatch
-   * @throws {DataValidationError} If y contains NaN/Inf values
+   * @throws {DataValidationError} If y is empty or contains NaN/Inf values
    */
   score(X: Tensor, y: Tensor): number {
-    if (y.ndim !== 1) {
-      throw new ShapeError(`y must be 1-dimensional; got ndim=${y.ndim}`);
-    }
-    assertContiguous(y, "y");
-    for (let i = 0; i < y.size; i++) {
-      const val = y.data[y.offset + i] ?? 0;
-      if (!Number.isFinite(val)) {
-        throw new DataValidationError("y contains non-finite values (NaN or Inf)");
-      }
-    }
-    const predictions = this.predict(X);
-    if (predictions.size !== y.size) {
+    this.requireTree();
+    const truth = readScoreTargets(y);
+    const predictions = toFloat64View(this.predict(X));
+    if (predictions.length !== truth.length) {
       throw new ShapeError(
-        `X and y must have the same number of samples; got X=${predictions.size}, y=${y.size}`
+        `X and y must have the same number of samples; got X=${predictions.length}, y=${truth.length}`
       );
     }
 
-    // Calculate R² score
+    let yMean = 0;
+    for (let i = 0; i < truth.length; i++) yMean += truth[i] as number;
+    yMean /= truth.length;
+
     let ssRes = 0;
     let ssTot = 0;
-    let yMean = 0;
-
-    for (let i = 0; i < y.size; i++) {
-      yMean += Number(y.data[y.offset + i]);
-    }
-    yMean /= y.size;
-
-    for (let i = 0; i < y.size; i++) {
-      const yTrue = Number(y.data[y.offset + i]);
-      const yPred = Number(predictions.data[predictions.offset + i]);
-      ssRes += (yTrue - yPred) ** 2;
+    for (let i = 0; i < truth.length; i++) {
+      const yTrue = truth[i] as number;
+      ssRes += (yTrue - (predictions[i] as number)) ** 2;
       ssTot += (yTrue - yMean) ** 2;
     }
 
@@ -1211,68 +1711,62 @@ export class DecisionTreeRegressor implements Regressor {
       minSamplesLeaf: this.minSamplesLeaf,
       maxFeatures: this.maxFeatures,
       randomState: this.randomState,
+      minImpurityDecrease: this.minImpurityDecrease,
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
     };
   }
 
   /**
-   * Set the parameters of this estimator.
+   * Set the parameters of this estimator. Either all given parameters are applied or, if one
+   * is invalid, none.
    *
    * @param params - Parameters to set
+   * @returns this
    * @throws {InvalidParameterError} If a parameter value is invalid or unknown
    */
   setParams(params: Record<string, unknown>): this {
+    const next = {
+      maxDepth: this.maxDepth,
+      minSamplesSplit: this.minSamplesSplit,
+      minSamplesLeaf: this.minSamplesLeaf,
+      maxFeatures: this.maxFeatures,
+      randomState: this.randomState,
+      minImpurityDecrease: this.minImpurityDecrease,
+      maxLeafNodes: this.maxLeafNodes,
+      ccpAlpha: this.ccpAlpha,
+    };
     for (const [key, value] of Object.entries(params)) {
       switch (key) {
         case "maxDepth":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError("maxDepth must be an integer >= 1", "maxDepth", value);
-          }
-          this.maxDepth = value;
+          next.maxDepth = checkTreeMaxDepth(value);
           break;
         case "minSamplesSplit":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 2) {
-            throw new InvalidParameterError(
-              "minSamplesSplit must be an integer >= 2",
-              "minSamplesSplit",
-              value
-            );
-          }
-          this.minSamplesSplit = value;
+          next.minSamplesSplit = checkTreeInteger("minSamplesSplit", value, 2);
           break;
         case "minSamplesLeaf":
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-            throw new InvalidParameterError(
-              "minSamplesLeaf must be an integer >= 1",
-              "minSamplesLeaf",
-              value
-            );
-          }
-          this.minSamplesLeaf = value;
+          next.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", value, 1);
           break;
         case "maxFeatures":
-          if (value !== undefined && (typeof value !== "number" || value < 1)) {
-            throw new InvalidParameterError(
-              "maxFeatures must be an integer >= 1 or undefined",
-              "maxFeatures",
-              value
-            );
-          }
-          this.maxFeatures = value;
+          next.maxFeatures = checkTreeMaxFeatures(value);
           break;
         case "randomState":
-          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
-            throw new InvalidParameterError(
-              "randomState must be a finite number",
-              "randomState",
-              value
-            );
-          }
-          this.randomState = value;
+          next.randomState = checkTreeRandomState(value);
+          break;
+        case "minImpurityDecrease":
+          next.minImpurityDecrease = checkMinImpurityDecrease(value);
+          break;
+        case "maxLeafNodes":
+          next.maxLeafNodes = checkMaxLeafNodes(value);
+          break;
+        case "ccpAlpha":
+          next.ccpAlpha = checkCcpAlpha(value);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
+    Object.assign(this, next);
     return this;
   }
 
@@ -1286,49 +1780,52 @@ export class DecisionTreeRegressor implements Regressor {
     return this.nFeatures;
   }
 
+  /**
+   * Depth of the fitted tree (a single leaf has depth 0).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  getDepth(): number {
+    return treeDepth(this.requireTree());
+  }
+
+  /**
+   * Number of leaves of the fitted tree.
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
+  getNLeaves(): number {
+    return treeLeafCount(this.requireTree());
+  }
+
+  /**
+   * Normalized mean decrease in impurity per feature (sums to 1, or all zeros when the tree
+   * never split).
+   *
+   * @throws {NotFittedError} If the model has not been fitted
+   */
   get featureImportances(): Tensor {
     if (!this.fitted || !this.tree || this.nFeatures === undefined) {
       throw new NotFittedError(
         "DecisionTreeRegressor must be fitted to access feature_importances_"
       );
     }
-    const importances = new Array<number>(this.nFeatures).fill(0);
-    computeFeatureImportances(this.tree, importances);
-    let total = 0;
-    for (let i = 0; i < importances.length; i++) {
-      total += importances[i] ?? 0;
-    }
-    if (total > 0) {
-      for (let i = 0; i < importances.length; i++) {
-        importances[i] = (importances[i] ?? 0) / total;
-      }
-    }
-    return tensor(importances);
+    return normalizedImportances(this.tree, this.nFeatures);
   }
 
+  /**
+   * Create an unfitted copy with the same hyperparameters.
+   */
   clone(): DecisionTreeRegressor {
-    return new DecisionTreeRegressor(
-      this.getParams() as {
-        maxDepth?: number;
-        minSamplesSplit?: number;
-        minSamplesLeaf?: number;
-        maxFeatures?: number;
-        randomState?: number;
-      }
-    );
+    return new DecisionTreeRegressor(this.getParams() as DecisionTreeRegressorOptions);
   }
-}
 
-function computeFeatureImportances(node: TreeNode, importances: number[]): void {
-  if (node.isLeaf) return;
-  const fi = node.featureIndex ?? 0;
-  if (fi < importances.length) {
-    // Mean-decrease-in-impurity: accumulate the weighted impurity decrease
-    // this split produced (sklearn convention), not a raw +1 split count.
-    importances[fi] = (importances[fi] ?? 0) + (node.weightedImpurityDecrease ?? 0);
+  private requireTree(): TreeNode {
+    if (!this.fitted || !this.tree) {
+      throw new NotFittedError("DecisionTreeRegressor must be fitted before prediction");
+    }
+    return this.tree;
   }
-  if (node.left) computeFeatureImportances(node.left, importances);
-  if (node.right) computeFeatureImportances(node.right, importances);
 }
 
 /**
@@ -1337,19 +1834,23 @@ function computeFeatureImportances(node: TreeNode, importances: number[]): void 
  * Works with both DecisionTreeClassifier and DecisionTreeRegressor.
  *
  * @param tree - A fitted DecisionTreeClassifier or DecisionTreeRegressor
- * @param options - Optional feature names and formatting options
+ * @param options - Optional feature names and the number of decimals (0 to 100, default 2)
  * @returns Multi-line string representation of the tree
+ * @throws {NotFittedError} If the tree has not been fitted
+ * @throws {InvalidParameterError} If `decimals` is not an integer in [0, 100]
  *
  * @example
  * ```ts
  * const clf = new DecisionTreeClassifier({ maxDepth: 3 });
  * clf.fit(X, y);
- * console.log(export_text(clf));
+ * console.log(exportText(clf));
  * // |--- feature_1 <= 3.50
  * // |   |--- class: 0
  * // |--- feature_1 > 3.50
  * // |   |--- class: 1
  * ```
+ *
+ * @deprecated Prefer {@link exportText}.
  */
 export function export_text(
   tree: DecisionTreeClassifier | DecisionTreeRegressor,
@@ -1361,6 +1862,13 @@ export function export_text(
   }
 
   const decimals = options.decimals ?? 2;
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 100) {
+    throw new InvalidParameterError(
+      `decimals must be an integer in [0, 100]; received ${String(decimals)}`,
+      "decimals",
+      decimals
+    );
+  }
   const featureNames = options.featureNames;
   const lines: string[] = [];
 
@@ -1371,38 +1879,63 @@ export function export_text(
     return `feature_${idx}`;
   }
 
-  function recurse(node: TreeNode, prefix: string, _isLast: boolean): void {
-    const connector = "|--- ";
+  // Explicit stack instead of recursion: an entry is either a finished line or a node still to
+  // print, so very deep trees do not overflow the call stack.
+  type Entry = string | { readonly node: TreeNode; readonly prefix: string };
+  const connector = "|--- ";
+  const stack: Entry[] = [{ node: root, prefix: "" }];
+  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
+    if (typeof entry === "string") {
+      lines.push(entry);
+      continue;
+    }
+    const { node, prefix } = entry;
     if (node.isLeaf) {
+      if (node.classProbabilities !== undefined) {
+        // Class labels are printed exactly as they are stored.
+        lines.push(`${prefix}${connector}class: ${String(node.prediction ?? "?")}`);
+        continue;
+      }
       const val =
         node.prediction !== undefined
           ? Number.isInteger(node.prediction)
             ? String(node.prediction)
             : node.prediction.toFixed(decimals)
           : "?";
-      if (node.classProbabilities !== undefined) {
-        lines.push(`${prefix}${connector}class: ${val}`);
-      } else {
-        lines.push(`${prefix}${connector}value: ${val}`);
-      }
-      return;
+      lines.push(`${prefix}${connector}value: ${val}`);
+      continue;
     }
 
-    const fi = node.featureIndex ?? 0;
+    const fname = featureName(node.featureIndex ?? 0);
     const thresh = (node.threshold ?? 0).toFixed(decimals);
-    const fname = featureName(fi);
-
     lines.push(`${prefix}${connector}${fname} <= ${thresh}`);
-    if (node.left) {
-      recurse(node.left, `${prefix}|   `, true);
-    }
-
-    lines.push(`${prefix}${connector}${fname} > ${thresh}`);
-    if (node.right) {
-      recurse(node.right, `${prefix}|   `, false);
-    }
+    if (node.right) stack.push({ node: node.right, prefix: `${prefix}|   ` });
+    stack.push(`${prefix}${connector}${fname} > ${thresh}`);
+    if (node.left) stack.push({ node: node.left, prefix: `${prefix}|   ` });
   }
-
-  recurse(root, "", true);
   return lines.join("\n");
 }
+
+/**
+ * Build a text representation of a decision tree.
+ *
+ * Works with both DecisionTreeClassifier and DecisionTreeRegressor.
+ *
+ * @param tree - A fitted DecisionTreeClassifier or DecisionTreeRegressor
+ * @param options - Optional feature names and the number of decimals (0 to 100, default 2)
+ * @returns Multi-line string representation of the tree
+ * @throws {NotFittedError} If the tree has not been fitted
+ * @throws {InvalidParameterError} If `decimals` is not an integer in [0, 100]
+ *
+ * @example
+ * ```ts
+ * const clf = new DecisionTreeClassifier({ maxDepth: 3 });
+ * clf.fit(X, y);
+ * console.log(exportText(clf));
+ * // |--- feature_1 <= 3.50
+ * // |   |--- class: 0
+ * // |--- feature_1 > 3.50
+ * // |   |--- class: 1
+ * ```
+ */
+export const exportText = export_text;

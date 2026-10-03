@@ -1,5 +1,5 @@
 """
-Benchmark 05 — Machine Learning
+Benchmark 05: Machine Learning
 scikit-learn
 """
 
@@ -49,7 +49,7 @@ from sklearn.manifold import TSNE
 from utils import run, create_suite, header, footer
 
 suite = create_suite("ml", "scikit-learn")
-header("Benchmark 05 — Machine Learning", "scikit-learn")
+header("Benchmark 05: Machine Learning", "scikit-learn")
 
 # ── Data generators ──────────────────────────────────────
 

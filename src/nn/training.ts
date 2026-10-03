@@ -12,6 +12,16 @@
 import { InvalidParameterError } from "../core";
 import type { Module } from "./module/Module";
 
+function assertMetric(metric: unknown): asserts metric is number {
+  if (typeof metric !== "number") {
+    throw new InvalidParameterError(
+      `metric must be a number; received ${typeof metric}`,
+      "metric",
+      metric
+    );
+  }
+}
+
 /**
  * Early stopping callback to terminate training when a monitored metric
  * stops improving.
@@ -95,10 +105,14 @@ export class EarlyStopping {
   /**
    * Report the current metric value and check if training should stop.
    *
+   * A NaN metric never counts as an improvement, so it consumes patience.
+   *
    * @param metric - Current metric value
    * @returns true if training should stop, false otherwise
+   * @throws {InvalidParameterError} If `metric` is not a number
    */
   step(metric: number): boolean {
+    assertMetric(metric);
     this.epochCount++;
 
     const improved =
@@ -167,6 +181,7 @@ export class EarlyStopping {
  * for (const batch of dataLoader) {
  *   const loss = forward(batch);
  *   backward(loss);
+ *   console.log(`loss ${loss.item()}`);
  *
  *   if (accumulator.step()) {
  *     // Time to update: 4 mini-batches accumulated
@@ -307,11 +322,16 @@ export class ModelCheckpoint {
   /**
    * Check the metric and save model state if improved.
    *
+   * The state is saved only on a strict improvement, so a NaN metric never
+   * overwrites a saved checkpoint.
+   *
    * @param model - The model to checkpoint
    * @param metric - Current metric value
    * @returns true if the model state was saved (metric improved), false otherwise
+   * @throws {InvalidParameterError} If `metric` is not a number
    */
   step(model: Module, metric: number): boolean {
+    assertMetric(metric);
     this.epochCount++;
 
     const improved = this.mode === "min" ? metric < this.bestScore : metric > this.bestScore;

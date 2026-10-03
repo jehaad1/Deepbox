@@ -1,14 +1,14 @@
 /**
  * Example 36: Kernel SVM & Anomaly Detection
  *
- * New in v1.0.0: Support Vector Machines with kernel tricks (SVC, SVR, NuSVC,
- * NuSVR, OneClassSVM) and anomaly detection (IsolationForest, LocalOutlierFactor).
+ * Kernel support vector machines (SVC, NuSVC, SVR) and anomaly detectors
+ * (IsolationForest, LocalOutlierFactor, OneClassSVM).
  */
 
 import { makeClassification, makeRegression } from "deepbox/datasets";
 import { accuracy, r2Score } from "deepbox/metrics";
 import { IsolationForest, LocalOutlierFactor, NuSVC, OneClassSVM, SVC, SVR } from "deepbox/ml";
-import { tensor } from "deepbox/ndarray";
+import { type Tensor, tensor } from "deepbox/ndarray";
 import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
 
 console.log("=".repeat(60));
@@ -30,34 +30,37 @@ const [XClass, yClass] = makeClassification({
 const [XReg, yReg] = makeRegression({
   nSamples: 150,
   nFeatures: 5,
-  noise: 5,
+  noise: 0.5,
   randomState: 42,
 });
 
-// Scale features for SVM (important for kernel methods)
+const [XTrainRaw, XTestRaw, yTrain, yTest] = trainTestSplit(XClass, yClass, {
+  testSize: 0.25,
+  randomState: 42,
+});
+
+const [XTrainRegRaw, XTestRegRaw, yTrainR, yTestR] = trainTestSplit(XReg, yReg, {
+  testSize: 0.25,
+  randomState: 42,
+});
+
+// Kernel methods are sensitive to feature scale. Fit the scaler on the training
+// rows only, then apply it to the test rows.
 const scaler = new StandardScaler();
-const XClassScaled = scaler.fitTransform(XClass);
+const XTrain = scaler.fitTransform(XTrainRaw);
+const XTest = scaler.transform(XTestRaw);
 
 const scalerReg = new StandardScaler();
-const XRegScaled = scalerReg.fitTransform(XReg);
-
-const [XTrain, XTest, yTrain, yTest] = trainTestSplit(XClassScaled, yClass, {
-  testSize: 0.25,
-  randomState: 42,
-});
-
-const [XTrainR, XTestR, yTrainR, yTestR] = trainTestSplit(XRegScaled, yReg, {
-  testSize: 0.25,
-  randomState: 42,
-});
+const XTrainR = scalerReg.fitTransform(XTrainRegRaw);
+const XTestR = scalerReg.transform(XTestRegRaw);
 
 // ============================================================================
 // Part 1: SVC with RBF Kernel
 // ============================================================================
-console.log("\n🎯 Part 1: SVC with RBF Kernel");
+console.log("\nPart 1: SVC with RBF Kernel");
 console.log("-".repeat(60));
 
-// SVC uses the kernel trick to find nonlinear decision boundaries
+// SVC separates the classes with the widest margin in a kernel-induced feature space
 const svcRbf = new SVC({
   C: 1.0,
   kernel: "rbf",
@@ -74,7 +77,7 @@ console.log(`  Accuracy: ${(Number(svcRbfAcc) * 100).toFixed(2)}%`);
 // ============================================================================
 // Part 2: SVC with Different Kernels
 // ============================================================================
-console.log("\n🔀 Part 2: SVC Kernel Comparison");
+console.log("\nPart 2: SVC Kernel Comparison");
 console.log("-".repeat(60));
 
 // Compare different kernel functions
@@ -83,31 +86,32 @@ for (const kernel of ["linear", "poly", "rbf", "sigmoid"] as const) {
   svc.fit(XTrain, yTrain);
   const pred = svc.predict(XTest);
   const acc = accuracy(yTest, pred);
-  console.log(`  ${kernel.padEnd(8)} kernel — Accuracy: ${(Number(acc) * 100).toFixed(2)}%`);
+  console.log(`  ${kernel.padEnd(8)} kernel: Accuracy: ${(Number(acc) * 100).toFixed(2)}%`);
 }
 
 // ============================================================================
 // Part 3: SVC with Regularization Tuning
 // ============================================================================
-console.log("\n⚙️  Part 3: SVC Regularization (C parameter)");
+console.log("\nPart 3: SVC Regularization (C parameter)");
 console.log("-".repeat(60));
 
-// C controls the trade-off between margin width and classification error
+// A small C allows a wide margin with many errors, a large C punishes errors harder.
+// At C=0.01 the model underfits, which shows in the accuracy.
 for (const C of [0.01, 0.1, 1.0, 10.0, 100.0]) {
   const svc = new SVC({ C, kernel: "rbf", gamma: "scale" });
   svc.fit(XTrain, yTrain);
   const pred = svc.predict(XTest);
   const acc = accuracy(yTest, pred);
-  console.log(`  C=${String(C).padEnd(6)} — Accuracy: ${(Number(acc) * 100).toFixed(2)}%`);
+  console.log(`  C=${String(C).padEnd(6)}: Accuracy: ${(Number(acc) * 100).toFixed(2)}%`);
 }
 
 // ============================================================================
 // Part 4: NuSVC
 // ============================================================================
-console.log("\n📊 Part 4: NuSVC");
+console.log("\nPart 4: NuSVC");
 console.log("-".repeat(60));
 
-// NuSVC uses nu parameter instead of C to control the number of support vectors
+// NuSVC replaces C with nu, a bound on the fraction of margin errors and of support vectors
 const nuSvc = new NuSVC({
   nu: 0.5,
   kernel: "rbf",
@@ -124,10 +128,10 @@ console.log(`  Accuracy: ${(Number(nuAcc) * 100).toFixed(2)}%`);
 // ============================================================================
 // Part 5: SVR (Support Vector Regression)
 // ============================================================================
-console.log("\n📈 Part 5: SVR (Support Vector Regression)");
+console.log("\nPart 5: SVR (Support Vector Regression)");
 console.log("-".repeat(60));
 
-// SVR applies the kernel trick to regression problems
+// SVR fits a function within an epsilon tube around the targets
 const svr = new SVR({
   C: 1.0,
   kernel: "rbf",
@@ -147,16 +151,20 @@ for (const kernel of ["linear", "rbf", "poly"] as const) {
   sv.fit(XTrainR, yTrainR);
   const pred = sv.predict(XTestR);
   const r2 = r2Score(yTestR, pred);
-  console.log(`  ${kernel.padEnd(8)} kernel — R²: ${Number(r2).toFixed(4)}`);
+  console.log(`  ${kernel.padEnd(8)} kernel: R²: ${Number(r2).toFixed(4)}`);
 }
 
 // ============================================================================
 // Part 6: Isolation Forest (Anomaly Detection)
 // ============================================================================
-console.log("\n🌲 Part 6: Isolation Forest");
+console.log("\nPart 6: Isolation Forest");
 console.log("-".repeat(60));
 
-// Create normal data with some outliers
+// Rows 0 to 14 form one cluster. The last three rows (15, 16 and 17) are planted outliers.
+// The detectors return 1 for an inlier and -1 for an outlier.
+const outlierRows = (labels: Tensor): number[] =>
+  (labels.toArray() as number[]).flatMap((label, row) => (label === -1 ? [row] : []));
+
 const normalData = tensor([
   [1, 2],
   [1.5, 1.8],
@@ -175,10 +183,10 @@ const normalData = tensor([
   [1.4, 1.8],
   [10, 10],
   [-5, -5],
-  [8, -3], // outliers
+  [8, -3],
 ]);
 
-// IsolationForest detects anomalies by how quickly points are isolated
+// IsolationForest isolates points with random splits. Outliers need fewer splits.
 const iforest = new IsolationForest({
   nEstimators: 100,
   contamination: 0.15,
@@ -190,24 +198,20 @@ const ifoLabels = iforest.predict(normalData);
 const ifoScores = iforest.scoreSamples(normalData);
 
 console.log("Isolation Forest (100 trees, contamination=0.15):");
-console.log(`  Labels (1=inlier, -1=outlier): ${ifoLabels.toString()}`);
 console.log(`  Anomaly scores: ${ifoScores.toString()}`);
 
-// Count detected outliers
-const labelData = ifoLabels.data as Int32Array;
-let outlierCount = 0;
-for (let i = 0; i < labelData.length; i++) {
-  if (labelData[i] === -1) outlierCount++;
-}
-console.log(`  Detected ${outlierCount} outliers out of ${normalData.shape[0]} samples`);
+const ifoOutliers = outlierRows(ifoLabels);
+console.log(
+  `  Outlier rows: [${ifoOutliers.join(", ")}] (${ifoOutliers.length} of ${normalData.shape[0]})`
+);
 
 // ============================================================================
 // Part 7: Local Outlier Factor (LOF)
 // ============================================================================
-console.log("\n🔍 Part 7: Local Outlier Factor (LOF)");
+console.log("\nPart 7: Local Outlier Factor (LOF)");
 console.log("-".repeat(60));
 
-// LOF measures local deviation of density compared to neighbors
+// LOF compares the density around a point with the density around its neighbors
 const lof = new LocalOutlierFactor({
   nNeighbors: 5,
   contamination: 0.15,
@@ -217,22 +221,19 @@ lof.fit(normalData);
 const lofLabels = lof.predict(normalData);
 
 console.log("Local Outlier Factor (k=5, contamination=0.15):");
-console.log(`  Labels (1=inlier, -1=outlier): ${lofLabels.toString()}`);
 
-const lofLabelData = lofLabels.data as Int32Array;
-let lofOutlierCount = 0;
-for (let i = 0; i < lofLabelData.length; i++) {
-  if (lofLabelData[i] === -1) lofOutlierCount++;
-}
-console.log(`  Detected ${lofOutlierCount} outliers out of ${normalData.shape[0]} samples`);
+const lofOutliers = outlierRows(lofLabels);
+console.log(
+  `  Outlier rows: [${lofOutliers.join(", ")}] (${lofOutliers.length} of ${normalData.shape[0]})`
+);
 
 // ============================================================================
 // Part 8: OneClassSVM
 // ============================================================================
-console.log("\n🛡️  Part 8: OneClassSVM");
+console.log("\nPart 8: OneClassSVM");
 console.log("-".repeat(60));
 
-// OneClassSVM learns a boundary around normal data points
+// OneClassSVM learns a boundary around the bulk of the data
 const ocsvm = new OneClassSVM({
   nu: 0.15,
   kernel: "rbf",
@@ -243,28 +244,27 @@ ocsvm.fit(normalData);
 const ocLabels = ocsvm.predict(normalData);
 
 console.log("OneClassSVM (nu=0.15, RBF kernel):");
-console.log(`  Labels (1=inlier, -1=outlier): ${ocLabels.toString()}`);
 
-const ocLabelData = ocLabels.data as Int32Array;
-let ocOutlierCount = 0;
-for (let i = 0; i < ocLabelData.length; i++) {
-  if (ocLabelData[i] === -1) ocOutlierCount++;
-}
-console.log(`  Detected ${ocOutlierCount} outliers out of ${normalData.shape[0]} samples`);
+const ocOutliers = outlierRows(ocLabels);
+console.log(
+  `  Outlier rows: [${ocOutliers.join(", ")}] (${ocOutliers.length} of ${normalData.shape[0]})`
+);
 
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• SVC: kernel-based classification with RBF, polynomial, linear, sigmoid kernels");
-console.log("• NuSVC: nu parameter controls fraction of support vectors (alternative to C)");
-console.log("• SVR: kernel regression for nonlinear relationships");
-console.log("• Feature scaling is crucial for kernel SVMs (use StandardScaler)");
-console.log("• IsolationForest: tree-based anomaly detection, fast and scalable");
-console.log("• LOF: density-based anomaly detection, measures local deviation");
-console.log("• OneClassSVM: learns a boundary around normal data in kernel space");
-console.log("• Anomaly detectors output +1 (inlier) and -1 (outlier)");
+console.log("• SVC: classification with a linear, polynomial, RBF or sigmoid kernel");
+console.log("• NuSVC: nu replaces C and bounds the fraction of support vectors");
+console.log("• SVR: kernel regression");
+console.log(
+  "• Scale features before kernel SVMs (StandardScaler), fitting on the training rows only"
+);
+console.log("• IsolationForest: random splits, so outliers are isolated quickly");
+console.log("• LOF: flags points that sit in a sparser region than their neighbors");
+console.log("• OneClassSVM: a boundary around normal data in kernel space");
+console.log("• Anomaly detectors return 1 for an inlier and -1 for an outlier");
 
-console.log("\n✅ Kernel SVM & Anomaly Detection Example Complete!");
+console.log("\nKernel SVM & Anomaly Detection Example Complete!");
 console.log("=".repeat(60));

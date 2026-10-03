@@ -1,5 +1,5 @@
 """
-Benchmark 09 — Plotting
+Benchmark 09: Plotting
 Matplotlib
 """
 
@@ -17,7 +17,7 @@ from scipy.stats import gaussian_kde
 from utils import run, create_suite, header, footer
 
 suite = create_suite("plot", "Matplotlib")
-header("Benchmark 09 — Plotting", "Matplotlib")
+header("Benchmark 09: Plotting", "Matplotlib")
 
 rng = np.random.RandomState(42)
 

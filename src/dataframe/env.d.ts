@@ -1,73 +1,14 @@
 /**
- * Environment-specific type declarations for DataFrame file I/O.
+ * Placeholder kept for tooling that skips this file by name.
  *
- * These declarations enable type-safe access to Node.js and browser APIs
- * without requiring explicit DOM or Node type libraries in tsconfig.
+ * This file used to declare minimal `process`, `fetch`, `document`, `Blob` and
+ * `URL` globals. They were not needed (the file I/O helpers in `./io` read
+ * `globalThis` instead, and the project tsconfig already includes the DOM and
+ * Node.js type libraries) and they hid the real Node.js `process` type from
+ * every file in the program, so `process.env` did not type-check. Nothing in
+ * `src` depends on them any more.
+ *
+ * @see {@link https://deepbox.dev/docs/dataframe-overview | Deepbox documentation}
  */
 
-/**
- * Node.js process global (available in Node.js environment).
- */
-declare const process:
-  | {
-      versions?: {
-        node?: string;
-      };
-    }
-  | undefined;
-
-/**
- * Browser fetch API (available in browser and modern Node.js).
- */
-declare function fetch(input: string, init?: RequestInit): Promise<Response>;
-
-type Response = {
-  ok: boolean;
-  status: number;
-  statusText: string;
-  text(): Promise<string>;
-};
-
-type RequestInit = {
-  method?: string;
-  headers?: Record<string, string>;
-};
-
-/**
- * Browser document object (available in browser environment).
- */
-declare const document:
-  | {
-      createElement(tagName: string): HTMLElement;
-      body: {
-        appendChild(element: HTMLElement): void;
-        removeChild(element: HTMLElement): void;
-      };
-    }
-  | undefined;
-
-type HTMLElement = {
-  href: string;
-  download: string;
-  style: {
-    display: string;
-  };
-  click(): void;
-};
-
-/**
- * Browser Blob API (available in browser environment).
- */
-declare class Blob {
-  constructor(parts: unknown[], options?: { type?: string });
-}
-
-/**
- * Browser URL API (available in browser environment).
- */
-declare const URL:
-  | {
-      createObjectURL(blob: Blob): string;
-      revokeObjectURL(url: string): void;
-    }
-  | undefined;
+export {};

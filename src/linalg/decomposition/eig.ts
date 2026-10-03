@@ -5,14 +5,25 @@ import {
   ShapeError,
 } from "../../core";
 import type { Tensor } from "../../ndarray";
-import {
-  atArr,
-  fromDenseMatrix2D,
-  fromDenseVector1D,
-  toDenseMatrix2D,
-  toDenseVector1D,
-} from "../_internal";
-import { svd } from "./svd";
+import { atArr, fromDenseMatrix2D, fromDenseVector1D, toDenseMatrix2D } from "../_internal";
+import { extremeScaleFactor, hessenbergReduceInPlace, scaledNorm } from "./hessenberg";
+import { realSchurIteration } from "./schur";
+
+/**
+ * Relative tolerance for accepting a matrix as symmetric in `eigh` and `eigvalsh`: entries
+ * a[i][j] and a[j][i] must differ by at most `SYMMETRY_TOL * max|A|`.
+ */
+const SYMMETRY_TOL = 1e-10;
+
+/**
+ * Tolerance of `eig` and `eigvals` for taking the symmetric shortcut. It is only a few
+ * rounding errors wide: the shortcut replaces A by (A + A^T) / 2, which moves the
+ * eigenvectors (not the eigenvalues) by about the asymmetry, so a looser threshold would
+ * cap the accuracy of the eigenpairs of a nearly symmetric matrix far above machine epsilon.
+ */
+function shortcutSymmetryTol(n: number): number {
+  return 32 * Math.max(n, 1) * Number.EPSILON;
+}
 
 function getSquareMatrixSize(a: Tensor, context: string): number {
   if (a.ndim !== 2) {
@@ -26,13 +37,56 @@ function getSquareMatrixSize(a: Tensor, context: string): number {
   return rows;
 }
 
+function isSymmetric(A: Float64Array, n: number, relTol: number = SYMMETRY_TOL): boolean {
+  let maxAbs = 0;
+  for (let i = 0; i < A.length; i++) {
+    const v = Math.abs(A[i] as number);
+    if (v > maxAbs) maxAbs = v;
+  }
+  const tol = relTol * maxAbs;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (Math.abs((A[i * n + j] as number) - (A[j * n + i] as number)) > tol) return false;
+    }
+  }
+  return true;
+}
+
+/** Returns (A + Aᵀ) / 2 so that rounding-level asymmetry does not bias the result. */
+function symmetrizedCopy(A: Float64Array, n: number): Float64Array {
+  const out = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    out[i * n + i] = A[i * n + i] as number;
+    for (let j = i + 1; j < n; j++) {
+      const v = 0.5 * ((A[i * n + j] as number) + (A[j * n + i] as number));
+      out[i * n + j] = v;
+      out[j * n + i] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Divides `A` in place by a power of two when its entries are extreme (see
+ * {@link extremeScaleFactor}) and returns that factor, 1 when nothing was scaled. The QL
+ * sweep multiplies several off-diagonal entries, which underflows near 1e-154 and
+ * overflows near 1e154; eigenvalues are multiplied by the factor afterwards and
+ * eigenvectors are unaffected.
+ */
+function scaleToSafeRange(A: Float64Array): number {
+  const factor = extremeScaleFactor(A);
+  if (factor !== 1) {
+    for (let i = 0; i < A.length; i++) A[i] = (A[i] as number) / factor;
+  }
+  return factor;
+}
+
 /**
  * Householder tridiagonalization of a symmetric matrix (EISPACK tred2).
  *
  * Reduces the symmetric matrix in `z` (row-major n×n, overwritten with the
  * accumulated orthogonal transform) to tridiagonal form with diagonal `d`
- * and off-diagonal `e` (e[0] unused). O(4n³/3) — the cyclic-Jacobi sweep
- * this replaces cost ~10x more FLOPs at 100×100.
+ * and off-diagonal `e` (e[0] unused). Costs about 4n³/3 flops.
  */
 function tred2(n: number, z: Float64Array, d: Float64Array, e: Float64Array): void {
   for (let i = 0; i < n; i++) {
@@ -138,16 +192,24 @@ function tred2(n: number, z: Float64Array, d: Float64Array, e: Float64Array): vo
 
 /**
  * QL algorithm with implicit shifts for a symmetric tridiagonal matrix
- * (EISPACK tql2). Consumes `d`/`e` from {@link tred2}, leaves ascending is
- * NOT guaranteed — callers sort. Eigenvectors are accumulated into `z`.
+ * (EISPACK tql2). Consumes `d`/`e` from {@link tred2}. The eigenvalues are left
+ * in `d` in no particular order; callers sort. When `z` is given, the
+ * eigenvectors are accumulated into it, otherwise only eigenvalues are computed.
  */
-function tql2(n: number, d: Float64Array, e: Float64Array, z: Float64Array): void {
+function tql2(
+  n: number,
+  d: Float64Array,
+  e: Float64Array,
+  z: Float64Array | null,
+  context: string
+): void {
   for (let i = 1; i < n; i++) e[i - 1] = e[i] as number;
   e[n - 1] = 0;
 
   let f = 0;
   let tst1 = 0;
   const eps = Number.EPSILON;
+  const maxIter = 60;
   for (let l = 0; l < n; l++) {
     tst1 = Math.max(tst1, Math.abs(d[l] as number) + Math.abs(e[l] as number));
     let m = l;
@@ -158,8 +220,10 @@ function tql2(n: number, d: Float64Array, e: Float64Array, z: Float64Array): voi
     if (m > l) {
       let iter = 0;
       do {
-        if (iter++ === 60) {
-          throw new ConvergenceError("eigh: QL iteration failed to converge", { iterations: 60 });
+        if (iter++ === maxIter) {
+          throw new ConvergenceError(`${context}: QL iteration failed to converge`, {
+            iterations: maxIter,
+          });
         }
         // Compute implicit shift.
         let g = d[l] as number;
@@ -193,11 +257,13 @@ function tql2(n: number, d: Float64Array, e: Float64Array, z: Float64Array): voi
           c = p / r;
           p = c * (d[i] as number) - s * g;
           d[i + 1] = h + s * (c * g + s * (d[i] as number));
-          for (let k = 0; k < n; k++) {
-            h = z[k * n + i + 1] as number;
-            const zki = z[k * n + i] as number;
-            z[k * n + i + 1] = s * zki + c * h;
-            z[k * n + i] = c * zki - s * h;
+          if (z !== null) {
+            for (let k = 0; k < n; k++) {
+              h = z[k * n + i + 1] as number;
+              const zki = z[k * n + i] as number;
+              z[k * n + i + 1] = s * zki + c * h;
+              z[k * n + i] = c * zki - s * h;
+            }
           }
         }
         p = (-s * s2 * c3 * el1 * (e[l] as number)) / dl1;
@@ -212,276 +278,286 @@ function tql2(n: number, d: Float64Array, e: Float64Array, z: Float64Array): voi
 
 /**
  * Symmetric eigendecomposition via Householder tridiagonalization + QL with
- * implicit shifts. Same interface as the Jacobi routine it replaces.
+ * implicit shifts. Returns eigenvalues in ascending order and the matching
+ * eigenvectors as columns of a row-major n×n matrix.
  */
 function symmetricEigen(
   a: Float64Array,
-  n: number
+  n: number,
+  context: string
 ): { readonly values: Float64Array; readonly vectors: Float64Array } {
-  const z = new Float64Array(a);
+  const z = symmetrizedCopy(a, n);
   const d = new Float64Array(n);
   const e = new Float64Array(n);
-  if (n === 0) return { values: d, vectors: z };
   if (n === 1) {
-    d[0] = a[0] as number;
+    d[0] = z[0] as number;
     z[0] = 1;
     return { values: d, vectors: z };
   }
+  const factor = scaleToSafeRange(z);
   tred2(n, z, d, e);
-  tql2(n, d, e, z);
-  return { values: d, vectors: z };
+  tql2(n, d, e, z, context);
+  if (factor !== 1) for (let i = 0; i < n; i++) d[i] = (d[i] as number) * factor;
+
+  // Sort ascending (stable for equal eigenvalues) and permute the columns.
+  const idx = new Array<number>(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  idx.sort((i, j) => (d[i] as number) - (d[j] as number) || i - j);
+
+  const values = new Float64Array(n);
+  const vectors = new Float64Array(n * n);
+  for (let col = 0; col < n; col++) {
+    const src = atArr(idx, col);
+    values[col] = d[src] as number;
+    for (let row = 0; row < n; row++) {
+      vectors[row * n + col] = z[row * n + src] as number;
+    }
+  }
+  return { values, vectors };
 }
 
 /**
- * Tridiagonalize (accumulating no transform) then run the QL sweep without
- * eigenvector updates — eigenvalues only, ~2x less work than
- * {@link symmetricEigen}. Returns unsorted eigenvalues.
+ * Eigenvalues only of a symmetric matrix: tridiagonalize, then run the QL sweep
+ * without eigenvector updates (~2x less work than {@link symmetricEigen}).
+ * Returns the eigenvalues in ascending order.
  */
-function symmetricEigenvalues(a: Float64Array, n: number): Float64Array {
+function symmetricEigenvalues(a: Float64Array, n: number, context: string): Float64Array {
   const d = new Float64Array(n);
   const e = new Float64Array(n);
-  if (n === 0) return d;
+  const A = symmetrizedCopy(a, n);
   if (n === 1) {
-    d[0] = a[0] as number;
+    d[0] = A[0] as number;
     return d;
   }
-  const A = new Float64Array(a);
+  const factor = scaleToSafeRange(A);
   tred2(n, A, d, e);
-  // QL without eigenvector accumulation (structure mirrors tql2).
-  for (let i = 1; i < n; i++) e[i - 1] = e[i] as number;
-  e[n - 1] = 0;
-  let f = 0;
-  let tst1 = 0;
-  const eps = Number.EPSILON;
-  for (let l = 0; l < n; l++) {
-    tst1 = Math.max(tst1, Math.abs(d[l] as number) + Math.abs(e[l] as number));
-    let m = l;
-    while (m < n) {
-      if (Math.abs(e[m] as number) <= eps * tst1) break;
-      m++;
-    }
-    if (m > l) {
-      let iter = 0;
-      do {
-        if (iter++ === 60) {
-          throw new ConvergenceError("eigvalsh: QL iteration failed to converge", {
-            iterations: 60,
-          });
-        }
-        let g = d[l] as number;
-        let p = ((d[l + 1] as number) - g) / (2 * (e[l] as number));
-        let r = Math.hypot(p, 1);
-        if (p < 0) r = -r;
-        d[l] = (e[l] as number) / (p + r);
-        d[l + 1] = (e[l] as number) * (p + r);
-        const dl1 = d[l + 1] as number;
-        let h = g - (d[l] as number);
-        for (let i = l + 2; i < n; i++) d[i] = (d[i] as number) - h;
-        f += h;
-        p = d[m] as number;
-        let c = 1;
-        let c2 = c;
-        let c3 = c;
-        const el1 = e[l + 1] as number;
-        let s = 0;
-        let s2 = 0;
-        for (let i = m - 1; i >= l; i--) {
-          c3 = c2;
-          c2 = c;
-          s2 = s;
-          g = c * (e[i] as number);
-          h = c * p;
-          r = Math.hypot(p, e[i] as number);
-          e[i + 1] = s * r;
-          s = (e[i] as number) / r;
-          c = p / r;
-          p = c * (d[i] as number) - s * g;
-          d[i + 1] = h + s * (c * g + s * (d[i] as number));
-        }
-        p = (-s * s2 * c3 * el1 * (e[l] as number)) / dl1;
-        e[l] = s * p;
-        d[l] = c * p;
-      } while (Math.abs(e[l] as number) > eps * tst1);
-    }
-    d[l] = (d[l] as number) + f;
-    e[l] = 0;
-  }
+  tql2(n, d, e, null, context);
+  if (factor !== 1) for (let i = 0; i < n; i++) d[i] = (d[i] as number) * factor;
+  d.sort();
   return d;
 }
 
-function matmulSquare(a: Float64Array, b: Float64Array, n: number): Float64Array {
-  const out = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      let sum = 0;
-      for (let k = 0; k < n; k++) {
-        sum += (a[i * n + k] as number) * (b[k * n + j] as number);
+/**
+ * Parlett-Reinsch balancing: finds a diagonal similarity D⁻¹ A D with power-of-two
+ * entries that brings the row and column norms of `B` closer together. This
+ * improves the accuracy of eigenvalues of badly scaled matrices. `B` is
+ * overwritten with the balanced matrix and the diagonal of D is returned.
+ */
+function balanceInPlace(B: Float64Array, n: number): Float64Array {
+  const scale = new Float64Array(n).fill(1);
+  const radix = 2;
+  const sqrdx = radix * radix;
+  for (let sweep = 0; sweep < 100; sweep++) {
+    let done = true;
+    for (let i = 0; i < n; i++) {
+      let c = 0;
+      let r = 0;
+      for (let j = 0; j < n; j++) {
+        if (j !== i) {
+          c += Math.abs(B[j * n + i] as number);
+          r += Math.abs(B[i * n + j] as number);
+        }
       }
-      out[i * n + j] = sum;
+      if (c === 0 || r === 0) continue;
+      let g = r / radix;
+      let f = 1;
+      const s = c + r;
+      while (c < g) {
+        f *= radix;
+        c *= sqrdx;
+      }
+      g = r * radix;
+      while (c > g) {
+        f /= radix;
+        c /= sqrdx;
+      }
+      if ((c + r) / f < 0.95 * s) {
+        done = false;
+        const gInv = 1 / f;
+        scale[i] = (scale[i] as number) * f;
+        for (let j = 0; j < n; j++) B[i * n + j] = (B[i * n + j] as number) * gInv;
+        for (let j = 0; j < n; j++) B[j * n + i] = (B[j * n + i] as number) * f;
+      }
     }
+    if (done) break;
   }
-  return out;
-}
-
-function qrFactorSquare(
-  a: Float64Array,
-  n: number
-): { readonly Q: Float64Array; readonly R: Float64Array } {
-  // Modified Gram-Schmidt is sufficient here for QR iteration on small n.
-  const Q = new Float64Array(n * n);
-  const R = new Float64Array(n * n);
-
-  const v = new Float64Array(n * n);
-  v.set(a);
-
-  const fillOrthonormalColumn = (col: number): void => {
-    for (let basis = 0; basis < n; basis++) {
-      const vec = new Float64Array(n);
-      vec[basis] = 1;
-      for (let j = 0; j < col; j++) {
-        let dot = 0;
-        for (let k = 0; k < n; k++) {
-          dot += (Q[k * n + j] as number) * (vec[k] as number);
-        }
-        for (let k = 0; k < n; k++) {
-          vec[k] = (vec[k] as number) - dot * (Q[k * n + j] as number);
-        }
-      }
-      let norm = 0;
-      for (let k = 0; k < n; k++) {
-        const val = vec[k] as number;
-        norm += val * val;
-      }
-      norm = Math.sqrt(norm);
-      if (norm > 1e-12) {
-        const inv = 1 / norm;
-        for (let k = 0; k < n; k++) {
-          Q[k * n + col] = (vec[k] as number) * inv;
-        }
-        return;
-      }
-    }
-  };
-
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < j; i++) {
-      let dot = 0;
-      for (let k = 0; k < n; k++) {
-        dot += (Q[k * n + i] as number) * (v[k * n + j] as number);
-      }
-      R[i * n + j] = dot;
-      for (let k = 0; k < n; k++) {
-        v[k * n + j] = (v[k * n + j] as number) - dot * (Q[k * n + i] as number);
-      }
-    }
-
-    let norm = 0;
-    for (let k = 0; k < n; k++) {
-      const x = v[k * n + j] as number;
-      norm += x * x;
-    }
-    norm = Math.sqrt(norm);
-    R[j * n + j] = norm;
-    if (norm > 1e-12) {
-      const inv = 1 / norm;
-      for (let k = 0; k < n; k++) {
-        Q[k * n + j] = (v[k * n + j] as number) * inv;
-      }
-    } else {
-      fillOrthonormalColumn(j);
-    }
-  }
-
-  return { Q, R };
+  return scale;
 }
 
 /**
- * Reduce matrix to upper Hessenberg form using Householder reflections.
- * Returns H and Q such that A = Q * H * Q^T where H is upper Hessenberg.
- *
- * Upper Hessenberg form has zeros below the first subdiagonal, which
- * significantly speeds up QR iteration convergence.
- *
- * @internal
+ * Makes the 2x2 Schur block at rows/columns (i, i + 1) upper triangular. The block has
+ * equal diagonal entries a and off-diagonal entries b, c with b * c < 0 and a negligible
+ * product, so dropping the smaller of |b|, |c| changes the matrix by less than the
+ * imaginary part of the pair. When |c| is the larger one, rows and columns i and i + 1
+ * are swapped first (an orthogonal similarity) so that the entry that is dropped is
+ * below the diagonal.
  */
-function hessenbergReduce(
-  a: Float64Array,
-  n: number
-): { readonly H: Float64Array; readonly Q: Float64Array } {
-  const H = new Float64Array(a);
-  const Q = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) Q[i * n + i] = 1;
-
-  const v = new Float64Array(n);
-
-  for (let col = 0; col < n - 2; col++) {
-    // Extract column col below diagonal
-    let norm = 0;
-    for (let i = col + 1; i < n; i++) {
-      const val = H[i * n + col] as number;
-      v[i] = val;
-      norm += val * val;
+function realifyBlock(T: Float64Array, Q: Float64Array | null, n: number, i: number): void {
+  const j = i + 1;
+  const b = T[i * n + j] as number;
+  const c = T[j * n + i] as number;
+  if (Math.abs(c) > Math.abs(b)) {
+    for (let col = 0; col < n; col++) {
+      const t = T[i * n + col] as number;
+      T[i * n + col] = T[j * n + col] as number;
+      T[j * n + col] = t;
     }
-    norm = Math.sqrt(norm);
-
-    if (norm < 1e-14) continue;
-
-    // Choose sign to avoid cancellation
-    const vkp1 = v[col + 1] as number;
-    const sign = vkp1 >= 0 ? 1 : -1;
-    v[col + 1] = vkp1 + sign * norm;
-
-    // Normalize v
-    let vnorm = 0;
-    for (let i = col + 1; i < n; i++) {
-      const val = v[i] as number;
-      vnorm += val * val;
+    for (let row = 0; row < n; row++) {
+      const t = T[row * n + i] as number;
+      T[row * n + i] = T[row * n + j] as number;
+      T[row * n + j] = t;
     }
-    vnorm = Math.sqrt(vnorm);
-    if (vnorm < 1e-14) continue;
-
-    for (let i = col + 1; i < n; i++) {
-      v[i] = (v[i] as number) / vnorm;
-    }
-
-    // Apply H = (I - 2*v*v^T) * H from left
-    for (let j = col; j < n; j++) {
-      let dot = 0;
-      for (let i = col + 1; i < n; i++) {
-        dot += (v[i] as number) * (H[i * n + j] as number);
-      }
-      dot *= 2;
-      for (let i = col + 1; i < n; i++) {
-        H[i * n + j] = (H[i * n + j] as number) - dot * (v[i] as number);
-      }
-    }
-
-    // Apply H = H * (I - 2*v*v^T) from right
-    for (let i = 0; i < n; i++) {
-      let dot = 0;
-      for (let j = col + 1; j < n; j++) {
-        dot += (H[i * n + j] as number) * (v[j] as number);
-      }
-      dot *= 2;
-      for (let j = col + 1; j < n; j++) {
-        H[i * n + j] = (H[i * n + j] as number) - dot * (v[j] as number);
-      }
-    }
-
-    // Accumulate Q = Q * (I - 2*v*v^T)
-    for (let i = 0; i < n; i++) {
-      let dot = 0;
-      for (let j = col + 1; j < n; j++) {
-        dot += (Q[i * n + j] as number) * (v[j] as number);
-      }
-      dot *= 2;
-      for (let j = col + 1; j < n; j++) {
-        Q[i * n + j] = (Q[i * n + j] as number) - dot * (v[j] as number);
+    if (Q !== null) {
+      for (let row = 0; row < n; row++) {
+        const t = Q[row * n + i] as number;
+        Q[row * n + i] = Q[row * n + j] as number;
+        Q[row * n + j] = t;
       }
     }
   }
+  T[j * n + i] = 0;
+}
 
-  return { H, Q };
+/**
+ * Eigenvalues (and optionally unit-norm eigenvectors) of a general real matrix
+ * whose spectrum is real: balance, reduce to Hessenberg form, run Francis QR to
+ * the real Schur form, then back-substitute for the eigenvectors of the
+ * triangular factor.
+ */
+function generalEigen(
+  A: Float64Array,
+  n: number,
+  maxIter: number,
+  tol: number,
+  wantVectors: boolean
+): { readonly values: Float64Array; readonly vectors: Float64Array | null } {
+  const T = new Float64Array(A);
+  // Entries near 1e-200 or 1e200 would underflow/overflow inside the QR iteration;
+  // eigenvectors are unaffected by a uniform scale, eigenvalues are rescaled below.
+  const factor = extremeScaleFactor(T);
+  if (factor !== 1) {
+    for (let i = 0; i < T.length; i++) T[i] = (T[i] as number) / factor;
+  }
+  const dscale = balanceInPlace(T, n);
+  let maxAbs = 0;
+  for (let i = 0; i < T.length; i++) {
+    const v = Math.abs(T[i] as number);
+    if (v > maxAbs) maxAbs = v;
+  }
+  let Q: Float64Array | null = null;
+  if (wantVectors) {
+    Q = new Float64Array(n * n);
+    for (let i = 0; i < n; i++) Q[i * n + i] = 1;
+  }
+  hessenbergReduceInPlace(T, Q, n);
+  const { wr, wi } = realSchurIteration(T, Q, n, maxIter, tol, "eig()");
+
+  // A conjugate pair whose imaginary part is at rounding level (typical for the repeated zero
+  // eigenvalue of a low-rank matrix) is indistinguishable from a repeated real eigenvalue, so it
+  // is reported as one (the backward error is of the same size as the rounding error).
+  const imagTol = 10 * n * Number.EPSILON * maxAbs;
+  for (let i = 0; i < n; i++) {
+    const im = wi[i] as number;
+    if (im === 0) continue;
+    if (!(im > 0 && im <= imagTol)) {
+      // Report the first offending eigenvalue, in the units of the input.
+      const real = (wr[i] as number) * factor;
+      const imag = Math.abs(im) * factor;
+      throw new InvalidParameterError(
+        "Matrix has complex eigenvalues, which are not supported. " +
+          "Only matrices with real eigenvalues can be decomposed. " +
+          "Symmetric matrices always have real eigenvalues. " +
+          `Found the eigenvalue pair ${real} +/- ${imag}i.`,
+        "a",
+        { real, imag }
+      );
+    }
+    realifyBlock(T, Q, n, i);
+    wi[i] = 0;
+    wi[i + 1] = 0;
+    i++;
+  }
+  if (factor !== 1) {
+    for (let i = 0; i < n; i++) wr[i] = (wr[i] as number) * factor;
+  }
+  if (Q === null) return { values: wr, vectors: null };
+
+  // T is upper triangular. Solve (T - λ_k I) x = 0 with x_k = 1 by back-substitution.
+  let tnorm = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i; j < n; j++) tnorm += Math.abs(T[i * n + j] as number);
+  }
+  const eps = Number.EPSILON;
+  const smin = eps * tnorm;
+  const X = new Float64Array(n * n);
+  const x = new Float64Array(n);
+  for (let k = n - 1; k >= 0; k--) {
+    const lambda = T[k * n + k] as number;
+    x.fill(0);
+    x[k] = 1;
+    for (let i = k - 1; i >= 0; i--) {
+      let w = (T[i * n + i] as number) - lambda;
+      let r = 0;
+      for (let j = i + 1; j <= k; j++) r += (T[i * n + j] as number) * (x[j] as number);
+      // Repeated eigenvalue: perturb the pivot, as LAPACK's dtrevc does.
+      if (Math.abs(w) < smin) w = smin;
+      const xi = -r / w;
+      x[i] = xi;
+      // Rescale the partial solution before it can overflow.
+      const t = Math.abs(xi);
+      if (eps * t * t > 1) {
+        for (let j = i; j <= k; j++) x[j] = (x[j] as number) / t;
+      }
+    }
+    for (let i = 0; i <= k; i++) X[i * n + k] = x[i] as number;
+  }
+
+  // V = Q X, then undo the balancing and normalize the columns.
+  const V = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < n; k++) {
+      let sum = 0;
+      for (let j = 0; j <= k; j++) sum += (Q[i * n + j] as number) * (X[j * n + k] as number);
+      V[i * n + k] = sum * (dscale[i] as number);
+    }
+  }
+  const col = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) col[i] = V[i * n + k] as number;
+    const nrm = scaledNorm(col, n);
+    if (nrm > 0) {
+      const inv = 1 / nrm;
+      for (let i = 0; i < n; i++) V[i * n + k] = (V[i * n + k] as number) * inv;
+    }
+  }
+  return { values: wr, vectors: V };
+}
+
+/**
+ * Options for {@link eig} and {@link eigvals}.
+ *
+ * - `maxIter`: maximum number of QR sweeps spent on a single eigenvalue before a
+ *   {@link ConvergenceError} is thrown (default: 300). A trailing 2×2 block is
+ *   solved in closed form and needs no sweeps.
+ * - `tol`: relative threshold below which a sub-diagonal entry is treated as zero
+ *   (default: machine epsilon, about 2.2e-16). Larger values deflate earlier at
+ *   the cost of accuracy.
+ */
+export type EigOptions = {
+  readonly maxIter?: number;
+  readonly tol?: number;
+};
+
+function resolveEigOptions(options: EigOptions): { maxIter: number; tol: number } {
+  const maxIter = options.maxIter ?? 300;
+  const tol = options.tol ?? Number.EPSILON;
+  if (!Number.isInteger(maxIter) || maxIter < 1) {
+    throw new InvalidParameterError("maxIter must be a positive integer", "maxIter", maxIter);
+  }
+  if (!Number.isFinite(tol) || tol <= 0) {
+    throw new InvalidParameterError("tol must be a positive finite number", "tol", tol);
+  }
+  return { maxIter, tol };
 }
 
 /**
@@ -490,34 +566,36 @@ function hessenbergReduce(
  * Solves A * v = λ * v where λ are eigenvalues and v are eigenvectors.
  *
  * **Algorithm**:
- * - Symmetric matrices: Jacobi iteration (stable, accurate)
- * - General matrices: QR iteration with Hessenberg reduction
+ * - Symmetric matrices: Householder tridiagonalization + implicit QL (same as {@link eigh}).
+ *   Eigenvalues are returned in ascending order.
+ * - General matrices: balancing, Hessenberg reduction, Francis double-shift QR to the
+ *   real Schur form, then back-substitution for the eigenvectors. Eigenvalues are
+ *   returned in the order they appear on the diagonal of the Schur form.
  *
  * **Limitations**:
  * - Only real eigenvalues are supported. Non-symmetric matrices whose
- *   spectrum includes complex eigenvalues will cause an
+ *   spectrum includes complex eigenvalues cause an
  *   {@link InvalidParameterError} to be thrown.
+ * - A conjugate pair whose imaginary part is at rounding level (at most
+ *   10 * N * eps * max|A| after balancing, as for the repeated zero eigenvalue of a
+ *   low-rank matrix) is reported as a repeated real eigenvalue.
  * - For symmetric/Hermitian matrices, use `eigh()` for better performance
- * - May not converge for some matrices (bounded QR iterations; see options)
+ * - Eigenvectors of a defective matrix (fewer independent eigenvectors than
+ *   eigenvalues) are nearly parallel, as with `numpy.linalg.eig`.
  *
  * **Parameters**:
  * @param a - Square matrix of shape (N, N)
  * @param options - Optional configuration overrides (see {@link EigOptions})
- * @param options.maxIter - Maximum QR iterations (default: 300)
- * @param options.tol - Convergence tolerance for subdiagonal norm (default: 1e-10)
+ * @param options.maxIter - Maximum QR sweeps per eigenvalue (default: 300)
+ * @param options.tol - Relative deflation threshold (default: machine epsilon)
  *
  * **Returns**: [eigenvalues, eigenvectors]
  * - eigenvalues: Real values of shape (N,)
  * - eigenvectors: Column vectors of shape (N, N) where eigenvectors[:,i] corresponds to eigenvalues[i]
  *
- * **Requirements**:
- * - Input must be square matrix
- * - Matrix must have only real eigenvalues
- * - For symmetric matrices, use eigh() for better performance
- *
  * **Properties**:
  * - A @ v[:,i] = λ[i] * v[:,i]
- * - Eigenvectors are normalized
+ * - Each eigenvector has unit Euclidean norm (its sign is arbitrary)
  *
  * @example
  * ```ts
@@ -531,240 +609,44 @@ function hessenbergReduce(
  * ```
  *
  * @throws {ShapeError} If input is not square matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
- * @throws {InvalidParameterError} If matrix has complex eigenvalues
+ * @throws {InvalidParameterError} If matrix has complex eigenvalues, or an option is invalid
+ * @throws {ConvergenceError} If the QR iteration does not converge within `maxIter` sweeps
  *
  * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 7.5.2
  */
-export type EigOptions = {
-  readonly maxIter?: number;
-  readonly tol?: number;
-};
-
 export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
   const n = getSquareMatrixSize(a, "eig");
+  const { maxIter, tol } = resolveEigOptions(options);
   if (n === 0) {
     return [fromDenseVector1D(new Float64Array(0)), fromDenseMatrix2D(0, 0, new Float64Array(0))];
   }
 
-  // If symmetric, use Jacobi (real eigenvalues, orthonormal eigenvectors).
-  const { data: A0 } = toDenseMatrix2D(a);
+  const { data: A } = toDenseMatrix2D(a, "eig()");
 
-  let symmetric = true;
-  for (let i = 0; i < n && symmetric; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const aij = A0[i * n + j] as number;
-      const aji = A0[j * n + i] as number;
-      if (Math.abs(aij - aji) > 1e-10) {
-        symmetric = false;
-        break;
-      }
-    }
+  if (isSymmetric(A, n, shortcutSymmetryTol(n))) {
+    const { values, vectors } = symmetricEigen(A, n, "eig()");
+    return [fromDenseVector1D(values), fromDenseMatrix2D(n, n, vectors)];
   }
 
-  if (symmetric) {
-    return eigh(a);
+  const { values, vectors } = generalEigen(A, n, maxIter, tol, true);
+  if (vectors === null) {
+    throw new ShapeError("eig(): eigenvectors were not computed");
   }
-
-  // Reduce to Hessenberg form first for faster QR iteration convergence
-  const { H } = hessenbergReduce(A0, n);
-
-  // Shifted QR iteration on Hessenberg matrix (converges faster and more reliably)
-  const maxIter = options.maxIter ?? 300;
-  const convTol = options.tol ?? 1e-10;
-  let Ak = H;
-  let converged = false;
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    let off = 0;
-    for (let i = 1; i < n; i++) {
-      const v = Ak[i * n + (i - 1)] as number;
-      off += v * v;
-    }
-    if (Math.sqrt(off) < convTol) {
-      converged = true;
-      break;
-    }
-
-    // Wilkinson shift from the trailing 2x2 block. A pure Rayleigh shift
-    // (mu = A[n-1][n-1]) livelocks on matrices like [[0,2],[0.5,0]] whose
-    // trailing diagonal entry never moves. Every 12th iteration applies an
-    // exceptional shift to break any remaining symmetric cycling.
-    let mu: number;
-    const t11 = Ak[(n - 2) * n + (n - 2)] as number;
-    const t12 = Ak[(n - 2) * n + (n - 1)] as number;
-    const t21 = Ak[(n - 1) * n + (n - 2)] as number;
-    const t22 = Ak[(n - 1) * n + (n - 1)] as number;
-    const delta = (t11 - t22) / 2;
-    const disc = delta * delta + t12 * t21;
-    if ((iter + 1) % 12 === 0) {
-      mu = t22 + Math.abs(t21) + Math.abs(delta);
-    } else if (disc >= 0) {
-      const sgn = delta >= 0 ? 1 : -1;
-      const denom = delta + sgn * Math.sqrt(disc);
-      mu = denom === 0 ? t22 : t22 - (t12 * t21) / denom;
-    } else {
-      // Complex eigenvalue pair in the trailing block; fall back to the
-      // Rayleigh shift (the complex-pair detection below reports it).
-      mu = t22;
-    }
-    const shifted = new Float64Array(Ak);
-    for (let i = 0; i < n; i++) {
-      shifted[i * n + i] = (shifted[i * n + i] as number) - mu;
-    }
-
-    const { Q, R } = qrFactorSquare(shifted, n);
-    Ak = matmulSquare(R, Q, n);
-    for (let i = 0; i < n; i++) {
-      Ak[i * n + i] = (Ak[i * n + i] as number) + mu;
-    }
-  }
-
-  // Clean small subdiagonal entries to stabilize eigenvalue detection
-  for (let i = 1; i < n; i++) {
-    const v = Ak[i * n + (i - 1)] as number;
-    if (Math.abs(v) < convTol) {
-      Ak[i * n + (i - 1)] = 0;
-    }
-  }
-
-  // Detect complex eigenvalues by checking for 2x2 blocks in the quasi-upper
-  // triangular (real Schur) form. A 2x2 diagonal block [[a, b], [c, d]] has
-  // complex conjugate eigenvalues when its discriminant (a-d)^2 + 4*b*c < 0.
-  // This check runs before the convergence check because matrices with complex
-  // eigenvalues will never converge (2x2 blocks persist), and the complex
-  // eigenvalue error is more informative than a generic convergence failure.
-  const complexTol = 1e-8;
-  let hasComplex = false;
-  for (let i = 0; i < n - 1; i++) {
-    const subdiag = Math.abs(Ak[(i + 1) * n + i] as number);
-    if (subdiag > complexTol) {
-      // Non-negligible subdiagonal element indicates a 2x2 block
-      const a11 = Ak[i * n + i] as number;
-      const a12 = Ak[i * n + (i + 1)] as number;
-      const a21 = Ak[(i + 1) * n + i] as number;
-      const a22 = Ak[(i + 1) * n + (i + 1)] as number;
-      const discriminant = (a11 - a22) * (a11 - a22) + 4 * a12 * a21;
-      if (discriminant < -complexTol) {
-        hasComplex = true;
-        break;
-      }
-    }
-  }
-
-  if (hasComplex) {
-    throw new InvalidParameterError(
-      "Matrix has complex eigenvalues, which are not supported. " +
-        "Only matrices with real eigenvalues can be decomposed. " +
-        "Symmetric matrices always have real eigenvalues.",
-      "a"
-    );
-  }
-
-  if (!converged) {
-    throw new ConvergenceError(`eig() failed to converge after ${maxIter} iterations`, {
-      iterations: maxIter,
-      tolerance: convTol,
-    });
-  }
-
-  const evals = new Float64Array(n);
-  for (let i = 0; i < n; i++) evals[i] = Ak[i * n + i] as number;
-
-  // Compute eigenvectors by finding nullspace of (A - λI)
-  const vectors = new Float64Array(n * n);
-  const used = new Array<boolean>(n).fill(false);
-  const clusterTol = 1e-8;
-
-  for (let i = 0; i < n; i++) {
-    if (used[i]) continue;
-    const lambda = evals[i] as number;
-    const cluster = [i];
-    used[i] = true;
-    for (let j = i + 1; j < n; j++) {
-      if (used[j]) continue;
-      const diff = Math.abs((evals[j] as number) - lambda);
-      const scale = Math.max(1, Math.abs(lambda));
-      if (diff <= clusterTol * scale) {
-        used[j] = true;
-        cluster.push(j);
-      }
-    }
-
-    const basis = (() => {
-      const M = new Float64Array(A0);
-      for (let d = 0; d < n; d++) {
-        M[d * n + d] = (M[d * n + d] as number) - lambda;
-      }
-      const [_, s, Vt] = svd(fromDenseMatrix2D(n, n, M), true);
-      const sDense = toDenseVector1D(s);
-      const { data: VtData } = toDenseMatrix2D(Vt);
-      const vData = new Float64Array(n * n);
-      for (let r = 0; r < n; r++) {
-        for (let c = 0; c < n; c++) {
-          vData[r * n + c] = VtData[c * n + r] as number;
-        }
-      }
-      const sMax = sDense.length === 0 ? 0 : (sDense[0] as number);
-      const tol = Number.EPSILON * n * sMax;
-      const basisVecs: Float64Array[] = [];
-      for (let r = sDense.length - 1; r >= 0; r--) {
-        if ((sDense[r] as number) <= tol) {
-          const vec = new Float64Array(n);
-          for (let c = 0; c < n; c++) {
-            vec[c] = vData[c * n + r] as number;
-          }
-          basisVecs.push(vec);
-        }
-      }
-      if (basisVecs.length === 0 && sDense.length > 0) {
-        const r = sDense.length - 1;
-        const vec = new Float64Array(n);
-        for (let c = 0; c < n; c++) {
-          vec[c] = vData[c * n + r] as number;
-        }
-        basisVecs.push(vec);
-      }
-      return basisVecs.length === 0 ? [new Float64Array(n)] : basisVecs;
-    })();
-
-    for (let b = 0; b < cluster.length; b++) {
-      const colIndex = cluster[b];
-      if (colIndex === undefined) {
-        throw new ShapeError("eig(): eigenvector index is missing");
-      }
-      const vec = basis[b % basis.length];
-      if (vec === undefined) {
-        throw new ShapeError("eig(): eigenvector basis is missing");
-      }
-      let norm = 0;
-      for (let r = 0; r < n; r++) {
-        const v = vec[r] as number;
-        norm += v * v;
-      }
-      if (norm === 0) {
-        for (let r = 0; r < n; r++) {
-          vectors[r * n + colIndex] = r === colIndex ? 1 : 0;
-        }
-        continue;
-      }
-      const inv = 1 / Math.sqrt(norm);
-      for (let r = 0; r < n; r++) {
-        vectors[r * n + colIndex] = (vec[r] as number) * inv;
-      }
-    }
-  }
-
-  return [fromDenseVector1D(evals), fromDenseMatrix2D(n, n, vectors)];
+  return [fromDenseVector1D(values), fromDenseMatrix2D(n, n, vectors)];
 }
 
 /**
  * Compute eigenvalues only (faster than eig).
  *
+ * Skips the eigenvector computation. Eigenvalues of symmetric input are returned
+ * in ascending order; for general input they follow the order of the real Schur form.
+ *
  * **Parameters**:
  * @param a - Square matrix of shape (N, N)
+ * @param options - Optional configuration overrides (see {@link EigOptions})
  *
  * **Returns**: eigenvalues - Array of real eigenvalues
  *
@@ -779,12 +661,25 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
  *
  * const A = tensor([[1, 2], [2, 1]]);
  * const eigenvalues = eigvals(A);
- * console.log(eigenvalues);  // [3, -1]
+ * console.log(eigenvalues);  // [-1, 3]
  * ```
+ *
+ * @throws {ShapeError} If input is not square matrix
+ * @throws {DTypeError} If input has string or complex dtype
+ * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
+ * @throws {InvalidParameterError} If matrix has complex eigenvalues, or an option is invalid
+ * @throws {ConvergenceError} If the QR iteration does not converge within `maxIter` sweeps
  */
-export function eigvals(a: Tensor, options?: EigOptions): Tensor {
-  const [eigenvalues] = eig(a, options);
-  return eigenvalues;
+export function eigvals(a: Tensor, options: EigOptions = {}): Tensor {
+  const n = getSquareMatrixSize(a, "eigvals");
+  const { maxIter, tol } = resolveEigOptions(options);
+  if (n === 0) return fromDenseVector1D(new Float64Array(0));
+
+  const { data: A } = toDenseMatrix2D(a, "eigvals()");
+  if (isSymmetric(A, n, shortcutSymmetryTol(n))) {
+    return fromDenseVector1D(symmetricEigenvalues(A, n, "eigvals()"));
+  }
+  return fromDenseVector1D(generalEigen(A, n, maxIter, tol, false).values);
 }
 
 /**
@@ -793,7 +688,7 @@ export function eigvals(a: Tensor, options?: EigOptions): Tensor {
  * **Parameters**:
  * @param a - Symmetric square matrix of shape (N, N)
  *
- * **Returns**: eigenvalues - Array of real eigenvalues
+ * **Returns**: eigenvalues - Array of real eigenvalues in ascending order
  *
  * @example
  * ```ts
@@ -806,29 +701,22 @@ export function eigvals(a: Tensor, options?: EigOptions): Tensor {
  * ```
  *
  * @throws {ShapeError} If input is not square matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input is not symmetric
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
+ * @throws {ConvergenceError} If the QL iteration does not converge
  */
 export function eigvalsh(a: Tensor): Tensor {
   const n = getSquareMatrixSize(a, "eigvalsh");
-  const { data: A } = toDenseMatrix2D(a);
+  const { data: A } = toDenseMatrix2D(a, "eigvalsh()");
 
-  // Validate symmetry
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const aij = A[i * n + j] as number;
-      const aji = A[j * n + i] as number;
-      if (Math.abs(aij - aji) > 1e-10) {
-        throw new DataValidationError("Input must be symmetric for eigvalsh");
-      }
-    }
+  if (!isSymmetric(A, n)) {
+    throw new DataValidationError("Input must be symmetric for eigvalsh");
   }
+  if (n === 0) return fromDenseVector1D(new Float64Array(0));
 
-  // Eigenvalues only — skip the O(n³) eigenvector accumulation entirely.
-  const values = symmetricEigenvalues(A, n);
-  values.sort();
-  return fromDenseVector1D(values);
+  // Eigenvalues only: skip the O(n³) eigenvector accumulation entirely.
+  return fromDenseVector1D(symmetricEigenvalues(A, n, "eigvalsh()"));
 }
 
 /**
@@ -840,8 +728,8 @@ export function eigvalsh(a: Tensor): Tensor {
  * @param a - Symmetric matrix of shape (N, N)
  *
  * **Returns**: [eigenvalues, eigenvectors]
- * - All eigenvalues are real
- * - Eigenvectors are orthonormal
+ * - Eigenvalues are real and in ascending order
+ * - Eigenvectors are orthonormal columns
  *
  * @example
  * ```ts
@@ -853,45 +741,22 @@ export function eigvalsh(a: Tensor): Tensor {
  * ```
  *
  * @throws {ShapeError} If input is not square matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input is not symmetric
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
+ * @throws {ConvergenceError} If the QL iteration does not converge
  */
 export function eigh(a: Tensor): [Tensor, Tensor] {
   const n = getSquareMatrixSize(a, "eigh");
+  const { data: A } = toDenseMatrix2D(a, "eigh()");
+
+  if (!isSymmetric(A, n)) {
+    throw new DataValidationError("Input must be symmetric for eigh");
+  }
   if (n === 0) {
     return [fromDenseVector1D(new Float64Array(0)), fromDenseMatrix2D(0, 0, new Float64Array(0))];
   }
 
-  const { data: A } = toDenseMatrix2D(a);
-
-  // Validate symmetry
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const aij = A[i * n + j] as number;
-      const aji = A[j * n + i] as number;
-      if (Math.abs(aij - aji) > 1e-10) {
-        throw new DataValidationError("Input must be symmetric for eigh");
-      }
-    }
-  }
-
-  const { values, vectors } = symmetricEigen(A, n);
-
-  // Sort ascending like eigh
-  const idx = new Array<number>(n);
-  for (let i = 0; i < n; i++) idx[i] = i;
-  idx.sort((i, j) => (values[i] as number) - (values[j] as number));
-
-  const outVals = new Float64Array(n);
-  const outVecs = new Float64Array(n * n);
-  for (let col = 0; col < n; col++) {
-    const src = atArr(idx, col);
-    outVals[col] = values[src] as number;
-    for (let row = 0; row < n; row++) {
-      outVecs[row * n + col] = vectors[row * n + src] as number;
-    }
-  }
-
-  return [fromDenseVector1D(outVals), fromDenseMatrix2D(n, n, outVecs)];
+  const { values, vectors } = symmetricEigen(A, n, "eigh()");
+  return [fromDenseVector1D(values), fromDenseMatrix2D(n, n, vectors)];
 }

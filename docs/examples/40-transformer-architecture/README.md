@@ -2,14 +2,14 @@
 
 > **View online:** https://deepbox.dev/examples/40-transformer-architecture
 
-Full Transformer implementation new in v1.0.0: MultiheadAttention, TransformerEncoder/Decoder, PositionalEncoding, and complete encoder-decoder models.
+Builds the parts of a Transformer one at a time and prints the tensor shapes: `MultiheadAttention`, encoder and decoder layers and stacks, `PositionalEncoding`, and a small encoder-decoder pipeline from token ids to vocabulary logits with `Embedding`, `causalMask` and a `Linear` output projection.
 
 ## Deepbox Modules Used
 
-| Module          | Features Used                                                                                  |
-| --------------- | ---------------------------------------------------------------------------------------------- |
-| `deepbox/nn`    | MultiheadAttention, TransformerEncoderLayer, TransformerDecoderLayer, TransformerEncoder, TransformerDecoder, PositionalEncoding, Linear, LayerNorm, Embedding, Sequential |
-| `deepbox/ndarray` | tensor, zeros, randn                                                                        |
+| Module            | Features Used                                                                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/nn`      | MultiheadAttention, TransformerEncoderLayer, TransformerDecoderLayer, TransformerEncoder, TransformerDecoder, PositionalEncoding, Embedding, Linear, causalMask |
+| `deepbox/ndarray` | tensor, randn, noGrad                                                                                                                                           |
 
 ## Usage
 
@@ -17,10 +17,16 @@ Full Transformer implementation new in v1.0.0: MultiheadAttention, TransformerEn
 npm run example:40
 ```
 
-## Architecture
+## Output
+
+- Console output only: input and output shapes for every component, parameter counts of the encoder and decoder stacks, and the logits shape of the pipeline.
+- The inputs are random, so no numbers are printed. The example shows how the pieces connect, not a trained model.
+- The forward passes run inside `noGrad()` and return plain tensors. Outside `noGrad()` the same calls return `GradTensor` values that support `backward()`.
+
+## Files
 
 ```
 40-transformer-architecture/
-├── index.ts     # Main entry point
+├── index.ts     # Example script
 └── README.md    # This file
 ```

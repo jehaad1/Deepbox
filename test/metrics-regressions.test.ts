@@ -24,7 +24,8 @@ describe("metrics regression contracts", () => {
   it("rejects non-binary labels for binary-only classification metrics", () => {
     expect(() => logLoss(tensor([0, 2]), tensor([0.2, 0.8]))).toThrow(/binary/i);
     expect(() => jaccardScore(tensor([2, 2, 3]), tensor([2, 3, 3]))).toThrow(/binary/i);
-    expect(() => matthewsCorrcoef(tensor([0, 2]), tensor([0, 1]))).toThrow(/binary/i);
+    // matthewsCorrcoef is defined for any number of classes since 1.5.0.
+    expect(matthewsCorrcoef(tensor([0, 2]), tensor([0, 1]))).toBeCloseTo(0.5, 12);
     expect(() => precisionRecallCurve(tensor([0, 2]), tensor([0.1, 0.9]))).toThrow(/binary/i);
     expect(() => averagePrecisionScore(tensor([0, 2]), tensor([0.1, 0.9]))).toThrow(/binary/i);
     expect(() => precision(tensor([0, 2]), tensor([0, 1]), "binary")).toThrow(/binary/i);

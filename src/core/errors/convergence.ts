@@ -5,10 +5,12 @@ import { DeepboxError } from "./base";
  *
  * @property iterations - Number of iterations completed before failure
  * @property tolerance - Tolerance value used for convergence checks
+ * @property cause - Underlying error, if the failure was triggered by one
  */
 export type ConvergenceErrorDetails = {
   readonly iterations?: number;
   readonly tolerance?: number;
+  readonly cause?: unknown;
 };
 
 /**
@@ -27,9 +29,7 @@ export type ConvergenceErrorDetails = {
  * }
  * ```
  *
- * References:
- * - Deepbox convergence diagnostics:
- *   https://deepbox.dev/docs/core-errors
+ * @see {@link https://deepbox.dev/docs/core-errors | Errors, warnings & logging}
  */
 export class ConvergenceError extends DeepboxError {
   override name = "ConvergenceError";
@@ -41,7 +41,7 @@ export class ConvergenceError extends DeepboxError {
   readonly tolerance?: number;
 
   constructor(message: string, details?: ConvergenceErrorDetails) {
-    super(message);
+    super(message, details?.cause !== undefined ? { cause: details.cause } : undefined);
     if (details?.iterations !== undefined) {
       this.iterations = details.iterations;
     }

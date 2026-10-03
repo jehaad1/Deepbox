@@ -115,12 +115,17 @@ export type {
 } from "./types/index";
 // Constants
 export { DEVICES, DTYPES, isDevice, isDType } from "./types/index";
+// Dtype helpers
+export { isFloatDType, promoteTypes, toFloatDType } from "./utils/dtype_utils";
 // Utilities
 export {
   asReadonlyArray,
   check_array,
   check_is_fitted,
   check_X_y,
+  checkArray,
+  checkIsFitted,
+  checkXY,
   dtypeToTypedArrayCtor,
   ensureNumericDType,
   getArrayElement,

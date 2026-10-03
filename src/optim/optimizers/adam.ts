@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { DeepboxError, InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -23,7 +22,6 @@ import {
   assertInRange,
   deviceMaxTensor,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -34,6 +32,7 @@ type AdamOptions = {
   eps: number;
   weightDecay: number;
   amsgrad: boolean;
+  maximize: boolean;
 };
 
 type AdamState = {
@@ -49,10 +48,21 @@ type AdamState = {
 };
 
 /**
- * Adam (Adaptive Moment Estimation) optimizer.
+ * Adam (Adaptive Moment Estimation) optimizer (Kingma and Ba, 2015).
  *
  * Computes adaptive learning rates for each parameter by maintaining
- * running averages of both the gradients and their squared values.
+ * running averages of both the gradients and their squared values. The update
+ * follows `torch.optim.Adam`:
+ *
+ * ```
+ * m = beta1 * m + (1 - beta1) * g
+ * v = beta2 * v + (1 - beta2) * g^2
+ * theta -= (lr / (1 - beta1^t)) * m / (sqrt(v / (1 - beta2^t)) + eps)
+ * ```
+ *
+ * When `weightDecay` is non-zero, `weightDecay * theta` is added to the gradient
+ * (classic L2 penalty); use {@link AdamW} for decoupled weight decay. With
+ * `amsgrad`, `v` is replaced by its running maximum in the denominator.
  *
  * @example
  * ```ts
@@ -68,12 +78,20 @@ type AdamState = {
  * @category Optimizers
  */
 export class Adam extends Optimizer<AdamOptions, AdamState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new Adam optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 0.001)
+   * @param options.beta1 - Decay rate of the first moment, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Decay rate of the second moment, in [0, 1) (default: 0.999)
+   * @param options.eps - Term added to the denominator for numerical stability (default: 1e-8)
+   * @param options.weightDecay - L2 penalty coefficient (default: 0)
+   * @param options.amsgrad - Use the AMSGrad variant (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<AdamOptions>>,
     options: {
@@ -83,6 +101,7 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
       readonly eps?: number;
       readonly weightDecay?: number;
       readonly amsgrad?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -92,45 +111,18 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
       eps: options.eps ?? 1e-8,
       weightDecay: options.weightDecay ?? 0,
       amsgrad: options.amsgrad ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<AdamOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is AdamState {
@@ -145,6 +137,15 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
     return true;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -152,23 +153,19 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
       loss = closure();
     }
 
-    this._stepCount++;
+    this.prepareStep("Adam");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps, weightDecay, amsgrad } = group.options;
+      const { lr, beta1, beta2, eps, weightDecay, amsgrad, maximize } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: keep the entire Adam update resident on the accelerator,
         // composing it from device-dispatched tensor ops (no host readback).
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { step: 0, expAvg: new Float64Array(0), expAvgSq: new Float64Array(0) };
@@ -215,11 +212,10 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
         const state =
           existing ??
           (() => {
-            const next = {
+            const next: AdamState = {
               step: 0,
               expAvg: new Float64Array(size),
               expAvgSq: new Float64Array(size),
-              ...(amsgrad ? { maxExpAvgSq: new Float64Array(size) } : {}),
             };
             this.state.set(param, next);
             return next;
@@ -228,8 +224,12 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
         // Validate state buffer sizes
         assertBufferSize(state.expAvg, size, "Adam expAvg");
         assertBufferSize(state.expAvgSq, size, "Adam expAvgSq");
-        if (amsgrad && state.maxExpAvgSq) {
-          assertBufferSize(state.maxExpAvgSq, size, "Adam maxExpAvgSq");
+        // `amsgrad` may be switched on after state was created (or the state may
+        // have been saved without the buffer), so create the maximum lazily.
+        let maxBuf: Float64Array | undefined;
+        if (amsgrad) {
+          maxBuf = state.maxExpAvgSq ??= new Float64Array(size);
+          assertBufferSize(maxBuf, size, "Adam maxExpAvgSq");
         }
 
         state.step += 1;
@@ -239,32 +239,28 @@ export class Adam extends Optimizer<AdamOptions, AdamState> {
         const biasCorrection2 = 1 - beta2 ** state.step;
 
         const stepSize = lr / biasCorrection1;
+        const expAvg = state.expAvg;
+        const expAvgSq = state.expAvgSq;
 
         for (let i = 0; i < size; i++) {
-          const gi0 = safeArrayAccess(gradData, gradOffset + i, "Adam gradient");
-          const pi = safeArrayAccess(paramData, paramOffset + i, "Adam parameter");
-          assertFinite("gradient", gi0);
-          assertFinite("parameter", pi);
+          const rawGi = gradData[gradOffset + i] as number;
+          const pi = paramData[paramOffset + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi0 = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
 
           // Optional L2 weight decay (classic Adam style)
           const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
 
-          const m = safeArrayAccess(state.expAvg, i, "Adam expAvg");
-          const v = safeArrayAccess(state.expAvgSq, i, "Adam expAvgSq");
+          const mNew = beta1 * (expAvg[i] as number) + (1 - beta1) * gi;
+          const vNew = beta2 * (expAvgSq[i] as number) + (1 - beta2) * gi * gi;
 
-          const mNew = beta1 * m + (1 - beta1) * gi;
-          const vNew = beta2 * v + (1 - beta2) * gi * gi;
-
-          state.expAvg[i] = mNew;
-          state.expAvgSq[i] = vNew;
+          expAvg[i] = mNew;
+          expAvgSq[i] = vNew;
 
           let denomSq = vNew;
-          if (amsgrad) {
-            const maxBuf = state.maxExpAvgSq;
-            if (!maxBuf) {
-              throw new DeepboxError("Internal error: AMSGrad enabled but maxExpAvgSq is missing");
-            }
-            const maxV = Math.max(safeArrayAccess(maxBuf, i, "Adam maxExpAvgSq"), vNew);
+          if (maxBuf) {
+            const maxV = Math.max(maxBuf[i] as number, vNew);
             maxBuf[i] = maxV;
             denomSq = maxV;
           }

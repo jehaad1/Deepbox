@@ -1,7 +1,7 @@
 /**
- * Deepbox — TypeScript toolkit for AI & numerical computing
+ * Deepbox: TypeScript toolkit for AI & numerical computing
  *
- * A comprehensive framework for tensors, linear algebra, tabular data,
+ * A toolkit for tensors, linear algebra, tabular data,
  * machine learning, neural networks, statistics, and related workflows in TypeScript/JavaScript.
  *
  * @example

@@ -1,4 +1,7 @@
 /**
+ * Internal random number plumbing: the xoshiro128++ generator, the global
+ * seed state, the unseeded crypto fallback and the Ziggurat normal sampler.
+ *
  * @see {@link https://deepbox.dev/docs/random-generation | Deepbox documentation}
  */
 
@@ -18,6 +21,9 @@ type CryptoLike = {
 };
 
 declare const crypto: CryptoLike | undefined;
+
+/** Largest float32 strictly below 1 (1 - 2^-24). */
+const FLOAT32_BELOW_ONE = 0.99999994039535522;
 
 const UINT64_MASK = (1n << 64n) - 1n;
 const SPLITMIX_GAMMA = 0x9e3779b97f4a7c15n;
@@ -47,7 +53,7 @@ class __SplitMix64 {
  *
  * High statistical quality (passes BigCrush), deterministic across
  * platforms, and ~3x faster per draw than the limb-arithmetic PCG32 it
- * replaced — the whole state transition is six 32-bit integer ops, which
+ * replaced: the whole state transition is six 32-bit integer ops, which
  * V8 compiles to straight-line machine code. Not cryptographically secure.
  *
  * The public contract is determinism per seed within a Deepbox version;
@@ -113,17 +119,35 @@ export class __SeededRandom {
     let b = s[1] as number;
     let c = s[2] as number;
     let d = s[3] as number;
-    for (let i = 0; i < count; i++) {
-      const sum = (a + d) | 0;
-      const result = (((sum << 7) | (sum >>> 25)) + a) >>> 0;
-      const t = (b << 9) | 0;
-      c = (c ^ a) | 0;
-      d = (d ^ b) | 0;
-      b = (b ^ c) | 0;
-      a = (a ^ d) | 0;
-      c = (c ^ t) | 0;
-      d = (d << 11) | (d >>> 21) | 0;
-      target[i] = result / 4294967296;
+    if (target instanceof Float32Array) {
+      // A uint32 draw above 2^32 - 128 rounds up to exactly 1.0 in float32, which
+      // would break the half-open [0, 1) contract (and make log(1 - u) infinite).
+      for (let i = 0; i < count; i++) {
+        const sum = (a + d) | 0;
+        const result = (((sum << 7) | (sum >>> 25)) + a) >>> 0;
+        const t = (b << 9) | 0;
+        c = (c ^ a) | 0;
+        d = (d ^ b) | 0;
+        b = (b ^ c) | 0;
+        a = (a ^ d) | 0;
+        c = (c ^ t) | 0;
+        d = (d << 11) | (d >>> 21) | 0;
+        const f = Math.fround(result / 4294967296);
+        target[i] = f < 1 ? f : FLOAT32_BELOW_ONE;
+      }
+    } else {
+      for (let i = 0; i < count; i++) {
+        const sum = (a + d) | 0;
+        const result = (((sum << 7) | (sum >>> 25)) + a) >>> 0;
+        const t = (b << 9) | 0;
+        c = (c ^ a) | 0;
+        d = (d ^ b) | 0;
+        b = (b ^ c) | 0;
+        a = (a ^ d) | 0;
+        c = (c ^ t) | 0;
+        d = (d << 11) | (d >>> 21) | 0;
+        target[i] = result / 4294967296;
+      }
     }
     s[0] = a;
     s[1] = b;
@@ -159,12 +183,14 @@ export class __SeededRandom {
 
   /**
    * Generate the next uniform sample in [0, 1).
+   *
+   * The value is `uint32 / 2^32`, so it has a resolution of 2^-32.
    */
   next(): number {
     return this.nextUint32() / 2 ** 32;
   }
 
-  /** Uniform in (0, 1) from this instance's stream — never 0 or 1, safe for log(). */
+  /** Uniform in (0, 1) from this instance's stream, never 0 or 1, safe for log(). */
   private nextOpen01(): number {
     return (this.nextUint32() + 0.5) / 4294967296;
   }
@@ -227,13 +253,70 @@ export class __SeededRandom {
   }
 }
 
+/**
+ * Convert a model-level seed to the uint64 that seeds {@link __SeededRandom}.
+ *
+ * Integer seeds (including negative ones, reduced modulo 2^64) map to themselves, so
+ * established sequences do not change. A fractional seed uses its IEEE-754 bits instead of
+ * being truncated, so 0.5 and 0.7 give different streams.
+ *
+ * @internal
+ */
+export function __seedToUint64(seed: number): bigint {
+  if (Number.isInteger(seed)) return BigInt.asUintN(64, BigInt(seed));
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, seed);
+  return view.getBigUint64(0);
+}
+
+/**
+ * Draw an integer in `[0, bound)` from a generator of uniform values in `[0, 1)`.
+ *
+ * `floor(u * bound)` is slightly biased when `u` has a resolution of 2^-32, as the draws of
+ * {@link __random} and {@link __SeededRandom.next} do: some residues occur once more often than
+ * others. For integer bounds up to 2^21 this applies Lemire's rejection test to the exact
+ * 32-bit word behind `u`, so every value is exactly equally likely. A draw is rejected with
+ * probability below `bound / 2^32`, so seeded streams give the same values as `floor(u * bound)`
+ * almost always. For larger bounds the 32-bit word is reduced with plain rejection sampling.
+ * A generator whose values are not multiples of 2^-32, or a non-integer bound, falls back to
+ * `floor(u * bound)`.
+ *
+ * @internal
+ */
+export function __randomBelow(random: () => number, bound: number): number {
+  let x = random() * 4294967296;
+  if (!Number.isInteger(bound) || bound < 1 || !Number.isInteger(x)) {
+    return Math.floor((x / 4294967296) * bound);
+  }
+  if (bound <= 2097152) {
+    let m = x * bound;
+    let low = m % 4294967296;
+    if (low < bound) {
+      const threshold = 4294967296 % bound;
+      while (low < threshold) {
+        x = random() * 4294967296;
+        m = x * bound;
+        low = m % 4294967296;
+      }
+    }
+    return Math.floor(m / 4294967296);
+  }
+  if (bound <= 4294967296) {
+    const limit = Math.floor(4294967296 / bound) * bound;
+    while (x >= limit) x = random() * 4294967296;
+    return x % bound;
+  }
+  return Math.floor((x / 4294967296) * bound);
+}
+
 /** Internal PRNG instance when a seed is set. */
 let __rng: __SeededRandom | null = null;
 
 /**
  * Set the global seed for all random operations.
  *
- * @param seed - Any finite number. It will be coerced to uint64 for the PRNG.
+ * @param seed - Any finite number. The fractional part is discarded and the
+ *   result is reduced modulo 2^64 to form the PRNG seed.
  */
 export function __setSeed(seed: number): void {
   // Validate input.
@@ -264,12 +347,7 @@ export function __clearSeed(): void {
   __rng = null;
 }
 
-/**
- * Generate a uniform random number in [0, 1).
- *
- * Uses the seeded PRNG when a seed is set; otherwise uses a cryptographically
- * secure RNG via `crypto.getRandomValues`.
- */
+/** Resolve the platform `crypto` object, or `undefined` when it cannot supply random bytes. */
 function getCrypto(): CryptoLike | undefined {
   if (typeof crypto === "undefined") {
     return undefined;
@@ -303,6 +381,12 @@ function randomUint32FromCrypto(): number {
   return (cryptoBuf as Uint32Array)[cryptoPos++]! >>> 0;
 }
 
+/**
+ * Generate a uniform random number in [0, 1).
+ *
+ * Uses the seeded PRNG when a seed is set; otherwise uses a cryptographically
+ * secure RNG via `crypto.getRandomValues`.
+ */
 export function __random(): number {
   // Use deterministic PRNG if available.
   if (__rng) {
@@ -313,12 +397,6 @@ export function __random(): number {
   return randomUint32FromCrypto() / 2 ** 32;
 }
 
-/**
- * Generate a uniform uint32 random number in [0, 2^32).
- *
- * Uses the seeded PRNG when a seed is set; otherwise uses a cryptographically
- * secure RNG via `crypto.getRandomValues`.
- */
 /**
  * Fill `target[0..count)` with uniform uint32 samples.
  *
@@ -347,6 +425,12 @@ export function __fillUint32(target: Uint32Array, count: number): void {
   }
 }
 
+/**
+ * Generate a uniform uint32 random number in [0, 2^32).
+ *
+ * Uses the seeded PRNG when a seed is set; otherwise uses a cryptographically
+ * secure RNG via `crypto.getRandomValues`.
+ */
 export function __randomUint32(): number {
   if (__rng) {
     return __rng.nextUint32();
@@ -364,6 +448,13 @@ export function __randomUint32(): number {
 export function __fillUniform(target: Float64Array | Float32Array, count: number): void {
   if (__rng) {
     __rng.fillUniform01(target, count);
+    return;
+  }
+  if (target instanceof Float32Array) {
+    for (let i = 0; i < count; i++) {
+      const f = Math.fround(randomUint32FromCrypto() / 4294967296);
+      target[i] = f < 1 ? f : FLOAT32_BELOW_ONE;
+    }
     return;
   }
   for (let i = 0; i < count; i++) {
@@ -420,7 +511,7 @@ function zigInit(): Uint32Array {
   return kn;
 }
 
-/** Uniform in (0, 1) — never 0 or 1, safe for log(). */
+/** Uniform in (0, 1), never 0 or 1, safe for log(). */
 function uniformOpen(): number {
   return (__randomUint32() + 0.5) / 4294967296;
 }

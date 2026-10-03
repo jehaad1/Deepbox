@@ -1,5 +1,5 @@
 /**
- * Benchmark 14 — Tensor operations (Deepbox-only)
+ * Benchmark 14: Tensor operations (Deepbox-only)
  *
  * Writes `benchmarks/results/deepbox-tensor.json`. Not part of the Python head-to-head
  * matrix (`bench:compare`); use alongside `bench:ndarray` for extra ndarray coverage.
@@ -47,7 +47,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("tensor");
-header("Benchmark 14 — Tensor Operations (Deepbox-only)");
+header("Benchmark 14: Tensor Operations (Deepbox-only)");
 
 // ── Creation ──────────────────────────────────────────────
 

@@ -24,11 +24,12 @@ describe("deepbox/ndarray - Comparison Branches", () => {
     expect(less(a, b).toArray()).toEqual([1, 0]);
   });
 
-  it("covers isclose/allclose error branches", () => {
+  it("supports isclose/allclose on int64 tensors", () => {
     const a = tensor([1, 2], { dtype: "int64" });
     const b = tensor([1, 2], { dtype: "int64" });
-    expect(() => isclose(a, b)).toThrow(/BigInt/);
-    expect(() => allclose(a, b)).toThrow(/BigInt/);
+    expect(isclose(a, b).toArray()).toEqual([1, 1]);
+    expect(allclose(a, b)).toBe(true);
+    expect(allclose(a, tensor([1, 3], { dtype: "int64" }))).toBe(false);
   });
 
   it("covers arrayEqual and finite checks", () => {

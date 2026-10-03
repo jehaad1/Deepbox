@@ -1,5 +1,5 @@
 /**
- * Benchmark 07: Scalability — Deepbox vs NumPy
+ * Benchmark 07: Scalability (Deepbox vs NumPy)
  *
  * Tests how performance scales with increasing data sizes.
  * Measures throughput (elements/sec) at multiple scales to

@@ -229,7 +229,7 @@ describe("MaxPool3d", () => {
     const out = pool.forward(x);
     expect(out.shape).toEqual([1, 1, 1, 1, 1]);
     // Max of [1..8] = 8
-    expect(out.tensor.toArray()).toEqual([[[[[8]]]]]);
+    expect(out.toArray()).toEqual([[[[[8]]]]]);
   });
 
   it("handles stride different from kernel", () => {
@@ -301,7 +301,7 @@ describe("AvgPool3d", () => {
     const out = pool.forward(x);
     expect(out.shape).toEqual([1, 1, 1, 1, 1]);
     // avg of [1..8] = 4.5
-    expect(out.tensor.toArray()).toEqual([[[[[4.5]]]]]);
+    expect(out.toArray()).toEqual([[[[[4.5]]]]]);
   });
 
   it("handles multiple channels", () => {

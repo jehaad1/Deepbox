@@ -1,104 +1,92 @@
 /**
- * Example 23: Cross-Validation Strategies
+ * Example 23: Cross-Validation
  *
- * Learn different cross-validation techniques for robust model evaluation.
- * Essential for assessing model generalization.
+ * Cross-validation scores a model on several different train/test splits, so
+ * one lucky or unlucky split does not decide the result. This example shows the
+ * splitters (KFold, StratifiedKFold, LeaveOneOut) and crossValScore, which runs
+ * the whole loop for you.
  */
 
-import { tensor } from "deepbox/ndarray";
+import { crossValScore, LinearRegression } from "deepbox/ml";
+import { arange, tensor } from "deepbox/ndarray";
 import { KFold, LeaveOneOut, StratifiedKFold } from "deepbox/preprocess";
+import { rand, setSeed } from "deepbox/random";
 
-// Generate synthetic linear data
-// Create training data: y = 2x + 3 + noise
-const X_data: number[][] = [];
-const y_data: number[] = [];
+// Synthetic linear data: y = 2x + 3 + noise in [-0.5, 0.5). The seed makes it repeatable.
+setSeed(42);
+const X = arange(0, 50).div(5).reshape([50, 1]);
+const y = X.reshape([50])
+  .mul(2)
+  .add(3)
+  .add(rand([50]).sub(0.5));
 
-// Populate data arrays with synthetic data
-for (let i = 0; i < 50; i++) {
-  const x = i / 5;
-  const y = 2 * x + 3 + (Math.random() - 0.5);
-  X_data.push([x]);
-  y_data.push(y);
-}
-
-// Convert data to tensors
-const X = tensor(X_data);
-
-// Display dataset size
 console.log(`Dataset: ${X.shape[0]} samples\n`);
 
-// 1. K-Fold Cross-Validation
-// K-Fold: Split data into k equal folds
+// 1. K-Fold: split the rows into k folds. Each fold is the test set once.
 console.log("1. K-Fold Cross-Validation (k=5):");
 console.log("-".repeat(50));
 
-// Create 5-fold cross-validator with shuffling
 const kfold = new KFold({ nSplits: 5, shuffle: true, randomState: 42 });
 
-// Initialize fold counter
 let foldNum = 1;
-
-// Iterate through each fold
 for (const { trainIndex, testIndex } of kfold.split(X)) {
-  // Note: In a real scenario, you'd use gather() to index the data
-  // For this example, we'll just count the splits
+  // The splitter yields row indices. Use them to pick rows, for example with X.gather(...).
   console.log(`Fold ${foldNum}: Train=${trainIndex.length}, Test=${testIndex.length}`);
   foldNum++;
 }
 
-// Display total number of folds
 console.log(`\nTotal folds: ${kfold.getNSplits()}\n`);
 
-// 2. Stratified K-Fold (for classification)
-// Stratified K-Fold: Preserves class distribution
+// 2. Stratified K-Fold: every fold keeps the class proportions of y.
 console.log("2. Stratified K-Fold:");
 console.log("-".repeat(50));
 
-// Create classification data with 3 classes
-const y_class = tensor([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]);
-const X_class = tensor(
-  Array(12)
-    .fill(0)
-    .map((_, i) => [i])
-);
+// 12 samples, 3 classes with 4 samples each
+const yClass = tensor([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]);
+const XClass = arange(0, 12).reshape([12, 1]);
 
-// Stratified split maintains class proportions in each fold
 const stratified = new StratifiedKFold({
-  nSplits: 3,
+  nSplits: 2,
   shuffle: true,
   randomState: 42,
 });
 
-// Initialize fold counter
+const labels = yClass.toArray() as number[];
 foldNum = 1;
-
-// Iterate through each fold
-for (const { trainIndex, testIndex } of stratified.split(X_class, y_class)) {
-  console.log(`Fold ${foldNum}: Train=${trainIndex.length}, Test=${testIndex.length}`);
+for (const { trainIndex, testIndex } of stratified.split(XClass, yClass)) {
+  // Count how many test rows belong to each class.
+  const counts = [0, 1, 2].map((c) => testIndex.filter((i) => labels[i] === c).length);
+  console.log(
+    `Fold ${foldNum}: Train=${trainIndex.length}, Test=${testIndex.length}, test rows per class=[${counts}]`
+  );
   foldNum++;
 }
 
-console.log("\nStratified K-Fold preserves class distribution in each fold\n");
+console.log("\nEach test fold holds the same number of rows from every class\n");
 
-// 3. Leave-One-Out Cross-Validation
-// Leave-One-Out: Use n-1 samples for training, 1 for testing
+// 3. Leave-One-Out: n folds, each tests a single row.
 console.log("3. Leave-One-Out Cross-Validation:");
 console.log("-".repeat(50));
 
-const X_small = tensor([[1], [2], [3], [4], [5]]);
-
-// LOO creates n folds for n samples
+const XSmall = tensor([[1], [2], [3], [4], [5]]);
 const loo = new LeaveOneOut();
-const looFolds = Array.from(loo.split(X_small));
+const looFolds = Array.from(loo.split(XSmall));
 
 console.log(`Total folds: ${looFolds.length}`);
-console.log("Each fold uses n-1 samples for training, 1 for testing");
-console.log("Useful for small datasets but computationally expensive\n");
+console.log("Each fold trains on n-1 samples and tests on 1");
+console.log("Uses the most training data, but fits the model n times\n");
 
-// Summary of when to use each method
-console.log("Key Insights:");
-console.log("• K-Fold: Good balance between bias and variance");
-console.log("• Stratified K-Fold: Maintains class distribution (classification)");
-console.log("• Leave-One-Out: Maximum training data, high variance");
+// 4. crossValScore: fit and score a model on every fold in one call.
+console.log("4. crossValScore:");
+console.log("-".repeat(50));
 
-console.log("\n✓ Cross-validation complete!");
+// For a regressor the score is R². The folds come from a fixed-seed shuffle.
+const scores = crossValScore(new LinearRegression(), X, y, 5);
+console.log(`Scores per fold: ${scores.map((s) => s.toFixed(4)).join(", ")}`);
+const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+console.log(`Mean R²: ${meanScore.toFixed(4)}\n`);
+
+console.log("Summary:");
+console.log("  K-Fold: a good default, 5 or 10 folds");
+console.log("  Stratified K-Fold: keeps class proportions, use it for classification");
+console.log("  Leave-One-Out: maximum training data per fold, high variance, slow on large data");

@@ -1,13 +1,106 @@
 import {
   type Axis,
   DataValidationError,
+  DTypeError,
   InvalidParameterError,
   normalizeAxis,
   ShapeError,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { getDim, getStride, luFactorSquare, toDenseMatrix2D, toDenseVector1D } from "./_internal";
+import {
+  fromDenseVector1D,
+  getDim,
+  getStride,
+  luFactorSquare,
+  toDenseMatrix2D,
+  toDenseVector1D,
+} from "./_internal";
 import { svdvals } from "./decomposition/svd";
+
+/** True for the error `luFactorSquare` raises on an exactly zero pivot. */
+function isSingularError(err: unknown): boolean {
+  return err instanceof DataValidationError && /singular/i.test(err.message);
+}
+
+/** True for the error `luFactorSquare` raises when elimination overflows. */
+function isOverflowError(err: unknown): boolean {
+  return err instanceof DataValidationError && /overflowed/i.test(err.message);
+}
+
+/**
+ * Scale the n x n matrix A by 2^-e so that LU elimination cannot overflow, and return the
+ * scaled copy with e. With partial pivoting no entry grows by more than 2^(n - 1), so the
+ * largest entry is brought down to about 2^(1020 - n) and not further: a larger shift would
+ * push small entries into the subnormal range and cost them digits. Powers of two keep the
+ * scaling exact.
+ */
+function scaleToAvoidOverflow(
+  A: Float64Array,
+  n: number
+): { readonly scaled: Float64Array; readonly e: number } {
+  let maxAbs = 0;
+  for (let i = 0; i < A.length; i++) maxAbs = Math.max(maxAbs, Math.abs(A[i] as number));
+  const e = Math.max(0, frexp(maxAbs)[1] - Math.max(0, 1020 - n));
+  const scaled = new Float64Array(A.length);
+  for (let i = 0; i < A.length; i++) scaled[i] = ldexp(A[i] as number, -e);
+  return { scaled, e };
+}
+
+/** Smallest positive normal float64. */
+const MIN_NORMAL = 2.2250738585072014e-308;
+
+/** Split a finite non-zero x into m * 2^e with 0.5 <= |m| < 1. */
+function frexp(x: number): [number, number] {
+  if (x === 0 || !Number.isFinite(x)) return [x, 0];
+  let e = Math.max(-1022, Math.floor(Math.log2(Math.abs(x))) + 1);
+  let m = x * 2 ** -e;
+  while (Math.abs(m) < 0.5) {
+    m *= 2;
+    e--;
+  }
+  while (Math.abs(m) >= 1) {
+    m /= 2;
+    e++;
+  }
+  return [m, e];
+}
+
+/** m * 2^e without the intermediate 2^e overflowing or underflowing too early. */
+function ldexp(m: number, e: number): number {
+  const half = Math.trunc(e / 2);
+  return m * 2 ** half * 2 ** (e - half);
+}
+
+/**
+ * Machine epsilon of the working precision implied by the dtypes of the given
+ * tensors, used for default tolerances the way NumPy uses `finfo(dtype).eps`:
+ * float32 gives 2^-23, float16 2^-10, bfloat16 2^-7, and float64, integer and
+ * bool tensors float64 epsilon. With several tensors the most precise dtype
+ * wins, as in NumPy's type promotion.
+ */
+function workingEpsilon(...tensors: readonly Tensor[]): number {
+  let eps = 0;
+  for (const t of tensors) {
+    let e: number;
+    switch (t.dtype) {
+      case "float32":
+      case "complex64":
+        e = 2 ** -23;
+        break;
+      case "float16":
+        e = 2 ** -10;
+        break;
+      case "bfloat16":
+        e = 2 ** -7;
+        break;
+      default:
+        e = Number.EPSILON;
+    }
+    // Promotion to the more precise type means the smaller epsilon wins.
+    eps = eps === 0 ? e : Math.min(eps, e);
+  }
+  return eps === 0 ? Number.EPSILON : eps;
+}
 
 /**
  * Compute the determinant of a matrix.
@@ -41,7 +134,7 @@ import { svdvals } from "./decomposition/svd";
  * ```
  *
  * @throws {ShapeError} If input is not a 2D square matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
  * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
@@ -55,19 +148,68 @@ export function det(a: Tensor): number {
   const n = rows;
   if (n === 0) return 1;
 
-  const { data: A } = toDenseMatrix2D(a);
+  const { data: A } = toDenseMatrix2D(a, "det()");
 
   try {
     const { lu, pivSign } = luFactorSquare(A, n);
     let detVal = pivSign;
-    for (let i = 0; i < n; i++) detVal *= lu[i * n + i] as number;
-    return detVal;
-  } catch (err) {
-    // (Fix) Do NOT swallow all errors. Only treat the specific "singular matrix" case as det=0.
-    if (err instanceof DataValidationError && err.message === "Matrix is singular") {
-      return 0;
+    let inRange = true;
+    for (let i = 0; i < n; i++) {
+      detVal *= lu[i * n + i] as number;
+      // A partial product that is subnormal has already lost digits, and one
+      // that is infinite or zero has lost the value, even if later factors
+      // would bring it back into range.
+      const mag = Math.abs(detVal);
+      if (!(mag >= MIN_NORMAL && mag <= Number.MAX_VALUE)) inRange = false;
     }
-    throw err;
+    if (inRange) return detVal;
+    // A partial product left the normal float64 range. Redo the product with
+    // the powers of two kept in a separate exponent, so that a determinant
+    // inside the float64 range survives transient overflow or underflow (e.g.
+    // diag(1e200, 1e200, 1e-200, 1e-200) is 1, not Infinity).
+    let mantissa = pivSign;
+    let exponent = 0;
+    for (let i = 0; i < n; i++) {
+      const [m, e] = frexp(lu[i * n + i] as number);
+      mantissa *= m;
+      exponent += e;
+      if (Math.abs(mantissa) < 2 ** -500) {
+        const [m2, e2] = frexp(mantissa);
+        mantissa = m2;
+        exponent += e2;
+      }
+    }
+    return ldexp(mantissa, exponent);
+  } catch (err) {
+    if (isSingularError(err)) return 0;
+    if (!isOverflowError(err)) throw err;
+    // Elimination overflowed although the input is finite (for example
+    // [[1e308, -1e308], [1e308, 1e308]]). det(A) = det(A / 2^e) * 2^(e*n), so
+    // factor the rescaled matrix and apply the power of two at the end. The
+    // result is +/-Infinity when the determinant itself exceeds the float64 range.
+    const { scaled, e } = scaleToAvoidOverflow(A, n);
+    let factors: { readonly lu: Float64Array; readonly pivSign: number };
+    try {
+      factors = luFactorSquare(scaled, n);
+    } catch (err2) {
+      // The rescaled matrix can underflow to an exactly singular one.
+      if (isSingularError(err2)) return 0;
+      throw err2;
+    }
+    const { lu, pivSign } = factors;
+    let mantissa = pivSign;
+    let exponent = e * n;
+    for (let i = 0; i < n; i++) {
+      const [m, ex] = frexp(lu[i * n + i] as number);
+      mantissa *= m;
+      exponent += ex;
+      if (Math.abs(mantissa) < 2 ** -500) {
+        const [m2, e2] = frexp(mantissa);
+        mantissa = m2;
+        exponent += e2;
+      }
+    }
+    return ldexp(mantissa, exponent);
   }
 }
 
@@ -84,9 +226,9 @@ export function det(a: Tensor): number {
  * **Parameters**:
  * @param a - Square matrix
  *
- * **Returns**: [sign, logdet]
- * - sign: +1, -1, or 0 (as 0D tensor)
- * - logdet: Natural log of |det(A)| (as 0D tensor), -Infinity if singular
+ * **Returns**: [sign, logdet], both 0-D float64 tensors
+ * - sign: +1, -1, or 0 for a singular matrix
+ * - logdet: Natural log of |det(A)|, -Infinity if singular (an empty matrix gives [1, 0])
  *
  * **Mathematical Relation**:
  * det(A) = sign * exp(logdet)
@@ -107,7 +249,7 @@ export function det(a: Tensor): number {
  * ```
  *
  * @throws {ShapeError} If input is not a 2D square matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  */
 export function slogdet(a: Tensor): [Tensor, Tensor] {
@@ -119,7 +261,7 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
   const n = rows;
   if (n === 0) return [tensor(1, { dtype: "float64" }), tensor(0, { dtype: "float64" })];
 
-  const { data: A } = toDenseMatrix2D(a);
+  const { data: A } = toDenseMatrix2D(a, "slogdet()");
 
   try {
     const { lu, pivSign } = luFactorSquare(A, n);
@@ -127,21 +269,41 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
     let logAbsDet = 0;
 
     for (let i = 0; i < n; i++) {
+      // luFactorSquare throws on a zero pivot, so every diagonal entry is non-zero here.
       const d = lu[i * n + i] as number;
-      if (d === 0) {
-        return [tensor(0, { dtype: "float64" }), tensor(-Infinity, { dtype: "float64" })];
-      }
       sign *= Math.sign(d);
       logAbsDet += Math.log(Math.abs(d));
     }
 
     return [tensor(sign, { dtype: "float64" }), tensor(logAbsDet, { dtype: "float64" })];
   } catch (err) {
-    // (Fix) Do NOT swallow all errors. Only treat the specific "singular matrix" case specially.
-    if (err instanceof DataValidationError && err.message === "Matrix is singular") {
+    // An exactly singular matrix has sign 0 and log-determinant -Infinity.
+    if (isSingularError(err)) {
       return [tensor(0, { dtype: "float64" }), tensor(-Infinity, { dtype: "float64" })];
     }
-    throw err;
+    if (!isOverflowError(err)) throw err;
+    // Elimination overflowed although the input is finite. Factor A / 2^e
+    // instead: log|det(A)| = log|det(A / 2^e)| + e * n * ln(2).
+    const { scaled, e } = scaleToAvoidOverflow(A, n);
+    let factors: { readonly lu: Float64Array; readonly pivSign: number };
+    try {
+      factors = luFactorSquare(scaled, n);
+    } catch (err2) {
+      // The rescaled matrix can underflow to an exactly singular one.
+      if (isSingularError(err2)) {
+        return [tensor(0, { dtype: "float64" }), tensor(-Infinity, { dtype: "float64" })];
+      }
+      throw err2;
+    }
+    const { lu, pivSign } = factors;
+    let sign = pivSign;
+    let logAbsDet = e * n * Math.LN2;
+    for (let i = 0; i < n; i++) {
+      const d = lu[i * n + i] as number;
+      sign *= Math.sign(d);
+      logAbsDet += Math.log(Math.abs(d));
+    }
+    return [tensor(sign, { dtype: "float64" }), tensor(logAbsDet, { dtype: "float64" })];
   }
 }
 
@@ -163,7 +325,8 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
  * @param axis1 - First axis to take the diagonal from (default: 0)
  * @param axis2 - Second axis to take the diagonal from (default: 1)
  *
- * **Returns**: Trace values as tensor (one per slice if input is batched)
+ * **Returns**: Trace values as a float64 tensor: shape `[1]` for a 2-D input, otherwise one
+ * value per remaining index (the input shape without `axis1` and `axis2`)
  *
  * **Properties**:
  * - trace(A) = sum of eigenvalues (for square matrices)
@@ -172,21 +335,22 @@ export function slogdet(a: Tensor): [Tensor, Tensor] {
  * - trace(cA) = c * trace(A) for scalar c
  * - trace(A^T) = trace(A)
  *
+ * NaN and Infinity entries on the summed diagonal propagate into the result.
+ *
  * @example
  * ```ts
  * import { trace } from 'deepbox/linalg';
  * import { tensor } from 'deepbox/ndarray';
  *
  * const A = tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
- * console.log(trace(A));  // 1 + 5 + 9 = 15
- * console.log(trace(A, 1));  // 2 + 6 = 8 (upper diagonal)
- * console.log(trace(A, -1));  // 4 + 8 = 12 (lower diagonal)
+ * console.log(trace(A).toArray());  // [15] (1 + 5 + 9)
+ * console.log(trace(A, 1).toArray());  // [8] (2 + 6, upper diagonal)
+ * console.log(trace(A, -1).toArray());  // [12] (4 + 8, lower diagonal)
  * ```
  *
  * @throws {ShapeError} If input is not at least 2D
  * @throws {InvalidParameterError} If axis values are invalid/identical or offset is non-integer
- * @throws {DTypeError} If input has string dtype
- * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
+ * @throws {DTypeError} If input has string or complex dtype
  */
 export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): Tensor {
   if (a.ndim < 2) {
@@ -198,7 +362,10 @@ export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): 
   }
 
   if (a.dtype === "string") {
-    throw new DataValidationError("trace() does not support string dtype");
+    throw new DTypeError("trace() does not support string dtype");
+  }
+  if (a.dtype === "complex64" || a.dtype === "complex128") {
+    throw new DTypeError("trace() does not support complex dtype");
   }
 
   const ndim = a.ndim;
@@ -260,8 +427,9 @@ export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): 
     out[outer] = sum;
   }
 
+  // Keep float64: a plain number[] would be rounded to the default dtype (float32).
   if (outerShape.length === 0) {
-    return tensor([out[0] as number]);
+    return fromDenseVector1D(out);
   }
   return tensor(out).view(outerShape);
 }
@@ -279,7 +447,8 @@ export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): 
  * **Parameters**:
  * @param a - Input matrix of shape (M, N)
  * @param tol - Threshold for small singular values (optional)
- *   - Default: max(M,N) * largest_singular_value * machine_epsilon
+ *   - Default: max(M,N) * largest_singular_value * machine_epsilon, where the epsilon follows
+ *     the dtype of `a` as in NumPy (about 1.2e-7 for float32, 2.2e-16 for float64 and integers)
  *   - Singular values > tol are counted as non-zero
  *
  * **Returns**: Rank (integer between 0 and min(M, N))
@@ -304,7 +473,7 @@ export function trace(a: Tensor, offset = 0, axis1: Axis = 0, axis2: Axis = 1): 
  * ```
  *
  * @throws {ShapeError} If input is not a 2D matrix
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {InvalidParameterError} If tol is negative or non-finite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  */
@@ -319,10 +488,10 @@ export function matrixRank(a: Tensor, tol?: number): number {
   const k = Math.min(rows, cols);
   if (k === 0) return 0;
 
-  // Only singular values are needed — skip U/V accumulation.
+  // Only singular values are needed, so skip U/V accumulation.
   const sDense = toDenseVector1D(svdvals(a));
 
-  const defaultTol = (sDense[0] as number) * Number.EPSILON * Math.max(rows, cols);
+  const defaultTol = (sDense[0] as number) * workingEpsilon(a) * Math.max(rows, cols);
   const threshold = tol ?? defaultTol;
 
   let rank = 0;

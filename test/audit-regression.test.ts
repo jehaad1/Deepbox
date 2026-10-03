@@ -15,7 +15,7 @@ import { beta, binom, chi2, f as fDist, norm } from "../src/stats/distributions"
 /**
  * Cross-module regression tests for the 2026-07-02 correctness audit. Each
  * asserts a value/behavior against an external reference (NumPy/SciPy/sklearn/
- * PyTorch) — the class of check the original suite was missing.
+ * PyTorch). This is the class of check the original suite was missing.
  */
 
 function flat(t: { toArray(): unknown }): number[] {
@@ -25,7 +25,7 @@ function flat(t: { toArray(): unknown }): number[] {
   return o;
 }
 
-describe("audit regression — ndarray", () => {
+describe("audit regression: ndarray", () => {
   it("non-power-of-2 FFT matches NumPy (not the conjugate)", () => {
     const im = flat(db.fft(db.tensor([0, 1, 0], { dtype: "float64" })).imag);
     // numpy.fft.fft([0,1,0]).imag == [0, -0.8660, +0.8660]
@@ -41,7 +41,7 @@ describe("audit regression — ndarray", () => {
   });
 });
 
-describe("audit regression — linalg", () => {
+describe("audit regression: linalg", () => {
   it("eigh is accurate for a 20x20 symmetric matrix", () => {
     const n = 20;
     let seed = 42;
@@ -70,7 +70,7 @@ describe("audit regression — linalg", () => {
   });
 });
 
-describe("audit regression — stats", () => {
+describe("audit regression: stats", () => {
   it("F.ppf lower tail matches scipy", () => {
     expect(fDist(5, 10).ppf(0.025)).toBeCloseTo(0.15108, 4);
   });
@@ -90,7 +90,7 @@ describe("audit regression — stats", () => {
   });
 });
 
-describe("audit regression — ml", () => {
+describe("audit regression: ml", () => {
   it("BallTree.query returns the true nearest neighbors", () => {
     let seed = 1;
     const rng = () => {
@@ -256,7 +256,7 @@ describe("audit regression — ml", () => {
   });
 });
 
-describe("audit regression — dataframe", () => {
+describe("audit regression: dataframe", () => {
   it("Date values hash distinctly in groupby", () => {
     const df = new DataFrame({
       d: [new Date("2024-01-01"), new Date("2025-06-30"), new Date("2024-01-01")],

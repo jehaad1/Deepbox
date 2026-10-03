@@ -11,7 +11,7 @@
 [![Bench](https://img.shields.io/badge/Bench-Leaderboard-amber)](https://bench.deepbox.dev)
 -->
 
-Deepbox is a zero-runtime-dependency TypeScript framework for tensors, linear algebra, tabular data, machine learning, neural networks, statistics, datasets, and plotting. It is designed for users who want one coherent toolkit instead of stitching together separate numerical and ML libraries.
+Deepbox is a TypeScript library for tensors, linear algebra, tabular data, machine learning, neural networks, statistics, datasets and plotting. It has no runtime dependencies and ships ESM and CommonJS builds with type declarations. The API follows NumPy, pandas, scikit-learn and PyTorch, so code written against those libraries translates directly.
 
 > Docs: [deepbox.dev/docs](https://deepbox.dev/docs)
 > Examples: [deepbox.dev/examples](https://deepbox.dev/examples)
@@ -20,27 +20,19 @@ Deepbox is a zero-runtime-dependency TypeScript framework for tensors, linear al
 > Benchmarks: [bench.deepbox.dev](https://bench.deepbox.dev)
 -->
 
-## Why Deepbox
-
-- Zero runtime dependencies
-- ESM and CommonJS builds with bundled type declarations
-- Stable subpath exports for each major module
-- Broad numerical surface area in a single package
-- **315** implementation files under `src/**/*.ts` excluding `*.d.ts`, **421** Vitest files matching `test/**/*.test.ts`, **8,686** tests, 50 example directories, and 9 end-to-end projects in the current `v1.0.0` tree (other files under `test/` are helpers or benches, not counted here)
-
-## Requirements
-
-- Node.js `>= 24.13.0` as declared in `package.json` `engines`. Deepbox 1.x is built and CI-tested on Node 24.x with a TypeScript `ES2024` target; use this line for predictable behavior. Older Node versions are not supported for 1.x.
-
 ## Installation
 
 ```bash
 npm install deepbox
 ```
 
+## Requirements
+
+- Node.js `>= 24.13.0`, as declared in the `engines` field of `package.json`. Deepbox 1.x is built and tested on Node 24 with a TypeScript `ES2024` target. Older Node versions are not supported.
+
 ## Import Model
 
-Deepbox is organized around subpath exports. Prefer importing named APIs from the module you actually use:
+Each module has its own subpath export. Import named APIs from the module you use:
 
 ```ts
 import { tensor, parameter } from "deepbox/ndarray";
@@ -48,7 +40,7 @@ import { LinearRegression } from "deepbox/ml";
 import { DataFrame } from "deepbox/dataframe";
 ```
 
-The root package exports namespaces, not direct named symbols:
+The root package exports namespaces, not named symbols:
 
 ```ts
 import * as db from "deepbox";
@@ -59,99 +51,93 @@ const model = new db.ml.LinearRegression();
 
 ## Quick Start
 
+The samples below run as written. They import from the subpaths above.
+
 ### Tensors and Autograd
 
-```ts
-import { parameter, tensor } from "deepbox/ndarray";
+`Tensor` and `GradTensor` share one method surface, so operations chain the way they do in PyTorch. The functional form (`add(a, b)`) still works. `tensor()` creates `float32` data by default.
 
+```ts
+import { noGrad, parameter, tensor } from "deepbox/ndarray";
+
+const t = tensor([
+  [1, 2],
+  [3, 4],
+]);
+console.log(t.add(1).mul(2).sum().item()); // 28
+console.log(t.T.toString());
+console.log(t.argmax(1).toString()); // int32 indices
+console.log(t.mean().item()); // 2.5
+
+// parameter() creates a tensor that records operations for backward().
 const x = parameter([
   [1, 2],
   [3, 4],
 ]);
 const w = parameter([[0.5], [0.25]]);
-
 const y = x.matmul(w).sum();
 y.backward();
-
 console.log(x.grad?.toString());
 console.log(w.grad?.toString());
 
-const plain = tensor([1, 2, 3]);
-console.log(plain.toString());
+// noGrad() turns tracking off for everything computed inside it.
+const pred = noGrad(() => x.matmul(w));
+console.log(pred.requiresGrad); // false
 ```
 
-### GPU and WASM Acceleration
+### Neural Network
 
-Tensors carry a device (`cpu`, `webgpu`, `wasm`). With a registered backend the
-accelerated op set executes on the device; ops a device cannot run throw a
-`DeviceError` with a transfer hint instead of silently computing elsewhere.
-
-The WebGPU device set is training-complete: element-wise arithmetic and
-activations (incl. `gelu`, `erf`, `rsqrt`, `where`), matmul and **batched**
-matmul (attention), **axis reductions** (so `softmax`/`logSoftmax`/`layerNorm`
-compose on-device), 2-D **convolution and pooling** (incl. `MaxPool`), and full
-reductions. The reverse pass (autograd) and **every practical optimizer step**
-(`SGD`, `Adam`, `AdamW`, `RMSprop`, `Adagrad`, `Adamax`, `Nadam`, `RAdam`,
-`Adadelta`, `ASGD`, `Rprop`, `Lion`, `LAMB`, `LARS`) also run on the device, so
-a full forward → backward → update loop for an MLP, transformer, or CNN stays
-resident on the GPU with no per-step host transfers. **Half precision** is
-supported: `float16` tensors compute in true on-device half (WGSL `shader-f16`,
-halving memory footprint) and `bfloat16` carries correct bf16 numerics.
+Training data stays in plain tensors. When gradient tracking is on and a module has trainable parameters, `model.forward(x)` returns a `GradTensor` that tracks the weights, so `loss.backward()` fills the gradients that the optimizer reads. `loss.item()` returns the loss as a number.
 
 ```ts
-import { registerBackend, WebGpuBackend } from "deepbox/core";
-import { dot, relu, tensor } from "deepbox/ndarray";
+import { tensor } from "deepbox/ndarray";
+import { Linear, mseLoss, ReLU, Sequential } from "deepbox/nn";
+import { Adam } from "deepbox/optim";
+import { setSeed } from "deepbox/random";
 
-const gpu = new WebGpuBackend(); // in Node, pass { gpu } from a WebGPU binding
-await gpu.init();
-if (gpu.info().available) {
-  registerBackend("webgpu", gpu);
+setSeed(42);
 
-  const a = tensor([[1, 2], [3, 4]], { device: "webgpu" }); // lives in GPU memory
-  const y = relu(dot(a, a));       // WGSL compute kernels
-  const host = await y.cpu();      // async readback
-  console.log(host.toString());
-}
-```
+// Learn y = x1 + 2 * x2 from four points.
+const X = tensor([
+  [0, 0],
+  [0, 1],
+  [1, 0],
+  [1, 1],
+]);
+const y = tensor([[0], [2], [1], [3]]);
 
-WebGPU kernels are float32/float16 and stride/broadcast-aware (views and
-transposes execute without copies), verified on GPU hardware against the CPU
-reference. The
-WASM backend accelerates contiguous float32 arithmetic with embedded SIMD
-kernels over zero-copy host storage:
+const model = new Sequential(new Linear(2, 16), new ReLU(), new Linear(16, 1));
+const optimizer = new Adam(model.parameters(), { lr: 0.01 });
 
-```ts
-import { registerBackend, WasmBackend } from "deepbox/core";
-import { add, tensor } from "deepbox/ndarray";
-
-const wasm = new WasmBackend();
-await wasm.init();
-if (wasm.info().available) {
-  registerBackend("wasm", wasm);
-  const a = tensor(new Array(4096).fill(1), { device: "wasm" });
-  console.log(add(a, a).at(0)); // SIMD, bit-identical to the CPU result
+for (let epoch = 0; epoch < 200; epoch++) {
+  optimizer.zeroGrad();
+  const loss = mseLoss(model.forward(X), y);
+  loss.backward();
+  optimizer.step();
+  if (epoch % 50 === 0 || epoch === 199) console.log(epoch, loss.item());
 }
 ```
 
 ### Classical ML
 
+Estimators follow the scikit-learn pattern: `fit`, `predict`, `score`.
+
 ```ts
-import { tensor } from "deepbox/ndarray";
-import { LinearRegression } from "deepbox/ml";
+import { loadIris } from "deepbox/datasets";
+import { accuracy } from "deepbox/metrics";
+import { RandomForestClassifier } from "deepbox/ml";
+import { trainTestSplit } from "deepbox/preprocess";
 
-const X = tensor([
-  [1],
-  [2],
-  [3],
-  [4],
-]);
-const y = tensor([2, 4, 6, 8]);
+const { data, target } = loadIris();
+const [XTrain, XTest, yTrain, yTest] = trainTestSplit(data, target, {
+  testSize: 0.25,
+  randomState: 42,
+});
 
-const model = new LinearRegression();
-model.fit(X, y);
+const model = new RandomForestClassifier({ nEstimators: 50, randomState: 42 });
+model.fit(XTrain, yTrain);
 
-const predictions = model.predict(tensor([[5], [6]]));
-console.log(predictions.toString());
+console.log(accuracy(yTest, model.predict(XTest)));
 ```
 
 ### DataFrames
@@ -165,8 +151,72 @@ const df = new DataFrame({
   score: [91, 84, 96],
 });
 
-const summary = df.groupBy("team").mean();
-console.log(summary.toString());
+console.log(df.groupBy("team").mean().toString());
+console.log(df.filter((row) => Number(row.score) > 90).toString());
+```
+
+## GPU and WASM Backends
+
+Tensors carry a device: `cpu`, `webgpu` or `wasm`. The CPU backend is always registered. The other two are opt-in: create the backend, call `await backend.init()`, check `info().available`, then pass it to `registerBackend`.
+
+Operands of one op must be on the same device, except that a 0-D host tensor is moved to the device of the other operand. An op that a device does not implement throws a `DeviceError` that tells you to move the tensor with `await t.cpu()`. Deepbox does not copy `webgpu` data to the CPU on its own.
+
+### WebGPU
+
+The WebGPU backend runs these ops as WGSL compute kernels, on views, transposes and broadcasts without copying:
+
+- Element-wise binary ops (`add`, `sub`, `mul`, `div`, `pow`, `maximum`, `minimum`) and the common unary ops and activations (`exp`, `log`, `sqrt`, `relu`, `sigmoid`, `tanh`, `gelu`, `erf` and others), plus `where`.
+- `matmul` and `dot`, including batched matmul with batch broadcasting.
+- `sum`, `mean`, `max` and `min`, over the whole tensor or along axes.
+- 2-D convolution (through `im2col` and `col2im`) and 2-D max and average pooling.
+
+Supported element types are `float32`, `float16` and `bfloat16`. `float16` needs the WebGPU `shader-f16` feature. `bfloat16` is rounded to bfloat16 on upload and download and computed in float32. Reductions of empty tensors throw on device.
+
+Autograd records through these ops, and the optimizers keep their state on the device when the parameters live there. `LBFGS` and `SparseAdam` are the exceptions: they throw a `DeviceError` for device parameters. The test suite checks the device paths against an in-process reference backend, so CI does not need a GPU. Anything outside the list above needs `await t.cpu()` first.
+
+```ts
+import { registerBackend, WebGpuBackend } from "deepbox/core";
+import { dot, relu, tensor } from "deepbox/ndarray";
+
+// In a browser, navigator.gpu is used. In Node, pass a WebGPU binding: new WebGpuBackend({ gpu }).
+const gpu = new WebGpuBackend();
+await gpu.init();
+if (gpu.info().available) {
+  registerBackend("webgpu", gpu);
+
+  const a = tensor(
+    [
+      [1, 2],
+      [3, 4],
+    ],
+    { device: "webgpu" }
+  );
+  const y = relu(dot(a, a)); // runs as WGSL compute kernels
+  console.log((await y.cpu()).toString()); // read back to host memory
+} else {
+  console.log("WebGPU is not available in this runtime");
+}
+```
+
+### WASM
+
+The WASM backend is a host accelerator. Tensors on the `wasm` device keep ordinary host memory. Element-wise `add`, `sub`, `mul` and `div` run through embedded SIMD kernels when both operands are contiguous `float32` tensors of the same shape with at least 512 elements. Every other op runs the normal CPU code, and results are identical to the CPU. If the runtime lacks WASM SIMD, `info().available` is `false`.
+
+```ts
+import { registerBackend, WasmBackend } from "deepbox/core";
+import { add, tensor } from "deepbox/ndarray";
+
+const wasm = new WasmBackend();
+await wasm.init();
+if (wasm.info().available) {
+  registerBackend("wasm", wasm);
+
+  const a = tensor(new Array(4096).fill(1), { dtype: "float32", device: "wasm" });
+  const b = add(a, a); // SIMD kernel
+  console.log(b.device, b.at(0)); // wasm 2
+} else {
+  console.log("WASM SIMD is not available in this runtime");
+}
 ```
 
 ## Modules
@@ -178,7 +228,7 @@ console.log(summary.toString());
 | `deepbox/linalg` | Decompositions, matrix functions, solvers, norms, special matrices |
 | `deepbox/dataframe` | `DataFrame`, `Series`, string and datetime accessors, MultiIndex, Categorical, CSV/JSON methods, Excel/Parquet helpers |
 | `deepbox/stats` | Descriptive stats, correlations, distributions, hypothesis tests, KDE, confidence intervals, power analysis |
-| `deepbox/metrics` | Classification, regression, clustering, pairwise, ranking, and calibration-oriented metrics |
+| `deepbox/metrics` | Classification, regression, clustering, pairwise, ranking and calibration metrics |
 | `deepbox/preprocess` | Scalers, encoders, imputers, feature selection, text vectorizers, splitters |
 | `deepbox/ml` | Linear models, trees, ensembles, SVM, neighbors, Naive Bayes, clustering, manifold, pipelines, model selection |
 | `deepbox/nn` | Modules, layers, recurrent models, transformers, losses, training utilities, initialization |
@@ -187,42 +237,44 @@ console.log(summary.toString());
 | `deepbox/datasets` | Built-in datasets, synthetic generators, loaders, samplers, remote and Kaggle helpers |
 | `deepbox/plot` | Figure API, SVG/PNG/PDF output, statistical plots, ML diagnostic plots, palettes, animation |
 
-## v1.0.0 Highlights
+## Upgrading from 1.0
 
-### Numerical Computing
+Deepbox 1.5 is backward compatible with 1.0: no export was removed or renamed, and older names still work. Results changed in the places listed below. The full list is in [CHANGELOG.md](CHANGELOG.md).
 
-- Tensor ops spanning arithmetic, broadcasting, reductions, sorting, indexing, signal processing, FFT, and Einstein summation
-- Sparse CSR matrices, complex dtypes, half-precision arrays, and NaN-aware reductions
-- Linear algebra with SVD, QR, LU, Cholesky, eigensolvers, Schur, polar, Hessenberg, and matrix functions
-- Training-complete WebGPU backend: device tensors with PyTorch-style `.to(device)` transfers, plus axis reductions, batched matmul, convolution/pooling, on-device autograd, and on-device `SGD`/`Adam` — MLP, transformer, and CNN training loops run resident on the GPU. WASM SIMD host acceleration for contiguous float32. Strict same-device semantics and loud errors for unaccelerated device ops
+- Dtype rules: Float ops keep the input float dtype, so `float32` stays `float32` (several ops returned `float64` in 1.0). Integer input to an op with a fractional result (`mean`, `exp`, `softmax` and similar) gives `float32`. Index results (`argmax`, `argsort`, `digitize`, `searchsorted`, `nonzero`) are `int32`. Call `t.astype("float64")` if you need double precision.
+- Promotion: Mixed dtypes promote like PyTorch instead of throwing: `int32` with `float32` gives `float32`, `float32` with `float64` gives `float64`. A JavaScript number never changes a tensor's dtype.
+- Training API: Data no longer needs `parameter(...)`. `model.forward(x)` returns a `GradTensor` that tracks the weights, and `noGrad()` turns tracking off. Optimizers skip parameters that have no gradient. In 1.0 they threw `NotFittedError`.
+- Names: All public names are camelCase (`matrixPower`, `toDatetime`, `ttestInd`, `crossValScore`, `multivariateNormal`, `checkXY`). The snake_case names from 1.0 still work and are marked deprecated.
+- Parameter-free layers: Layers without trainable parameters (pooling, `Dropout2d`, `LayerNorm` without affine parameters) return a plain `Tensor` for plain input. Read the result directly instead of through `.tensor`.
+- Seeded streams: The same seed gives different numbers than 1.0 in several modules. Tests that pin exact random values need new expected values.
+- Corrected results: About 1,500 fixes landed, many of them wrong results in 1.0. Calls that used to throw (mixed dtypes, batched broadcasting, frozen parameters in optimizers) now work.
 
-### Data and Statistics
+## Defaults that Differ from NumPy, pandas, scikit-learn and PyTorch
 
-- `DataFrame` and `Series` workflows with grouping, merging, pivoting, rolling, expanding, EWM, string accessors, and datetime tooling
-- Statistical distributions, confidence intervals, kernel density estimation, multiple-comparison corrections, and power analysis
-- Metrics for classification, regression, clustering, ranking, and pairwise similarity
+These defaults are kept in 1.x for compatibility and may change in 2.0.
 
-### Machine Learning and Deep Learning
+| API | Deepbox default | Reference |
+| --- | --- | --- |
+| `PowerTransformer` `standardize` | `false` | scikit-learn: `true` |
+| `DataFrame.ewm` `adjust` / `bias` | `false` / `true` | pandas: `true` / `false` |
+| `gelu`, `GELU` | tanh approximation | PyTorch: exact (`approximate: "none"`) |
+| `mape` | percentage | scikit-learn returns a fraction; use `meanAbsolutePercentageError` for that |
+| `InstanceNorm` `affine` | `true` | PyTorch: `false` |
+| `tensor()` default dtype | `float32` | NumPy: `float64` (PyTorch: `float32`) |
 
-- Expanded estimator surface across ensembles, SVM variants, Naive Bayes, clustering, manifold learning, Gaussian processes, anomaly detection, and model selection
-- Pipeline composition with `Pipeline`, `FeatureUnion`, `ColumnTransformer`, `GridSearchCV`, and `RandomizedSearchCV`
-- Neural network stack with convolutional, recurrent, normalization, attention, transformer, embedding, and utility layers
-- Training infrastructure including `Trainer`, callbacks, clipping, and advanced optimizers and schedulers
+## Known Limits
 
-### Visualization and Data Sources
-
-- Figure-based plotting API with line, scatter, histogram, heatmap, contour, violin, radar, polar, dendrogram, and diagnostic plots
-- Real reference datasets (Iris, Wine, Breast Cancer, Diabetes, Digits — values matching scikit-learn), synthetic generators, `DataLoader`, samplers, and remote dataset helpers
-- Streaming / out-of-core datasets: a lazy `StreamingDataset` with map/shuffle-buffer/batch/prefetch that trains on data larger than RAM via `Trainer.fitAsync`
+- `complex64` and `complex128` appear in the `DType` type, but tensors cannot be created with them yet.
+- WebGPU and WASM accelerate a subset of ops, as described above. The rest throw a `DeviceError`.
 
 <!--
 ## Performance
 
-Deepbox is pure TypeScript — no native addons, no WebAssembly, no C bindings. Every operation runs on V8’s JIT compiler with `TypedArray` backing. Despite competing against Python libraries that use hand-tuned C and Fortran backends (BLAS, LAPACK, ATen), Deepbox delivers competitive or superior performance in several areas.
+Deepbox is pure TypeScript with no native addons and no C bindings. Operations run on V8's JIT compiler with `TypedArray` backing. The Python libraries it is compared with use hand-tuned C and Fortran (BLAS, LAPACK, ATen).
 
-**930 head-to-head benchmarks** across 12 categories, tested on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
+930 head-to-head benchmarks across 12 categories, run on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
 
-Two win rates are reported. **Overall:** 586/930 (63.0%). **Realized-work** (excludes 120 sub-microsecond lazy-view/spec-build cases that only rewrite shape/stride metadata): 483/810 (59.6%). The realized-work rate is the fair measure of throughput on operations that actually move data; see [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) for the per-case breakdown.
+Two win rates are reported. Overall: 586/930 (63.0%). Realized-work, which excludes 120 sub-microsecond lazy-view and spec-build cases that only rewrite shape and stride metadata: 483/810 (59.6%). See benchmarks/RESULTS.md for the per-case breakdown.
 
 | Category | Deepbox Wins | Python Package Wins | Competing Against |
 | --- | ---: | ---: | --- |
@@ -238,42 +290,34 @@ Two win rates are reported. **Overall:** 586/930 (63.0%). **Realized-work** (exc
 | Preprocessing | 48 | 16 | scikit-learn (C / Cython) |
 | Random | 47 | 6 | NumPy (C) |
 | Statistics | 76 | 21 | SciPy (C / Fortran) |
-| **Total** | **586** | **344** | |
+| Total | 586 | 344 | n/a |
 
-### Where Deepbox shines
+The gap is largest for BLAS-bound operations (matmul, decompositions) and smallest for memory-layout operations (transpose, reshape, indexing), where the lazy-view design helps.
 
-- **chi2_contingency** (2x3) — 681.0x faster *(Statistics)*
-- **matthewsCorrcoef** (100) — 577.4x faster *(Metrics)*
-- **show (SVG) scatter** (100 pts) — 494.8x faster *(Plotting)*
-- **MeanShift fit** (120x2) — 163.5x faster *(ML Training)*
-- **describe** (100x5) — 137.9x faster *(DataFrames)*
-- **WarmupLR (100 steps)** (—) — 57.7x faster *(Optimizers)*
-- **loadLinnerud** (20x3) — 27.0x faster *(Datasets)*
-- **setdiff1d** (6-5) — 25.7x faster *(NDArray Ops)*
-
-### Context
-
-Python’s numerical libraries delegate heavy lifting to compiled C/Fortran code (OpenBLAS, MKL, LAPACK). Deepbox implements everything in TypeScript, relying on V8’s TurboFan JIT and `Float64Array` for performance. The gap is largest for BLAS-bound operations (matmul, decompositions) and smallest for memory-layout operations (transpose, reshape, indexing) where Deepbox’s lazy-view architecture has an advantage.
-
-> Run `npm run bench:all` to reproduce. Full results in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
+Run `npm run bench:all` to reproduce. Full results are in benchmarks/RESULTS.md.
+-->
 
 ## Repository Contents
 
-- [`docs/examples`](./docs/examples) contains 50 numbered examples (`00`-`49`)
-- [`docs/projects`](./docs/projects) contains 9 larger end-to-end projects
+- [`src`](./src) holds the library, one folder per module.
+- [`test`](./test) holds the Vitest suite. Regression tests for the 1.5.0 audit are in [`test/v150`](./test/v150).
+- [`docs/examples`](./docs/examples) holds the numbered examples, each runnable on its own.
+- [`docs/projects`](./docs/projects) holds larger end-to-end projects.
+- [`CHANGELOG.md`](./CHANGELOG.md) lists the changes in each release.
+- [`SKILL.md`](./SKILL.md) is the guide for AI agents.
 <!--
-- [`benchmarks`](./benchmarks) contains Deepbox and Python benchmark harnesses (`npm run bench:deepbox` runs numeric suites **01–13**; suite **14** is `npm run bench:tensor` only and is excluded from the Python comparison path — see `benchmarks/README.md`)
+- [`benchmarks`](./benchmarks) holds the Deepbox and Python benchmark harnesses.
 -->
 
 ## For AI Agents
 
-Use [`SKILL.md`](./SKILL.md) as the repo-native agent guide (also included at `node_modules/deepbox/SKILL.md` when you install from npm). It documents:
+[`SKILL.md`](./SKILL.md) is the repository guide for coding agents. It is also installed at `node_modules/deepbox/SKILL.md`. It covers:
 
-- correct import patterns
-- module selection guidance
-- Deepbox core types
-- custom error hierarchy
-- common coding patterns and gotchas
+- import patterns
+- module selection
+- core types
+- the error hierarchy
+- common coding patterns and pitfalls
 
 ## Development
 
@@ -282,7 +326,7 @@ npm ci
 npm run validate:all
 ```
 
-Additional contributor workflow details live in [CONTRIBUTING.md](CONTRIBUTING.md). Security reporting instructions live in [SECURITY.md](SECURITY.md).
+`validate:all` runs the format, lint and type checks, builds the package, and runs the tests, benchmarks smoke run, examples, projects and coverage. See [CONTRIBUTING.md](CONTRIBUTING.md) for the individual scripts and the writing rules. Security reporting instructions are in [SECURITY.md](SECURITY.md).
 
 ## License
 

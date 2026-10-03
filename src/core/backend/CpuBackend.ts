@@ -1,5 +1,5 @@
 /**
- * CPU Backend — the reference execution backend for Deepbox.
+ * CPU backend: the reference execution backend for Deepbox.
  *
  * This backend is always available and provides the baseline
  * implementation for all tensor operations. It executes
@@ -24,7 +24,11 @@ const CPU_CAPABILITIES: readonly BackendCapability[] = [
 /**
  * The built-in CPU execution backend.
  *
- * Supports all capabilities and requires no async initialisation.
+ * Supports all capabilities and requires no async initialisation. It holds
+ * no resources, so it stays available after {@link CpuBackend.dispose}:
+ * disposing it only sets {@link CpuBackend.isDisposed}. Otherwise one stray
+ * `dispose()` call on the registered CPU backend would make every tensor
+ * operation fail.
  */
 export class CpuBackend implements Backend {
   private disposed = false;
@@ -33,7 +37,7 @@ export class CpuBackend implements Backend {
     return {
       device: "cpu",
       name: "Deepbox CPU Backend",
-      available: !this.disposed,
+      available: true,
       capabilities: CPU_CAPABILITIES,
     };
   }
@@ -49,6 +53,7 @@ export class CpuBackend implements Backend {
     // CPU backend needs no async setup.
   }
 
+  /** Marks the backend as disposed. It does not affect availability. */
   dispose(): void {
     this.disposed = true;
   }

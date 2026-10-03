@@ -2,7 +2,7 @@
  * Portfolio Optimization Module
  *
  * Implements Mean-Variance Optimization (Markowitz Portfolio Theory).
- * Demonstrates deepbox/linalg for matrix operations.
+ * Uses `inv` from deepbox/linalg for the closed-form weights.
  */
 
 import { inv } from "deepbox/linalg";
@@ -46,7 +46,7 @@ export function minimumVariancePortfolio(covMatrix: Tensor): number[] {
   for (let i = 0; i < n; i++) {
     let sum = 0;
     for (let j = 0; j < n; j++) {
-      sum += Number(covInverse.data[i * n + j]) * 1;
+      sum += Number(covInverse.at(i, j)) * 1;
     }
     invTimesOnes.push(sum);
   }
@@ -88,7 +88,7 @@ export function maxSharpePortfolio(
   for (let i = 0; i < n; i++) {
     let sum = 0;
     for (let j = 0; j < n; j++) {
-      sum += Number(covInverse.data[i * n + j]) * excessReturns[j];
+      sum += Number(covInverse.at(i, j)) * excessReturns[j];
     }
     invTimesExcess.push(sum);
   }
@@ -116,7 +116,7 @@ export function maxSharpePortfolio(
   let portfolioVariance = 0;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      portfolioVariance += finalWeights[i] * finalWeights[j] * Number(covMatrix.data[i * n + j]);
+      portfolioVariance += finalWeights[i] * finalWeights[j] * Number(covMatrix.at(i, j));
     }
   }
   const portfolioVol = Math.sqrt(portfolioVariance) * Math.sqrt(12);
@@ -166,8 +166,8 @@ export function targetReturnPortfolio(
     let sumMu = 0,
       sumOne = 0;
     for (let j = 0; j < n; j++) {
-      sumMu += Number(covInverse.data[i * n + j]) * expectedReturns[j];
-      sumOne += Number(covInverse.data[i * n + j]) * 1;
+      sumMu += Number(covInverse.at(i, j)) * expectedReturns[j];
+      sumOne += Number(covInverse.at(i, j)) * 1;
     }
     A += 1 * sumMu;
     B += expectedReturns[i] * sumMu;
@@ -183,7 +183,7 @@ export function targetReturnPortfolio(
   for (let i = 0; i < n; i++) {
     let sum = 0;
     for (let j = 0; j < n; j++) {
-      const invIJ = Number(covInverse.data[i * n + j]);
+      const invIJ = Number(covInverse.at(i, j));
       sum += invIJ * ((B - A * targetReturn) * 1 + (C * targetReturn - A) * expectedReturns[j]);
     }
     weights.push(sum / D);
@@ -205,7 +205,7 @@ export function targetReturnPortfolio(
   let portfolioVariance = 0;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      portfolioVariance += finalWeights[i] * finalWeights[j] * Number(covMatrix.data[i * n + j]);
+      portfolioVariance += finalWeights[i] * finalWeights[j] * Number(covMatrix.at(i, j));
     }
   }
   const portfolioVol = Math.sqrt(portfolioVariance) * Math.sqrt(12);
@@ -283,7 +283,7 @@ export function riskParityPortfolio(
     for (let i = 0; i < n; i++) {
       let sum = 0;
       for (let j = 0; j < n; j++) {
-        sum += Number(covMatrix.data[i * n + j]) * weights[j];
+        sum += Number(covMatrix.at(i, j)) * weights[j];
       }
       marginalRisk.push(sum);
     }
@@ -320,7 +320,7 @@ export function riskParityPortfolio(
 }
 
 /**
- * Implied equilibrium returns used in Black–Litterman-style workflows: π = δ Σ w_mkt.
+ * Implied equilibrium returns used in Black-Litterman-style workflows: π = δ Σ w_mkt.
  *
  * This helper only computes the equilibrium (prior) return vector from cap-weights and
  * covariance; it does **not** blend investor views (no P, Q, or Ω blending yet).
@@ -328,7 +328,7 @@ export function riskParityPortfolio(
  * @param marketWeights - Market capitalization weights
  * @param covMatrix - Covariance matrix of asset returns
  * @param riskAversion - δ (risk aversion) scaling the implied returns
- * @param _tau - Reserved for a full Black–Litterman implementation (unused)
+ * @param _tau - Reserved for a full Black-Litterman implementation (unused)
  * @returns Implied equilibrium expected returns π
  * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox linear algebra}
  */
@@ -346,7 +346,7 @@ export function blackLittermanReturns(
   for (let i = 0; i < n; i++) {
     let sum = 0;
     for (let j = 0; j < n; j++) {
-      sum += Number(covMatrix.data[i * n + j]) * marketWeights[j];
+      sum += Number(covMatrix.at(i, j)) * marketWeights[j];
     }
     impliedReturns.push(riskAversion * sum);
   }

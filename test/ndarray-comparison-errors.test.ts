@@ -31,14 +31,14 @@ describe("ndarray comparison error branches", () => {
     expect(() => isfinite(s)).toThrow(/string dtype/i);
   });
 
-  it("throws for invalid shapes and unsupported BigInt isclose/allclose", () => {
+  it("throws for invalid shapes; int64 isclose/allclose are supported", () => {
     const a = tensor([1, 2]);
     const b = tensor([1, 2, 3]);
     expect(() => equal(a, b)).toThrow(/broadcast/i);
 
     const big = tensor([1, 2], { dtype: "int64" });
-    expect(() => isclose(big, big)).toThrow(/BigInt/i);
-    expect(() => allclose(big, big)).toThrow(/BigInt/i);
+    expect(isclose(big, big).toArray()).toEqual([1, 1]);
+    expect(allclose(big, big)).toBe(true);
   });
 
   it("rejects invalid zero-dimension broadcasting in comparisons", () => {

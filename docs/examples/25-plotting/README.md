@@ -2,14 +2,14 @@
 
 > **View online:** https://deepbox.dev/examples/25-plotting
 
-Create various types of plots to visualize data and results. Deepbox supports SVG and PNG output for publication-quality figures.
+Create line, scatter, bar, histogram and heatmap plots and save each one as an SVG file. `Figure.renderSVG()` returns the SVG text. `Figure.renderPNG()` renders PNG in Node.js.
 
 ## Deepbox Modules Used
 
-| Module            | Features Used                             |
-| ----------------- | ----------------------------------------- |
-| `deepbox/ndarray` | tensor, linspace, sin, cos                |
-| `deepbox/plot`    | Figure, plot, scatter, bar, hist, heatmap |
+| Module            | Features Used                                  |
+| ----------------- | ---------------------------------------------- |
+| `deepbox/ndarray` | tensor, linspace, sin, cos                     |
+| `deepbox/plot`    | Figure, Axes.plot, scatter, bar, hist, heatmap |
 
 ## Usage
 
@@ -19,9 +19,9 @@ npm run example:25
 
 ## Output
 
-- 5 SVG visualizations in `output/`:
-  - `line-plot.svg` — Sine and cosine functions
-  - `scatter-plot.svg` — Scatter plot example
-  - `bar-chart.svg` — Bar chart example
-  - `histogram.svg` — Histogram example
-  - `heatmap.svg` — Heatmap example
+- Five SVG files in `output/`:
+  - `line-plot.svg`: sine and cosine curves
+  - `scatter-plot.svg`: scatter plot of a noisy linear trend
+  - `bar-chart.svg`: bar chart of five categories
+  - `histogram.svg`: histogram of 25 values in 9 bins
+  - `heatmap.svg`: heatmap of a 3 by 4 matrix

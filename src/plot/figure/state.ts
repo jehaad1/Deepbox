@@ -9,8 +9,16 @@ import { Figure } from "./Figure";
 
 let _currentFigure: Figure | null = null;
 let _currentAxes: Axes | null = null;
+// Axes created implicitly by figure() or gca(). One that is still untouched when
+// a subplot grid is requested is dropped, so it does not draw a stray full-size frame.
+const _implicitAxes = new WeakSet<Axes>();
+// Subplot position ("rows x cols : index") of axes created by subplot().
+const _subplotSlots = new WeakMap<Axes, string>();
 
-function gcf(): Figure {
+/**
+ * Get the current figure, creating a 320 x 240 one if needed.
+ */
+export function gcf(): Figure {
   if (!_currentFigure) {
     _currentFigure = new Figure({ width: 320, height: 240 });
   }
@@ -25,11 +33,13 @@ export function gca(): Axes {
   if (_currentAxes && fig.axesList.includes(_currentAxes)) return _currentAxes;
   if (fig.axesList.length === 0) {
     _currentAxes = fig.addAxes();
+    _implicitAxes.add(_currentAxes);
     return _currentAxes;
   }
   const firstAxes = fig.axesList[0];
   if (!firstAxes) {
     _currentAxes = fig.addAxes();
+    _implicitAxes.add(_currentAxes);
     return _currentAxes;
   }
   _currentAxes = firstAxes;
@@ -37,7 +47,29 @@ export function gca(): Axes {
 }
 
 /**
- * Create a new figure and set it as current.
+ * Make `ax` the current axes (like `plt.sca`). Later calls of the global helpers
+ * such as `plot()` and `title()` draw on it. When the axes belongs to another
+ * figure, that figure becomes the current figure too.
+ * @throws {InvalidParameterError} If `ax` is not part of any figure's axes list
+ *   (it was not created with `Figure.addAxes()` or `subplot()`).
+ */
+export function sca(ax: Axes): Axes {
+  const owner = ax.fig;
+  if (!owner.axesList.includes(ax)) {
+    throw new InvalidParameterError(
+      "sca: the axes does not belong to its figure (create it with Figure.addAxes())",
+      "ax",
+      ax
+    );
+  }
+  _currentFigure = owner;
+  _currentAxes = ax;
+  return ax;
+}
+
+/**
+ * Create a new figure and set it as current. The figure starts with one axes
+ * that fills it (default size 320 x 240; `new Figure()` defaults to 640 x 480).
  */
 export function figure(
   options: { readonly width?: number; readonly height?: number; readonly background?: Color } = {}
@@ -48,11 +80,16 @@ export function figure(
     ...(options.background !== undefined && { background: options.background }),
   });
   _currentAxes = _currentFigure.addAxes();
+  _implicitAxes.add(_currentAxes);
   return _currentFigure;
 }
 
 /**
- * Create a subplot and set it as current axes.
+ * Create a subplot in a `rows` x `cols` grid on the current figure and make it
+ * the current axes. Positions are numbered from 1, row by row, starting at the
+ * top left. Asking again for a position that already has a subplot returns that
+ * axes (and ignores `options`). The empty axes that `figure()` creates is
+ * dropped when the first subplot is added.
  */
 export function subplot(
   rows: number,
@@ -91,6 +128,18 @@ export function subplot(
   }
 
   const fig = gcf();
+  const slot = `${rows}x${cols}:${index}`;
+  const existing = fig.axesList.find((a) => _subplotSlots.get(a) === slot);
+  if (existing) {
+    _currentAxes = existing;
+    return existing;
+  }
+  for (let i = fig.axesList.length - 1; i >= 0; i--) {
+    const candidate = fig.axesList[i];
+    if (candidate && _implicitAxes.has(candidate) && candidate.isBlank()) {
+      fig.axesList.splice(i, 1);
+    }
+  }
   const idx0 = index - 1;
   const row = Math.floor(idx0 / cols);
   const col = idx0 % cols;
@@ -103,6 +152,7 @@ export function subplot(
     height: cellH,
   };
   const ax = fig.addAxes({ ...options, viewport });
+  _subplotSlots.set(ax, slot);
   _currentAxes = ax;
   return ax;
 }

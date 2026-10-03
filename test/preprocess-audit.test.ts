@@ -1,5 +1,5 @@
 /**
- * Comprehensive tests for all v1.0.0 audit features:
+ * Tests for all v1.0.0 audit features:
  * - PolynomialFeatures, Binarizer, FunctionTransformer
  * - TimeSeriesSplit, RepeatedKFold, RepeatedStratifiedKFold
  * - Probability distributions (norm, t, chi2, f, uniform, expon, beta, gamma, binom, poisson)

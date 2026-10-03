@@ -1,13 +1,14 @@
 /**
  * Fraud Detection Platform
  *
- * A production-style risk scoring workflow that combines supervised fraud
- * classification, probability calibration, anomaly detection, feature
- * inspection, and operational reporting in one Deepbox project.
+ * Scores synthetic card transactions in four parts: operational reporting with
+ * a DataFrame, a supervised classifier with probability calibration, three
+ * unsupervised anomaly detectors trained on legitimate rows only, and model
+ * inspection with permutation importance.
  */
 
 import { mkdir } from "node:fs/promises";
-import { DataFrame, to_datetime } from "deepbox/dataframe";
+import { DataFrame, toDatetime } from "deepbox/dataframe";
 import { accuracy, f1Score, precision, recall } from "deepbox/metrics";
 import {
   CalibratedClassifierCV,
@@ -147,65 +148,48 @@ function buildLabelTensor(records: readonly TransactionRecord[]): Tensor {
   return tensor(records.map((row) => row.isFraud));
 }
 
+// Rows of X whose label equals `label`
 function selectRows(X: Tensor, y: Tensor, label: number): Tensor {
-  const rows: number[][] = [];
-  for (let i = 0; i < (y.shape[0] ?? 0); i++) {
-    if (Number(y.at(i)) !== label) {
-      continue;
-    }
-    rows.push(Array.from({ length: X.shape[1] ?? 0 }, (_, j) => Number(X.at(i, j))));
-  }
-  return tensor(rows);
+  const labels = y.toArray() as number[];
+  const rows = X.toArray() as number[][];
+  return tensor(rows.filter((_, i) => labels[i] === label));
 }
 
+// Probability of class 1 from the (n, 2) output of predictProba
 function positiveProbabilities(probabilities: Tensor): Tensor {
-  return tensor(
-    Array.from({ length: probabilities.shape[0] ?? 0 }, (_, i) => Number(probabilities.at(i, 1)))
-  );
+  return tensor((probabilities.toArray() as number[][]).map((row) => row[1]));
 }
 
 function thresholdPredictions(probabilities: Tensor, threshold: number): Tensor {
-  return tensor(
-    Array.from({ length: probabilities.shape[0] ?? 0 }, (_, i) =>
-      Number(probabilities.at(i)) >= threshold ? 1 : 0
-    )
-  );
+  return tensor((probabilities.toArray() as number[]).map((p) => (p >= threshold ? 1 : 0)));
 }
 
-function anomalyRecall(yTrue: Tensor, predictedLabels: Tensor): number {
-  let fraudCount = 0;
-  let flaggedFraudCount = 0;
-
-  for (let i = 0; i < (yTrue.shape[0] ?? 0); i++) {
-    const actual = Number(yTrue.at(i));
-    const predicted = Number(predictedLabels.at(i));
-    if (actual === 1) {
-      fraudCount++;
-      if (predicted === -1) {
-        flaggedFraudCount++;
-      }
-    }
+// Share of rows with the given true label that were flagged. Anomaly detectors flag
+// outliers with -1 (inliers are 1), the classifier flags fraud with 1.
+// For label 1 (fraud) this is the recall. For label 0 it is the false alarm rate.
+function flaggedShare(yTrue: Tensor, predictedLabels: Tensor, label: number, flag = -1): number {
+  const actual = yTrue.toArray() as number[];
+  const predicted = predictedLabels.toArray() as number[];
+  let total = 0;
+  let flagged = 0;
+  for (let i = 0; i < actual.length; i++) {
+    if (actual[i] !== label) continue;
+    total++;
+    if (predicted[i] === flag) flagged++;
   }
-
-  return fraudCount === 0 ? 0 : flaggedFraudCount / fraudCount;
+  return total === 0 ? 0 : flagged / total;
 }
 
 function meanProbabilityByLabel(yTrue: Tensor, probabilities: Tensor, label: number): number {
-  let sum = 0;
-  let count = 0;
-  for (let i = 0; i < (yTrue.shape[0] ?? 0); i++) {
-    if (Number(yTrue.at(i)) !== label) {
-      continue;
-    }
-    sum += Number(probabilities.at(i));
-    count++;
-  }
-  return count === 0 ? 0 : sum / count;
+  const actual = yTrue.toArray() as number[];
+  const p = probabilities.toArray() as number[];
+  const selected = p.filter((_, i) => actual[i] === label);
+  return selected.length === 0 ? 0 : selected.reduce((a, b) => a + b, 0) / selected.length;
 }
 
 console.log("═".repeat(72));
 console.log("  FRAUD DETECTION PLATFORM");
-console.log("  Deepbox v1.0.0 production example");
+console.log("  Deepbox 1.5.0 example project");
 console.log("═".repeat(72));
 
 await mkdir(OUTPUT_DIR, { recursive: true });
@@ -230,10 +214,10 @@ const transactions = new DataFrame({
 // ============================================================================
 // Step 1: Operations reporting
 // ============================================================================
-console.log("\n📊 STEP 1: Operational Reporting");
+console.log("\nSTEP 1: Operational Reporting");
 console.log("─".repeat(72));
 
-const parsedTimestamps = to_datetime(records.map((row) => row.timestamp));
+const parsedTimestamps = toDatetime(records.map((row) => row.timestamp));
 const nightTransactions = transactions.query("hourOfDay < 5 and amount > 700");
 const fraudShare = records.reduce((sum, row) => sum + row.isFraud, 0) / records.length;
 
@@ -247,7 +231,7 @@ console.log(transactions.query("isFraud == 1").groupBy("merchantCategory").mean(
 // ============================================================================
 // Step 2: Supervised classifier + calibration
 // ============================================================================
-console.log("\n🛡️  STEP 2: Supervised Fraud Scoring");
+console.log("\nSTEP 2: Supervised Fraud Scoring");
 console.log("─".repeat(72));
 
 const featureNames = [
@@ -294,9 +278,11 @@ const baseProbabilities = positiveProbabilities(baseModel.predictProba(XTestScal
 const calibratedProba = positiveProbabilities(calibratedModel.predictProba(XTestScaled));
 const basePred = thresholdPredictions(baseProbabilities, reviewThreshold);
 
-console.log(`Decision threshold: ${reviewThreshold.toFixed(2)} (tuned for fraud review queues)`);
 console.log(
-  `Base LogisticRegression -> accuracy=${(Number(accuracy(yTest, basePred)) * 100).toFixed(2)}%, precision=${Number(precision(yTest, basePred)).toFixed(4)}, recall=${Number(recall(yTest, basePred)).toFixed(4)}, f1=${Number(f1Score(yTest, basePred)).toFixed(4)}`
+  `Decision threshold: ${reviewThreshold.toFixed(2)} (low on purpose: favors recall over precision for a review queue)`
+);
+console.log(
+  `Base LogisticRegression -> accuracy=${(accuracy(yTest, basePred) * 100).toFixed(2)}%, precision=${precision(yTest, basePred).toFixed(4)}, recall=${recall(yTest, basePred).toFixed(4)}, f1=${f1Score(yTest, basePred).toFixed(4)}`
 );
 console.log(
   `Calibrated probabilities -> mean(fraud)=${meanProbabilityByLabel(yTest, calibratedProba, 1).toFixed(4)}, mean(clean)=${meanProbabilityByLabel(yTest, calibratedProba, 0).toFixed(4)}`
@@ -305,9 +291,12 @@ console.log(
 // ============================================================================
 // Step 3: Unsupervised anomaly models
 // ============================================================================
-console.log("\n🕵️  STEP 3: Unsupervised Anomaly Detectors");
+console.log("\nSTEP 3: Unsupervised Anomaly Detectors");
 console.log("─".repeat(72));
 
+// Each detector learns what a legitimate transaction looks like. Fraud is whatever it
+// flags as an outlier. contamination (IsolationForest, LocalOutlierFactor) and nu
+// (OneClassSVM) set how many rows the detector is allowed to flag.
 const normalTrain = selectRows(XTrainScaled, yTrain, 0);
 
 const isolationForest = new IsolationForest({
@@ -323,29 +312,44 @@ const lof = new LocalOutlierFactor({
 });
 lof.fit(normalTrain);
 
+const oneClassNu = Math.min(Math.max(fraudShare * 1.2, 0.05), 0.35);
 const oneClass = new OneClassSVM({
-  nu: Math.min(Math.max(fraudShare * 1.2, 0.05), 0.35),
+  nu: oneClassNu,
   kernel: "rbf",
   gamma: "scale",
 });
 oneClass.fit(normalTrain);
 
-const iforestPred = isolationForest.predict(XTestScaled);
-const lofPred = lof.predict(XTestScaled);
-const oneClassPred = oneClass.predict(XTestScaled);
+const detectors = [
+  { name: "IsolationForest", predictions: isolationForest.predict(XTestScaled) },
+  { name: "LocalOutlierFactor", predictions: lof.predict(XTestScaled) },
+  { name: "OneClassSVM", predictions: oneClass.predict(XTestScaled) },
+].map(({ name, predictions }) => ({
+  name,
+  fraudRecall: flaggedShare(yTest, predictions, 1),
+  falseAlarmRate: flaggedShare(yTest, predictions, 0),
+}));
 
+console.log("Detector              Fraud recall   False alarm rate (legitimate rows flagged)");
+for (const d of detectors) {
+  console.log(
+    `${d.name.padEnd(21)} ${(d.fraudRecall * 100).toFixed(2).padStart(9)}%   ${(d.falseAlarmRate * 100).toFixed(2).padStart(9)}%`
+  );
+}
+
+// nu is an upper bound on the share of training rows flagged as outliers, and a lower
+// bound on the share of support vectors. A healthy fit flags about nu of its own training rows.
+const oneClassTrainFlagged = (oneClass.predict(normalTrain).toArray() as number[]).filter(
+  (label) => label === -1
+).length;
 console.log(
-  `IsolationForest fraud recall: ${(anomalyRecall(yTest, iforestPred) * 100).toFixed(2)}%`
-);
-console.log(`LocalOutlierFactor recall:    ${(anomalyRecall(yTest, lofPred) * 100).toFixed(2)}%`);
-console.log(
-  `OneClassSVM recall:           ${(anomalyRecall(yTest, oneClassPred) * 100).toFixed(2)}%`
+  `OneClassSVM flags ${((oneClassTrainFlagged / (normalTrain.shape[0] ?? 1)) * 100).toFixed(1)}% of its training rows (nu=${oneClassNu.toFixed(3)})`
 );
 
 // ============================================================================
 // Step 4: Inspection + visualization outputs
 // ============================================================================
-console.log("\n📈 STEP 4: Inspection & Outputs");
+console.log("\nSTEP 4: Inspection & Outputs");
 console.log("─".repeat(72));
 
 const reliability = calibrationCurve(yTest, calibratedProba, { nBins: 8 });
@@ -376,12 +380,14 @@ await saveFig(`${OUTPUT_DIR}/feature-importance.svg`, {
 const scoreReport = new DataFrame({
   model: ["LogisticRegression", "IsolationForest", "LocalOutlierFactor", "OneClassSVM"],
   primaryMetric: [
-    Number(f1Score(yTest, basePred)).toFixed(4),
-    anomalyRecall(yTest, iforestPred).toFixed(4),
-    anomalyRecall(yTest, lofPred).toFixed(4),
-    anomalyRecall(yTest, oneClassPred).toFixed(4),
+    f1Score(yTest, basePred).toFixed(4),
+    ...detectors.map((d) => d.fraudRecall.toFixed(4)),
   ],
   metricName: ["F1", "Fraud recall", "Fraud recall", "Fraud recall"],
+  falseAlarmRate: [
+    flaggedShare(yTest, basePred, 0, 1).toFixed(4),
+    ...detectors.map((d) => d.falseAlarmRate.toFixed(4)),
+  ],
 });
 
 const reportPath = `${OUTPUT_DIR}/model-report.json`;
@@ -391,4 +397,4 @@ console.log(`Saved calibration curve: ${OUTPUT_DIR}/calibration-curve.svg`);
 console.log(`Saved feature chart:     ${OUTPUT_DIR}/feature-importance.svg`);
 console.log(`Saved JSON report:       ${reportPath}`);
 
-console.log("\n✅ Fraud Detection Platform Complete!");
+console.log("\nFraud Detection Platform Complete!");

@@ -1,14 +1,32 @@
+/**
+ * Normalization layers: BatchNorm1d/2d/3d, LayerNorm, GroupNorm, InstanceNorm,
+ * InstanceNorm1d/2d/3d, RMSNorm and LocalResponseNorm.
+ *
+ * Layers with parameters or running statistics compute in the layer dtype (the `dtype`
+ * option, or the global default dtype, `float32` unless changed) and cast the input to
+ * it, so a `float64` or integer input works with the default `float32` parameters.
+ * `LocalResponseNorm` has no parameters: it keeps a `float32` or `float64` input dtype and
+ * converts other inputs to its `dtype` option.
+ *
+ * A `GradTensor` input gives a `GradTensor`. A plain `Tensor` input gives a `GradTensor`
+ * that tracks the parameters while they require grad and gradient tracking is on, and a
+ * plain `Tensor` otherwise (inside `noGrad()` or with frozen or absent parameters).
+ *
+ * @module
+ * @see {@link https://deepbox.dev/docs/nn-normalization | Deepbox Normalization & Dropout}
+ */
+
 import {
+  type DType,
   DTypeError,
-  dtypeToTypedArrayCtor,
   ensureNumericDType,
-  getBigIntElement,
-  getNumericElement,
+  getConfig,
   InvalidParameterError,
   ShapeError,
 } from "../../core";
 import {
   type AnyTensor,
+  customOp,
   GradTensor,
   noGrad,
   ones,
@@ -16,50 +34,102 @@ import {
   varianceGrad,
   zeros,
 } from "../../ndarray";
-import { isContiguous, offsetFromFlatIndex } from "../../ndarray/tensor/strides";
-import { computeStrides, Tensor as TensorClass } from "../../ndarray/tensor/Tensor";
+import { readNumbers } from "../../ndarray/ops/_internal";
+import { isContiguous } from "../../ndarray/tensor/strides";
+import { Tensor as TensorClass } from "../../ndarray/tensor/Tensor";
 import { Module } from "../module/Module";
+import { allPlain, settle } from "./_shared";
 
-function toContiguousTensor(t: TensorClass): TensorClass {
-  if (isContiguous(t.shape, t.strides)) {
-    return t;
-  }
-  if (t.dtype === "string") {
-    throw new DTypeError("Normalization does not support string dtype");
-  }
-  const Ctor = dtypeToTypedArrayCtor(t.dtype);
-  const out = new Ctor(t.size);
-  const logicalStrides = computeStrides(t.shape);
-  const data = t.data;
+type FloatDType = "float32" | "float64";
 
-  if (Array.isArray(data)) {
-    throw new DTypeError("Normalization does not support string dtype");
-  }
+function asGrad(x: AnyTensor): GradTensor {
+  return GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+}
 
-  if (data instanceof BigInt64Array) {
-    if (!(out instanceof BigInt64Array)) {
-      throw new DTypeError("Expected int64 output buffer for int64 tensor");
-    }
-    for (let i = 0; i < t.size; i++) {
-      const offset = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = getBigIntElement(data, offset);
-    }
-  } else {
-    if (out instanceof BigInt64Array) {
-      throw new DTypeError("Unexpected int64 output buffer for numeric tensor");
-    }
-    for (let i = 0; i < t.size; i++) {
-      const offset = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-      out[i] = getNumericElement(data, offset);
+function resolveLayerDtype(dtype: FloatDType | undefined): FloatDType {
+  if (dtype === undefined) {
+    const configured = getConfig().defaultDtype;
+    return configured === "float64" ? "float64" : "float32";
+  }
+  const resolved: string = dtype;
+  if (resolved !== "float32" && resolved !== "float64") {
+    throw new InvalidParameterError("dtype must be 'float32' or 'float64'", "dtype", dtype);
+  }
+  return resolved;
+}
+
+function validateEps(eps: number): number {
+  if (!Number.isFinite(eps) || eps <= 0) {
+    throw new InvalidParameterError("eps must be a positive number", "eps", eps);
+  }
+  return eps;
+}
+
+/**
+ * Dtype the layer computes in: the input dtype when it is float32 or float64,
+ * otherwise the layer's own dtype.
+ */
+function computeDtypeFor(inputDtype: DType, layerDtype: FloatDType): FloatDType {
+  return inputDtype === "float64" || inputDtype === "float32" ? inputDtype : layerDtype;
+}
+
+function normalizeShapeOption(
+  normalizedShape: number | readonly number[],
+  requirePositive: boolean
+): readonly number[] {
+  const shape =
+    typeof normalizedShape === "number" ? [normalizedShape] : Array.from(normalizedShape);
+  if (shape.length === 0) {
+    throw new InvalidParameterError(
+      "normalizedShape must contain at least one dimension",
+      "normalizedShape",
+      normalizedShape
+    );
+  }
+  if (requirePositive) {
+    for (const dim of shape) {
+      if (!Number.isFinite(dim) || dim <= 0 || Math.trunc(dim) !== dim) {
+        throw new InvalidParameterError(
+          "All dimensions in normalizedShape must be positive integers",
+          "normalizedShape",
+          normalizedShape
+        );
+      }
     }
   }
+  return shape;
+}
 
-  return TensorClass.fromTypedArray({
-    data: out,
-    shape: t.shape,
-    dtype: t.dtype,
-    device: t.device,
-  });
+/**
+ * Check that the trailing dimensions of `inputShape` equal `normShape` and
+ * return the index where the normalized dimensions start.
+ */
+function matchTrailingShape(inputShape: readonly number[], normShape: readonly number[]): number {
+  const suffixStart = inputShape.length - normShape.length;
+  if (suffixStart < 0) {
+    throw new ShapeError(`Input shape ${inputShape} too small for normalizedShape ${normShape}`);
+  }
+  for (let i = 0; i < normShape.length; i++) {
+    if (inputShape[suffixStart + i] !== normShape[i]) {
+      throw new ShapeError(
+        `Input shape ${inputShape} does not end with normalizedShape ${normShape}`
+      );
+    }
+  }
+  return suffixStart;
+}
+
+/**
+ * Return `input` itself when it is contiguous. Otherwise materialize a
+ * contiguous copy while preserving the autograd graph: multiplying by 1
+ * produces a fresh contiguous tensor with a proper backward node, unlike a
+ * raw `fromTensor` copy which would detach.
+ */
+function materialize(input: GradTensor, dtype: FloatDType): GradTensor {
+  if (isContiguous(input.tensor.shape, input.tensor.strides)) {
+    return input;
+  }
+  return input.mul(GradTensor.scalar(1, { dtype }));
 }
 
 /**
@@ -75,11 +145,10 @@ abstract class _BatchNorm extends Module {
   protected readonly momentum: number;
   protected readonly affine: boolean;
   protected readonly trackRunningStats: boolean;
+  protected readonly layerDtype: FloatDType;
 
   protected gamma?: GradTensor;
   protected beta?: GradTensor;
-  protected runningMean: GradTensor;
-  protected runningVar: GradTensor;
 
   private readonly name: string;
 
@@ -90,6 +159,7 @@ abstract class _BatchNorm extends Module {
       readonly momentum?: number;
       readonly affine?: boolean;
       readonly trackRunningStats?: boolean;
+      readonly dtype?: FloatDType;
     } = {},
     name: string
   ) {
@@ -107,10 +177,7 @@ abstract class _BatchNorm extends Module {
     }
     this.name = name;
     this.numFeatures = numFeatures;
-    this.eps = options.eps ?? 1e-5;
-    if (!Number.isFinite(this.eps) || this.eps <= 0) {
-      throw new InvalidParameterError("eps must be a positive number", "eps", this.eps);
-    }
+    this.eps = validateEps(options.eps ?? 1e-5);
     this.momentum = options.momentum ?? 0.1;
     if (!Number.isFinite(this.momentum) || this.momentum < 0 || this.momentum > 1) {
       throw new InvalidParameterError(
@@ -121,24 +188,19 @@ abstract class _BatchNorm extends Module {
     }
     this.affine = options.affine ?? true;
     this.trackRunningStats = options.trackRunningStats ?? true;
+    this.layerDtype = resolveLayerDtype(options.dtype);
+    const dtypeOpt = { dtype: this.layerDtype };
 
     if (this.affine) {
-      this.gamma = parameter(ones([numFeatures]));
-      this.beta = parameter(zeros([numFeatures]));
+      this.gamma = parameter(ones([numFeatures], dtypeOpt));
+      this.beta = parameter(zeros([numFeatures], dtypeOpt));
       this.registerParameter("weight", this.gamma);
       this.registerParameter("bias", this.beta);
     }
 
-    this.runningMean = GradTensor.fromTensor(zeros([numFeatures]), {
-      requiresGrad: false,
-    });
-    this.runningVar = GradTensor.fromTensor(ones([numFeatures]), {
-      requiresGrad: false,
-    });
-
     if (this.trackRunningStats) {
-      this.registerBuffer("running_mean", this.runningMean.tensor);
-      this.registerBuffer("running_var", this.runningVar.tensor);
+      this.registerBuffer("running_mean", zeros([numFeatures], dtypeOpt));
+      this.registerBuffer("running_var", ones([numFeatures], dtypeOpt));
     }
   }
 
@@ -158,20 +220,45 @@ abstract class _BatchNorm extends Module {
    */
   protected abstract broadcastShape(nFeatures: number, input: GradTensor): readonly number[];
 
-  forward(x: AnyTensor): GradTensor {
-    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+  /**
+   * Current tensor registered under a buffer name. Reading through the module
+   * keeps the layer in sync when `loadStateDict` or `to(device)` touches the
+   * buffers.
+   */
+  private bufferTensor(name: "running_mean" | "running_var"): TensorClass {
+    for (const [bufferName, buffer] of this.namedBuffers("", false)) {
+      if (bufferName === name) return buffer;
+    }
+    throw new InvalidParameterError(
+      `${this.name} has no ${name} buffer`,
+      "trackRunningStats",
+      false
+    );
+  }
 
-    if (input.dtype === "string") {
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): AnyTensor;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
+
+  private run(x: AnyTensor): GradTensor {
+    const raw = asGrad(x);
+
+    if (raw.dtype === "string") {
       throw new DTypeError(`${this.name} does not support string dtype`);
     }
 
-    this.validateInputNdims(input);
+    this.validateInputNdims(raw);
 
-    const nFeatures = input.shape[1] ?? 0;
+    const nFeatures = raw.shape[1] ?? 0;
     if (nFeatures !== this.numFeatures) {
       throw new ShapeError(`Expected ${this.numFeatures} channels, got ${nFeatures}`);
     }
 
+    const dtype = this.layerDtype;
+    const input = raw.astype(dtype);
     const flat = this.flattenForStats(input);
 
     const useBatchStats = this.training || !this.trackRunningStats;
@@ -180,9 +267,19 @@ abstract class _BatchNorm extends Module {
     let varVal: GradTensor;
 
     if (useBatchStats) {
-      if (flat.shape[0] === 0) {
+      const n = flat.shape[0] ?? 0;
+      if (n === 0) {
         throw new InvalidParameterError(
           "BatchNorm requires at least one element",
+          "input",
+          input.shape
+        );
+      }
+      if (n === 1) {
+        throw new InvalidParameterError(
+          `${this.name} needs more than one value per channel to compute batch statistics; ` +
+            `got input shape [${input.shape}]. Use a larger batch, or call eval() with ` +
+            "trackRunningStats enabled to use the running statistics.",
           "input",
           input.shape
         );
@@ -193,43 +290,38 @@ abstract class _BatchNorm extends Module {
 
       if (this.trackRunningStats) {
         noGrad(() => {
-          const n = flat.shape[0] ?? 0;
-          const unbiasedVar = n > 1 ? varianceGrad(flat, 0, 1) : varianceGrad(flat, 0, 0);
+          const unbiasedVar = varianceGrad(flat, 0, 1);
           const m = this.momentum;
-          const statsDtype = this.runningMean.dtype;
-          if (statsDtype === "string") {
-            throw new DTypeError(`${this.name} running statistics must be numeric`);
-          }
-          const oneMinusM = GradTensor.scalar(1 - m, { dtype: statsDtype });
-          const mScalar = GradTensor.scalar(m, { dtype: statsDtype });
-          const newMean = this.runningMean.mul(oneMinusM).add(mean.mul(mScalar));
-          const newVar = this.runningVar.mul(oneMinusM).add(unbiasedVar.mul(mScalar));
-          this.runningMean = GradTensor.fromTensor(newMean.tensor, {
-            requiresGrad: false,
-          });
-          this.runningVar = GradTensor.fromTensor(newVar.tensor, {
-            requiresGrad: false,
-          });
-          this.registerBuffer("running_mean", this.runningMean.tensor);
-          this.registerBuffer("running_var", this.runningVar.tensor);
+          const oneMinusM = GradTensor.scalar(1 - m, { dtype });
+          const mScalar = GradTensor.scalar(m, { dtype });
+
+          const prevMean = this.bufferTensor("running_mean");
+          const prevVar = this.bufferTensor("running_var");
+          const meanBase = GradTensor.fromTensor(prevMean.astype(dtype));
+          const varBase = GradTensor.fromTensor(prevVar.astype(dtype));
+
+          const newMean = meanBase.mul(oneMinusM).add(mean.mul(mScalar));
+          const newVar = varBase.mul(oneMinusM).add(unbiasedVar.mul(mScalar));
+          this.registerBuffer("running_mean", newMean.tensor.astype(prevMean.dtype));
+          this.registerBuffer("running_var", newVar.tensor.astype(prevVar.dtype));
         });
       }
     } else {
-      mean = this.runningMean;
-      varVal = this.runningVar;
+      mean = GradTensor.fromTensor(this.bufferTensor("running_mean").astype(dtype));
+      varVal = GradTensor.fromTensor(this.bufferTensor("running_var").astype(dtype));
     }
 
     const bcastShape = this.broadcastShape(nFeatures, input);
     const meanB = mean.reshape(bcastShape);
     const varB = varVal.reshape(bcastShape);
 
-    const epsTensor = GradTensor.scalar(this.eps, { dtype: input.dtype });
+    const epsTensor = GradTensor.scalar(this.eps, { dtype });
     const denom = varB.add(epsTensor).sqrt();
     let out = input.sub(meanB).div(denom);
 
     if (this.affine && this.gamma && this.beta) {
-      const gammaB = this.gamma.reshape(bcastShape);
-      const betaB = this.beta.reshape(bcastShape);
+      const gammaB = this.gamma.astype(dtype).reshape(bcastShape);
+      const betaB = this.beta.astype(dtype).reshape(bcastShape);
       out = out.mul(gammaB).add(betaB);
     }
 
@@ -248,15 +340,20 @@ abstract class _BatchNorm extends Module {
  *
  * **Formula**: y = (x - E[x]) / sqrt(Var[x] + eps) * gamma + beta
  *
- * During training, uses batch statistics. During evaluation, uses running statistics
- * unless `trackRunningStats=false`, in which case batch statistics are always used.
+ * During training, uses batch statistics (biased variance for the
+ * normalization, unbiased variance for the running estimate). During
+ * evaluation, uses running statistics unless `trackRunningStats=false`, in
+ * which case batch statistics are always used. Batch statistics need more than
+ * one value per channel, otherwise an {@link InvalidParameterError} is thrown.
+ *
+ * Accepts `(N, C)` or `(N, C, L)` input.
  *
  * @example
  * ```ts
  * import { BatchNorm1d } from 'deepbox/nn';
  * import { tensor } from 'deepbox/ndarray';
  *
- * const bn = new BatchNorm1d(10);
+ * const bn = new BatchNorm1d(3);
  * const x = tensor([[1, 2, 3], [4, 5, 6]]);
  * const y = bn.forward(x);
  * ```
@@ -264,6 +361,14 @@ abstract class _BatchNorm extends Module {
  * @see {@link https://deepbox.dev/docs/nn-normalization | Deepbox Normalization & Dropout}
  */
 export class BatchNorm1d extends _BatchNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.momentum - Running statistics update factor in [0, 1] (default: 0.1)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.trackRunningStats - Keep running mean and variance (default: true)
+   * @param options.dtype - Dtype of the parameters and running statistics (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
@@ -271,6 +376,7 @@ export class BatchNorm1d extends _BatchNorm {
       readonly momentum?: number;
       readonly affine?: boolean;
       readonly trackRunningStats?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super(numFeatures, options, "BatchNorm1d");
@@ -319,7 +425,7 @@ export class BatchNorm1d extends _BatchNorm {
  * import { LayerNorm } from 'deepbox/nn';
  * import { tensor } from 'deepbox/ndarray';
  *
- * const ln = new LayerNorm([10]);
+ * const ln = new LayerNorm(3);
  * const x = tensor([[1, 2, 3]]);
  * const y = ln.forward(x);
  * ```
@@ -330,121 +436,92 @@ export class LayerNorm extends Module {
   private readonly normalizedShape: readonly number[];
   private readonly eps: number;
   private readonly elementwiseAffine: boolean;
+  private readonly layerDtype: FloatDType;
 
   private gamma?: GradTensor;
   private beta?: GradTensor;
 
+  /**
+   * @param normalizedShape - Size of the trailing dimension(s) to normalize over
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.elementwiseAffine - Learn a scale (`weight`) and shift (`bias`) (default: true)
+   * @param options.bias - With `elementwiseAffine`, also learn the shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     normalizedShape: number | readonly number[],
     options: {
       readonly eps?: number;
       readonly elementwiseAffine?: boolean;
+      readonly bias?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super();
-    this.normalizedShape =
-      typeof normalizedShape === "number" ? [normalizedShape] : Array.from(normalizedShape);
-
-    if (this.normalizedShape.length === 0) {
-      throw new InvalidParameterError(
-        "normalizedShape must contain at least one dimension",
-        "normalizedShape",
-        normalizedShape
-      );
-    }
-
-    for (const dim of this.normalizedShape) {
-      if (!Number.isFinite(dim) || dim <= 0 || Math.trunc(dim) !== dim) {
-        throw new InvalidParameterError(
-          "All dimensions in normalizedShape must be positive integers",
-          "normalizedShape",
-          normalizedShape
-        );
-      }
-    }
-
-    this.eps = options.eps ?? 1e-5;
-    if (!Number.isFinite(this.eps) || this.eps <= 0) {
-      throw new InvalidParameterError("eps must be a positive number", "eps", this.eps);
-    }
-
+    this.normalizedShape = normalizeShapeOption(normalizedShape, true);
+    this.eps = validateEps(options.eps ?? 1e-5);
     this.elementwiseAffine = options.elementwiseAffine ?? true;
+    this.layerDtype = resolveLayerDtype(options.dtype);
+    const dtypeOpt = { dtype: this.layerDtype };
 
     if (this.elementwiseAffine) {
-      this.gamma = parameter(ones(this.normalizedShape));
-      this.beta = parameter(zeros(this.normalizedShape));
+      this.gamma = parameter(ones(this.normalizedShape, dtypeOpt));
       this.registerParameter("weight", this.gamma);
-      this.registerParameter("bias", this.beta);
+      if (options.bias ?? true) {
+        this.beta = parameter(zeros(this.normalizedShape, dtypeOpt));
+        this.registerParameter("bias", this.beta);
+      }
     }
   }
 
-  forward(x: AnyTensor): GradTensor {
-    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): AnyTensor;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
 
-    const inputDtype = input.dtype;
-    if (inputDtype === "string") {
+  private run(x: AnyTensor): GradTensor {
+    const raw = asGrad(x);
+
+    if (raw.dtype === "string") {
       throw new DTypeError("LayerNorm does not support string dtype");
     }
 
-    let workingInput = input;
-    if (!isContiguous(input.tensor.shape, input.tensor.strides)) {
-      // Materialize a contiguous copy while preserving the autograd graph.
-      // Multiplying by 1 produces a fresh contiguous tensor and a proper
-      // backward node, unlike a raw `fromTensor` copy which would detach.
-      const numericDtype = ensureNumericDType(inputDtype, "LayerNorm");
-      workingInput = input.mul(GradTensor.scalar(1, { dtype: numericDtype }));
-    }
+    // Without affine parameters there is nothing to match, so keep the input float dtype.
+    const dtype = this.gamma ? this.layerDtype : computeDtypeFor(raw.dtype, this.layerDtype);
+    const workingInput = materialize(raw.astype(dtype), dtype);
 
-    // Check if input shape ends with normalizedShape
+    // The input shape must end with normalizedShape.
     const inputShape = workingInput.shape;
     const normShape = this.normalizedShape;
-    if (normShape.length > inputShape.length) {
-      throw new ShapeError(`Input shape ${inputShape} too small for normalizedShape ${normShape}`);
-    }
+    const suffixStart = matchTrailingShape(inputShape, normShape);
 
-    // Check suffix
-    const suffixStart = inputShape.length - normShape.length;
-    for (let i = 0; i < normShape.length; i++) {
-      if (inputShape[suffixStart + i] !== normShape[i]) {
-        throw new ShapeError(
-          `Input shape ${inputShape} does not end with normalizedShape ${normShape}`
-        );
-      }
-    }
-
-    // We need to flatten the normalized dimensions to calculate mean/var over them.
-    // Dimensions to reduce: [suffixStart, ..., inputShape.length - 1]
-    // We can reshape input to (..., Product(normShape)).
-    // Then reduce over last dimension.
-
+    // Reshape input to (..., Product(normShape)) and reduce over the last dimension.
     const outerDims = inputShape.slice(0, suffixStart);
     const normSize = normShape.reduce((a, b) => a * b, 1);
+    const inputReshaped = workingInput.reshape([...outerDims, normSize]);
 
-    const flattenedShape = [...outerDims, normSize];
-    const inputReshaped = workingInput.reshape(flattenedShape);
-
-    // Mean and Var over last dim (-1)
-    const mean = inputReshaped.mean(-1, true); // Keep dims to facilitate broadcasting (..., 1)
+    // Keep dims on the mean to facilitate broadcasting (..., 1)
+    const mean = inputReshaped.mean(-1, true);
     // Biased variance (population, ddof=0) is used for normalization, matching PyTorch.
     // varianceGrad reduces the axis without keepdims, so reshape it back to the
     // kept-dims shape of `mean` for broadcasting.
     const varVal = varianceGrad(inputReshaped, -1, 0);
     const varReshaped = varVal.reshape(mean.shape);
 
-    // Normalize
-    const epsTensor = GradTensor.scalar(this.eps, { dtype: inputDtype });
+    const epsTensor = GradTensor.scalar(this.eps, { dtype });
     const denom = varReshaped.add(epsTensor).sqrt();
     const normalizedReshaped = inputReshaped.sub(mean).div(denom);
 
-    // Reshape back to original shape
     let out = normalizedReshaped.reshape(inputShape);
 
-    // Apply affine
-    if (this.elementwiseAffine && this.gamma && this.beta) {
-      // gamma/beta shape: normShape
-      // input shape: (..., normShape)
-      // Broadcasting works automatically since trailing dims match.
-      out = out.mul(this.gamma).add(this.beta);
+    // gamma/beta have shape normShape, which matches the trailing dims of the input.
+    if (this.gamma) {
+      out = out.mul(this.gamma.astype(dtype));
+    }
+    if (this.beta) {
+      out = out.add(this.beta.astype(dtype));
     }
 
     return out;
@@ -461,6 +538,8 @@ export class LayerNorm extends Module {
  * Divides channels into groups and normalizes within each group.
  * Works well with small batch sizes where BatchNorm struggles.
  *
+ * Accepts `(N, C, *)` input with any number of trailing spatial dimensions.
+ *
  * **Formula**: y = (x - E[x]) / sqrt(Var[x] + eps) * gamma + beta
  *
  * @example
@@ -473,16 +552,25 @@ export class GroupNorm extends Module {
   private readonly numChannels: number;
   private readonly eps: number;
   private readonly affine: boolean;
+  private readonly layerDtype: FloatDType;
 
   private gamma?: GradTensor;
   private beta?: GradTensor;
 
+  /**
+   * @param numGroups - Number of groups the channels are split into
+   * @param numChannels - Number of channels `C` (must be divisible by `numGroups`)
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     numGroups: number,
     numChannels: number,
     options: {
       readonly eps?: number;
       readonly affine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super();
@@ -511,38 +599,51 @@ export class GroupNorm extends Module {
 
     this.numGroups = numGroups;
     this.numChannels = numChannels;
-    this.eps = options.eps ?? 1e-5;
+    this.eps = validateEps(options.eps ?? 1e-5);
     this.affine = options.affine ?? true;
+    this.layerDtype = resolveLayerDtype(options.dtype);
+    const dtypeOpt = { dtype: this.layerDtype };
 
     if (this.affine) {
-      this.gamma = parameter(ones([numChannels]));
-      this.beta = parameter(zeros([numChannels]));
+      this.gamma = parameter(ones([numChannels], dtypeOpt));
+      this.beta = parameter(zeros([numChannels], dtypeOpt));
       this.registerParameter("weight", this.gamma);
       this.registerParameter("bias", this.beta);
     }
   }
 
-  forward(x: AnyTensor): GradTensor {
-    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): AnyTensor;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
 
-    if (input.dtype === "string") {
+  private run(x: AnyTensor): GradTensor {
+    const raw = asGrad(x);
+
+    if (raw.dtype === "string") {
       throw new DTypeError("GroupNorm does not support string dtype");
     }
 
     // Input: (N, C, *) where * is any number of spatial dims
-    if (input.ndim < 2) {
-      throw new ShapeError(`GroupNorm expects at least 2D input; got ${input.ndim}D`);
+    if (raw.ndim < 2) {
+      throw new ShapeError(`GroupNorm expects at least 2D input; got ${raw.ndim}D`);
     }
 
-    const nChannels = input.shape[1] ?? 0;
+    const nChannels = raw.shape[1] ?? 0;
     if (nChannels !== this.numChannels) {
       throw new ShapeError(`Expected ${this.numChannels} channels, got ${nChannels}`);
     }
 
+    // Without affine parameters there is nothing to match, so keep the input float dtype.
+    const dtype = this.gamma ? this.layerDtype : computeDtypeFor(raw.dtype, this.layerDtype);
+    const input = materialize(raw.astype(dtype), dtype);
+
     const batch = input.shape[0] ?? 0;
     const channelsPerGroup = this.numChannels / this.numGroups;
 
-    // Reshape to (N, G, C/G, *) then normalize over (C/G, *)
+    // Reshape to (N, G, C/G * spatial) then normalize over the last axis
     const spatialDims = input.shape.slice(2);
     const spatialSize = spatialDims.reduce((a, b) => a * b, 1);
     const groupShape = [batch, this.numGroups, channelsPerGroup * spatialSize];
@@ -552,26 +653,123 @@ export class GroupNorm extends Module {
     const varVal = varianceGrad(reshaped, -1, 0);
     const varReshaped = varVal.reshape(mean.shape);
 
-    const epsTensor = GradTensor.scalar(this.eps, { dtype: input.dtype });
+    const epsTensor = GradTensor.scalar(this.eps, { dtype });
     const denom = varReshaped.add(epsTensor).sqrt();
     const normalized = reshaped.sub(mean).div(denom);
 
-    // Reshape back to original
     let out = normalized.reshape(input.shape);
 
     if (this.affine && this.gamma && this.beta) {
       // gamma/beta shape: (C,) -> broadcast to (1, C, 1, 1, ...)
       const broadcastShape = [1, this.numChannels, ...spatialDims.map(() => 1)];
-      const gammaB = this.gamma.reshape(broadcastShape);
-      const betaB = this.beta.reshape(broadcastShape);
+      const gammaB = this.gamma.astype(dtype).reshape(broadcastShape);
+      const betaB = this.beta.astype(dtype).reshape(broadcastShape);
       out = out.mul(gammaB).add(betaB);
     }
 
     return out;
   }
 
+  /** Per-channel scale (`gamma`), or `undefined` when `affine` is false. */
+  get weight(): GradTensor | undefined {
+    return this.gamma;
+  }
+
+  /** Per-channel shift (`beta`), or `undefined` when `affine` is false. */
+  get bias(): GradTensor | undefined {
+    return this.beta;
+  }
+
   override toString(): string {
     return `GroupNorm(${this.numGroups}, ${this.numChannels}, eps=${this.eps}, affine=${this.affine})`;
+  }
+}
+
+/**
+ * Shared implementation of the instance normalization layers.
+ *
+ * Instance normalization is group normalization with one group per channel.
+ * Subclasses fix which input ranks are accepted; the lowest accepted rank is
+ * the unbatched `(C, *)` layout.
+ */
+abstract class _InstanceNorm extends Module {
+  private readonly groupNorm: GroupNorm;
+  private readonly name: string;
+  private readonly batchedNdim: number;
+  private readonly allowUnbatched: boolean;
+
+  constructor(
+    name: string,
+    batchedNdim: number,
+    allowUnbatched: boolean,
+    numFeatures: number,
+    options: {
+      readonly eps?: number;
+      readonly affine?: boolean;
+      readonly dtype?: FloatDType;
+    }
+  ) {
+    super();
+    this.name = name;
+    this.batchedNdim = batchedNdim;
+    this.allowUnbatched = allowUnbatched;
+    // InstanceNorm = GroupNorm where numGroups == numChannels
+    this.groupNorm = new GroupNorm(numFeatures, numFeatures, options);
+    this.registerModule("group_norm", this.groupNorm);
+  }
+
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): AnyTensor;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
+
+  private run(x: AnyTensor): GradTensor {
+    const input = asGrad(x);
+    const ndim = input.ndim;
+    const unbatched = this.allowUnbatched && ndim === this.batchedNdim - 1;
+    // The generic InstanceNorm accepts any (N, C, *) input with at least one spatial dim.
+    const valid = this.batchedNdim === 0 ? ndim >= 3 : ndim === this.batchedNdim || unbatched;
+    if (!valid) {
+      const expected =
+        this.batchedNdim === 0
+          ? "at least 3D input (N, C, *)"
+          : this.allowUnbatched
+            ? `${this.batchedNdim}D input (N, C, ...) or ${this.batchedNdim - 1}D input (C, ...)`
+            : `${this.batchedNdim}D input (N, C, ...)`;
+      throw new ShapeError(`${this.name} expects ${expected}; got ${ndim}D`);
+    }
+
+    const batched = unbatched ? input.reshape([1, ...input.shape]) : input;
+    const spatialSize = batched.shape.slice(2).reduce((a, b) => a * b, 1);
+    if (spatialSize === 1 && batched.size > 0) {
+      throw new InvalidParameterError(
+        `${this.name} needs more than one spatial element per channel; got input shape [${input.shape}]`,
+        "input",
+        input.shape
+      );
+    }
+    const out = this.groupNorm.forward(batched);
+    return unbatched ? out.reshape(input.shape) : out;
+  }
+
+  /**
+   * Per-channel scale, or `undefined` when `affine` is false. In a state dict the
+   * parameter is stored as `group_norm.weight` (the 1.0.0 layout, kept so existing
+   * checkpoints load); this accessor gives the PyTorch-style `layer.weight` view.
+   */
+  get weight(): GradTensor | undefined {
+    return this.groupNorm.weight;
+  }
+
+  /** Per-channel shift, or `undefined` when `affine` is false. See {@link _InstanceNorm.weight}. */
+  get bias(): GradTensor | undefined {
+    return this.groupNorm.bias;
+  }
+
+  override toString(): string {
+    return `${this.name}(${this.groupNorm.toString()})`;
   }
 }
 
@@ -582,33 +780,31 @@ export class GroupNorm extends Module {
  * Equivalent to GroupNorm with numGroups = numChannels.
  * Used in style transfer and image generation.
  *
+ * Accepts `(N, C, *)` input with at least one spatial dimension that holds more
+ * than one element. Unlike PyTorch, `affine` defaults to `true`; pass
+ * `{ affine: false }` to match `torch.nn.InstanceNorm`.
+ *
  * @example
  * ```ts
  * const inorm = new InstanceNorm(64); // 64 channels
  * ```
  */
-export class InstanceNorm extends Module {
-  private readonly groupNorm: GroupNorm;
-
+export class InstanceNorm extends _InstanceNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
       readonly eps?: number;
       readonly affine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
-    super();
-    // InstanceNorm = GroupNorm where numGroups == numChannels
-    this.groupNorm = new GroupNorm(numFeatures, numFeatures, options);
-    this.registerModule("group_norm", this.groupNorm);
-  }
-
-  forward(x: AnyTensor): GradTensor {
-    return this.groupNorm.forward(x);
-  }
-
-  override toString(): string {
-    return `InstanceNorm(${this.groupNorm.toString()})`;
+    super("InstanceNorm", 0, false, numFeatures, options);
   }
 }
 
@@ -621,6 +817,9 @@ export class InstanceNorm extends Module {
  * **Formula**: y = x / RMS(x) * gamma
  * where RMS(x) = sqrt(mean(x^2) + eps)
  *
+ * The default `eps` is 1e-5; PyTorch's `RMSNorm` defaults to the machine
+ * epsilon of the input dtype, so pass `eps` explicitly when comparing outputs.
+ *
  * @example
  * ```ts
  * const rms = new RMSNorm(512);
@@ -629,78 +828,72 @@ export class InstanceNorm extends Module {
 export class RMSNorm extends Module {
   private readonly normalizedShape: readonly number[];
   private readonly eps: number;
-  private gamma: GradTensor;
+  private readonly layerDtype: FloatDType;
+  private gamma?: GradTensor;
 
+  /**
+   * @param normalizedShape - Size of the trailing dimension(s) to normalize over
+   * @param options.eps - Value added to the mean square for numerical stability (default: 1e-5)
+   * @param options.elementwiseAffine - Learn a per-element scale (`weight`) (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     normalizedShape: number | readonly number[],
     options: {
       readonly eps?: number;
+      readonly elementwiseAffine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super();
-    this.normalizedShape =
-      typeof normalizedShape === "number" ? [normalizedShape] : Array.from(normalizedShape);
+    this.normalizedShape = normalizeShapeOption(normalizedShape, true);
+    this.eps = validateEps(options.eps ?? 1e-5);
+    this.layerDtype = resolveLayerDtype(options.dtype);
 
-    if (this.normalizedShape.length === 0) {
-      throw new InvalidParameterError(
-        "normalizedShape must contain at least one dimension",
-        "normalizedShape",
-        normalizedShape
-      );
+    if (options.elementwiseAffine ?? true) {
+      this.gamma = parameter(ones(this.normalizedShape, { dtype: this.layerDtype }));
+      this.registerParameter("weight", this.gamma);
     }
-
-    this.eps = options.eps ?? 1e-5;
-    this.gamma = parameter(ones(this.normalizedShape));
-    this.registerParameter("weight", this.gamma);
   }
 
-  forward(x: AnyTensor): GradTensor {
-    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): AnyTensor;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
 
-    if (input.dtype === "string") {
+  private run(x: AnyTensor): GradTensor {
+    const raw = asGrad(x);
+
+    if (raw.dtype === "string") {
       throw new DTypeError("RMSNorm does not support string dtype");
     }
 
-    let workingInput = input;
-    if (!isContiguous(input.tensor.shape, input.tensor.strides)) {
-      // Materialize a contiguous copy while preserving the autograd graph
-      // (see LayerNorm.forward for rationale).
-      const numericDtype = ensureNumericDType(input.dtype, "RMSNorm");
-      workingInput = input.mul(GradTensor.scalar(1, { dtype: numericDtype }));
-    }
+    // Without affine parameters there is nothing to match, so keep the input float dtype.
+    const dtype = this.gamma ? this.layerDtype : computeDtypeFor(raw.dtype, this.layerDtype);
+    const workingInput = materialize(raw.astype(dtype), dtype);
 
     const inputShape = workingInput.shape;
     const normShape = this.normalizedShape;
-    const suffixStart = inputShape.length - normShape.length;
-
-    if (suffixStart < 0) {
-      throw new ShapeError(`Input shape ${inputShape} too small for normalizedShape ${normShape}`);
-    }
-
-    for (let i = 0; i < normShape.length; i++) {
-      if (inputShape[suffixStart + i] !== normShape[i]) {
-        throw new ShapeError(
-          `Input shape ${inputShape} does not end with normalizedShape ${normShape}`
-        );
-      }
-    }
+    const suffixStart = matchTrailingShape(inputShape, normShape);
 
     const outerDims = inputShape.slice(0, suffixStart);
     const normSize = normShape.reduce((a, b) => a * b, 1);
-    const flattenedShape = [...outerDims, normSize];
-    const inputReshaped = workingInput.reshape(flattenedShape);
+    const inputReshaped = workingInput.reshape([...outerDims, normSize]);
 
     // RMS = sqrt(mean(x^2) + eps)
     const squared = inputReshaped.mul(inputReshaped);
     const meanSquared = squared.mean(-1, true);
-    const epsTensor = GradTensor.scalar(this.eps, { dtype: input.dtype });
+    const epsTensor = GradTensor.scalar(this.eps, { dtype });
     const rms = meanSquared.add(epsTensor).sqrt();
 
     const normalized = inputReshaped.div(rms);
     let out = normalized.reshape(inputShape);
 
-    // Apply scale
-    out = out.mul(this.gamma);
+    if (this.gamma) {
+      out = out.mul(this.gamma.astype(dtype));
+    }
 
     return out;
   }
@@ -723,6 +916,14 @@ export class RMSNorm extends Module {
  * ```
  */
 export class BatchNorm2d extends _BatchNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.momentum - Running statistics update factor in [0, 1] (default: 0.1)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.trackRunningStats - Keep running mean and variance (default: true)
+   * @param options.dtype - Dtype of the parameters and running statistics (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
@@ -730,6 +931,7 @@ export class BatchNorm2d extends _BatchNorm {
       readonly momentum?: number;
       readonly affine?: boolean;
       readonly trackRunningStats?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super(numFeatures, options, "BatchNorm2d");
@@ -771,6 +973,14 @@ export class BatchNorm2d extends _BatchNorm {
  * ```
  */
 export class BatchNorm3d extends _BatchNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.momentum - Running statistics update factor in [0, 1] (default: 0.1)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.trackRunningStats - Keep running mean and variance (default: true)
+   * @param options.dtype - Dtype of the parameters and running statistics (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
@@ -778,6 +988,7 @@ export class BatchNorm3d extends _BatchNorm {
       readonly momentum?: number;
       readonly affine?: boolean;
       readonly trackRunningStats?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super(numFeatures, options, "BatchNorm3d");
@@ -811,7 +1022,9 @@ export class BatchNorm3d extends _BatchNorm {
  * 1D Instance Normalization.
  *
  * Normalizes each channel independently per sample for 3D inputs (N, C, L).
+ * An unbatched 2D input (C, L) is also accepted.
  * Equivalent to GroupNorm where numGroups == numChannels.
+ * Unlike PyTorch, `affine` defaults to `true`; pass `{ affine: false }` to match `torch.nn.InstanceNorm1d`.
  *
  * @example
  * ```ts
@@ -819,27 +1032,22 @@ export class BatchNorm3d extends _BatchNorm {
  * // input: (N, 64, L) -> normalized output
  * ```
  */
-export class InstanceNorm1d extends Module {
-  private readonly groupNorm: GroupNorm;
-
+export class InstanceNorm1d extends _InstanceNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
       readonly eps?: number;
       readonly affine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
-    super();
-    this.groupNorm = new GroupNorm(numFeatures, numFeatures, options);
-    this.registerModule("group_norm", this.groupNorm);
-  }
-
-  forward(x: AnyTensor): GradTensor {
-    return this.groupNorm.forward(x);
-  }
-
-  override toString(): string {
-    return `InstanceNorm1d(${this.groupNorm.toString()})`;
+    super("InstanceNorm1d", 3, true, numFeatures, options);
   }
 }
 
@@ -847,7 +1055,9 @@ export class InstanceNorm1d extends Module {
  * 2D Instance Normalization.
  *
  * Normalizes each channel independently per sample for 4D inputs (N, C, H, W).
+ * An unbatched 3D input (C, H, W) is also accepted.
  * Equivalent to GroupNorm where numGroups == numChannels.
+ * Unlike PyTorch, `affine` defaults to `true`; pass `{ affine: false }` to match `torch.nn.InstanceNorm2d`.
  *
  * @example
  * ```ts
@@ -855,27 +1065,22 @@ export class InstanceNorm1d extends Module {
  * // input: (N, 64, H, W) -> normalized output
  * ```
  */
-export class InstanceNorm2d extends Module {
-  private readonly groupNorm: GroupNorm;
-
+export class InstanceNorm2d extends _InstanceNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
       readonly eps?: number;
       readonly affine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
-    super();
-    this.groupNorm = new GroupNorm(numFeatures, numFeatures, options);
-    this.registerModule("group_norm", this.groupNorm);
-  }
-
-  forward(x: AnyTensor): GradTensor {
-    return this.groupNorm.forward(x);
-  }
-
-  override toString(): string {
-    return `InstanceNorm2d(${this.groupNorm.toString()})`;
+    super("InstanceNorm2d", 4, true, numFeatures, options);
   }
 }
 
@@ -883,7 +1088,9 @@ export class InstanceNorm2d extends Module {
  * 3D Instance Normalization.
  *
  * Normalizes each channel independently per sample for 5D inputs (N, C, D, H, W).
+ * An unbatched 4D input (C, D, H, W) is also accepted.
  * Equivalent to GroupNorm where numGroups == numChannels.
+ * Unlike PyTorch, `affine` defaults to `true`; pass `{ affine: false }` to match `torch.nn.InstanceNorm3d`.
  *
  * @example
  * ```ts
@@ -891,27 +1098,22 @@ export class InstanceNorm2d extends Module {
  * // input: (N, 64, D, H, W) -> normalized output
  * ```
  */
-export class InstanceNorm3d extends Module {
-  private readonly groupNorm: GroupNorm;
-
+export class InstanceNorm3d extends _InstanceNorm {
+  /**
+   * @param numFeatures - Number of channels `C`
+   * @param options.eps - Value added to the variance for numerical stability (default: 1e-5)
+   * @param options.affine - Learn a per-channel scale and shift (default: true)
+   * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   */
   constructor(
     numFeatures: number,
     options: {
       readonly eps?: number;
       readonly affine?: boolean;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
-    super();
-    this.groupNorm = new GroupNorm(numFeatures, numFeatures, options);
-    this.registerModule("group_norm", this.groupNorm);
-  }
-
-  forward(x: AnyTensor): GradTensor {
-    return this.groupNorm.forward(x);
-  }
-
-  override toString(): string {
-    return `InstanceNorm3d(${this.groupNorm.toString()})`;
+    super("InstanceNorm3d", 5, true, numFeatures, options);
   }
 }
 
@@ -923,7 +1125,10 @@ export class InstanceNorm3d extends Module {
  * nearby channels.
  *
  * **Formula**: out_i = x_i / (k + alpha/size * sum(x_j^2))^beta
- * where the sum is over the `size` nearest channels.
+ * where the sum runs over `size` neighbouring channels: channel `i` itself,
+ * `floor(size / 2)` channels before it and `floor((size - 1) / 2)` after it.
+ * Channels outside the input count as zero, and the divisor is always `size`.
+ * This matches `torch.nn.LocalResponseNorm`, including for even `size`.
  *
  * @example
  * ```ts
@@ -936,12 +1141,14 @@ export class LocalResponseNorm extends Module {
   private readonly alpha: number;
   private readonly beta: number;
   private readonly k: number;
+  private readonly layerDtype: FloatDType;
 
   /**
-   * @param size - Number of channels to normalize across (must be odd)
+   * @param size - Number of neighbouring channels used for normalization
    * @param options.alpha - Multiplicative factor (default: 1e-4)
    * @param options.beta - Exponent (default: 0.75)
    * @param options.k - Additive factor (default: 1)
+   * @param options.dtype - Compute dtype for non-float32/float64 input (default: the global default dtype)
    */
   constructor(
     size: number,
@@ -949,9 +1156,11 @@ export class LocalResponseNorm extends Module {
       readonly alpha?: number;
       readonly beta?: number;
       readonly k?: number;
+      readonly dtype?: FloatDType;
     } = {}
   ) {
     super();
+    this.layerDtype = resolveLayerDtype(options.dtype);
     if (!Number.isInteger(size) || size < 1) {
       throw new InvalidParameterError("size must be a positive integer", "size", size);
     }
@@ -959,22 +1168,40 @@ export class LocalResponseNorm extends Module {
     this.alpha = options.alpha ?? 1e-4;
     this.beta = options.beta ?? 0.75;
     this.k = options.k ?? 1;
+    for (const [name, value] of [
+      ["alpha", this.alpha],
+      ["beta", this.beta],
+      ["k", this.k],
+    ] as const) {
+      if (!Number.isFinite(value)) {
+        throw new InvalidParameterError(`${name} must be a finite number`, name, value);
+      }
+    }
   }
 
-  forward(x: AnyTensor): GradTensor {
-    const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+  forward(x: GradTensor): GradTensor;
+  forward(x: TensorClass): TensorClass;
+  forward(x: AnyTensor): AnyTensor;
+  forward(x: AnyTensor): AnyTensor {
+    return settle(this.run(x), allPlain(x));
+  }
 
-    if (input.dtype === "string") {
+  private run(x: AnyTensor): GradTensor {
+    const raw = asGrad(x);
+
+    if (raw.dtype === "string") {
       throw new DTypeError("LocalResponseNorm does not support string dtype");
     }
 
-    if (input.ndim < 3) {
+    if (raw.ndim < 3) {
       throw new ShapeError(
-        `LocalResponseNorm expects at least 3D input (N, C, ...); got ${input.ndim}D`
+        `LocalResponseNorm expects at least 3D input (N, C, ...); got ${raw.ndim}D`
       );
     }
 
-    const t = toContiguousTensor(input.tensor);
+    const dtype = computeDtypeFor(raw.dtype, this.layerDtype);
+    const input = raw.astype(dtype);
+    const t = input.tensor;
     const shape = t.shape;
     const C = shape[1] ?? 0;
     const batchSize = shape[0] ?? 0;
@@ -985,48 +1212,37 @@ export class LocalResponseNorm extends Module {
       spatialSize *= shape[d] ?? 1;
     }
 
-    const inputDtype = ensureNumericDType(t.dtype, "LocalResponseNorm");
-    const Ctor = dtypeToTypedArrayCtor(inputDtype);
-    const outData = new Ctor(t.size);
-    const data = t.data;
+    // Zero-based row-major view of the values; honours strides and offsets.
+    const data = readNumbers(t, "LocalResponseNorm");
 
-    if (Array.isArray(data) || data instanceof BigInt64Array) {
-      throw new DTypeError("LocalResponseNorm requires numeric non-bigint dtype");
-    }
-
-    if (outData instanceof BigInt64Array) {
-      throw new DTypeError("Unexpected BigInt64Array");
-    }
-
-    const halfSize = Math.floor(this.size / 2);
+    const front = Math.floor(this.size / 2);
+    const back = Math.floor((this.size - 1) / 2);
     const alphaOverN = this.alpha / this.size;
     const beta = this.beta;
+    const channelStride = spatialSize;
+    const sampleStride = C * spatialSize;
 
     // Cache the un-exponentiated normalizer s_i = k + (alpha/n) * sum(x_j^2) for
     // every element so the backward pass can reuse it without recomputation.
     const sBase = new Float64Array(t.size);
+    const outData = dtype === "float64" ? new Float64Array(t.size) : new Float32Array(t.size);
 
     for (let n = 0; n < batchSize; n++) {
       for (let c = 0; c < C; c++) {
-        const cStart = Math.max(0, c - halfSize);
-        const cEnd = Math.min(C - 1, c + halfSize);
+        const cStart = Math.max(0, c - front);
+        const cEnd = Math.min(C - 1, c + back);
 
         for (let s = 0; s < spatialSize; s++) {
-          // Sum of squares over nearby channels
           let sqSum = 0;
           for (let j = cStart; j <= cEnd; j++) {
-            const idx = n * C * spatialSize + j * spatialSize + s;
-            const val = getNumericElement(data, idx);
+            const val = data[n * sampleStride + j * channelStride + s] as number;
             sqSum += val * val;
           }
 
           const sVal = this.k + alphaOverN * sqSum;
-          const inIdx = n * C * spatialSize + c * spatialSize + s;
-          sBase[inIdx] = sVal;
-          const scale = sVal ** beta;
-
-          const val = getNumericElement(data, inIdx);
-          outData[inIdx] = val / scale;
+          const idx = n * sampleStride + c * channelStride + s;
+          sBase[idx] = sVal;
+          outData[idx] = (data[idx] as number) / sVal ** beta;
         }
       }
     }
@@ -1034,94 +1250,63 @@ export class LocalResponseNorm extends Module {
     const outTensor = TensorClass.fromTypedArray({
       data: outData,
       shape: shape.slice(),
-      dtype: inputDtype,
+      dtype,
       device: t.device,
     });
 
-    const requiresGrad = input.requiresGrad;
-    if (!requiresGrad) {
-      return GradTensor.fromTensor(outTensor, { requiresGrad: false });
-    }
-
-    // Custom backward: out_i = x_i * s_i^(-beta), with
+    // Backward: out_i = x_i * s_i^(-beta), with
     //   s_i = k + (alpha/n) * sum_{j in window(i)} x_j^2.
     // For an input element m:
     //   dL/dx_m = g_m * s_m^(-beta)
     //           + sum_{i: m in window(i)} g_i * x_i * (-beta) * s_i^(-beta-1) * (2*alpha/n) * x_m
-    // where g = dL/dout. The window relationship is symmetric (m in window(i)
-    // iff i in window(m)), so we iterate i over the window of m.
-    const inputRef = input;
-    const out = GradTensor.create({
-      tensor: outTensor,
-      requiresGrad: true,
-      prev: [inputRef],
-      backward: () => {
-        const go = out.grad;
-        if (go === null) {
-          return;
-        }
-        const goData = go.data;
-        if (Array.isArray(goData) || goData instanceof BigInt64Array) {
-          throw new DTypeError("LocalResponseNorm requires numeric non-bigint gradient");
-        }
-        const goStrides = computeStrides(go.shape);
-        const gradOut = new Float64Array(t.size);
-        const twoAlphaOverN = 2 * alphaOverN;
+    // where g = dL/dout. The window of i is [i - front, i + back], so m is in
+    // window(i) exactly when i lies in [m - back, m + front].
+    const twoAlphaOverN = 2 * alphaOverN;
+    return customOp(outTensor, [
+      [
+        input,
+        (go: TensorClass): TensorClass => {
+          const g = readNumbers(go, "LocalResponseNorm");
+          const gradOut = dtype === "float64" ? new Float64Array(t.size) : new Float32Array(t.size);
 
-        for (let n = 0; n < batchSize; n++) {
-          for (let m = 0; m < C; m++) {
-            const cStart = Math.max(0, m - halfSize);
-            const cEnd = Math.min(C - 1, m + halfSize);
+          for (let n = 0; n < batchSize; n++) {
+            for (let m = 0; m < C; m++) {
+              const iStart = Math.max(0, m - back);
+              const iEnd = Math.min(C - 1, m + front);
 
-            for (let s = 0; s < spatialSize; s++) {
-              const mIdx = n * C * spatialSize + m * spatialSize + s;
-              const xm = getNumericElement(data, mIdx);
+              for (let s = 0; s < spatialSize; s++) {
+                const mIdx = n * sampleStride + m * channelStride + s;
+                const xm = data[mIdx] as number;
 
-              // Direct path: contribution from out_m itself.
-              const gm = getNumericElement(
-                goData,
-                offsetFromFlatIndex(mIdx, goStrides, go.strides, go.offset)
-              );
-              const sm = sBase[mIdx] ?? 1;
-              let acc = gm * sm ** -beta;
+                // Direct path: contribution from out_m itself.
+                let acc = (g[mIdx] as number) * (sBase[mIdx] as number) ** -beta;
 
-              // Cross-channel path: every out_i whose window includes m.
-              for (let i = cStart; i <= cEnd; i++) {
-                const iIdx = n * C * spatialSize + i * spatialSize + s;
-                const gi = getNumericElement(
-                  goData,
-                  offsetFromFlatIndex(iIdx, goStrides, go.strides, go.offset)
-                );
-                const xi = getNumericElement(data, iIdx);
-                const si = sBase[iIdx] ?? 1;
-                acc += gi * xi * -beta * si ** (-beta - 1) * twoAlphaOverN * xm;
+                // Cross-channel path: every out_i whose window includes m.
+                for (let i = iStart; i <= iEnd; i++) {
+                  const iIdx = n * sampleStride + i * channelStride + s;
+                  acc +=
+                    (g[iIdx] as number) *
+                    (data[iIdx] as number) *
+                    -beta *
+                    (sBase[iIdx] as number) ** (-beta - 1) *
+                    twoAlphaOverN *
+                    xm;
+                }
+
+                gradOut[mIdx] = acc;
               }
-
-              gradOut[mIdx] = acc;
             }
           }
-        }
 
-        const gradCtor = dtypeToTypedArrayCtor(inputDtype);
-        const gradData = new gradCtor(t.size);
-        if (gradData instanceof BigInt64Array) {
-          throw new DTypeError("Unexpected BigInt64Array for LocalResponseNorm gradient");
-        }
-        for (let i = 0; i < t.size; i++) {
-          gradData[i] = gradOut[i] ?? 0;
-        }
-        inputRef.accumulateGrad(
-          TensorClass.fromTypedArray({
-            data: gradData,
+          return TensorClass.fromTypedArray({
+            data: gradOut,
             shape: shape.slice(),
-            dtype: inputDtype,
+            dtype,
             device: t.device,
-          })
-        );
-      },
-    });
-
-    return out;
+          });
+        },
+      ],
+    ]);
   }
 
   override toString(): string {

@@ -255,4 +255,4 @@ def footer(suite: dict[str, Any], output_file: str) -> None:
     os.makedirs(out_path.parent, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(suite, handle, indent=2)
-    print(f"  ✓ Saved → {out_path}\n")
+    print(f"  Saved: {out_path}\n")

@@ -3,6 +3,7 @@
  */
 
 export type {
+  Axis,
   Device,
   DType,
   ExtendedTypedArray,
@@ -30,7 +31,7 @@ export { Complex, Complex64Array, Complex128Array } from "./tensor/complex";
 // Float16 and Complex number arrays
 export { BFloat16Array, Float16Array } from "./tensor/float16";
 
-// Re-export Tensor class for the union type below
+// Class types used by the AnyTensor union below
 import type { GradTensor as GradTensorClass } from "./autograd/index";
 import type { Tensor as TensorClass } from "./tensor/index";
 
@@ -55,22 +56,48 @@ import type { Tensor as TensorClass } from "./tensor/index";
  * ```
  */
 export type AnyTensor = TensorClass | GradTensorClass;
+export type { TensordotAxes } from "./linalg/basic";
 export { corrcoef, cov, tensordot } from "./linalg/basic";
 export { dot } from "./linalg/index";
 export {
+  celu,
   elu,
+  type GeluApproximation,
+  type GeluOptions,
   gelu,
+  hardshrink,
+  hardsigmoid,
+  hardswish,
+  hardtanh,
   leakyRelu,
+  logSigmoid,
   logSoftmax,
   mish,
   relu,
+  relu6,
+  selu,
   sigmoid,
   softmax,
   softplus,
+  softshrink,
+  softsign,
   swish,
+  tanhshrink,
 } from "./ops/activation";
 export { col2im, im2col } from "./ops/conv";
 export { einsum } from "./ops/einsum";
+export type {
+  ConvolveMode,
+  CrossOptions,
+  HistogramOptions,
+  LikeOptions,
+  PadMode,
+  PadWidth,
+  UniqueOptions,
+  UniqueOutput,
+  UniqueResult,
+  WindowOptions,
+} from "./ops/index";
 export {
   abs,
   acos,
@@ -80,7 +107,10 @@ export {
   all,
   allclose,
   any,
+  argmax,
+  argmin,
   argsort,
+  argwhere,
   arrayEqual,
   asin,
   asinh,
@@ -110,6 +140,7 @@ export {
   correlate,
   cos,
   cosh,
+  countNonzero,
   cross,
   cumprod,
   cumsum,
@@ -126,11 +157,14 @@ export {
   exp,
   exp2,
   expm1,
+  type FFTNorm,
   type FFTResult,
   fancyIndex,
   fft,
   fft2,
+  fftfreq,
   fftn,
+  fftshift,
   flip,
   flipLr,
   fliplr,
@@ -151,6 +185,7 @@ export {
   ifft,
   ifft2,
   ifftn,
+  ifftshift,
   index_select,
   indexSelect,
   insert,
@@ -185,21 +220,31 @@ export {
   moveaxis,
   mul,
   mulScalar,
+  nanargmax,
+  nanargmin,
+  nancumsum,
   nanmax,
   nanmean,
+  nanmedian,
   nanmin,
+  nanprod,
+  nanquantile,
   nanstd,
   nansum,
+  nanvar,
   neg,
+  nonzero,
   notEqual,
   ones_like,
   onesLike,
   pad,
   pow,
   prod,
+  putAlongAxis,
   reciprocal,
   repeat,
   rfft,
+  rfftfreq,
   roll,
   rot90,
   round,
@@ -219,9 +264,11 @@ export {
   sub,
   sum,
   swapaxes,
+  takeAlongAxis,
   tan,
   tanh,
   tile,
+  trapezoid,
   trapz,
   tril,
   triu,
@@ -238,9 +285,11 @@ export { dropoutMask } from "./ops/random";
 export type { CSRMatrixInit } from "./sparse";
 
 export { CSRMatrix } from "./sparse";
+export { roundToBFloat16, roundToFloat16 } from "./tensor/float16";
 export type {
   NestedArray,
   SliceRange,
+  StringNestedArray,
   TensorCreateOptions,
   TensorOptions,
 } from "./tensor/index";

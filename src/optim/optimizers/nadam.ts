@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -22,7 +21,6 @@ import {
   assertHasGradFloat,
   assertInRange,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -33,6 +31,8 @@ type NadamOptions = {
   readonly eps: number;
   readonly weightDecay: number;
   readonly momentumDecay: number;
+  readonly decoupledWeightDecay: boolean;
+  maximize: boolean;
 };
 
 type NadamState = {
@@ -48,11 +48,17 @@ type NadamState = {
 };
 
 /**
- * Nadam (Nesterov-accelerated Adam) optimizer.
+ * Nadam (Nesterov-accelerated Adam) optimizer (Dozat, 2016).
  *
- * Implements Nadam algorithm - combines Adam's adaptive learning rates with
- * Nesterov momentum for potentially faster convergence. Nadam applies Nesterov
- * acceleration to the momentum term, providing a "look-ahead" gradient.
+ * Combines Adam's adaptive learning rates with Nesterov momentum: the first
+ * moment estimate is replaced by a look-ahead blend of the next momentum
+ * estimate and the current gradient. The momentum coefficient follows the
+ * schedule `mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentumDecay))` used by
+ * `torch.optim.NAdam`.
+ *
+ * By default `weightDecay` is an L2 penalty added to the gradient. With
+ * `decoupledWeightDecay: true` the parameters are instead multiplied by
+ * `1 - lr * weightDecay` before the update (NAdamW).
  *
  * @example
  * ```ts
@@ -75,11 +81,22 @@ type NadamState = {
  * @category Optimizers
  */
 export class Nadam extends Optimizer<NadamOptions, NadamState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
+  /**
+   * Create a new Nadam optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 0.002)
+   * @param options.beta1 - Decay rate of the first moment, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Decay rate of the second moment, in [0, 1) (default: 0.999)
+   * @param options.eps - Term added to the denominator for numerical stability (default: 1e-8)
+   * @param options.weightDecay - Weight decay coefficient (default: 0)
+   * @param options.momentumDecay - Decay of the momentum schedule (default: 0.004)
+   * @param options.decoupledWeightDecay - Apply weight decay directly to the parameters
+   *   instead of the gradient (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<NadamOptions>>,
     options: {
@@ -89,6 +106,8 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
       readonly eps?: number;
       readonly weightDecay?: number;
       readonly momentumDecay?: number;
+      readonly decoupledWeightDecay?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -98,47 +117,20 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
       eps: options.eps ?? 1e-8,
       weightDecay: options.weightDecay ?? 0,
       momentumDecay: options.momentumDecay ?? 0.004,
+      decoupledWeightDecay: options.decoupledWeightDecay ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    // Validate hyperparameters
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
-    assertFiniteNonNegative("momentum_decay", defaults.momentumDecay);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<NadamOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
+    assertFiniteNonNegative("momentum_decay", options.momentumDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is NadamState {
@@ -150,6 +142,15 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
     );
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -157,25 +158,21 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("Nadam");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps, weightDecay, momentumDecay } = group.options;
+      const { lr, beta1, beta2, eps, weightDecay, momentumDecay, decoupledWeightDecay, maximize } =
+        group.options;
 
       // Re-validate hyperparameters
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-      assertFiniteNonNegative("momentum_decay", momentumDecay);
 
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the Nadam update from device-dispatched ops.
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = {
@@ -194,7 +191,15 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
           const muProduct = (dstate.deviceMuProduct ?? 1) * mu;
           const muProductNext = muProduct * muNext;
           dstate.deviceMuProduct = muProduct;
-          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const grad =
+            weightDecay !== 0 && !decoupledWeightDecay
+              ? add(g, mulScalar(param.tensor, weightDecay))
+              : g;
+          // Decoupled decay shrinks the parameter before the Adam-style update.
+          const base =
+            weightDecay !== 0 && decoupledWeightDecay
+              ? mulScalar(param.tensor, 1 - lr * weightDecay)
+              : param.tensor;
           const mPrev = dstate.expAvgTensor;
           const vPrev = dstate.expAvgSqTensor;
           const mNew = mPrev
@@ -209,11 +214,7 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
           const mHatNext = mulScalar(mNew, 1 / (1 - muProductNext));
           const gHat = mulScalar(grad, 1 / (1 - muProduct));
           const mNesterov = add(mulScalar(mHatNext, muNext), mulScalar(gHat, 1 - mu));
-          replaceParamStorage(
-            param,
-            "tensor",
-            sub(param.tensor, mulScalar(div(mNesterov, denom), lr))
-          );
+          replaceParamStorage(param, "tensor", sub(base, mulScalar(div(mNesterov, denom), lr)));
           continue;
         }
 
@@ -251,24 +252,29 @@ export class Nadam extends Optimizer<NadamOptions, NadamState> {
         const muProductNext = muProduct * muNext;
         state.muProduct = muProduct;
 
+        const expAvg = state.expAvg;
+        const expAvgSq = state.expAvgSq;
+        const l2 = weightDecay !== 0 && !decoupledWeightDecay;
+        const shrink = weightDecay !== 0 && decoupledWeightDecay ? 1 - lr * weightDecay : 1;
+
         for (let i = 0; i < size; i++) {
-          const gi0 = safeArrayAccess(gradData, gOff + i, "Nadam gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "Nadam parameter");
-          assertFinite("gradient", gi0);
-          assertFinite("parameter", pi);
+          const rawGi = gradData[gOff + i] as number;
+          const p0 = pData[pOff + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi0 = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(p0)) assertFinite("parameter", p0);
 
-          // Apply weight decay
-          const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
+          // L2 weight decay goes into the gradient; decoupled decay shrinks the parameter
+          const gi = l2 ? gi0 + weightDecay * p0 : gi0;
+          const pi = p0 * shrink;
 
-          // Update biased first moment estimate: m(t) = β1 * m(t-1) + (1 - β1) * g(t)
-          const m = safeArrayAccess(state.expAvg, i, "Nadam expAvg");
-          const mNew = beta1 * m + (1 - beta1) * gi;
-          state.expAvg[i] = mNew;
+          // Update biased first moment estimate: m(t) = beta1 * m(t-1) + (1 - beta1) * g(t)
+          const mNew = beta1 * (expAvg[i] as number) + (1 - beta1) * gi;
+          expAvg[i] = mNew;
 
-          // Update biased second moment estimate: v(t) = β2 * v(t-1) + (1 - β2) * g(t)²
-          const v = safeArrayAccess(state.expAvgSq, i, "Nadam expAvgSq");
-          const vNew = beta2 * v + (1 - beta2) * gi * gi;
-          state.expAvgSq[i] = vNew;
+          // Update biased second moment estimate: v(t) = beta2 * v(t-1) + (1 - beta2) * g(t)^2
+          const vNew = beta2 * (expAvgSq[i] as number) + (1 - beta2) * gi * gi;
+          expAvgSq[i] = vNew;
 
           const denom = Math.sqrt(vNew / biasCorrection2) + eps;
           const mHatNext = mNew / (1 - muProductNext);

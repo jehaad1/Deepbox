@@ -28,9 +28,10 @@ export class MemoryError extends DeepboxError {
     details?: {
       readonly requestedBytes?: number;
       readonly availableBytes?: number;
+      readonly cause?: unknown;
     }
   ) {
-    super(message);
+    super(message, details?.cause !== undefined ? { cause: details.cause } : undefined);
     if (details?.requestedBytes !== undefined) {
       this.requestedBytes = details.requestedBytes;
     }

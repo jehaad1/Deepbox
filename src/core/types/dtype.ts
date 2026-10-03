@@ -9,9 +9,13 @@
  * - `int64`: 64-bit signed integer (BigInt)
  * - `uint8`: 8-bit unsigned integer
  * - `bool`: Boolean values (stored as uint8)
- * - `complex64`: Complex number with float32 real and imaginary parts
- * - `complex128`: Complex number with float64 real and imaginary parts
- * - `string`: String values (limited support)
+ * - `complex64`: Reserved. Complex number with float32 real and imaginary parts.
+ *   Tensors cannot be created with this dtype yet (a `DTypeError` is thrown);
+ *   use `Complex64Array` for complex data.
+ * - `complex128`: Reserved. Complex number with float64 real and imaginary parts.
+ *   Tensors cannot be created with this dtype yet (a `DTypeError` is thrown);
+ *   use `Complex128Array` for complex data.
+ * - `string`: String values (limited support; backed by a `string[]`)
  *
  * @example
  * ```ts
@@ -55,7 +59,7 @@ export type ScalarDType =
  *
  * - `string` → `string`
  * - `int64`  → `bigint`
- * - all others → `number` (complex types return the real part as number)
+ * - all others → `number` (the complex dtypes are reserved and have no tensor storage yet)
  */
 export type ElementOf<D extends DType> = D extends "string"
   ? string
@@ -73,7 +77,8 @@ export type ElementOf<D extends DType> = D extends "string"
  * import { DTYPES } from 'deepbox/core';
  *
  * console.log(DTYPES);
- * // ['float32', 'float64', 'int32', 'int64', 'uint8', 'bool', 'string']
+ * // ['float16', 'bfloat16', 'float32', 'float64', 'int32', 'int64', 'uint8', 'bool',
+ * //  'complex64', 'complex128', 'string']
  * ```
  */
 export const DTYPES: readonly DType[] = [

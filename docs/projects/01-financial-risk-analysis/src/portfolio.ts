@@ -2,22 +2,13 @@
  * Portfolio Management Module
  *
  * Handles portfolio construction, returns calculation, and basic analytics.
- * Demonstrates deepbox/ndarray and deepbox/dataframe usage.
+ * Uses tensors from deepbox/ndarray and DataFrame from deepbox/dataframe.
  */
 
-import { InvalidParameterError, isNumericTypedArray, isTypedArray } from "deepbox/core";
+import { InvalidParameterError } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
-import { reshape, type Tensor, tensor } from "deepbox/ndarray";
+import { type Tensor, tensor } from "deepbox/ndarray";
 import { cov, mean, std } from "deepbox/stats";
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 /**
  * Asset data structure representing a single financial asset
@@ -95,16 +86,10 @@ export class Portfolio {
    * Calculate portfolio returns for each period
    */
   getPortfolioReturns(): Tensor {
-    const portfolioReturns: number[] = [];
-
-    for (let t = 0; t < this.returnsTensor.shape[0]; t++) {
-      let periodReturn = 0;
-      for (let i = 0; i < this.weights.length; i++) {
-        const idx = t * this.returnsTensor.shape[1] + i;
-        periodReturn += Number(this.returnsTensor.data[idx]) * this.weights[i];
-      }
-      portfolioReturns.push(periodReturn);
-    }
+    const periods = this.returnsTensor.toArray() as number[][];
+    const portfolioReturns = periods.map((row) =>
+      row.reduce((sum, r, i) => sum + r * this.weights[i], 0)
+    );
 
     return tensor(portfolioReturns);
   }
@@ -116,7 +101,7 @@ export class Portfolio {
     const portfolioReturns = this.getPortfolioReturns();
     const meanReturn = mean(portfolioReturns);
     // Annualize assuming monthly returns (multiply by 12)
-    return Number(meanReturn.data[0]) * 12;
+    return Number(meanReturn.item()) * 12;
   }
 
   /**
@@ -126,7 +111,7 @@ export class Portfolio {
     const portfolioReturns = this.getPortfolioReturns();
     const stdDev = std(portfolioReturns);
     // Annualize assuming monthly returns (multiply by sqrt(12))
-    return Number(stdDev.data[0]) * Math.sqrt(12);
+    return Number(stdDev.item()) * Math.sqrt(12);
   }
 
   /**
@@ -147,8 +132,8 @@ export class Portfolio {
     const portfolioReturns = this.getPortfolioReturns();
     const expectedReturn = this.getExpectedReturn();
 
-    // Calculate downside deviation (only negative returns)
-    const returnsArray = Array.from(expectNumericTypedArray(portfolioReturns.data));
+    // Downside deviation uses only the returns below the monthly risk-free rate
+    const returnsArray = portfolioReturns.toArray() as number[];
     const monthlyRiskFree = this.riskFreeRate / 12;
     const negativeReturns = returnsArray.filter((r) => r < monthlyRiskFree);
 
@@ -168,7 +153,7 @@ export class Portfolio {
    */
   getMaxDrawdown(): number {
     const portfolioReturns = this.getPortfolioReturns();
-    const returnsArray = Array.from(expectNumericTypedArray(portfolioReturns.data));
+    const returnsArray = portfolioReturns.toArray() as number[];
 
     // Calculate cumulative returns
     let cumulativeValue = 1.0;
@@ -215,26 +200,17 @@ export class Portfolio {
    */
   getCorrelationMatrix(): Tensor {
     const covMatrix = this.getCovarianceMatrix();
-    const n = covMatrix.shape[0];
-    const corrData: number[] = [];
+    const covRows = covMatrix.toArray() as number[][];
 
-    // Extract standard deviations from diagonal
-    const stdDevs: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const variance = Number(covMatrix.data[i * n + i]);
-      stdDevs.push(Math.sqrt(variance));
-    }
+    // Standard deviations are the square roots of the diagonal
+    const stdDevs = covRows.map((row, i) => Math.sqrt(row[i]));
 
-    // Calculate correlation matrix
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        const covIJ = Number(covMatrix.data[i * n + j]);
-        const corr = stdDevs[i] * stdDevs[j] === 0 ? 0 : covIJ / (stdDevs[i] * stdDevs[j]);
-        corrData.push(corr);
-      }
-    }
+    // corr(i, j) = cov(i, j) / (std(i) * std(j))
+    const corrData = covRows.map((row, i) =>
+      row.map((covIJ, j) => (stdDevs[i] * stdDevs[j] === 0 ? 0 : covIJ / (stdDevs[i] * stdDevs[j])))
+    );
 
-    return reshape(tensor(corrData), [n, n]);
+    return tensor(corrData);
   }
 
   /**
@@ -284,7 +260,7 @@ export class Portfolio {
  * Generate synthetic asset data for testing
  */
 export function generateSyntheticAssets(numPeriods = 60): Asset[] {
-  // Simulate realistic asset characteristics
+  // Monthly mean return and volatility for each synthetic asset
   const assetConfigs = [
     {
       symbol: "TECH",

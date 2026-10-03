@@ -105,7 +105,7 @@ function consume(value: unknown): void {
     return;
   }
   // Typed arrays / DataViews are ArrayBuffer views, not plain objects. Consume
-  // them by length like Array — `Object.keys()` on a large typed array would
+  // them by length like Array, since `Object.keys()` on a large typed array would
   // materialize one index-key string per element (O(n) with heavy allocation),
   // which would dwarf the operation being measured for functions that return a
   // raw typed array (e.g. Generator.randomArray).
@@ -436,5 +436,5 @@ export function footer(suite: BenchmarkSuite, outputFile: string): void {
   const outPath = `benchmarks/results/${outputFile}`;
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(suite, null, 2));
-  console.log(`  ✓ Saved → ${outPath}\n`);
+  console.log(`  Saved: ${outPath}\n`);
 }

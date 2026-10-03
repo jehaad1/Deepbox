@@ -2,7 +2,7 @@
 
 > **View online:** https://deepbox.dev/examples/26-sparse-matrices
 
-Demonstrates CSR (Compressed Sparse Row) matrix operations. Memory-efficient representation for matrices with many zeros.
+`CSRMatrix` (Compressed Sparse Row) stores only the non-zero entries of a matrix. This example builds one from COO triplets and runs addition, scaling, element-wise and matrix products, transpose and conversion back to a dense tensor.
 
 ## Deepbox Modules Used
 
@@ -18,4 +18,4 @@ npm run example:26
 
 ## Output
 
-- Console output showing sparse matrix creation, element access, arithmetic, matrix-vector/matrix multiplication, transpose, and dense conversion
+- Console output only: sparsity, element access, arithmetic, matrix-vector and matrix-matrix products, transpose and dense conversion.

@@ -1,5 +1,5 @@
 /**
- * Benchmark 03: ML Training & Inference — Deepbox vs scikit-learn
+ * Benchmark 03: ML Training & Inference (Deepbox vs scikit-learn)
  *
  * Compares classical ML model training and prediction speed:
  * Linear/Logistic Regression, Ridge, Lasso, KMeans, PCA,

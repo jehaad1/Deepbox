@@ -21,8 +21,11 @@ export {
   assertEstimator,
   get_output,
   getEstimatorTags,
+  getOutput,
   reset_output,
+  resetOutput,
   set_output,
+  setOutput,
 } from "./base";
 // Calibration
 export { CalibratedClassifierCV, calibrationCurve } from "./calibration";
@@ -51,6 +54,19 @@ export {
   QuadraticDiscriminantAnalysis,
 } from "./discriminant_analysis";
 // Ensemble methods
+export type {
+  AdaBoostClassifierOptions,
+  AdaBoostRegressorOptions,
+  BaggingOptions,
+  GradientBoostingClassifierOptions,
+  GradientBoostingLoss,
+  GradientBoostingRegressorOptions,
+  StackingClassifierOptions,
+  StackingMethod,
+  StackingRegressorOptions,
+  VotingClassifierOptions,
+  VotingRegressorOptions,
+} from "./ensemble";
 export {
   AdaBoostClassifier,
   AdaBoostRegressor,
@@ -64,19 +80,32 @@ export {
   VotingRegressor,
 } from "./ensemble";
 // Gaussian Processes
+export type {
+  GaussianProcessClassifierOptions,
+  GaussianProcessRegressorOptions,
+} from "./gaussian_process";
 export {
   GaussianProcessClassifier,
   GaussianProcessRegressor,
 } from "./gaussian_process";
 // Inspection
-export type { PermutationImportanceResult } from "./inspection";
+export type { PermutationImportanceOptions, PermutationImportanceResult } from "./inspection";
 export { permutationImportance } from "./inspection";
 // Linear models - regression and classification
+export type { BayesianRidgeOptions } from "./linear/BayesianRidge";
 export { BayesianRidge } from "./linear/BayesianRidge";
+export type { ElasticNetOptions } from "./linear/ElasticNet";
 export { ElasticNet } from "./linear/ElasticNet";
+export type { HuberRegressorOptions } from "./linear/HuberRegressor";
 export { HuberRegressor } from "./linear/HuberRegressor";
+export type {
+  IsotonicOutOfBounds,
+  IsotonicRegressionOptions,
+} from "./linear/IsotonicRegression";
 export { IsotonicRegression } from "./linear/IsotonicRegression";
+export type { KernelRidgeKernel, KernelRidgeOptions } from "./linear/KernelRidge";
 export { KernelRidge } from "./linear/KernelRidge";
+export type { LassoOptions } from "./linear/Lasso";
 export { Lasso } from "./linear/Lasso";
 export { LinearRegression } from "./linear/LinearRegression";
 export { LogisticRegression } from "./linear/LogisticRegression";
@@ -86,6 +115,7 @@ export { Ridge } from "./linear/Ridge";
 export { SGDClassifier, SGDRegressor } from "./linear/SGD";
 // Manifold learning
 export { Isomap, MDS, SpectralEmbedding, TSNE } from "./manifold";
+export type { TSNEOptions } from "./manifold/TSNE";
 // Multi-layer Perceptron
 export { MLPClassifier, MLPRegressor } from "./mlp";
 // Model selection
@@ -93,6 +123,8 @@ export type { CrossValidateResult, GridSearchResult } from "./model_selection";
 export {
   cross_val_score,
   cross_validate,
+  crossValidate,
+  crossValScore,
   GridSearchCV,
   RandomizedSearchCV,
 } from "./model_selection";
@@ -125,14 +157,29 @@ export {
   Pipeline,
 } from "./pipeline";
 // Random Projection
-export { GaussianRandomProjection } from "./random_projection";
+export { GaussianRandomProjection, johnsonLindenstraussMinDim } from "./random_projection";
 // Semi-supervised
+export type { SelfTrainingTermination } from "./semi_supervised";
 export {
   LabelPropagation,
   LabelSpreading,
   SelfTrainingClassifier,
 } from "./semi_supervised";
 // Support Vector Machines
+export type {
+  ClassWeightOption,
+  GammaOption,
+  KernelType,
+  LinearSVCLoss,
+  LinearSVCOptions,
+  LinearSVRLoss,
+  LinearSVROptions,
+  NuSVCOptions,
+  NuSVROptions,
+  OneClassSVMOptions,
+  SVCOptions,
+  SVROptions,
+} from "./svm";
 export {
   LinearSVC,
   LinearSVR,
@@ -143,13 +190,27 @@ export {
   SVR,
 } from "./svm";
 // Tree-based models
-export type { ClassificationCriterion } from "./tree";
+export type {
+  ClassificationCriterion,
+  DecisionTreeClassifierOptions,
+  DecisionTreeRegressorOptions,
+  ForestClassWeight,
+  ForestMaxFeatures,
+  RandomForestClassifierOptions,
+  RandomForestOptions,
+  RandomForestRegressorOptions,
+  TreeClassWeight,
+  TreeGrowthOptions,
+  TreeMaxFeatures,
+} from "./tree";
 export {
   DecisionTreeClassifier,
   DecisionTreeRegressor,
   ExtraTreesClassifier,
   ExtraTreesRegressor,
   export_text,
+  exportText,
   RandomForestClassifier,
   RandomForestRegressor,
 } from "./tree";
+export type { ExtraTreesClassifierOptions, ExtraTreesOptions } from "./tree/ExtraTrees";

@@ -172,7 +172,8 @@ describe("cross", () => {
 
   it("throws on wrong dimensions", () => {
     expect(() => cross(tensor([1, 2]), tensor([3, 4]))).toThrow();
-    expect(() => cross(tensor([[1, 2, 3]]), tensor([4, 5, 6]))).toThrow();
+    // [[1, 2, 3]] is a valid batch of one vector since cross broadcasts; a trailing length of 2 is not
+    expect(() => cross(tensor([[1, 2]]), tensor([4, 5, 6]))).toThrow();
   });
 });
 

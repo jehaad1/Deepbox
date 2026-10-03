@@ -35,7 +35,7 @@ const toNumberArray = (data: unknown): number[] => {
   throw new Error("Expected numeric tensor data");
 };
 
-describe("Classification Metrics - Comprehensive Tests", () => {
+describe("Classification Metrics tests", () => {
   describe("accuracy", () => {
     it("should calculate perfect accuracy", () => {
       const yTrue = tensor([0, 1, 1, 0, 1]);

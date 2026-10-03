@@ -3,12 +3,29 @@
  */
 
 import { type DType, DTypeError, getArrayElement, type Shape, ShapeError } from "../../core";
+import { promoteTypes } from "../../core/utils/dtype_utils";
 import type { Tensor } from "../tensor/Tensor";
 
+/** A tensor whose dtype is not `string`. */
+export type NumericTensor = Tensor<Shape, Exclude<DType, "string">>;
+
+/**
+ * True for 0-d tensors holding one element (shape `[]`).
+ *
+ * Tensors of shape `[1]`, `[1, 1]`, ... are not scalars here; they take part in
+ * ordinary broadcasting.
+ */
 export function isScalar(t: Tensor): boolean {
   return t.ndim === 0 && t.size === 1;
 }
 
+/**
+ * Assert that a tensor has a numeric (non-string) dtype.
+ *
+ * @param t - Tensor to check
+ * @param op - Operation name used in the error message
+ * @throws {DTypeError} If the tensor has string dtype
+ */
 export function ensureNumericDType(
   t: Tensor,
   op: string
@@ -18,53 +35,102 @@ export function ensureNumericDType(
   }
 }
 
+/**
+ * Assert that two tensors share one dtype.
+ *
+ * Binary element-wise ops no longer need this because they promote their operands with
+ * {@link promoteOperands}; it stays for callers that require identical dtypes.
+ *
+ * @throws {DTypeError} If the dtypes differ
+ */
 export function ensureSameDType(a: Tensor, b: Tensor): void {
   if (a.dtype !== b.dtype) {
     throw new DTypeError(`DType mismatch: ${a.dtype} vs ${b.dtype}`);
   }
 }
 
+/**
+ * Convert the operands of a binary op to their common dtype (PyTorch-style promotion).
+ *
+ * `bool < uint8 < int32 < int64 < float16, bfloat16 < float32 < float64`; an operand that
+ * already has the common dtype is returned as it is (no copy). Both operands must be
+ * numeric, and a tensor that lives in device memory cannot be converted.
+ *
+ * @param a - First operand
+ * @param b - Second operand
+ * @param op - Operation name used in the error message
+ * @returns The two operands, both with the common dtype
+ * @throws {DTypeError} If either tensor has string dtype, or a tensor in device memory would
+ *   need a dtype conversion
+ *
+ * @example
+ * ```ts
+ * const [x, y] = promoteOperands(tensor([1, 2], { dtype: "int32" }), tensor([0.5, 1.5]), "add");
+ * x.dtype; // "float32"
+ * ```
+ */
+export function promoteOperands(a: Tensor, b: Tensor, op: string): [NumericTensor, NumericTensor] {
+  ensureNumericDType(a, op);
+  ensureNumericDType(b, op);
+  if (a.dtype === b.dtype) return [a, b];
+  const target = promoteTypes(a.dtype, b.dtype);
+  if ((a.isDeviceTensor && a.dtype !== target) || (b.isDeviceTensor && b.dtype !== target)) {
+    throw new DTypeError(
+      `${op}: cannot promote dtype ${a.dtype} with ${b.dtype} for a tensor in device memory; ` +
+        "move it to the CPU with `await t.cpu()` or give both operands the same dtype"
+    );
+  }
+  const x: Tensor = a.dtype === target ? a : a.astype(target);
+  const y: Tensor = b.dtype === target ? b : b.astype(target);
+  ensureNumericDType(x, op);
+  ensureNumericDType(y, op);
+  return [x, y];
+}
+
+/**
+ * Assert that two tensors can be combined element-wise (either is a 0-d
+ * scalar, or their shapes broadcast).
+ *
+ * @throws {ShapeError} If the shapes are not broadcast-compatible
+ */
 export function ensureBroadcastableScalar(a: Tensor, b: Tensor): void {
   if (!isScalar(a) && !isScalar(b) && !canBroadcast(a.shape, b.shape)) {
     throw ShapeError.mismatch(a.shape, b.shape, "broadcast");
   }
 }
 
+/**
+ * Check whether two shapes are broadcast-compatible under NumPy rules: shapes
+ * are aligned at the trailing axis and each pair of sizes must be equal or
+ * contain a 1. A size-0 axis only pairs with 0 or 1.
+ */
 export function canBroadcast(shapeA: Shape, shapeB: Shape): boolean {
   const maxLen = Math.max(shapeA.length, shapeB.length);
   for (let i = 0; i < maxLen; i++) {
     const dimA = getArrayElement(shapeA, shapeA.length - 1 - i, 1);
     const dimB = getArrayElement(shapeB, shapeB.length - 1 - i, 1);
-    if (dimA === dimB || dimA === 1 || dimB === 1) {
-      continue;
-    }
-    // Explicitly reject broadcasting 0 with anything other than 1 or 0,
-    // which is covered by the condition above.
-    if (dimA === 0 || dimB === 0) {
+    if (dimA !== dimB && dimA !== 1 && dimB !== 1) {
       return false;
     }
-    return false;
   }
   return true;
 }
 
+/**
+ * Compute the broadcast result shape of two shapes under NumPy rules.
+ *
+ * @throws {ShapeError} If the shapes are not broadcast-compatible
+ */
 export function getBroadcastShape(shapeA: Shape, shapeB: Shape): Shape {
   const maxLen = Math.max(shapeA.length, shapeB.length);
-  const result: number[] = [];
+  const result = new Array<number>(maxLen);
   for (let i = 0; i < maxLen; i++) {
     const dimA = getArrayElement(shapeA, shapeA.length - 1 - i, 1);
     const dimB = getArrayElement(shapeB, shapeB.length - 1 - i, 1);
-    if (dimA === dimB) {
-      result.unshift(dimA);
+    if (dimA === dimB || dimB === 1) {
+      result[maxLen - 1 - i] = dimA;
     } else if (dimA === 1) {
-      result.unshift(dimB);
-    } else if (dimB === 1) {
-      result.unshift(dimA);
-    } else if (dimA === 0 || dimB === 0) {
-      // If one dimension is 0, the broadcasted dimension is 0.
-      // This is only allowed if the other is 1 (handled above) or they are equal.
-      // If we are here, it's an invalid broadcast like (0, 2), which should fail.
-      throw ShapeError.mismatch(shapeA, shapeB, "broadcast");
+      result[maxLen - 1 - i] = dimB;
     } else {
       throw ShapeError.mismatch(shapeA, shapeB, "broadcast");
     }
@@ -77,6 +143,10 @@ export function getBroadcastShape(shapeA: Shape, shapeB: Shape): Shape {
  *
  * This avoids expensive index calculations (division/modulo) inside the inner loop
  * by maintaining running offsets for all tensors.
+ *
+ * Inputs may be strided views; size-1 axes are walked with stride 0. The output
+ * tensor must have the broadcast shape of `a` and `b`. The callback receives
+ * physical buffer offsets (view offset included), not logical flat indices.
  *
  * @param a - First input tensor
  * @param b - Second input tensor

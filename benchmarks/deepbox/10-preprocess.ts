@@ -1,5 +1,5 @@
 /**
- * Benchmark 10 — Preprocessing
+ * Benchmark 10: Preprocessing
  * Deepbox vs scikit-learn
  */
 
@@ -47,7 +47,7 @@ import {
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("preprocess");
-header("Benchmark 10 — Preprocessing");
+header("Benchmark 10: Preprocessing");
 
 // ── Data generators ──────────────────────────────────────
 

@@ -1,5 +1,5 @@
 /**
- * Comprehensive multi-step integration tests for all 13 Deepbox scopes.
+ * Multi-step integration tests for all 13 Deepbox scopes.
  * Each test exercises a realistic multi-step workflow, not just single assertions.
  * Covers: core, ndarray, linalg, dataframe, stats, metrics, preprocess, ml, nn, optim, random, plot, datasets.
  */
@@ -752,7 +752,7 @@ describe("integration: preprocess", () => {
     expect(XRecovered.at(0, 1)).toBeCloseTo(100, 1);
   });
 
-  it("minmax and robust scaler pipeline", () => {
+  it("minmax and RobustScaler pipeline", () => {
     const X = tensor([
       [1, 100],
       [2, 200],

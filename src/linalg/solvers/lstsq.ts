@@ -14,17 +14,21 @@ import { svd } from "../decomposition/svd";
  *
  * Finds x that minimizes ||A*x - b||^2 (Euclidean norm).
  * Works for overdetermined (M > N), underdetermined (M < N), and square systems.
+ * For rank-deficient A the minimum-norm solution is returned.
  *
  * **Algorithm**: SVD-based least squares
  *
  * **Parameters**:
  * @param a - Coefficient matrix of shape (M, N)
  * @param b - Target values of shape (M,) or (M, K)
- * @param rcond - Cutoff for small singular values (default: machine epsilon * max(M,N))
+ * @param rcond - Cutoff for small singular values: singular values `<= rcond * s_max` are
+ *   treated as zero (default: float64 machine epsilon * max(M,N), as in NumPy, which always
+ *   solves in double precision)
  *
  * **Returns**: Object with:
  * - x: Least squares solution of shape (N,) or (N, K)
- * - residuals: Sum of squared residuals ||b - A*x||^2
+ * - residuals: Sum of squared residuals ||b - A*x||^2, shape (1,) for 1-D b or (K,) for 2-D b.
+ *   Unlike NumPy, it is always filled in, also for rank-deficient or underdetermined systems.
  * - rank: Effective rank of A
  * - s: Singular values of A
  *
@@ -49,7 +53,7 @@ import { svd } from "../decomposition/svd";
  * @throws {ShapeError} If A is not 2D matrix
  * @throws {ShapeError} If b is not 1D or 2D tensor
  * @throws {ShapeError} If dimensions don't match
- * @throws {DTypeError} If input has string dtype
+ * @throws {DTypeError} If input has string or complex dtype
  * @throws {InvalidParameterError} If rcond is negative or non-finite
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
@@ -78,32 +82,52 @@ export function lstsq(
   const bRows = getDim(b, 0, "lstsq()");
   if (bRows !== m) throw new ShapeError("A and b dimensions do not match");
 
+  const nrhs = b.ndim === 1 ? 1 : getDim(b, 1, "lstsq()");
   const k = Math.min(m, n);
 
+  // Right-hand side as a dense (m, nrhs) row-major block (a vector is one column).
+  const B = b.ndim === 1 ? toDenseVector1D(b, "lstsq()") : toDenseMatrix2D(b, "lstsq()").data;
+
+  const pack = (x: Float64Array, residuals: Float64Array, rank: number, s: Tensor) => ({
+    x: b.ndim === 1 ? fromDenseVector1D(x) : fromDenseMatrix2D(n, nrhs, x),
+    // fromDense* keeps float64; a bare tensor([residual]) would downcast to the
+    // default float32 dtype
+    residuals: fromDenseVector1D(residuals),
+    rank,
+    s,
+  });
+
+  // ||b_c - A x_c||^2 for every right-hand-side column c.
+  const residualsOf = (A: Float64Array | null, X: Float64Array): Float64Array => {
+    const out = new Float64Array(nrhs);
+    for (let i = 0; i < m; i++) {
+      for (let c = 0; c < nrhs; c++) {
+        let pred = 0;
+        if (A !== null) {
+          for (let j = 0; j < n; j++) {
+            pred += (A[i * n + j] as number) * (X[j * nrhs + c] as number);
+          }
+        }
+        const err = (B[i * nrhs + c] as number) - pred;
+        out[c] = (out[c] as number) + err * err;
+      }
+    }
+    return out;
+  };
+
   if (k === 0) {
-    const zeroX =
-      b.ndim === 1
-        ? fromDenseVector1D(new Float64Array(n))
-        : fromDenseMatrix2D(
-            n,
-            getDim(b, 1, "lstsq()"),
-            new Float64Array(n * getDim(b, 1, "lstsq()"))
-          );
-    const zeroResiduals =
-      b.ndim === 1
-        ? fromDenseVector1D(new Float64Array([0]))
-        : fromDenseVector1D(new Float64Array(getDim(b, 1, "lstsq()")));
-    return {
-      x: zeroX,
-      residuals: zeroResiduals,
-      rank: 0,
-      s: fromDenseVector1D(new Float64Array(0)),
-    };
+    // No unknowns (n = 0): x is empty and the residual is ||b||^2.
+    // No equations (m = 0): x is zero and the residual is 0.
+    const X = new Float64Array(n * nrhs);
+    return pack(X, residualsOf(null, X), 0, fromDenseVector1D(new Float64Array(0)));
   }
 
   const rcondVal = rcond ?? Number.EPSILON * Math.max(m, n);
 
-  // Compute SVD once and reuse for both rank and pseudo-inverse
+  // Validates A under the name lstsq(), and gives the residuals their dense copy.
+  const { data: A } = toDenseMatrix2D(a, "lstsq()");
+
+  // Compute SVD once: A = U diag(s) V^T with U (m, k) and Vt (k, n).
   const [U_t, s, Vt_t] = svd(a, false);
   const { data: U, cols: uCols, rows: uRows } = toDenseMatrix2D(U_t);
   const sDense = toDenseVector1D(s);
@@ -117,7 +141,7 @@ export function lstsq(
     throw new DeepboxError("Internal error: unexpected Vt shape");
   }
 
-  // Compute rank and inverse singular values
+  // Rank and inverse singular values
   const cutoff = (sDense[0] as number) * rcondVal;
   let rank = 0;
   const sInv = new Float64Array(k);
@@ -126,92 +150,38 @@ export function lstsq(
     if (si > cutoff) {
       rank++;
       sInv[i] = 1 / si;
-    } else {
-      sInv[i] = 0;
     }
   }
 
-  // Compute pinv(A) = V * diag(sInv) * U^T manually (n x m)
-  const P = new Float64Array(n * m);
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < m; j++) {
-      let sum = 0;
-      for (let r = 0; r < k; r++) {
-        const v_ir = Vt[r * n + i] as number; // Vt[r,i] = V[i,r]
-        const u_jr = U[j * k + r] as number; // U[j,r]
-        sum += v_ir * (sInv[r] as number) * u_jr;
+  // x = V diag(sInv) U^T b, evaluated right to left so the pseudo-inverse
+  // (n x m) is never formed: cost O((m + n) k K) instead of O(m n k).
+  // C = diag(sInv) U^T B, shape (k, nrhs)
+  const C = new Float64Array(k * nrhs);
+  for (let j = 0; j < m; j++) {
+    for (let r = 0; r < k; r++) {
+      const u = U[j * k + r] as number;
+      if (u === 0) continue;
+      for (let c = 0; c < nrhs; c++) {
+        C[r * nrhs + c] = (C[r * nrhs + c] as number) + u * (B[j * nrhs + c] as number);
       }
-      P[i * m + j] = sum;
     }
   }
-
-  if (b.ndim === 1) {
-    const bv = toDenseVector1D(b);
-    const x = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      let sum = 0;
-      for (let j = 0; j < m; j++) {
-        sum += (P[i * m + j] as number) * (bv[j] as number);
-      }
-      x[i] = sum;
-    }
-
-    // residual = ||b - A x||^2
-    const { data: A } = toDenseMatrix2D(a);
-    let residual = 0;
-    for (let i = 0; i < m; i++) {
-      let pred = 0;
-      for (let j = 0; j < n; j++) {
-        pred += (A[i * n + j] as number) * (x[j] as number);
-      }
-      const err = (bv[i] as number) - pred;
-      residual += err * err;
-    }
-
-    return {
-      x: fromDenseVector1D(x),
-      // fromDenseVector1D keeps float64; a bare tensor([residual]) would
-      // downcast to the default float32 dtype, inconsistent with the 2-D-b path
-      residuals: fromDenseVector1D(new Float64Array([residual])),
-      rank,
-      s,
-    };
+  for (let r = 0; r < k; r++) {
+    const inv = sInv[r] as number;
+    for (let c = 0; c < nrhs; c++) C[r * nrhs + c] = (C[r * nrhs + c] as number) * inv;
   }
-
-  const nrhs = getDim(b, 1, "lstsq()");
-  const { data: B, rows: bM, cols: bK } = toDenseMatrix2D(b);
-  if (bM !== m || bK !== nrhs) throw new DeepboxError("Internal error: unexpected b shape");
-
+  // X = V C, with V[i, r] = Vt[r, i]
   const X = new Float64Array(n * nrhs);
-  for (let i = 0; i < n; i++) {
-    for (let k2 = 0; k2 < nrhs; k2++) {
-      let sum = 0;
-      for (let j = 0; j < m; j++) {
-        sum += (P[i * m + j] as number) * (B[j * nrhs + k2] as number);
+  for (let r = 0; r < k; r++) {
+    if (sInv[r] === 0) continue;
+    for (let i = 0; i < n; i++) {
+      const v = Vt[r * n + i] as number;
+      if (v === 0) continue;
+      for (let c = 0; c < nrhs; c++) {
+        X[i * nrhs + c] = (X[i * nrhs + c] as number) + v * (C[r * nrhs + c] as number);
       }
-      X[i * nrhs + k2] = sum;
     }
   }
 
-  const { data: A } = toDenseMatrix2D(a);
-  const residuals = new Float64Array(nrhs);
-  for (let k2 = 0; k2 < nrhs; k2++) {
-    let rsum = 0;
-    for (let i = 0; i < m; i++) {
-      let pred = 0;
-      for (let j = 0; j < n; j++) {
-        pred += (A[i * n + j] as number) * (X[j * nrhs + k2] as number);
-      }
-      const err = (B[i * nrhs + k2] as number) - pred;
-      rsum += err * err;
-    }
-    residuals[k2] = rsum;
-  }
-
-  return {
-    x: fromDenseMatrix2D(n, nrhs, X),
-    residuals: fromDenseVector1D(residuals),
-    rank,
-    s,
-  };
+  return pack(X, residualsOf(A, X), rank, s);
 }

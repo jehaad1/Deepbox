@@ -400,10 +400,12 @@ describe("Cross entropy edge cases", () => {
     expect(loss).toBeGreaterThan(0);
   });
 
-  it("binaryCrossEntropyWithLogitsLoss throws on 3D input", () => {
+  it("binaryCrossEntropyWithLogitsLoss accepts same-shaped N-D input and rejects 3D vs 1D", () => {
+    // Same-shaped tensors of any rank are element-wise problems (multi-label, sequences).
     const pred = tensor([[[1]]]);
     const target = tensor([[[1]]]);
-    expect(() => binaryCrossEntropyWithLogitsLoss(pred, target)).toThrow();
+    expect(binaryCrossEntropyWithLogitsLoss(pred, target)).toBeCloseTo(Math.log1p(Math.exp(-1)), 6);
+    expect(() => binaryCrossEntropyWithLogitsLoss(pred, tensor([1]))).toThrow();
   });
 
   it("binaryCrossEntropyWithLogitsLoss throws on batch size mismatch", () => {

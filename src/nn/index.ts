@@ -2,8 +2,6 @@
  * @see {@link https://deepbox.dev/docs/nn-module | Deepbox documentation}
  */
 
-// Module base class
-
 // Gradient clipping
 export {
   clip_grad_norm_,
@@ -19,8 +17,11 @@ export { ParameterDict, ParameterList } from "./containers/ParameterList";
 export { Sequential } from "./containers/Sequential";
 // Weight initialization
 export {
+  calculateFanInOut,
+  calculateGain,
   constant,
   constant_,
+  eye_,
   kaiming_normal_,
   kaiming_uniform_,
   kaimingNormal,
@@ -33,6 +34,8 @@ export {
   orthogonal,
   orthogonal_,
   sparse_,
+  trunc_normal_,
+  truncNormal_,
   uniform_,
   xavier_normal_,
   xavier_uniform_,
@@ -45,17 +48,21 @@ export {
 } from "./init";
 // Activation layers
 export {
+  CELU,
   ELU,
   GELU,
   GLU,
+  Hardshrink,
   Hardsigmoid,
   Hardswish,
   Hardtanh,
   LeakyReLU,
+  LogSigmoid,
   LogSoftmax,
   Mish,
   PReLU,
   ReLU,
+  ReLU6,
   SELU,
   Sigmoid,
   SiLU,
@@ -63,17 +70,21 @@ export {
   Softmax2d,
   Softmin,
   Softplus,
+  Softshrink,
   Softsign,
   Swish,
   Tanh,
   Tanhshrink,
+  Threshold,
 } from "./layers/activations";
 // Attention layers
 export {
   causalMask,
   FullTransformer,
   MultiheadAttention,
+  type MultiheadAttentionForwardOptions,
   PositionalEncoding,
+  type TransformerActivation,
   TransformerDecoder,
   TransformerDecoderLayer,
   TransformerEncoder,
@@ -100,7 +111,7 @@ export {
 // Regularization layers
 export { AlphaDropout, Dropout, Dropout2d } from "./layers/dropout";
 // Embedding layers
-export { Embedding, EmbeddingBag } from "./layers/embedding";
+export { Embedding, EmbeddingBag, type EmbeddingBagMode } from "./layers/embedding";
 // Layers - fully connected / dense layers
 export { Linear } from "./layers/linear";
 // Normalization layers
@@ -133,13 +144,21 @@ export {
   ZeroPad2d,
 } from "./layers/padding";
 // Recurrent layers
-export { GRU, LSTM, RNN } from "./layers/recurrent";
+export { GRU, LSTM, RNN, type RNNNonlinearity } from "./layers/recurrent";
 // Spectral normalization
 export { SpectralNorm } from "./layers/spectral_norm";
 // Upsampling
 export { Upsample } from "./layers/upsample";
 // Utility layers
 export { Flatten, Identity, Unflatten } from "./layers/utility";
+// Loss function option types
+export type {
+  BinaryCrossEntropyWithLogitsOptions,
+  CrossEntropyLossOptions,
+  CtcLossOptions,
+  LossReduction,
+  NllLossOptions,
+} from "./losses/index";
 // Loss functions
 export {
   binaryCrossEntropyLoss,
@@ -166,6 +185,7 @@ export type {
   EpochInfo,
   LossFn,
   TrainerCallback,
+  TrainerOptimizer,
   TrainerOptions,
   TrainerResult,
 } from "./Trainer";

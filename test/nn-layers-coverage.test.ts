@@ -107,7 +107,8 @@ describe("Unflatten", () => {
 
   it("throws for non-positive unflattenedSize", () => {
     expect(() => new Unflatten(0, [0])).toThrow(/positive integers/);
-    expect(() => new Unflatten(0, [-1])).toThrow(/positive integers/);
+    // -1 is the "infer this dimension" marker (as in PyTorch); other negatives are invalid.
+    expect(() => new Unflatten(0, [-2])).toThrow(/positive integers/);
   });
 
   it("throws for dim out of range", () => {
@@ -287,7 +288,7 @@ describe("Embedding", () => {
   it("validates constructor params", () => {
     expect(() => new Embedding(0, 3)).toThrow(/numEmbeddings/);
     expect(() => new Embedding(10, 0)).toThrow(/embeddingDim/);
-    expect(() => new Embedding(10, 3, { paddingIdx: -1 })).toThrow(/paddingIdx/);
+    expect(() => new Embedding(10, 3, { paddingIdx: -11 })).toThrow(/paddingIdx/);
     expect(() => new Embedding(10, 3, { paddingIdx: 10 })).toThrow(/paddingIdx/);
   });
 

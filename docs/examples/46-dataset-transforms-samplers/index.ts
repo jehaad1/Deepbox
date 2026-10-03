@@ -1,9 +1,9 @@
 /**
  * Example 46: Dataset Transforms & Samplers
  *
- * Demonstrates v1.0.0 dataset utilities that sit around model training:
- * Subset, randomSplit, mapDataset, filterDataset, and sampler-driven DataLoader
- * iteration for balancing or curating batches.
+ * Dataset helpers around a training loop: randomSplit, Subset, filterDataset,
+ * mapDataset, and DataLoader batches drawn by a WeightedRandomSampler or a
+ * SubsetRandomSampler. The sampler seeds make every run give the same result.
  */
 
 import {
@@ -24,33 +24,33 @@ console.log("=".repeat(60));
 const iris = loadIris();
 
 // ============================================================================
-// Part 1: Deterministic dataset splitting
+// Part 1: Seeded dataset splitting
 // ============================================================================
-console.log("\n✂️  Part 1: randomSplit");
+console.log("\nPart 1: randomSplit");
 console.log("-".repeat(60));
 
-const [trainSplit, validationSplit, testSplit] = randomSplit(iris, [105, 30, 15], 42);
+const [trainSplit, validationSplit, testSplit] = randomSplit(iris, [105, 30, 15], 42); // sizes, then the seed
 
 console.log(`Dataset description: ${iris.description}`);
 console.log(
-  `Split sizes -> train: ${trainSplit.data.shape[0]}, validation: ${validationSplit.data.shape[0]}, test: ${testSplit.data.shape[0]}`
+  `Split sizes: train ${trainSplit.data.shape[0]}, validation ${validationSplit.data.shape[0]}, test ${testSplit.data.shape[0]}`
 );
 console.log(`First five train indices: ${trainSplit.indices.slice(0, 5).join(", ")}`);
 
 // ============================================================================
-// Part 2: Explicit curated subsets
+// Part 2: Explicit subsets
 // ============================================================================
-console.log("\n🎯 Part 2: Subset");
+console.log("\nPart 2: Subset");
 console.log("-".repeat(60));
 
 const reviewSubset = new Subset(iris, [0, 10, 20, 50, 60, 120]);
-console.log(`Curated review subset rows: ${reviewSubset.data.shape[0]}`);
-console.log(`Curated indices: ${reviewSubset.indices.join(", ")}`);
+console.log(`Review subset rows: ${reviewSubset.data.shape[0]}`);
+console.log(`Indices into the original dataset: ${reviewSubset.indices.join(", ")}`);
 
 // ============================================================================
 // Part 3: Filtering and mapping
 // ============================================================================
-console.log("\n🧪 Part 3: filterDataset + mapDataset");
+console.log("\nPart 3: filterDataset + mapDataset");
 console.log("-".repeat(60));
 
 const binaryIris = filterDataset(iris, (_row, target) => target !== 2);
@@ -70,15 +70,21 @@ console.log(
 );
 
 // ============================================================================
-// Part 4: WeightedRandomSampler for class balancing
+// Part 4: WeightedRandomSampler to rebalance classes
 // ============================================================================
-console.log("\n⚖️  Part 4: WeightedRandomSampler");
+console.log("\nPart 4: WeightedRandomSampler");
 console.log("-".repeat(60));
 
-const weights = Array.from({ length: binaryIris.target.shape[0] ?? 0 }, (_, index) => {
-  const label = Number(binaryIris.target.at(index));
-  return label === 1 ? 4 : 1;
-});
+// Make the classes unequal: all 50 setosa rows (class 0), but only the versicolor
+// rows (class 1) with sepal length of at least 6.3
+const skewedIris = filterDataset(binaryIris, (row, target) => target === 0 || (row[0] ?? 0) >= 6.3);
+const skewedLabels = skewedIris.target.toArray() as number[];
+const count0 = skewedLabels.filter((label) => label === 0).length;
+const count1 = skewedLabels.length - count0;
+console.log(`Skewed dataset: class0=${count0}, class1=${count1}`);
+
+// A sample's weight is the inverse of its class size, so each class is drawn about equally often
+const weights = skewedLabels.map((label) => (label === 0 ? 1 / count0 : 1 / count1));
 
 const balancedSampler = new WeightedRandomSampler(weights, {
   numSamples: 24,
@@ -86,7 +92,7 @@ const balancedSampler = new WeightedRandomSampler(weights, {
   seed: 7,
 });
 
-const balancedLoader = new DataLoader(binaryIris.data, binaryIris.target, {
+const balancedLoader = new DataLoader(skewedIris.data, skewedIris.target, {
   batchSize: 6,
   sampler: balancedSampler,
 });
@@ -96,19 +102,11 @@ let sampledClass1 = 0;
 let batchNumber = 1;
 
 for (const [xBatch, yBatch] of balancedLoader) {
-  let batchClass0 = 0;
-  let batchClass1 = 0;
-
-  for (let i = 0; i < (yBatch.shape[0] ?? 0); i++) {
-    const label = Number(yBatch.at(i));
-    if (label === 0) {
-      batchClass0++;
-      sampledClass0++;
-    } else {
-      batchClass1++;
-      sampledClass1++;
-    }
-  }
+  const labels = yBatch.toArray() as number[];
+  const batchClass0 = labels.filter((label) => label === 0).length;
+  const batchClass1 = labels.length - batchClass0;
+  sampledClass0 += batchClass0;
+  sampledClass1 += batchClass1;
 
   console.log(
     `  Batch ${batchNumber}: X${JSON.stringify(xBatch.shape)} | class0=${batchClass0}, class1=${batchClass1}`
@@ -116,15 +114,15 @@ for (const [xBatch, yBatch] of balancedLoader) {
   batchNumber++;
 }
 
-console.log(`Weighted sampling totals -> class0=${sampledClass0}, class1=${sampledClass1}`);
+console.log(`Drawn in total: class0=${sampledClass0}, class1=${sampledClass1}`);
 
 // ============================================================================
-// Part 5: Deterministic review queues via SubsetRandomSampler
+// Part 5: SubsetRandomSampler (a shuffled pass over chosen rows)
 // ============================================================================
-console.log("\n📋 Part 5: SubsetRandomSampler");
+console.log("\nPart 5: SubsetRandomSampler");
 console.log("-".repeat(60));
 
-const shortlistSampler = new SubsetRandomSampler([0, 5, 10, 15, 20, 25], { seed: 19 });
+const shortlistSampler = new SubsetRandomSampler([0, 25, 50, 75, 100, 125], { seed: 19 });
 const shortlistLoader = new DataLoader(iris.data, iris.target, {
   batchSize: 3,
   sampler: shortlistSampler,
@@ -133,7 +131,7 @@ const shortlistLoader = new DataLoader(iris.data, iris.target, {
 let shortlistBatch = 1;
 for (const [xBatch, yBatch] of shortlistLoader) {
   console.log(
-    `  Review batch ${shortlistBatch}: X${JSON.stringify(xBatch.shape)}, labels=${Array.from({ length: yBatch.shape[0] ?? 0 }, (_, i) => Number(yBatch.at(i))).join(", ")}`
+    `  Review batch ${shortlistBatch}: X${JSON.stringify(xBatch.shape)}, labels=${(yBatch.toArray() as number[]).join(", ")}`
   );
   shortlistBatch++;
 }
@@ -141,13 +139,17 @@ for (const [xBatch, yBatch] of shortlistLoader) {
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• randomSplit gives deterministic multi-way dataset partitioning");
-console.log("• Subset is useful for audits, human review queues, or frozen evaluation slices");
-console.log("• filterDataset and mapDataset make lightweight data curation easy");
-console.log("• WeightedRandomSampler can rebalance skewed labels without copying data");
-console.log("• SubsetRandomSampler lets you batch over a curated slice reproducibly");
+console.log("• randomSplit: a seeded split into any number of parts");
+console.log(
+  "• Subset: a fixed list of rows, for example a review queue or a frozen evaluation set"
+);
+console.log(
+  "• filterDataset, mapDataset: keep or rewrite samples without editing the source dataset"
+);
+console.log("• WeightedRandomSampler: draws rows by weight, which rebalances skewed labels");
+console.log("• SubsetRandomSampler: a shuffled pass over chosen rows, repeatable with a seed");
 
-console.log("\n✅ Dataset Transforms & Samplers Example Complete!");
+console.log("\nDataset Transforms & Samplers Example Complete!");
 console.log("=".repeat(60));

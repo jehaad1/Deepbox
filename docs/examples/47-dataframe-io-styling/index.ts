@@ -1,17 +1,18 @@
 /**
  * Example 47: DataFrame IO & Styling
  *
- * Demonstrates v1.0.0 DataFrame operational polish: JSON/XLSX/Parquet round-trips,
- * string/date helpers, style rendering, and pandas-like plotting accessors.
+ * DataFrame input and output and report formatting: CSV, JSON, XLSX and Parquet
+ * round trips, date parsing, the string accessor, df.style (HTML and ANSI output),
+ * and df.plot for an SVG line chart. Files are written to the output folder.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import {
   DataFrame,
-  date_range,
+  dateRange,
   readParquet,
   readXlsx,
-  to_datetime,
+  toDatetime,
   writeParquet,
   writeXlsx,
 } from "deepbox/dataframe";
@@ -24,7 +25,7 @@ console.log("=".repeat(60));
 
 await mkdir(OUTPUT_DIR, { recursive: true });
 
-const orderDates = date_range("2026-03-01", 6, "D");
+const orderDates = dateRange("2026-03-01", 6, "D");
 const orderDateStrings = Array.from(orderDates.data, (value) =>
   value instanceof Date ? value.toISOString().slice(0, 10) : ""
 );
@@ -90,23 +91,26 @@ const df = new DataFrame({
 });
 
 // ============================================================================
-// Part 1: CSV ingest + datetime helpers
+// Part 1: CSV round trip and date parsing
 // ============================================================================
-console.log("\n📥 Part 1: CSV + Date Helpers");
+console.log("\nPart 1: CSV and Date Parsing");
 console.log("-".repeat(60));
 
 const csvRoundTrip = DataFrame.fromCsvString(df.toCsvString());
-const parsedDates = to_datetime(rows.map((row) => row.orderDate));
+const parsedDates = toDatetime(rows.map((row) => row.orderDate));
 
-console.log(`Round-trip CSV shape: ${csvRoundTrip.shape[0]} rows × ${csvRoundTrip.shape[1]} cols`);
 console.log(
-  `Parsed weekday numbers: ${Array.from(parsedDates.dt.dayofweek().data, (value) => String(value)).join(", ")}`
+  `Round-trip CSV shape: ${csvRoundTrip.shape[0]} rows x ${csvRoundTrip.shape[1]} columns`
+);
+// dayOfWeek() numbers the days from Monday = 0 to Sunday = 6
+console.log(
+  `Parsed weekday numbers: ${Array.from(parsedDates.dt.dayOfWeek().data, (value) => String(value)).join(", ")}`
 );
 
 // ============================================================================
-// Part 2: JSON, XLSX, and Parquet round-trips
+// Part 2: JSON, XLSX and Parquet round trips
 // ============================================================================
-console.log("\n🗃️  Part 2: JSON / XLSX / Parquet");
+console.log("\nPart 2: JSON / XLSX / Parquet");
 console.log("-".repeat(60));
 
 const jsonPath = `${OUTPUT_DIR}/regional-sales.json`;
@@ -128,24 +132,26 @@ console.log(`XLSX rows reloaded:    ${xlsxReloaded.data.length}`);
 console.log(`Parquet rows reloaded: ${parquetReloaded.data.length}`);
 
 // ============================================================================
-// Part 3: String accessor + styling
+// Part 3: String accessor and styling
 // ============================================================================
-console.log("\n🎨 Part 3: String Accessor + Styling");
+console.log("\nPart 3: String Accessor and Styling");
 console.log("-".repeat(60));
 
 const regionSeries = df.get("region");
-console.log(`Upper-case regions: ${regionSeries.str.upper().toString()}`);
+console.log(`Upper-case regions:\n${regionSeries.str.upper().toString()}`);
 
+// df.style builds a report by chaining formatting calls. The method names
+// highlightMax, highlightMin and backgroundGradient follow pandas.
 const styledHtml = df.style
   .setCaption("Daily Revenue Operations Snapshot")
-  .highlight_max({ backgroundColor: "#dcfce7", fontWeight: "bold" })
-  .background_gradient("#fff7ed", "#fb923c")
+  .highlightMax({ backgroundColor: "#dcfce7", fontWeight: "bold" })
+  .backgroundGradient("#fff7ed", "#fb923c")
   .format("revenue", (value) => `$${Number(value).toLocaleString("en-US")}`)
   .format("supportTickets", (value) => `${value} tickets`)
   .toHTML();
 
 const ansiTable = df.style
-  .highlight_min({ backgroundColor: "#fee2e2" })
+  .highlightMin({ backgroundColor: "#fee2e2" })
   .format("revenue", (value) => `$${Number(value).toLocaleString("en-US")}`)
   .toANSI();
 
@@ -160,7 +166,7 @@ console.log(`Styled ANSI table:  ${ansiPath}`);
 // ============================================================================
 // Part 4: Plot accessor
 // ============================================================================
-console.log("\n📈 Part 4: Plot Accessor");
+console.log("\nPart 4: Plot Accessor");
 console.log("-".repeat(60));
 
 const trend = new DataFrame({
@@ -184,12 +190,16 @@ console.log(`Plot saved to: ${svgPath}`);
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• DataFrame supports JSON file IO directly and zero-dependency XLSX/Parquet codecs");
-console.log("• Date helpers and string accessors make operational reports easier to clean");
-console.log("• df.style can emit HTML or ANSI-ready reports for notebooks and terminals");
-console.log("• df.plot offers pandas-like plotting without leaving the Deepbox stack");
+console.log(
+  "• JSON files are read and written by DataFrame. XLSX and Parquet have built-in codecs with no extra dependency."
+);
+console.log(
+  "• toDatetime and dateRange build date columns, and the .dt and .str accessors clean them"
+);
+console.log("• df.style writes the same table as HTML or as an ANSI string for a terminal");
+console.log("• df.plot.line() returns a Figure, and renderSVG() gives the SVG text");
 
-console.log("\n✅ DataFrame IO & Styling Example Complete!");
+console.log("\nDataFrame IO & Styling Example Complete!");
 console.log("=".repeat(60));

@@ -1,5 +1,5 @@
 /**
- * Device dispatch — routes ndarray ops on device tensors to kernel backends.
+ * Device dispatch: routes ndarray ops on device tensors to kernel backends.
  *
  * Every wired op calls a `dispatch*` helper first. The helpers return `null`
  * when all operands live in host memory (the caller proceeds with the normal
@@ -17,10 +17,11 @@
  * @see {@link https://deepbox.dev/docs/devices-and-execution | Devices & execution}
  */
 
-import { DeviceError, ShapeError } from "../../core";
+import { DeviceError, DTypeError, InvalidParameterError, ShapeError } from "../../core";
 import type {
   BinaryKernelOp,
   DeviceBuffer,
+  DeviceDType,
   Im2ColParams,
   KernelBackend,
   KernelLayout,
@@ -32,6 +33,7 @@ import type {
 import { getHostAccelerator, requireKernelBackend } from "../../core/backend/registry";
 import type { Axis } from "../../core/types/common";
 import { normalizeAxes } from "../../core/utils/axis";
+import { planMatmul } from "../linalg/matmul_plan";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, DeviceBufferOwner, Tensor } from "../tensor/Tensor";
 import { getBroadcastShape, isScalar } from "./broadcast";
@@ -46,7 +48,7 @@ const HOST_ACCEL_MIN_SIZE = 512;
  * Try to run a binary op through a host accelerator (e.g. WASM SIMD).
  *
  * Only same-shape contiguous float32 tensors are eligible; anything else
- * returns `null` and the caller's CPU implementation runs instead — safe
+ * returns `null` and the caller's CPU implementation runs instead, which is safe
  * because host accelerators produce bit-identical IEEE-754 results over
  * the same host memory.
  */
@@ -110,13 +112,30 @@ function layoutOf(t: Tensor): KernelLayout {
   return { shape: t.shape, strides: t.strides, offset: t.offset };
 }
 
+/** Element type of a device tensor's buffer (`float32` when the buffer does not say). */
+function deviceDTypeOf(t: Tensor): DeviceDType {
+  return t.__bufferOwner?.buffer.dtype ?? "float32";
+}
+
 /**
  * Move a scalar (0-D) host tensor to `backend` so it can participate in a
  * device binary op, mirroring PyTorch's cpu-scalar promotion.
+ *
+ * The scalar takes the element type of the device operand it is combined with
+ * (`dtype`), so `x * 2` works for float16 and bfloat16 tensors instead of
+ * tripping the backend's mixed-dtype guard.
  */
-function uploadScalar(t: Tensor, device: Tensor["device"], backend: KernelBackend): Tensor {
+function uploadScalar(
+  t: Tensor,
+  device: Tensor["device"],
+  backend: KernelBackend,
+  dtype: DeviceDType = "float32"
+): Tensor {
+  if (t.dtype === "string") {
+    throw new DTypeError("cannot combine a string tensor with a device tensor");
+  }
   const value = Number(t.data[t.offset] ?? 0);
-  const buffer = backend.fill(value, 1);
+  const buffer = backend.fill(value, 1, dtype);
   return Tensor.fromDeviceBuffer({
     owner: new DeviceBufferOwner(buffer, backend),
     shape: [],
@@ -148,11 +167,11 @@ export function dispatchBinary(op: BinaryKernelOp, a: Tensor, b: Tensor): Tensor
   if (aDev && !bDev) {
     if (!isScalar(b)) mixedDeviceError(op, a, b);
     const backend = requireKernelBackend(a.device, op);
-    rhs = uploadScalar(b, a.device, backend);
+    rhs = uploadScalar(b, a.device, backend, deviceDTypeOf(a));
   } else if (!aDev && bDev) {
     if (!isScalar(a)) mixedDeviceError(op, a, b);
     const backend = requireKernelBackend(b.device, op);
-    lhs = uploadScalar(a, b.device, backend);
+    lhs = uploadScalar(a, b.device, backend, deviceDTypeOf(b));
   } else if (a.device !== b.device) {
     mixedDeviceError(op, a, b);
   }
@@ -164,7 +183,7 @@ export function dispatchBinary(op: BinaryKernelOp, a: Tensor, b: Tensor): Tensor
   const lhsOwner = lhs.__bufferOwner;
   const rhsOwner = rhs.__bufferOwner;
   if (!lhsOwner || !rhsOwner) {
-    throw new DeviceError(`${op}: internal error — device tensor without a device buffer`);
+    throw new DeviceError(`${op}: internal error: device tensor without a device buffer`);
   }
 
   const out = backend.binary(
@@ -218,7 +237,7 @@ export function dispatchMatmul(a: Tensor, b: Tensor): Tensor | null {
   const aOwner = a.__bufferOwner;
   const bOwner = b.__bufferOwner;
   if (!aOwner || !bOwner) {
-    throw new DeviceError("matmul: internal error — device tensor without a device buffer");
+    throw new DeviceError("matmul: internal error: device tensor without a device buffer");
   }
 
   const out = backend.matmul(aOwner.buffer, layoutOf(a), bOwner.buffer, layoutOf(b));
@@ -230,123 +249,62 @@ export function dispatchMatmul(a: Tensor, b: Tensor): Tensor | null {
 }
 
 /**
- * Route a batched (`ndim > 2`) matmul on device, matching the CPU `dot`
- * Case-5 semantics exactly: when both operands carry batch dimensions they
- * must match; when one operand is 2-D it is shared (broadcast, stride 0)
- * across the batch. Output shape is `[...batchShape, m, n]`.
- */
-function dispatchBatchedMatmul(a: Tensor, b: Tensor): Tensor {
-  const aBatchRank = Math.max(0, a.ndim - 2);
-  const bBatchRank = Math.max(0, b.ndim - 2);
-  if (a.ndim < 2 || b.ndim < 2) {
-    throw new ShapeError(`dot not implemented for shapes ${a.shape} and ${b.shape}`);
-  }
-  const aBatchShape = a.shape.slice(0, aBatchRank);
-  const bBatchShape = b.shape.slice(0, bBatchRank);
-
-  let batchShape: number[];
-  if (aBatchRank > 0 && bBatchRank > 0) {
-    if (aBatchRank !== bBatchRank || aBatchShape.some((d, i) => d !== bBatchShape[i])) {
-      throw new ShapeError(`batch dimensions don't match: [${aBatchShape}] vs [${bBatchShape}]`);
-    }
-    batchShape = aBatchShape;
-  } else if (aBatchRank > 0) {
-    batchShape = aBatchShape;
-  } else {
-    batchShape = bBatchShape;
-  }
-  const batchNdim = batchShape.length;
-
-  const m = a.shape[a.ndim - 2] ?? 0;
-  const k = a.shape[a.ndim - 1] ?? 0;
-  const k2 = b.shape[b.ndim - 2] ?? 0;
-  const n = b.shape[b.ndim - 1] ?? 0;
-  if (k !== k2) throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
-
-  // Full [batch..., X, Y] layouts: batch strides come from the operand that
-  // has them, or are 0 (shared) for a 2-D operand broadcast across the batch.
-  const aBatchStrides =
-    aBatchRank > 0 ? a.strides.slice(0, batchNdim) : new Array<number>(batchNdim).fill(0);
-  const bBatchStrides =
-    bBatchRank > 0 ? b.strides.slice(0, batchNdim) : new Array<number>(batchNdim).fill(0);
-  const aFull: KernelLayout = {
-    shape: [...batchShape, m, k],
-    strides: [...aBatchStrides, a.strides[a.ndim - 2] ?? 0, a.strides[a.ndim - 1] ?? 0],
-    offset: a.offset,
-  };
-  const bFull: KernelLayout = {
-    shape: [...batchShape, k, n],
-    strides: [...bBatchStrides, b.strides[b.ndim - 2] ?? 0, b.strides[b.ndim - 1] ?? 0],
-    offset: b.offset,
-  };
-
-  let batch = 1;
-  for (const d of batchShape) batch *= d;
-
-  const backend = requireKernelBackend(a.device, "matmul");
-  const aOwner = a.__bufferOwner;
-  const bOwner = b.__bufferOwner;
-  if (!aOwner || !bOwner) {
-    throw new DeviceError("matmul: internal error — device tensor without a device buffer");
-  }
-  const out = backend.matmulBatched(aOwner.buffer, aFull, bOwner.buffer, bFull, batch, m, k, n);
-  return Tensor.fromDeviceBuffer({
-    owner: new DeviceBufferOwner(out, backend),
-    shape: [...batchShape, m, n],
-    device: a.device,
-  });
-}
-
-/**
  * Route NumPy-style `dot` when either operand is a device tensor.
  *
- * Handles 0-D (scalar multiply), 1-D and 2-D operands by mapping them onto
- * the rank-2 matmul kernel with stride tricks, and batched (>2-D) operands
- * through the batched matmul kernel.
+ * Shapes follow `numpy.matmul`: 1-D operands are promoted to a row or column
+ * vector, and batch dimensions are right-aligned and broadcast (size-1 and
+ * missing batch dimensions get stride 0, so no operand is copied). Plain
+ * vector and matrix products use the rank-2 matmul kernel through stride
+ * tricks, everything with batch dimensions uses the batched matmul kernel.
+ * 0-D operands are rejected exactly like the CPU `dot` (use `mul`).
  *
  * @returns The device result, or `null` for host tensors
  */
 export function dispatchDot(a: Tensor, b: Tensor): Tensor | null {
   if (!a.isDeviceTensor && !b.isDeviceTensor) return null;
-  if (a.ndim === 0 || b.ndim === 0) {
-    return dispatchBinary("mul", a, b);
-  }
+  // Shape rules and error messages are shared with the CPU implementation.
+  const plan = planMatmul(a, b, "dot");
   if (a.device !== b.device) mixedDeviceError("dot", a, b);
-  if (a.ndim > 2 || b.ndim > 2) {
-    return dispatchBatchedMatmul(a, b);
-  }
-
-  const m = a.ndim === 1 ? 1 : (a.shape[0] ?? 0);
-  const k = a.ndim === 1 ? (a.shape[0] ?? 0) : (a.shape[1] ?? 0);
-  const kb = b.ndim === 1 ? (b.shape[0] ?? 0) : (b.shape[0] ?? 0);
-  const n = b.ndim === 1 ? 1 : (b.shape[1] ?? 0);
-  if (k !== kb) {
-    throw new ShapeError(`shapes ${a.shape} and ${b.shape} not aligned`);
-  }
+  const { batchShape, m, k, n } = plan;
 
   const backend = requireKernelBackend(a.device, "dot");
   const aOwner = a.__bufferOwner;
   const bOwner = b.__bufferOwner;
   if (!aOwner || !bOwner) {
-    throw new DeviceError("dot: internal error — device tensor without a device buffer");
+    throw new DeviceError("dot: internal error: device tensor without a device buffer");
   }
 
-  const aLayout: KernelLayout =
-    a.ndim === 1
-      ? { shape: [1, k], strides: [0, a.strides[0] ?? 0], offset: a.offset }
-      : { shape: a.shape, strides: a.strides, offset: a.offset };
-  const bLayout: KernelLayout =
-    b.ndim === 1
-      ? { shape: [k, 1], strides: [b.strides[0] ?? 0, 0], offset: b.offset }
-      : { shape: b.shape, strides: b.strides, offset: b.offset };
-
-  const out = backend.matmul(aOwner.buffer, aLayout, bOwner.buffer, bLayout);
-  const outShape: number[] = [];
-  if (a.ndim === 2) outShape.push(m);
-  if (b.ndim === 2) outShape.push(n);
+  let out: DeviceBuffer;
+  if (batchShape.length === 0) {
+    const aLayout: KernelLayout = {
+      shape: [m, k],
+      strides: [plan.aSM, plan.aSK],
+      offset: a.offset,
+    };
+    const bLayout: KernelLayout = {
+      shape: [k, n],
+      strides: [plan.bSK, plan.bSN],
+      offset: b.offset,
+    };
+    out = backend.matmul(aOwner.buffer, aLayout, bOwner.buffer, bLayout);
+  } else {
+    const aFull: KernelLayout = {
+      shape: [...batchShape, m, k],
+      strides: [...plan.aBatchStrides, plan.aSM, plan.aSK],
+      offset: a.offset,
+    };
+    const bFull: KernelLayout = {
+      shape: [...batchShape, k, n],
+      strides: [...plan.bBatchStrides, plan.bSK, plan.bSN],
+      offset: b.offset,
+    };
+    let batch = 1;
+    for (const d of batchShape) batch *= d;
+    out = backend.matmulBatched(aOwner.buffer, aFull, bOwner.buffer, bFull, batch, m, k, n);
+  }
   return Tensor.fromDeviceBuffer({
     owner: new DeviceBufferOwner(out, backend),
-    shape: outShape,
+    shape: plan.outShape,
     device: a.device,
   });
 }
@@ -378,6 +336,13 @@ export function dispatchReduce(
   }
   const backend = requireKernelBackend(t.device, op);
 
+  // An explicit empty axis list reduces nothing (NumPy `axis=()`), exactly like
+  // the CPU path: the result is an element-wise copy, not a full reduction.
+  if (Array.isArray(axis) && axis.length === 0) {
+    const copied = dispatchUnary("copy", t);
+    if (copied) return copied;
+  }
+
   const axes =
     axis === undefined || axis === null ? [] : normalizeAxes(axis as Axis | Axis[], t.ndim);
 
@@ -402,15 +367,21 @@ export function dispatchReduce(
   let curOffset = t.offset;
   let owned = false; // curBuffer is an intermediate we allocated and must free
 
-  for (const ax of sorted) {
-    const layout: KernelLayout = { shape: curShape, strides: curStrides, offset: curOffset };
-    const next = backend.reduceAxis(op, curBuffer, layout, ax);
+  try {
+    for (const ax of sorted) {
+      const layout: KernelLayout = { shape: curShape, strides: curStrides, offset: curOffset };
+      const next = backend.reduceAxis(op, curBuffer, layout, ax);
+      if (owned) backend.free(curBuffer);
+      curBuffer = next;
+      curShape = curShape.filter((_, d) => d !== ax);
+      curStrides = [...computeStrides(curShape)];
+      curOffset = 0;
+      owned = true;
+    }
+  } catch (error) {
+    // A failing pass must not leak the intermediate buffer of the previous one.
     if (owned) backend.free(curBuffer);
-    curBuffer = next;
-    curShape = curShape.filter((_, d) => d !== ax);
-    curStrides = [...computeStrides(curShape)];
-    curOffset = 0;
-    owned = true;
+    throw error;
   }
 
   const finalShape = keepdims ? t.shape.map((d, i) => (reducedSet.has(i) ? 1 : d)) : curShape;
@@ -422,22 +393,39 @@ export function dispatchReduce(
   });
 }
 
-/** Build the shared conv/pool geometry from a 4-D NCHW input and hyperparams. */
-function convParams(
-  input: Tensor,
+/**
+ * Validate the window hyperparameters against an NCHW image size and build the
+ * shared conv/pool geometry. A kernel that does not fit the padded image is
+ * reported here, before any kernel runs, with the sizes involved.
+ */
+function windowParams(
+  dims: readonly [number, number, number, number],
   kernelSize: readonly [number, number],
   stride: readonly [number, number],
   padding: readonly [number, number]
 ): Im2ColParams {
-  const batch = input.shape[0] ?? 0;
-  const channels = input.shape[1] ?? 0;
-  const height = input.shape[2] ?? 0;
-  const width = input.shape[3] ?? 0;
+  const [batch, channels, height, width] = dims;
   const [kH, kW] = kernelSize;
   const [sH, sW] = stride;
   const [pH, pW] = padding;
+  const whole = [kH, kW, sH, sW, pH, pW].every((v) => Number.isInteger(v));
+  if (!whole || kH < 1 || kW < 1 || sH < 1 || sW < 1 || pH < 0 || pW < 0) {
+    throw new InvalidParameterError(
+      "kernelSize and stride must be integers >= 1 and padding an integer >= 0",
+      "kernelSize",
+      { kernelSize, stride, padding }
+    );
+  }
   const outH = Math.floor((height + 2 * pH - kH) / sH) + 1;
   const outW = Math.floor((width + 2 * pW - kW) / sW) + 1;
+  if (outH <= 0 || outW <= 0) {
+    throw new InvalidParameterError(
+      `invalid output dimensions ${outH}x${outW}; kernel [${kH}, ${kW}] does not fit ` +
+        `an input of ${height}x${width} with padding [${pH}, ${pW}]`,
+      "output_dimensions",
+      { outH, outW }
+    );
+  }
   return {
     batch,
     channels,
@@ -452,6 +440,27 @@ function convParams(
     padH: pH,
     padW: pW,
   };
+}
+
+/** Build the shared conv/pool geometry from a 4-D NCHW input and hyperparams. */
+function convParams(
+  input: Tensor,
+  kernelSize: readonly [number, number],
+  stride: readonly [number, number],
+  padding: readonly [number, number]
+): Im2ColParams {
+  if (input.ndim !== 4) {
+    throw new ShapeError(
+      `expected a 4D [batch, channels, height, width] input, got ${input.ndim}D`
+    );
+  }
+  const dims: [number, number, number, number] = [
+    input.shape[0] ?? 0,
+    input.shape[1] ?? 0,
+    input.shape[2] ?? 0,
+    input.shape[3] ?? 0,
+  ];
+  return windowParams(dims, kernelSize, stride, padding);
 }
 
 /**
@@ -494,26 +503,13 @@ export function dispatchCol2im(
   const owner = cols.__bufferOwner;
   if (!owner) return null;
   const backend = requireKernelBackend(cols.device, "col2im");
+  if (inputShape.length !== 4) {
+    throw new ShapeError(
+      `expected a 4D [batch, channels, height, width] image shape, got ${inputShape.length}D`
+    );
+  }
   const [batch, channels, height, width] = inputShape as [number, number, number, number];
-  const [kH, kW] = kernelSize;
-  const [sH, sW] = stride;
-  const [pH, pW] = padding;
-  const outH = Math.floor((height + 2 * pH - kH) / sH) + 1;
-  const outW = Math.floor((width + 2 * pW - kW) / sW) + 1;
-  const p: Im2ColParams = {
-    batch,
-    channels,
-    height,
-    width,
-    outH,
-    outW,
-    kH,
-    kW,
-    strideH: sH,
-    strideW: sW,
-    padH: pH,
-    padW: pW,
-  };
+  const p = windowParams([batch, channels, height, width], kernelSize, stride, padding);
   const out = backend.col2im(owner.buffer, p);
   return Tensor.fromDeviceBuffer({
     owner: new DeviceBufferOwner(out, backend),
@@ -590,16 +586,22 @@ export function dispatchTernary(
   if (!cond.isDeviceTensor && !a.isDeviceTensor && !b.isDeviceTensor) return null;
 
   // Resolve the target device from the first device operand.
-  const device = cond.isDeviceTensor ? cond.device : a.isDeviceTensor ? a.device : b.device;
+  const anchor = cond.isDeviceTensor ? cond : a.isDeviceTensor ? a : b;
+  const device = anchor.device;
   const backend = requireKernelBackend(device, op);
+
+  // Host scalars among the selected values take the dtype of the device value
+  // operand; a host condition stays float32 (it is a 0/1 mask).
+  const valueAnchor = a.isDeviceTensor ? a : b.isDeviceTensor ? b : null;
+  const valueDType: DeviceDType = valueAnchor ? deviceDTypeOf(valueAnchor) : "float32";
 
   const operands: Tensor[] = [];
   for (const t of [cond, a, b]) {
     if (t.isDeviceTensor) {
-      if (t.device !== device) mixedDeviceError(op, t, cond);
+      if (t.device !== device) mixedDeviceError(op, anchor, t);
       operands.push(t);
     } else if (isScalar(t)) {
-      operands.push(uploadScalar(t, device, backend));
+      operands.push(uploadScalar(t, device, backend, t === cond ? "float32" : valueDType));
     } else {
       throw new DeviceError(
         `${op}: expected all tensors on device "${device}", but found a host tensor. ` +
@@ -614,7 +616,7 @@ export function dispatchTernary(
   const xOwner = x.__bufferOwner;
   const yOwner = y.__bufferOwner;
   if (!cOwner || !xOwner || !yOwner) {
-    throw new DeviceError(`${op}: internal error — device tensor without a device buffer`);
+    throw new DeviceError(`${op}: internal error: device tensor without a device buffer`);
   }
 
   const out = backend.ternary(

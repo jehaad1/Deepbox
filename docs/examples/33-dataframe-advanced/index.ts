@@ -1,8 +1,8 @@
 /**
  * Example 33: Advanced DataFrame Features
  *
- * New in v1.0.0: String and DateTime accessors, rolling/expanding/EWM windows,
- * query/eval expressions, pivot tables, crosstabs, interpolation, and more.
+ * String and DateTime accessors, rolling, expanding and EWM windows,
+ * query/eval expressions, pivot tables, crosstabs, interpolation and gap filling.
  */
 
 import { DataFrame, Series } from "deepbox/dataframe";
@@ -14,10 +14,10 @@ console.log("=".repeat(60));
 // ============================================================================
 // Part 1: Series String Accessor (str)
 // ============================================================================
-console.log("\n📝 Part 1: Series String Accessor");
+console.log("\nPart 1: Series String Accessor");
 console.log("-".repeat(60));
 
-// The .str accessor provides vectorized string operations on Series
+// The .str accessor applies string operations to every element of a Series. Missing values stay missing.
 const names = new Series(["Alice Smith", "bob jones", "CHARLIE BROWN", null, "diana prince"]);
 
 console.log("Original names:");
@@ -60,10 +60,10 @@ console.log(".str.endswith('e'):", ends.toString());
 // ============================================================================
 // Part 2: Series DateTime Accessor (dt)
 // ============================================================================
-console.log("\n📅 Part 2: Series DateTime Accessor");
+console.log("\nPart 2: Series DateTime Accessor");
 console.log("-".repeat(60));
 
-// The .dt accessor provides vectorized datetime extraction on Series
+// The .dt accessor extracts date parts from every element of a Series
 const dates = new Series([
   new Date("2024-01-15T10:30:00"),
   new Date("2024-06-20T14:45:30"),
@@ -88,8 +88,8 @@ console.log(".dt.day():", days.toString());
 const hours = dates.dt.hour();
 console.log(".dt.hour():", hours.toString());
 
-const dayOfWeek = dates.dt.dayofweek();
-console.log(".dt.dayofweek():", dayOfWeek.toString());
+const dayOfWeek = dates.dt.dayOfWeek();
+console.log(".dt.dayOfWeek():", dayOfWeek.toString());
 
 const quarter = dates.dt.quarter();
 console.log(".dt.quarter():", quarter.toString());
@@ -97,7 +97,7 @@ console.log(".dt.quarter():", quarter.toString());
 // ============================================================================
 // Part 3: Rolling Window Calculations
 // ============================================================================
-console.log("\n📊 Part 3: Rolling Window Calculations");
+console.log("\nPart 3: Rolling Window Calculations");
 console.log("-".repeat(60));
 
 // Rolling windows compute statistics over a sliding window
@@ -133,10 +133,20 @@ const rollingMax = stockPrices.rolling(3).max();
 console.log("Rolling max (window=3):");
 console.log(rollingMax.toString());
 
+// By default the first window - 1 rows are null. minPeriods lets a window report
+// once it holds that many values, and center aligns the window on the current row.
+const earlyMean = stockPrices.rolling(3, { minPeriods: 1 }).mean();
+console.log("Rolling mean (window=3, minPeriods=1), first 3 rows:");
+console.log(earlyMean.head(3).toString());
+
+const centeredMean = stockPrices.rolling(3, { center: true }).mean();
+console.log("Rolling mean (window=3, center=true), first 3 rows:");
+console.log(centeredMean.head(3).toString());
+
 // ============================================================================
 // Part 4: Expanding Window Calculations
 // ============================================================================
-console.log("\n📈 Part 4: Expanding Window Calculations");
+console.log("\nPart 4: Expanding Window Calculations");
 console.log("-".repeat(60));
 
 // Expanding windows compute cumulative statistics from the start
@@ -159,10 +169,12 @@ console.log(expandingStd.toString());
 // ============================================================================
 // Part 5: Exponentially Weighted Moving (EWM) Calculations
 // ============================================================================
-console.log("\n⚡ Part 5: Exponentially Weighted Moving (EWM)");
+console.log("\nPart 5: Exponentially Weighted Moving (EWM)");
 console.log("-".repeat(60));
 
-// EWM gives more weight to recent observations
+// EWM gives more weight to recent observations.
+// Deepbox defaults to adjust=false and bias=true. pandas defaults to adjust=true and
+// bias=false, so pass { adjust: true, bias: false } to match pandas.
 const temperatures = new DataFrame({
   temp: [20, 22, 21, 25, 24, 23, 26, 28, 27, 30],
 });
@@ -182,10 +194,15 @@ const ewmStd = temperatures.ewm({ span: 3 }).std();
 console.log("EWM std (span=3):");
 console.log(ewmStd.toString());
 
+// pandas-compatible settings
+const ewmPandas = temperatures.ewm({ span: 3, adjust: true, bias: false }).mean();
+console.log("EWM mean (span=3, adjust=true, bias=false):");
+console.log(ewmPandas.toString());
+
 // ============================================================================
 // Part 6: Query Expressions
 // ============================================================================
-console.log("\n🔍 Part 6: Query Expressions");
+console.log("\nPart 6: Query Expressions");
 console.log("-".repeat(60));
 
 // Query filters rows using string expressions
@@ -217,7 +234,7 @@ console.log(salesOrMarketing.toString());
 // ============================================================================
 // Part 7: Eval Expressions
 // ============================================================================
-console.log("\n🧮 Part 7: Eval Expressions");
+console.log("\nPart 7: Eval Expressions");
 console.log("-".repeat(60));
 
 // Eval creates computed columns or filters using expressions
@@ -241,13 +258,13 @@ console.log(withProduct.toString());
 
 // Filter with eval
 const filtered = metrics.eval("a > 2");
-console.log("eval('a > 2') — filters rows:");
+console.log("eval('a > 2') filters rows:");
 console.log(filtered.toString());
 
 // ============================================================================
 // Part 8: Assign (Functional Column Creation)
 // ============================================================================
-console.log("\n🔧 Part 8: Assign");
+console.log("\nPart 8: Assign");
 console.log("-".repeat(60));
 
 // Assign creates new columns from arrays or functions
@@ -276,7 +293,7 @@ console.log(withRevenue.toString());
 // ============================================================================
 // Part 9: Pivot Table
 // ============================================================================
-console.log("\n📋 Part 9: Pivot Table");
+console.log("\nPart 9: Pivot Table");
 console.log("-".repeat(60));
 
 // Pivot tables reshape data for cross-tabulation analysis
@@ -290,31 +307,31 @@ console.log("Sales data:");
 console.log(salesData.toString());
 
 // Pivot: regions as rows, products as columns, mean revenue as values
-const pivoted = salesData.pivot_table({
+const pivoted = salesData.pivotTable({
   index: "region",
   columns: "product",
   values: "revenue",
   aggFunc: "mean",
 });
 
-console.log("\nPivot table (mean revenue by region × product):");
+console.log("\nPivot table (mean revenue by region and product):");
 console.log(pivoted.toString());
 
 // Pivot with sum aggregation
-const pivotedSum = salesData.pivot_table({
+const pivotedSum = salesData.pivotTable({
   index: "region",
   columns: "product",
   values: "revenue",
   aggFunc: "sum",
 });
 
-console.log("Pivot table (sum revenue by region × product):");
+console.log("Pivot table (sum revenue by region and product):");
 console.log(pivotedSum.toString());
 
 // ============================================================================
 // Part 10: Crosstab
 // ============================================================================
-console.log("\n📊 Part 10: Crosstab");
+console.log("\nPart 10: Crosstab");
 console.log("-".repeat(60));
 
 // Crosstab computes frequency tables between two categorical columns
@@ -327,13 +344,13 @@ console.log("Survey data:");
 console.log(survey.toString());
 
 const crossResult = survey.crosstab("gender", "preference");
-console.log("\nCrosstab (gender × preference):");
+console.log("\nCrosstab (gender and preference):");
 console.log(crossResult.toString());
 
 // ============================================================================
 // Part 11: nlargest / nsmallest
 // ============================================================================
-console.log("\n🏆 Part 11: nlargest / nsmallest");
+console.log("\nPart 11: nlargest / nsmallest");
 console.log("-".repeat(60));
 
 const scores = new DataFrame({
@@ -356,10 +373,11 @@ console.log(bottom3.toString());
 // ============================================================================
 // Part 12: Interpolation
 // ============================================================================
-console.log("\n🔗 Part 12: Interpolation");
+console.log("\nPart 12: Interpolation");
 console.log("-".repeat(60));
 
-// Interpolate fills missing values using linear or nearest interpolation
+// interpolate estimates missing values from their neighbors (linear or nearest).
+// ffill, bfill and fillna replace them with a copied or fixed value instead.
 const sensorData = new DataFrame({
   time: [0, 1, 2, 3, 4, 5, 6, 7],
   reading: [10, null, null, 25, 30, null, 42, 50],
@@ -376,23 +394,40 @@ const nearestInterp = sensorData.interpolate("nearest");
 console.log("Nearest interpolation:");
 console.log(nearestInterp.toString());
 
+// ffill copies the last valid value forward, bfill copies the next valid value backward
+console.log("Forward fill (ffill):");
+console.log(sensorData.ffill().toString());
+
+console.log("Backward fill (bfill):");
+console.log(sensorData.bfill().toString());
+
+// fillna takes a value per column, or a fill method
+console.log("fillna({ reading: 0 }):");
+console.log(sensorData.fillna({ reading: 0 }).toString());
+
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• .str accessor: vectorized string ops (upper, lower, contains, split, etc.)");
-console.log("• .dt accessor: datetime extraction (year, month, day, hour, dayofweek, quarter)");
-console.log("• rolling(n): sliding window stats (mean, sum, std, var, min, max)");
+console.log(
+  "• .str accessor: string operations on every element (upper, lower, contains, split, ...)"
+);
+console.log("• .dt accessor: date parts (year, month, day, hour, dayOfWeek, quarter)");
+console.log(
+  "• rolling(n): sliding window stats (mean, sum, std, var, min, max), with minPeriods and center"
+);
 console.log("• expanding(): cumulative stats from the start of the data");
-console.log("• ewm({span}): exponentially weighted moving averages");
-console.log("• query(): SQL-like row filtering with expressions");
+console.log(
+  "• ewm({ span }): exponentially weighted moving statistics (adjust=false, bias=true by default)"
+);
+console.log("• query(): filter rows with an expression string");
 console.log("• eval(): computed columns and expression-based filtering");
 console.log("• assign(): functional column creation with arrays or functions");
-console.log("• pivot_table(): reshape data for cross-tabulation analysis");
-console.log("• crosstab(): frequency tables between categorical columns");
+console.log("• pivotTable(): aggregate values into a rows-by-columns table");
+console.log("• crosstab(): counts for each pair of categories");
 console.log("• nlargest/nsmallest: top/bottom N rows by column");
-console.log("• interpolate(): fill missing values with linear or nearest method");
+console.log("• interpolate(), ffill(), bfill(), fillna(): fill missing values");
 
-console.log("\n✅ Advanced DataFrame Features Example Complete!");
+console.log("\nAdvanced DataFrame Features Example Complete!");
 console.log("=".repeat(60));

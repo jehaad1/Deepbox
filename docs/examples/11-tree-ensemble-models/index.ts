@@ -23,7 +23,7 @@ import { trainTestSplit } from "deepbox/preprocess";
 console.log("=== Tree-Based & Ensemble Models ===\n");
 
 // ---------------------------------------------------------------------------
-// Classification dataset (Iris — full 3-class for multi-class models)
+// Classification dataset (Iris, all 3 classes for multi-class models)
 // ---------------------------------------------------------------------------
 const iris = loadIris();
 const [XTrain, XTest, yTrain, yTest] = trainTestSplit(iris.data, iris.target, {
@@ -82,7 +82,7 @@ console.log("  Accuracy:", accuracy(yBinTest, gbcPred).toFixed(4));
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 4: Linear SVC ---");
 
-const svc = new LinearSVC({ C: 1.0 });
+const svc = new LinearSVC({ C: 1.0, randomState: 42 });
 svc.fit(XBinTrain, yBinTrain);
 const svcPred = svc.predict(XBinTest);
 console.log("  Accuracy:", accuracy(yBinTest, svcPred).toFixed(4));
@@ -167,10 +167,52 @@ console.log("  R²: ", r2Score(yRegTest, gbrPred).toFixed(4));
 // ---------------------------------------------------------------------------
 console.log("\n--- Part 8: Linear SVR ---");
 
-const svr = new LinearSVR({ C: 1.0 });
+// The features are unscaled, so the solver needs more passes to converge.
+const svr = new LinearSVR({ C: 1.0, maxIter: 20000, randomState: 42 });
 svr.fit(XRegTrain, yRegTrain);
 const svrPred = svr.predict(XRegTest);
 console.log("  MSE:", mse(yRegTest, svrPred).toFixed(4));
 console.log("  R²: ", r2Score(yRegTest, svrPred).toFixed(4));
+
+// ---------------------------------------------------------------------------
+// Part 9: Tree options for regularization and weighting
+// ---------------------------------------------------------------------------
+console.log("\n--- Part 9: Tree regularization and weights ---");
+
+// maxLeafNodes grows the tree best-first and stops at the given number of leaves.
+// ccpAlpha prunes the finished tree: a larger value removes more branches.
+// classWeight and the sampleWeight argument of fit() change how much each row counts.
+const variants: Array<[string, DecisionTreeClassifier]> = [
+  ["default", new DecisionTreeClassifier({ randomState: 42 })],
+  ["maxLeafNodes = 3", new DecisionTreeClassifier({ maxLeafNodes: 3, randomState: 42 })],
+  ["ccpAlpha = 0.05", new DecisionTreeClassifier({ ccpAlpha: 0.05, randomState: 42 })],
+  [
+    "classWeight = balanced",
+    new DecisionTreeClassifier({ classWeight: "balanced", randomState: 42 }),
+  ],
+];
+for (const [label, tree] of variants) {
+  tree.fit(XTrain, yTrain);
+  const acc = accuracy(yTest, tree.predict(XTest)).toFixed(4);
+  console.log(
+    `  ${label.padEnd(24)} leaves: ${tree.getNLeaves()}  depth: ${tree.getDepth()}  accuracy: ${acc}`
+  );
+}
+
+// Per-row weights: rows of class 2 count twice as much as the others.
+const weights = yTrain.eq(2).astype("float32").add(1);
+const weighted = new DecisionTreeClassifier({ maxDepth: 3, randomState: 42 });
+weighted.fit(XTrain, yTrain, weights);
+console.log(
+  `  ${"sampleWeight in fit()".padEnd(24)} leaves: ${weighted.getNLeaves()}  depth: ${weighted.getDepth()}  accuracy: ${accuracy(yTest, weighted.predict(XTest)).toFixed(4)}`
+);
+
+// Fitted forests expose how much each feature contributed to the splits.
+console.log("  Random forest feature importances:", rfc.featureImportances.toString());
+
+// clone() returns an unfitted copy with the same options.
+const rfcCopy = rfc.clone();
+rfcCopy.fit(XTrain, yTrain);
+console.log("  Cloned forest accuracy:", accuracy(yTest, rfcCopy.predict(XTest)).toFixed(4));
 
 console.log("\n=== Tree-Based & Ensemble Models Complete ===");

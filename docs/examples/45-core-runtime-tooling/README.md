@@ -2,13 +2,13 @@
 
 > **View online:** https://deepbox.dev/examples/45-core-runtime-tooling
 
-A runtime-focused walkthrough for the v1.0.0 `deepbox/core` surface: structured logging, warning policies, backend registration, and JSON/file serialization.
+Walks through the runtime tools in `deepbox/core`: the logger, warning filters, JSON and file serialization, and the backend registry with the WASM SIMD backend. The WebGPU and WASM backends accelerate a subset of operations. An operation that a device cannot run throws a `DeviceError` that says to move the tensor with `await t.cpu()`.
 
 ## Deepbox Modules Used
 
-| Module          | Features Used                                                                 |
-| --------------- | ----------------------------------------------------------------------------- |
-| `deepbox/core`  | Logger, warnings, save/load, toJSON/fromJSON, CpuBackend, backend registry    |
+| Module         | Features Used                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `deepbox/core` | Logger, setLogHandler, warn, filterWarnings, catchWarnings, resetWarnings, save, load, toJSON, fromJSON, WasmBackend, registerBackend, listBackends, isBackendAvailable |
 
 ## Usage
 
@@ -18,10 +18,10 @@ npm run example:45
 
 ## Output
 
-- Console walkthrough of logging, warning capture, serialization, and backend registration
-- JSON payloads written to `output/`
+- Console output: captured log entries, collected warnings, serialization round trips, registered backends and one SIMD addition.
+- Two JSON files written to `output/`: `tensor-payload.json` and `module-state.json`.
 
-## Architecture
+## Files
 
 ```text
 45-core-runtime-tooling/

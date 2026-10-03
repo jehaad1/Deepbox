@@ -1,17 +1,24 @@
-# Quick Start Guide
+# Quick Start
 
 > **View online:** https://deepbox.dev/examples/00-quick-start
 
-A rapid introduction to Deepbox's core features — tensors, DataFrames, and machine learning in under 50 lines.
+A short tour of tensors, DataFrames and a first machine learning model. The script is about 50 lines.
 
 ## Deepbox Modules Used
 
-| Module               | Features Used                   |
-| -------------------- | ------------------------------- |
-| `deepbox/ndarray`    | Tensor creation, addition, mean |
-| `deepbox/dataframe`  | DataFrame creation, display     |
-| `deepbox/ml`         | LinearRegression (fit, predict) |
-| `deepbox/preprocess` | trainTestSplit                  |
+| Module               | Features Used                                  |
+| -------------------- | ---------------------------------------------- |
+| `deepbox/ndarray`    | `tensor`, chained `add`, `mul`, `mean`, `item` |
+| `deepbox/dataframe`  | `DataFrame` creation and printing              |
+| `deepbox/ml`         | `LinearRegression` (`fit`, `predict`)          |
+| `deepbox/preprocess` | `trainTestSplit`                               |
+
+## What It Shows
+
+- Tensor methods chain: `a.add(b).mul(2)` is the same as `mul(add(a, b), 2)`.
+- `item()` turns a one-element tensor into a plain JavaScript number.
+- A `DataFrame` is built from an object of equal-length columns.
+- A linear regression is fitted on `y = 2x + 1` and predicts the held-out rows.
 
 ## Usage
 
@@ -21,13 +28,12 @@ npm run example:00
 
 ## Output
 
-- Console output demonstrating tensors, DataFrames, and linear regression predictions
+Console output only: tensor arithmetic and a mean, a printed DataFrame, and the model's predictions next to the true values.
 
-## Architecture
+## Files
 
 ```
 00-quick-start/
 ├── index.ts     # Main entry point
-├── README.md    # This file
-└── output/      # Generated output files
+└── README.md    # This file
 ```

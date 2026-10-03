@@ -2,15 +2,15 @@
  * Interactive plot support for Deepbox.
  *
  * Generates standalone HTML files with embedded JavaScript for
- * client-side interactivity. Zero external dependencies — all
+ * client-side interactivity. Zero external dependencies: all
  * interaction logic is inlined in the HTML output.
  *
  * Supported interactions:
  * - Pan (click + drag)
- * - Zoom (scroll wheel)
- * - Tooltips (hover over data points)
+ * - Zoom (scroll wheel and zoom buttons)
+ * - Tooltips (hover over registered data points)
  * - Crosshair cursor
- * - Reset view (double-click)
+ * - Reset view (double-click or reset button)
  *
  * @module plot/interactive
  * @see {@link https://deepbox.dev/docs/plot-basic | Deepbox documentation}
@@ -33,11 +33,11 @@ export type InteractiveOptions = {
   readonly crosshair?: boolean;
   /** Enable reset on double-click. Default: true. */
   readonly resetOnDoubleClick?: boolean;
-  /** Minimum zoom level. Default: 0.1. */
+  /** Minimum zoom level (finite and positive). Default: 0.1. */
   readonly minZoom?: number;
-  /** Maximum zoom level. Default: 10. */
+  /** Maximum zoom level (finite and at least `minZoom`). Default: 10. */
   readonly maxZoom?: number;
-  /** Custom CSS to inject. */
+  /** Custom CSS to inject into the page's `<style>` element. Must not contain `</style`. */
   readonly customCSS?: string;
   /** HTML page title. Default: "Deepbox Plot". */
   readonly title?: string;
@@ -45,11 +45,19 @@ export type InteractiveOptions = {
 
 /**
  * Data point for tooltip display.
+ *
+ * `x` and `y` are positions in the rendered SVG, in pixels measured from the
+ * top-left corner of the figure (the same units as the figure's `width` and
+ * `height`). They are not data-space coordinates of the axes.
  */
 export type TooltipDataPoint = {
+  /** Horizontal position in figure pixels (finite). */
   readonly x: number;
+  /** Vertical position in figure pixels, measured downwards (finite). */
   readonly y: number;
+  /** Text shown in the tooltip. Defaults to the `(x, y)` pair. */
   readonly label?: string;
+  /** Series name, shown before the label. */
   readonly series?: string;
 };
 
@@ -71,13 +79,17 @@ export type InteractiveResult = {
  * Wraps a static SVG plot in an HTML document with embedded JavaScript
  * that provides pan, zoom, tooltip, and crosshair interactions.
  *
+ * Tooltip points are positioned in figure pixels (see {@link TooltipDataPoint}),
+ * so they must be given in the SVG's own coordinate system.
+ *
  * @example
  * ```ts
- * import { InteractivePlot, figure } from 'deepbox/plot';
+ * import { InteractivePlot, figure, gca } from 'deepbox/plot';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * // figure() makes the new figure current and gives it one axes.
  * const fig = figure({ width: 800, height: 600 });
- * const ax = fig.addAxes();
- * ax.plot([1, 2, 3, 4], [10, 20, 15, 25]);
+ * gca().plot(tensor([1, 2, 3, 4]), tensor([10, 20, 15, 25]));
  *
  * const interactive = new InteractivePlot(fig, {
  *   tooltips: true,
@@ -86,10 +98,10 @@ export type InteractiveResult = {
  *   pan: true,
  * });
  *
- * // Add tooltip data points
+ * // Tooltip points, in pixels from the top-left corner of the figure
  * interactive.addDataPoints([
- *   { x: 1, y: 10, label: "Point A" },
- *   { x: 2, y: 20, label: "Point B" },
+ *   { x: 120, y: 340, label: "Point A" },
+ *   { x: 260, y: 210, label: "Point B" },
  * ]);
  *
  * const result = interactive.render();
@@ -117,14 +129,25 @@ export class InteractivePlot {
     this.customCSS = options.customCSS ?? "";
     this.title = options.title ?? "Deepbox Plot";
 
-    if (this.options.minZoom <= 0) {
-      throw new InvalidParameterError("minZoom must be positive", "minZoom", this.options.minZoom);
-    }
-    if (this.options.maxZoom < this.options.minZoom) {
+    if (!Number.isFinite(this.options.minZoom) || this.options.minZoom <= 0) {
       throw new InvalidParameterError(
-        "maxZoom must be >= minZoom",
+        `minZoom must be a finite positive number; received ${String(this.options.minZoom)}`,
+        "minZoom",
+        this.options.minZoom
+      );
+    }
+    if (!Number.isFinite(this.options.maxZoom) || this.options.maxZoom < this.options.minZoom) {
+      throw new InvalidParameterError(
+        `maxZoom must be finite and >= minZoom (${this.options.minZoom}); received ${String(this.options.maxZoom)}`,
         "maxZoom",
         this.options.maxZoom
+      );
+    }
+    if (/<\/style/i.test(this.customCSS)) {
+      throw new InvalidParameterError(
+        "customCSS must not contain a closing </style> tag",
+        "customCSS",
+        this.customCSS
       );
     }
   }
@@ -132,10 +155,44 @@ export class InteractivePlot {
   /**
    * Add data points for tooltip display.
    *
-   * @param points - Array of data points with x, y coordinates and optional labels
+   * Positions are in figure pixels, measured from the top-left corner of the
+   * SVG. The points are copied, and nothing is added if any point is invalid.
+   *
+   * @param points - Array of data points with x, y positions and optional labels
+   * @throws {InvalidParameterError} If a point has a non-finite `x` or `y`, or a
+   *   `label` or `series` that is not a string.
    */
   addDataPoints(points: readonly TooltipDataPoint[]): void {
-    this.dataPoints.push(...points);
+    const copies: TooltipDataPoint[] = [];
+    for (const [i, p] of points.entries()) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+        throw new InvalidParameterError(
+          `data point ${i} must have finite x and y; received x=${String(p.x)}, y=${String(p.y)}`,
+          "points",
+          p
+        );
+      }
+      if (
+        (p.label !== undefined && typeof p.label !== "string") ||
+        (p.series !== undefined && typeof p.series !== "string")
+      ) {
+        throw new InvalidParameterError(
+          `data point ${i}: label and series must be strings`,
+          "points",
+          p
+        );
+      }
+      copies.push({ ...p });
+    }
+    // Append one by one: spreading a very large array into push() overflows the call stack.
+    for (const copy of copies) this.dataPoints.push(copy);
+  }
+
+  /**
+   * Get a copy of the registered tooltip data points.
+   */
+  getDataPoints(): readonly TooltipDataPoint[] {
+    return this.dataPoints.map((p) => ({ ...p }));
   }
 
   /**
@@ -159,7 +216,7 @@ export class InteractivePlot {
     return {
       html,
       svg,
-      options: this.options,
+      options: { ...this.options },
     };
   }
 
@@ -234,6 +291,14 @@ ${zoom ? '<button id="zoom-in" title="Zoom In">+</button><button id="zoom-out" t
     svgEl.style.transformOrigin = '0 0';
   }
 
+  function zoomAt(cx, cy, factor) {
+    const newScale = Math.min(maxZoom, Math.max(minZoom, scale * factor));
+    translateX = cx - (cx - translateX) * (newScale / scale);
+    translateY = cy - (cy - translateY) * (newScale / scale);
+    scale = newScale;
+    updateTransform();
+  }
+
   function resetView() {
     scale = 1;
     translateX = 0;
@@ -246,6 +311,7 @@ ${zoom ? '<button id="zoom-in" title="Zoom In">+</button><button id="zoom-out" t
       ? `
   container.addEventListener('mousedown', function(e) {
     if (e.button !== 0) return;
+    if (e.target.closest && e.target.closest('#controls')) return;
     isDragging = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -275,26 +341,18 @@ ${zoom ? '<button id="zoom-in" title="Zoom In">+</button><button id="zoom-out" t
       ? `
   container.addEventListener('wheel', function(e) {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const newScale = Math.min(maxZoom, Math.max(minZoom, scale * delta));
+    if (e.deltaY === 0) return;
     const rect = container.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    translateX = mouseX - (mouseX - translateX) * (newScale / scale);
-    translateY = mouseY - (mouseY - translateY) * (newScale / scale);
-    scale = newScale;
-    updateTransform();
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY > 0 ? 0.9 : 1.1);
   }, { passive: false });
 
   var zoomInBtn = document.getElementById('zoom-in');
   var zoomOutBtn = document.getElementById('zoom-out');
   if (zoomInBtn) zoomInBtn.addEventListener('click', function() {
-    scale = Math.min(maxZoom, scale * 1.2);
-    updateTransform();
+    zoomAt(container.clientWidth / 2, container.clientHeight / 2, 1.2);
   });
   if (zoomOutBtn) zoomOutBtn.addEventListener('click', function() {
-    scale = Math.max(minZoom, scale / 1.2);
-    updateTransform();
+    zoomAt(container.clientWidth / 2, container.clientHeight / 2, 1 / 1.2);
   });
   `
       : ""
@@ -319,7 +377,8 @@ ${zoom ? '<button id="zoom-in" title="Zoom In">+</button><button id="zoom-out" t
       var d = Math.sqrt(dx*dx + dy*dy);
       if (d < minDist) { minDist = d; closest = dataPoints[i]; }
     }
-    if (closest && minDist < 50) {
+    // minDist is in SVG pixels; compare in screen pixels so the hit radius does not grow when zoomed in.
+    if (closest && minDist * scale < 50) {
       var label = closest.label || ('(' + closest.x.toFixed(2) + ', ' + closest.y.toFixed(2) + ')');
       if (closest.series) label = closest.series + ': ' + label;
       tooltip.textContent = label;

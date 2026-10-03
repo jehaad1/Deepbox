@@ -3,7 +3,7 @@ import { InvalidParameterError } from "../src/core/errors/invalid_parameter";
 import { tensor } from "../src/ndarray";
 import { createInteractivePlot, figure, InteractivePlot } from "../src/plot";
 
-describe("plot/interactive — InteractivePlot", () => {
+describe("plot/interactive: InteractivePlot", () => {
   it("renders HTML with embedded SVG and default options", () => {
     const fig = figure({ width: 200, height: 150 });
     const ax = fig.addAxes();

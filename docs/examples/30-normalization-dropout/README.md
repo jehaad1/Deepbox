@@ -2,13 +2,13 @@
 
 > **View online:** https://deepbox.dev/examples/30-normalization-dropout
 
-Demonstrates BatchNorm1d, LayerNorm, and Dropout for training stability and regularization.
+Runs `BatchNorm1d`, `LayerNorm` and `Dropout` on small inputs. `BatchNorm1d` and `Dropout` behave differently in train and eval mode, and the example shows both.
 
 ## Deepbox Modules Used
 
 | Module            | Features Used                   |
 | ----------------- | ------------------------------- |
-| `deepbox/ndarray` | tensor, GradTensor              |
+| `deepbox/ndarray` | `tensor`, `noGrad`              |
 | `deepbox/nn`      | BatchNorm1d, LayerNorm, Dropout |
 
 ## Usage
@@ -19,5 +19,7 @@ npm run example:30
 
 ## Output
 
-- Console output demonstrating normalization behavior in train vs eval modes
-- Dropout masking and inverted scaling during training
+- Console output only: output shapes, the per-feature mean after `BatchNorm1d`, the per-sample mean after `LayerNorm`, and dropout in train and eval mode.
+- Dropout is random, so the zeroed positions differ from run to run. Surviving values are scaled by `1 / (1 - p)`.
+
+`eval()` does not turn gradient tracking off. For inference, run the forward pass inside `noGrad()` to get a plain tensor.

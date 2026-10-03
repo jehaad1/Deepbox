@@ -17,12 +17,18 @@ import { escapeXml } from "../utils/xml";
 
 /**
  * Radar (spider) chart: plots multi-dimensional data on radial axes.
+ *
+ * Axis 0 points straight up and the axes follow clockwise. Every series is
+ * divided by the largest absolute value over all series, so the outer ring
+ * corresponds to that maximum. All values must be finite.
  * @internal
  */
 export class Radar2D implements Drawable {
   readonly kind = "radar";
   readonly series: Float64Array[];
   readonly axisCount: number;
+  /** Value that maps to the outer ring (largest absolute value, or 1 if all are 0). */
+  readonly maxValue: number;
   readonly colors: Color[];
   readonly labels: (string | null)[];
   readonly linewidth: number;
@@ -41,6 +47,7 @@ export class Radar2D implements Drawable {
     const n = series[0]?.length ?? 0;
     if (n < 3) throw new InvalidParameterError("Radar chart requires at least 3 axes", "axes", n);
 
+    let maxVal = 0;
     for (const s of series) {
       if (s.length !== n)
         throw new InvalidParameterError(
@@ -48,11 +55,32 @@ export class Radar2D implements Drawable {
           "series",
           s.length
         );
+      for (let i = 0; i < n; i++) {
+        const v = s[i] ?? 0;
+        if (!Number.isFinite(v)) {
+          throw new InvalidParameterError(
+            `radar values must be finite; received ${v}`,
+            "series",
+            v
+          );
+        }
+        if (Math.abs(v) > maxVal) maxVal = Math.abs(v);
+      }
+    }
+
+    const lw = options.linewidth ?? 2;
+    if (!Number.isFinite(lw) || lw <= 0) {
+      throw new InvalidParameterError(
+        `linewidth must be a positive number; received ${lw}`,
+        "linewidth",
+        lw
+      );
     }
 
     this.series = series;
     this.axisCount = n;
-    this.linewidth = options.linewidth ?? 2;
+    this.maxValue = maxVal === 0 ? 1 : maxVal;
+    this.linewidth = lw;
     this.colors = series.map((_, i) =>
       normalizeColor(
         options.colors?.[i],
@@ -63,7 +91,7 @@ export class Radar2D implements Drawable {
   }
 
   getDataRange(): DataRange | null {
-    // Radar is drawn in a fixed [-1.2, 1.2] coordinate space
+    // Radar is drawn in a fixed [-1.3, 1.3] coordinate space (unit ring plus margin)
     return { xmin: -1.3, xmax: 1.3, ymin: -1.3, ymax: 1.3 };
   }
 
@@ -71,21 +99,14 @@ export class Radar2D implements Drawable {
     const n = this.axisCount;
     const angleStep = (2 * Math.PI) / n;
 
-    // Find max value for normalization
-    let maxVal = 0;
-    for (const s of this.series) {
-      for (let i = 0; i < s.length; i++) {
-        maxVal = Math.max(maxVal, Math.abs(s[i] ?? 0));
-      }
-    }
-    if (maxVal === 0) maxVal = 1;
+    const maxVal = this.maxValue;
 
-    // Draw grid circles
+    // Draw grid rings
     for (let level = 1; level <= 4; level++) {
       const r = level / 4;
       const points: string[] = [];
       for (let i = 0; i < n; i++) {
-        const angle = angleStep * i - Math.PI / 2;
+        const angle = Math.PI / 2 - angleStep * i;
         const gx = ctx.transform.xToPx(r * Math.cos(angle));
         const gy = ctx.transform.yToPx(r * Math.sin(angle));
         points.push(`${gx.toFixed(2)},${gy.toFixed(2)}`);
@@ -97,7 +118,7 @@ export class Radar2D implements Drawable {
 
     // Draw axes
     for (let i = 0; i < n; i++) {
-      const angle = angleStep * i - Math.PI / 2;
+      const angle = Math.PI / 2 - angleStep * i;
       const x0 = ctx.transform.xToPx(0);
       const y0 = ctx.transform.yToPx(0);
       const x1 = ctx.transform.xToPx(Math.cos(angle));
@@ -115,7 +136,7 @@ export class Radar2D implements Drawable {
       const points: string[] = [];
       for (let i = 0; i < n; i++) {
         const val = (data[i] ?? 0) / maxVal;
-        const angle = angleStep * i - Math.PI / 2;
+        const angle = Math.PI / 2 - angleStep * i;
         const gx = ctx.transform.xToPx(val * Math.cos(angle));
         const gy = ctx.transform.yToPx(val * Math.sin(angle));
         points.push(`${gx.toFixed(2)},${gy.toFixed(2)}`);
@@ -127,34 +148,52 @@ export class Radar2D implements Drawable {
   }
 
   drawRaster(ctx: RasterDrawContext): void {
-    // Minimal raster fallback — draw series as filled polygons
-    let maxVal = 0;
-    for (const s of this.series) {
-      for (let i = 0; i < s.length; i++) {
-        maxVal = Math.max(maxVal, Math.abs(s[i] ?? 0));
-      }
-    }
-    if (maxVal === 0) maxVal = 1;
-
+    const maxVal = this.maxValue;
     const n = this.axisCount;
     const angleStep = (2 * Math.PI) / n;
+    const px = (r: number, i: number): number =>
+      Math.round(ctx.transform.xToPx(r * Math.cos(Math.PI / 2 - angleStep * i)));
+    const py = (r: number, i: number): number =>
+      Math.round(ctx.transform.yToPx(r * Math.sin(Math.PI / 2 - angleStep * i)));
+
+    // Grid rings and axes, same layout as the SVG output.
+    for (let level = 1; level <= 4; level++) {
+      const r = level / 4;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        ctx.canvas.drawLineRGBA(px(r, i), py(r, i), px(r, j), py(r, j), 204, 204, 204, 255);
+      }
+    }
+    const ox = Math.round(ctx.transform.xToPx(0));
+    const oy = Math.round(ctx.transform.yToPx(0));
+    for (let i = 0; i < n; i++) {
+      ctx.canvas.drawLineRGBA(ox, oy, px(1, i), py(1, i), 153, 153, 153, 255);
+    }
 
     for (let s = 0; s < this.series.length; s++) {
       const data = this.series[s];
       if (!data) continue;
       const rgba = parseHexColorToRGBA(this.colors[s] ?? "#1f77b4");
+      const xs = new Array<number>(n);
+      const ys = new Array<number>(n);
       for (let i = 0; i < n; i++) {
         const val = (data[i] ?? 0) / maxVal;
-        const angle = angleStep * i - Math.PI / 2;
-        const px = Math.round(ctx.transform.xToPx(val * Math.cos(angle)));
-        const py = Math.round(ctx.transform.yToPx(val * Math.sin(angle)));
-
-        const nextI = (i + 1) % n;
-        const nextVal = (data[nextI] ?? 0) / maxVal;
-        const nextAngle = angleStep * nextI - Math.PI / 2;
-        const npx = Math.round(ctx.transform.xToPx(nextVal * Math.cos(nextAngle)));
-        const npy = Math.round(ctx.transform.yToPx(nextVal * Math.sin(nextAngle)));
-        ctx.canvas.drawLineRGBA(px, py, npx, npy, rgba.r, rgba.g, rgba.b, rgba.a);
+        xs[i] = px(val, i);
+        ys[i] = py(val, i);
+      }
+      ctx.canvas.fillPolygonRGBA(xs, ys, rgba.r, rgba.g, rgba.b, Math.round(rgba.a * 0.15));
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        ctx.canvas.drawLineRGBA(
+          xs[i] ?? 0,
+          ys[i] ?? 0,
+          xs[j] ?? 0,
+          ys[j] ?? 0,
+          rgba.r,
+          rgba.g,
+          rgba.b,
+          rgba.a
+        );
       }
     }
   }

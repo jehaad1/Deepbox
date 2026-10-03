@@ -1,8 +1,14 @@
 /**
  * Example 22: Built-in Datasets
  *
- * Explore Deepbox's built-in datasets for quick experimentation.
- * Perfect for learning and testing ML algorithms.
+ * Load each of the 24 built-in datasets and the 6 synthetic generators, and
+ * print their shapes and metadata. The datasets ship with the package, so
+ * nothing is downloaded. Each loader returns an object with `data` (features),
+ * `target` (labels or values) and, for most, `featureNames` and `targetNames`.
+ * The generators return a [X, y] pair.
+ *
+ * For text corpora, fetch20Newsgroups and fetchIMDB download the official
+ * archives. They need network access, so this example does not call them.
  */
 
 import {
@@ -226,8 +232,9 @@ const classData = makeClassification({
   nClasses: 2,
   randomState: 42,
 });
-const X_class = classData[0];
-console.log(`Generated ${X_class.shape[0]} samples with ${X_class.shape[1]} features\n`);
+const [XClass, yClass] = classData;
+console.log(`Generated ${XClass.shape[0]} samples with ${XClass.shape[1]} features`);
+console.log(`Labels: shape [${yClass.shape}], dtype ${yClass.dtype}\n`);
 
 console.log("26. Make Regression:");
 console.log("-".repeat(50));
@@ -237,8 +244,8 @@ const regData = makeRegression({
   noise: 0.1,
   randomState: 42,
 });
-const X_reg = regData[0];
-console.log(`Generated ${X_reg.shape[0]} samples with ${X_reg.shape[1]} features\n`);
+const XReg = regData[0];
+console.log(`Generated ${XReg.shape[0]} samples with ${XReg.shape[1]} features\n`);
 
 console.log("27. Make Blobs:");
 console.log("-".repeat(50));
@@ -248,8 +255,8 @@ const blobsData = makeBlobs({
   centers: 3,
   randomState: 42,
 });
-const X_blobs = blobsData[0];
-console.log(`Generated ${X_blobs.shape[0]} samples in ${3} clusters\n`);
+const XBlobs = blobsData[0];
+console.log(`Generated ${XBlobs.shape[0]} samples in 3 clusters\n`);
 
 console.log("28. Make Moons:");
 console.log("-".repeat(50));
@@ -258,8 +265,8 @@ const moonsData = makeMoons({
   noise: 0.1,
   randomState: 42,
 });
-const X_moons = moonsData[0];
-console.log(`Generated ${X_moons.shape[0]} samples (2 interleaving half circles)\n`);
+const XMoons = moonsData[0];
+console.log(`Generated ${XMoons.shape[0]} samples (2 interleaving half circles)\n`);
 
 console.log("29. Make Circles:");
 console.log("-".repeat(50));
@@ -268,8 +275,8 @@ const circlesData = makeCircles({
   noise: 0.05,
   randomState: 42,
 });
-const X_circles = circlesData[0];
-console.log(`Generated ${X_circles.shape[0]} samples (concentric circles)\n`);
+const XCircles = circlesData[0];
+console.log(`Generated ${XCircles.shape[0]} samples (concentric circles)\n`);
 
 console.log("30. Make Gaussian Quantiles:");
 console.log("-".repeat(50));
@@ -279,7 +286,7 @@ const gaussData = makeGaussianQuantiles({
   nClasses: 3,
   randomState: 42,
 });
-const X_gauss = gaussData[0];
-console.log(`Generated ${X_gauss.shape[0]} samples in ${3} quantile-based classes\n`);
+const XGauss = gaussData[0];
+console.log(`Generated ${XGauss.shape[0]} samples in 3 quantile-based classes\n`);
 
-console.log("✓ All 24 built-in datasets + 6 synthetic generators explored!");
+console.log("Listed 24 built-in datasets and 6 synthetic generators.");

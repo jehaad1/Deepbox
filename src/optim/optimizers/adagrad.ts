@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -21,7 +20,6 @@ import {
   assertFinitePositive,
   assertHasGradFloat,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -30,6 +28,8 @@ type AdagradOptions = {
   eps: number;
   weightDecay: number;
   lrDecay: number;
+  initialAccumulatorValue: number;
+  maximize: boolean;
 };
 
 type AdagradState = {
@@ -46,7 +46,16 @@ type AdagradState = {
  * Adagrad adapts the learning rate for each parameter based on the historical
  * sum of squared gradients. Parameters with larger gradients receive smaller
  * effective learning rates, while parameters with smaller gradients receive
- * larger effective learning rates.
+ * larger effective learning rates. The update follows `torch.optim.Adagrad`:
+ *
+ * ```
+ * clr = lr / (1 + (t - 1) * lrDecay)
+ * sum += g^2
+ * theta -= clr * g / (sqrt(sum) + eps)
+ * ```
+ *
+ * When `weightDecay` is non-zero, `weightDecay * theta` is added to the gradient
+ * (L2 penalty) before the update.
  *
  * @example
  * ```ts
@@ -68,11 +77,19 @@ type AdagradState = {
  * @category Optimizers
  */
 export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
+  /**
+   * Create a new Adagrad optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 0.01)
+   * @param options.eps - Term added to the denominator for numerical stability (default: 1e-10)
+   * @param options.weightDecay - L2 penalty coefficient (default: 0)
+   * @param options.lrDecay - Learning rate decay applied per step (default: 0)
+   * @param options.initialAccumulatorValue - Starting value of the squared-gradient sum (default: 0)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<AdagradOptions>>,
     options: {
@@ -80,6 +97,8 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
       readonly eps?: number;
       readonly weightDecay?: number;
       readonly lrDecay?: number;
+      readonly initialAccumulatorValue?: number;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -87,50 +106,34 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
       eps: options.eps ?? 1e-10,
       weightDecay: options.weightDecay ?? 0,
       lrDecay: options.lrDecay ?? 0,
+      initialAccumulatorValue: options.initialAccumulatorValue ?? 0,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
-    assertFiniteNonNegative("lr_decay", defaults.lrDecay);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<AdagradOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
+    assertFiniteNonNegative("lr_decay", options.lrDecay);
+    assertFiniteNonNegative("initial_accumulator_value", options.initialAccumulatorValue);
   }
 
   protected isState(state: Record<string, unknown>): state is AdagradState {
     return typeof state["step"] === "number" && state["sum"] instanceof Float64Array;
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -138,22 +141,18 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
       loss = closure();
     }
 
-    // Increment global step counter
-    this._stepCount++;
+    this.prepareStep("Adagrad");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, eps, weightDecay, lrDecay } = group.options;
+      const { lr, eps, weightDecay, lrDecay, initialAccumulatorValue, maximize } = group.options;
 
-      assertFiniteNonNegative("learning rate", lr);
-      assertFinitePositive("epsilon", eps);
-      assertFiniteNonNegative("weight_decay value", weightDecay);
-      assertFiniteNonNegative("lr_decay", lrDecay);
-
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the Adagrad update from device-dispatched ops.
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { step: 0, sum: new Float64Array(0) };
@@ -164,7 +163,9 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
           const clr = lr / (1 + (t - 1) * lrDecay);
           const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
           const sumPrev = dstate.sumTensor;
-          const sumNew = sumPrev ? add(sumPrev, square(grad)) : square(grad);
+          const sumNew = sumPrev
+            ? add(sumPrev, square(grad))
+            : addScalar(square(grad), initialAccumulatorValue);
           dstate.sumTensor = sumNew;
           const std = addScalar(sqrt(sumNew), eps);
           replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(div(grad, std), clr)));
@@ -185,7 +186,7 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
           (() => {
             const next = {
               step: 0,
-              sum: new Float64Array(size),
+              sum: new Float64Array(size).fill(initialAccumulatorValue),
             };
             this.state.set(param, next);
             return next;
@@ -197,18 +198,20 @@ export class Adagrad extends Optimizer<AdagradOptions, AdagradState> {
         state.step += 1;
 
         const clr = lr / (1 + (state.step - 1) * lrDecay);
+        const sum = state.sum;
 
         for (let i = 0; i < size; i++) {
-          const gi0 = safeArrayAccess(gradData, gOff + i, "Adagrad gradient");
-          const pi = safeArrayAccess(pData, pOff + i, "Adagrad parameter");
-          assertFinite("gradient", gi0);
-          assertFinite("parameter", pi);
+          const rawGi = gradData[gOff + i] as number;
+          const pi = pData[pOff + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi0 = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
 
+          // L2 weight decay
           const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
 
-          const sumVal = safeArrayAccess(state.sum, i, "Adagrad sum");
-          const sumNew = sumVal + gi * gi;
-          state.sum[i] = sumNew;
+          const sumNew = (sum[i] as number) + gi * gi;
+          sum[i] = sumNew;
 
           const std = Math.sqrt(sumNew) + eps;
           pData[pOff + i] = pi - clr * (gi / std);

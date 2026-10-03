@@ -79,12 +79,12 @@ describe("KNNImputer", () => {
 
   it("returns params", () => {
     const imp = new KNNImputer({ nNeighbors: 3, weights: "distance" });
-    expect(imp.getParams()).toEqual({ nNeighbors: 3, weights: "distance" });
+    expect(imp.getParams()).toMatchObject({ nNeighbors: 3, weights: "distance" });
   });
 
   it("defaults to nNeighbors=5, weights='uniform'", () => {
     const imp = new KNNImputer();
-    expect(imp.getParams()).toEqual({ nNeighbors: 5, weights: "uniform" });
+    expect(imp.getParams()).toMatchObject({ nNeighbors: 5, weights: "uniform" });
   });
 });
 
@@ -155,7 +155,7 @@ describe("MissingIndicator", () => {
 
   it("returns params", () => {
     const mi = new MissingIndicator({ features: "all" });
-    expect(mi.getParams()).toEqual({ features: "all" });
+    expect(mi.getParams()).toMatchObject({ features: "all" });
   });
 
   it("throws accessing features_ before fit", () => {

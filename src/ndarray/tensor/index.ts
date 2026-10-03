@@ -3,7 +3,7 @@
  */
 
 // Creation
-export type { NestedArray, TensorCreateOptions } from "./creation";
+export type { NestedArray, StringNestedArray, TensorCreateOptions } from "./creation";
 export {
   arange,
   empty,

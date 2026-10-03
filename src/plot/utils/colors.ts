@@ -166,8 +166,30 @@ const namedColors: Record<string, string> = {
   yellowgreen: "#9acd32",
 };
 
+type RGBA = {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly a: number;
+};
+
+/** Color returned for anything that cannot be parsed: opaque black. */
+const BLACK: RGBA = { r: 0, g: 0, b: 0, a: 255 };
+const TRANSPARENT: RGBA = { r: 0, g: 0, b: 0, a: 0 };
+
+/** Upper bound on cached parse results, so per-point color strings cannot grow memory forever. */
+const COLOR_CACHE_LIMIT = 1024;
+
+function cacheResult(key: string, value: RGBA): RGBA {
+  if (colorCache.size >= COLOR_CACHE_LIMIT) colorCache.clear();
+  colorCache.set(key, value);
+  return value;
+}
+
 /**
- * Normalizes a color value to hex format.
+ * Normalizes a color value to hex format: `#rrggbb`, or `#rrggbbaa` when the color is not
+ * fully opaque. Returns `fallback` for `undefined` or an empty string. Text that is not a
+ * recognized color becomes black (`#000000`), like {@link parseHexColorToRGBA}.
  * @internal
  */
 export function normalizeColor(c: Color | undefined, fallback: Color): Color {
@@ -192,8 +214,115 @@ export function normalizeColor(c: Color | undefined, fallback: Color): Color {
   return `#${r}${g}${b}${a}`;
 }
 
+const NUMBER_TOKEN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/;
+
+/** Parses "12", "12.5" or "50%"; percentages are scaled so 100% equals `percentBase`. */
+function parseComponent(token: string, percentBase: number): number | null {
+  const isPercent = token.endsWith("%");
+  const body = isPercent ? token.slice(0, -1) : token;
+  if (!NUMBER_TOKEN.test(body)) return null;
+  const v = Number.parseFloat(body);
+  if (!Number.isFinite(v)) return null;
+  return isPercent ? (v / 100) * percentBase : v;
+}
+
+function parseHue(token: string): number | null {
+  const body = token.endsWith("deg") ? token.slice(0, -3) : token;
+  if (!NUMBER_TOKEN.test(body)) return null;
+  const v = Number.parseFloat(body);
+  return Number.isFinite(v) ? v : null;
+}
+
+function hue2rgb(p: number, q: number, t: number): number {
+  let u = t;
+  if (u < 0) u += 1;
+  if (u > 1) u -= 1;
+  if (u < 1 / 6) return p + (q - p) * 6 * u;
+  if (u < 1 / 2) return q;
+  if (u < 2 / 3) return p + (q - p) * (2 / 3 - u) * 6;
+  return p;
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    Math.round(hue2rgb(p, q, h) * 255),
+    Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  ];
+}
+
+const clampByte = (value: number): number => Math.min(255, Math.max(0, Math.round(value)));
+const clampUnit = (value: number): number => Math.min(1, Math.max(0, value));
+
+function parseFunctional(s: string): RGBA | null {
+  const m = s.match(/^(rgba?|hsla?)\(\s*([^()]*?)\s*\)$/);
+  if (!m) return null;
+  const kind = m[1] ?? "";
+  const args = (m[2] ?? "").split(/\s*[,/]\s*|\s+/).filter((a) => a.length > 0);
+  if (args.length !== 3 && args.length !== 4) return null;
+
+  let alpha = 1;
+  if (args.length === 4) {
+    const a = parseComponent(args[3] ?? "", 1);
+    if (a === null) return null;
+    alpha = clampUnit(a);
+  }
+  const a255 = Math.round(alpha * 255);
+
+  if (kind.startsWith("rgb")) {
+    const r = parseComponent(args[0] ?? "", 255);
+    const g = parseComponent(args[1] ?? "", 255);
+    const b = parseComponent(args[2] ?? "", 255);
+    if (r === null || g === null || b === null) return null;
+    return { r: clampByte(r), g: clampByte(g), b: clampByte(b), a: a255 };
+  }
+
+  const hue = parseHue(args[0] ?? "");
+  const sat = parseComponent(args[1] ?? "", 100);
+  const light = parseComponent(args[2] ?? "", 100);
+  if (hue === null || sat === null || light === null) return null;
+  const h = (((hue % 360) + 360) % 360) / 360;
+  const [r, g, b] = hslToRgb(h, clampUnit(sat / 100), clampUnit(light / 100));
+  return { r: clampByte(r), g: clampByte(g), b: clampByte(b), a: a255 };
+}
+
+function parseColorString(s: string): RGBA | null {
+  if (s === "transparent") return TRANSPARENT;
+
+  const named = Object.hasOwn(namedColors, s) ? namedColors[s] : undefined;
+  if (named !== undefined) return parseColorString(named);
+
+  if (s.startsWith("#")) {
+    let hex = s.slice(1);
+    if (!/^[0-9a-f]+$/.test(hex)) return null;
+    if (hex.length === 3 || hex.length === 4) {
+      hex = Array.from(hex, (ch) => ch + ch).join("");
+    }
+    if (hex.length !== 6 && hex.length !== 8) return null;
+    return {
+      r: Number.parseInt(hex.slice(0, 2), 16),
+      g: Number.parseInt(hex.slice(2, 4), 16),
+      b: Number.parseInt(hex.slice(4, 6), 16),
+      a: hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) : 255,
+    };
+  }
+
+  return parseFunctional(s);
+}
+
 /**
- * Parses color to RGBA.
+ * Parses a CSS color to 8-bit RGBA (alpha 0-255).
+ *
+ * Supported forms: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()` (numbers or
+ * percentages, comma or space separated, optional `/ alpha`), `hsl()`/`hsla()`, the 148 CSS
+ * color names and `transparent`. Matching is case-insensitive. Anything else, including a
+ * non-string value, yields opaque black.
  * @internal
  */
 export function parseHexColorToRGBA(c: Color): {
@@ -202,132 +331,16 @@ export function parseHexColorToRGBA(c: Color): {
   readonly b: number;
   readonly a: number;
 } {
+  if (typeof c !== "string") return BLACK;
   const cached = colorCache.get(c);
   if (cached) return cached;
-
-  const s = c.trim().toLowerCase();
-  const clampByte = (value: number): number => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.min(255, Math.max(0, Math.round(value)));
-  };
-  const clampAlpha = (value: number): number => {
-    if (!Number.isFinite(value)) return 1;
-    return Math.min(1, Math.max(0, value));
-  };
-
-  if (namedColors[s]) {
-    const namedColor = namedColors[s];
-    if (typeof namedColor === "string") {
-      const result = parseHexColorToRGBA(namedColor);
-      colorCache.set(c, result);
-      return result;
-    }
-    const result = { r: 0, g: 0, b: 0, a: 255 };
-    colorCache.set(c, result);
-    return result;
-  }
-
-  if (s.startsWith("#")) {
-    const hex = s.slice(1);
-    if (hex.length === 6 || hex.length === 8) {
-      const r = Number.parseInt(hex.slice(0, 2), 16);
-      const g = Number.parseInt(hex.slice(2, 4), 16);
-      const b = Number.parseInt(hex.slice(4, 6), 16);
-      const a = hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) : 255;
-      if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b) && Number.isFinite(a)) {
-        const result = { r, g, b, a };
-        colorCache.set(c, result);
-        return result;
-      }
-    }
-  }
-
-  const rgbMatch = s.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
-  if (rgbMatch) {
-    const rStr = rgbMatch[1];
-    const gStr = rgbMatch[2];
-    const bStr = rgbMatch[3];
-    if (!rStr || !gStr || !bStr) {
-      const result = { r: 0, g: 0, b: 0, a: 255 };
-      colorCache.set(c, result);
-      return result;
-    }
-    const r = clampByte(Number.parseInt(rStr, 10));
-    const g = clampByte(Number.parseInt(gStr, 10));
-    const b = clampByte(Number.parseInt(bStr, 10));
-    const alpha = rgbMatch[4] ? clampAlpha(Number.parseFloat(rgbMatch[4])) : 1;
-    const result = { r, g, b, a: Math.round(alpha * 255) };
-    colorCache.set(c, result);
-    return result;
-  }
-
-  const hslMatch = s.match(
-    /^hsla?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*(?:,\s*([\d.]+)\s*)?\)$/
-  );
-  if (hslMatch) {
-    const hRaw = hslMatch[1];
-    const sRaw = hslMatch[2];
-    const lRaw = hslMatch[3];
-    if (!hRaw || !sRaw || !lRaw) {
-      const result = { r: 0, g: 0, b: 0, a: 255 };
-      colorCache.set(c, result);
-      return result;
-    }
-    const hueDegrees = Number.parseFloat(hRaw);
-    const sat = Number.parseFloat(sRaw);
-    const light = Number.parseFloat(lRaw);
-    if (!Number.isFinite(hueDegrees) || !Number.isFinite(sat) || !Number.isFinite(light)) {
-      const result = { r: 0, g: 0, b: 0, a: 255 };
-      colorCache.set(c, result);
-      return result;
-    }
-    const h = (((hueDegrees % 360) + 360) % 360) / 360;
-    const sl = Math.min(1, Math.max(0, sat / 100));
-    const l = Math.min(1, Math.max(0, light / 100));
-    const alpha = hslMatch[4] ? clampAlpha(Number.parseFloat(hslMatch[4])) : 1;
-
-    const hslToRgb = (h: number, s: number, l: number): [number, number, number] => {
-      let r: number, g: number, b: number;
-      if (s === 0) {
-        r = g = b = l;
-      } else {
-        const hue2rgb = (p: number, q: number, t: number): number => {
-          if (t < 0) t += 1;
-          if (t > 1) t -= 1;
-          if (t < 1 / 6) return p + (q - p) * 6 * t;
-          if (t < 1 / 2) return q;
-          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-          return p;
-        };
-        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-        const p = 2 * l - q;
-        r = hue2rgb(p, q, h + 1 / 3);
-        g = hue2rgb(p, q, h);
-        b = hue2rgb(p, q, h - 1 / 3);
-      }
-      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-    };
-
-    const [r, g, b] = hslToRgb(h, sl, l);
-    const result = {
-      r: clampByte(r),
-      g: clampByte(g),
-      b: clampByte(b),
-      a: Math.round(alpha * 255),
-    };
-    colorCache.set(c, result);
-    return result;
-  }
-
-  const result = { r: 0, g: 0, b: 0, a: 255 };
-  colorCache.set(c, result);
-  return result;
+  return cacheResult(c, parseColorString(c.trim().toLowerCase()) ?? BLACK);
 }
 
 /**
  * Named color palettes for plotting.
  */
-const palettes: Record<string, readonly string[]> = {
+const palettes: Readonly<Record<string, readonly string[]>> = {
   tab10: [
     "#1f77b4",
     "#ff7f0e",
@@ -368,7 +381,7 @@ const palettes: Record<string, readonly string[]> = {
   ],
   viridis: [
     "#440154",
-    "#482777",
+    "#482878",
     "#3e4989",
     "#31688e",
     "#26828e",
@@ -417,25 +430,21 @@ const palettes: Record<string, readonly string[]> = {
   cividis: [
     "#00224e",
     "#123570",
-    "#1f4e79",
-    "#29678a",
-    "#35809e",
-    "#4e9b8e",
-    "#72b474",
-    "#a1c95a",
-    "#d0db48",
+    "#3b496c",
+    "#575d6d",
+    "#707173",
+    "#8a8678",
+    "#a59c74",
+    "#c3b369",
+    "#e1cc55",
     "#fee838",
   ],
 };
 
-/**
- * Get a named color palette.
- *
- * @param name - Palette name (tab10, Set1, Set2, Paired, viridis, plasma, inferno, magma, cividis)
- * @returns Array of hex color strings
- */
-export function getPalette(name: string): readonly string[] {
-  const p = palettes[name];
+for (const colors of Object.values(palettes)) Object.freeze(colors);
+
+function lookupPalette(name: string): readonly string[] {
+  const p = Object.hasOwn(palettes, name) ? palettes[name] : undefined;
   if (!p) {
     const available = Object.keys(palettes).join(", ");
     throw new InvalidParameterError(
@@ -448,15 +457,31 @@ export function getPalette(name: string): readonly string[] {
 }
 
 /**
- * Get a color from a named palette by index (wraps around).
+ * Get a named color palette.
+ *
+ * @param name - Palette name (tab10, Set1, Set2, Paired, viridis, plasma, inferno, magma, cividis)
+ * @returns A new array of hex color strings; changing it does not affect the palette
+ * @throws {InvalidParameterError} If the palette name is unknown.
+ */
+export function getPalette(name: string): readonly string[] {
+  return lookupPalette(name).slice();
+}
+
+/**
+ * Get a color from a named palette by index (wraps around in both directions, so index -1 is
+ * the last color).
  *
  * @param name - Palette name
- * @param index - Color index (wraps around palette length)
+ * @param index - Integer color index
  * @returns Hex color string
+ * @throws {InvalidParameterError} If the palette name is unknown or `index` is not an integer.
  */
 export function getPaletteColor(name: string, index: number): string {
-  const p = getPalette(name);
-  return p[index % p.length]!;
+  const p = lookupPalette(name);
+  if (!Number.isInteger(index)) {
+    throw new InvalidParameterError(`index must be an integer; received ${index}`, "index", index);
+  }
+  return p[((index % p.length) + p.length) % p.length] ?? "#000000";
 }
 
 /**

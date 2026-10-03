@@ -1,5 +1,5 @@
 /**
- * Benchmark 03 — Linear Algebra
+ * Benchmark 03: Linear Algebra
  * Deepbox vs NumPy/SciPy
  */
 
@@ -36,7 +36,7 @@ import { dot, tensor } from "deepbox/ndarray";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("linalg");
-header("Benchmark 03 — Linear Algebra");
+header("Benchmark 03: Linear Algebra");
 
 // ── Matrix generators ───────────────────────────────────
 

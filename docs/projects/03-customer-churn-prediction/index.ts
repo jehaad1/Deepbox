@@ -1,33 +1,33 @@
 /**
  * Customer Churn Prediction System
  *
- * A comprehensive ML pipeline for predicting customer churn using
- * classical machine learning algorithms.
+ * Predicts customer churn on a synthetic dataset. Six classical models are
+ * trained and compared, then the best one is cross-validated and inspected.
  *
  * Deepbox Modules Used:
- * - deepbox/ml: Classical ML models
- * - deepbox/preprocess: Data preprocessing, train/test split, cross-validation
+ * - deepbox/ml: Classifiers, Pipeline, crossValScore
+ * - deepbox/preprocess: StandardScaler, trainTestSplit
  * - deepbox/metrics: Classification metrics
- * - deepbox/dataframe: Data manipulation
- * - deepbox/stats: Statistical analysis
- * - deepbox/plot: Visualization
+ * - deepbox/dataframe: Tables for console output
+ * - deepbox/plot: SVG charts
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
 import { accuracy, confusionMatrix, f1Score, precision, recall } from "deepbox/metrics";
 import {
+  crossValScore,
   DecisionTreeClassifier,
   GaussianNB,
   GradientBoostingClassifier,
   KNeighborsClassifier,
   LogisticRegression,
+  Pipeline,
   RandomForestClassifier,
 } from "deepbox/ml";
 import { type Tensor, tensor } from "deepbox/ndarray";
 import { Figure } from "deepbox/plot";
-import { KFold, StandardScaler, trainTestSplit } from "deepbox/preprocess";
+import { StandardScaler, trainTestSplit } from "deepbox/preprocess";
 
 // ============================================================================
 // Configuration
@@ -39,14 +39,13 @@ const NUM_FEATURES = 10;
 const TEST_SIZE = 0.2;
 const RANDOM_STATE = 42;
 
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
+type ChurnClassifier =
+  | LogisticRegression
+  | DecisionTreeClassifier
+  | RandomForestClassifier
+  | GradientBoostingClassifier
+  | KNeighborsClassifier
+  | GaussianNB;
 
 // ============================================================================
 // Data Generation
@@ -157,7 +156,7 @@ function generateChurnData(
 
 console.log("═".repeat(70));
 console.log("  CUSTOMER CHURN PREDICTION SYSTEM");
-console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
+console.log("  Built with Deepbox: TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -169,18 +168,18 @@ if (!existsSync(OUTPUT_DIR)) {
 // Step 1: Generate and Explore Data
 // ============================================================================
 
-console.log("\n📊 STEP 1: Data Generation and Exploration");
+console.log("\nSTEP 1: Data Generation and Exploration");
 console.log("─".repeat(70));
 
 const { X, y, featureNames } = generateChurnData(NUM_SAMPLES, RANDOM_STATE);
 
-console.log(`\n✓ Generated synthetic customer data`);
+console.log(`\nGenerated synthetic customer data`);
 console.log(`  Samples: ${NUM_SAMPLES}`);
 console.log(`  Features: ${NUM_FEATURES}`);
 
 // Class distribution
-const yData = expectNumericTypedArray(y.data);
-const numChurned = Array.from(yData).filter((v) => v === 1).length;
+const yData = y.toArray() as number[];
+const numChurned = yData.filter((v) => v === 1).length;
 const numRetained = NUM_SAMPLES - numChurned;
 
 console.log(`\nClass Distribution:`);
@@ -189,14 +188,14 @@ console.log(`  Retained (0): ${numRetained} (${((numRetained / NUM_SAMPLES) * 10
 
 // Feature statistics
 console.log(`\nFeature Statistics:`);
-const XData = expectNumericTypedArray(X.data);
+const XRows = X.toArray() as number[][];
 
 const statsDF = new DataFrame({
   Feature: featureNames,
   Mean: featureNames.map((_, i) => {
     let sum = 0;
     for (let j = 0; j < NUM_SAMPLES; j++) {
-      sum += XData[j * NUM_FEATURES + i];
+      sum += XRows[j][i];
     }
     return (sum / NUM_SAMPLES).toFixed(2);
   }),
@@ -204,7 +203,7 @@ const statsDF = new DataFrame({
     let sum = 0;
     let sumSq = 0;
     for (let j = 0; j < NUM_SAMPLES; j++) {
-      const val = XData[j * NUM_FEATURES + i];
+      const val = XRows[j][i];
       sum += val;
       sumSq += val * val;
     }
@@ -215,14 +214,14 @@ const statsDF = new DataFrame({
   Min: featureNames.map((_, i) => {
     let min = Infinity;
     for (let j = 0; j < NUM_SAMPLES; j++) {
-      min = Math.min(min, XData[j * NUM_FEATURES + i]);
+      min = Math.min(min, XRows[j][i]);
     }
     return min.toFixed(2);
   }),
   Max: featureNames.map((_, i) => {
     let max = -Infinity;
     for (let j = 0; j < NUM_SAMPLES; j++) {
-      max = Math.max(max, XData[j * NUM_FEATURES + i]);
+      max = Math.max(max, XRows[j][i]);
     }
     return max.toFixed(2);
   }),
@@ -234,7 +233,7 @@ console.log(statsDF.toString());
 // Step 2: Data Preprocessing
 // ============================================================================
 
-console.log("\n🔄 STEP 2: Data Preprocessing");
+console.log("\nSTEP 2: Data Preprocessing");
 console.log("─".repeat(70));
 
 // Train/test split
@@ -244,7 +243,7 @@ const [XTrain, XTest, yTrain, yTest] = trainTestSplit(X, y, {
   shuffle: true,
 });
 
-console.log(`\n✓ Train/Test Split:`);
+console.log(`\nTrain/Test Split:`);
 console.log(`  Training samples: ${XTrain.shape[0]}`);
 console.log(`  Test samples: ${XTest.shape[0]}`);
 
@@ -254,64 +253,43 @@ scaler.fit(XTrain);
 const XTrainScaled = scaler.transform(XTrain);
 const XTestScaled = scaler.transform(XTest);
 
-console.log(`✓ Applied StandardScaler`);
+console.log(`Applied StandardScaler`);
 
 // ============================================================================
 // Step 3: Model Training and Evaluation
 // ============================================================================
 
-console.log("\n🤖 STEP 3: Model Training and Evaluation");
+console.log("\nSTEP 3: Model Training and Evaluation");
 console.log("─".repeat(70));
 
-// Define models to compare
-const models: {
-  name: string;
-  model:
-    | LogisticRegression
-    | DecisionTreeClassifier
-    | RandomForestClassifier
-    | GradientBoostingClassifier
-    | KNeighborsClassifier
-    | GaussianNB;
-  params: string;
-}[] = [
+// Each entry builds a fresh, unfitted model, so the same settings can be reused
+// for cross-validation and for the final analysis.
+const models: { name: string; create: () => ChurnClassifier }[] = [
   {
     name: "Logistic Regression",
-    model: new LogisticRegression({ maxIter: 100, learningRate: 0.1 }),
-    params: "maxIter=100, lr=0.1",
+    create: () => new LogisticRegression({ maxIter: 100, learningRate: 0.1 }),
   },
   {
     name: "Decision Tree",
-    model: new DecisionTreeClassifier({ maxDepth: 5 }),
-    params: "maxDepth=5",
+    create: () => new DecisionTreeClassifier({ maxDepth: 5 }),
   },
   {
     name: "Random Forest",
-    model: new RandomForestClassifier({
-      nEstimators: 50,
-      maxDepth: 5,
-      randomState: RANDOM_STATE,
-    }),
-    params: "nEstimators=50, maxDepth=5",
+    create: () =>
+      new RandomForestClassifier({ nEstimators: 50, maxDepth: 5, randomState: RANDOM_STATE }),
   },
   {
     name: "Gradient Boosting",
-    model: new GradientBoostingClassifier({
-      nEstimators: 50,
-      maxDepth: 3,
-      learningRate: 0.1,
-    }),
-    params: "nEstimators=50, maxDepth=3, lr=0.1",
+    create: () =>
+      new GradientBoostingClassifier({ nEstimators: 50, maxDepth: 3, learningRate: 0.1 }),
   },
   {
     name: "KNN",
-    model: new KNeighborsClassifier({ nNeighbors: 5 }),
-    params: "k=5",
+    create: () => new KNeighborsClassifier({ nNeighbors: 5 }),
   },
   {
     name: "Naive Bayes",
-    model: new GaussianNB(),
-    params: "default",
+    create: () => new GaussianNB(),
   },
 ];
 
@@ -326,17 +304,14 @@ const results: {
 
 console.log("\nTraining models...\n");
 
-for (const { name, model, params: _params } of models) {
+for (const { name, create } of models) {
   const startTime = Date.now();
+  const model = create();
 
   try {
-    // Train model
     model.fit(XTrainScaled, yTrain);
-
-    // Predict
     const yPred = model.predict(XTestScaled);
 
-    // Calculate metrics
     const acc = accuracy(yTest, yPred);
     const prec = precision(yTest, yPred, "binary");
     const rec = recall(yTest, yPred, "binary");
@@ -354,10 +329,10 @@ for (const { name, model, params: _params } of models) {
     });
 
     console.log(
-      `  ✓ ${name.padEnd(20)} - Accuracy: ${(Number(acc) * 100).toFixed(2)}% (${trainTime}ms)`
+      `  ${name.padEnd(20)} - Accuracy: ${(Number(acc) * 100).toFixed(2)}% (${trainTime}ms)`
     );
   } catch (error) {
-    console.log(`  ✗ ${name.padEnd(20)} - Error: ${error}`);
+    console.log(`  ${name.padEnd(20)} - Error: ${error}`);
   }
 }
 
@@ -365,7 +340,7 @@ for (const { name, model, params: _params } of models) {
 // Step 4: Model Comparison
 // ============================================================================
 
-console.log("\n📈 STEP 4: Model Comparison");
+console.log("\nSTEP 4: Model Comparison");
 console.log("─".repeat(70));
 
 // Sort by F1 score
@@ -385,93 +360,35 @@ console.log(comparisonDF.toString());
 
 // Best model
 const bestModel = results[0];
-console.log(`\n🏆 Best Model: ${bestModel.name}`);
-console.log(`   F1 Score: ${(bestModel.f1 * 100).toFixed(2)}%`);
+console.log(`\nBest Model: ${bestModel.name}`);
+console.log(`  F1 Score: ${(bestModel.f1 * 100).toFixed(2)}%`);
 
 // ============================================================================
 // Step 5: Cross-Validation
 // ============================================================================
 
-console.log("\n🔄 STEP 5: Cross-Validation (Best Model)");
+console.log("\nSTEP 5: Cross-Validation (Best Model)");
 console.log("─".repeat(70));
 
-// Re-train best model type for cross-validation
-const bestModelType = results[0].name;
-console.log(`\nPerforming 5-Fold Cross-Validation on ${bestModelType}...`);
+const bestModelType = bestModel.name;
+const createBest = (models.find((m) => m.name === bestModelType) ?? models[0]).create;
+console.log(`\nPerforming 5-fold cross-validation on ${bestModelType}...`);
 
-const kfold = new KFold({
-  nSplits: 5,
-  shuffle: true,
-  randomState: RANDOM_STATE,
+// The scaler sits inside the pipeline, so each fold fits it on its own training rows only.
+// crossValScore stratifies the folds by class for classifiers.
+const cvScores = crossValScore(
+  new Pipeline([
+    ["scaler", new StandardScaler()],
+    ["clf", createBest()],
+  ]),
+  X,
+  y,
+  5
+);
+
+cvScores.forEach((score, i) => {
+  console.log(`  Fold ${i + 1}: Accuracy = ${(score * 100).toFixed(2)}%`);
 });
-const cvScores: number[] = [];
-
-let foldNum = 1;
-for (const { trainIndex: trainIdx, testIndex: valIdx } of kfold.split(X)) {
-  // Extract fold data
-  const XTrainFold: number[][] = [];
-  const yTrainFold: number[] = [];
-  const XValFold: number[][] = [];
-  const yValFold: number[] = [];
-
-  for (const idx of trainIdx) {
-    const row: number[] = [];
-    for (let j = 0; j < NUM_FEATURES; j++) {
-      row.push(XData[idx * NUM_FEATURES + j]);
-    }
-    XTrainFold.push(row);
-    yTrainFold.push(yData[idx]);
-  }
-
-  for (const idx of valIdx) {
-    const row: number[] = [];
-    for (let j = 0; j < NUM_FEATURES; j++) {
-      row.push(XData[idx * NUM_FEATURES + j]);
-    }
-    XValFold.push(row);
-    yValFold.push(yData[idx]);
-  }
-
-  // Scale
-  const foldScaler = new StandardScaler();
-  foldScaler.fit(tensor(XTrainFold));
-  const XTrainFoldScaled = foldScaler.transform(tensor(XTrainFold));
-  const XValFoldScaled = foldScaler.transform(tensor(XValFold));
-
-  // Train and evaluate
-  let cvModel:
-    | LogisticRegression
-    | DecisionTreeClassifier
-    | RandomForestClassifier
-    | GradientBoostingClassifier
-    | KNeighborsClassifier
-    | GaussianNB;
-  if (bestModelType === "Random Forest") {
-    cvModel = new RandomForestClassifier({
-      nEstimators: 50,
-      maxDepth: 5,
-      randomState: RANDOM_STATE,
-    });
-  } else if (bestModelType === "Gradient Boosting") {
-    cvModel = new GradientBoostingClassifier({
-      nEstimators: 50,
-      maxDepth: 3,
-      learningRate: 0.1,
-    });
-  } else if (bestModelType === "Logistic Regression") {
-    cvModel = new LogisticRegression({ maxIter: 100, learningRate: 0.1 });
-  } else {
-    cvModel = new DecisionTreeClassifier({ maxDepth: 5 });
-  }
-
-  cvModel.fit(XTrainFoldScaled, tensor(yTrainFold));
-  const yPredFold = cvModel.predict(XValFoldScaled);
-  const foldAcc = Number(accuracy(tensor(yValFold), yPredFold));
-
-  cvScores.push(foldAcc);
-  console.log(`  Fold ${foldNum}: Accuracy = ${(foldAcc * 100).toFixed(2)}%`);
-  foldNum++;
-}
 
 const cvMean = cvScores.reduce((a, b) => a + b, 0) / cvScores.length;
 const cvStd = Math.sqrt(cvScores.reduce((sum, s) => sum + (s - cvMean) ** 2, 0) / cvScores.length);
@@ -482,53 +399,22 @@ console.log(`\n  CV Mean Accuracy: ${(cvMean * 100).toFixed(2)}% ± ${(cvStd * 1
 // Step 6: Confusion Matrix Analysis
 // ============================================================================
 
-console.log("\n📊 STEP 6: Confusion Matrix Analysis");
+console.log("\nSTEP 6: Confusion Matrix Analysis");
 console.log("─".repeat(70));
 
-// Re-train best model for detailed analysis
-let analysisModel:
-  | LogisticRegression
-  | DecisionTreeClassifier
-  | RandomForestClassifier
-  | GradientBoostingClassifier
-  | KNeighborsClassifier
-  | GaussianNB;
-if (bestModelType === "Random Forest") {
-  analysisModel = new RandomForestClassifier({
-    nEstimators: 50,
-    maxDepth: 5,
-    randomState: RANDOM_STATE,
-  });
-} else if (bestModelType === "Gradient Boosting") {
-  analysisModel = new GradientBoostingClassifier({
-    nEstimators: 50,
-    maxDepth: 3,
-    learningRate: 0.1,
-  });
-} else {
-  analysisModel = new LogisticRegression({ maxIter: 100, learningRate: 0.1 });
-}
-
+// Fit the best model again on the training split for the detailed breakdown
+const analysisModel = createBest();
 analysisModel.fit(XTrainScaled, yTrain);
 const yPredFinal = analysisModel.predict(XTestScaled);
 
 const cm = confusionMatrix(yTest, yPredFinal);
-const cmData = expectNumericTypedArray(cm.data);
+const [[tn, fp], [fn, tp]] = cm.toArray() as number[][];
 
 console.log("\nConfusion Matrix:");
 console.log("                  Predicted");
 console.log("                  Retained  Churned");
-console.log(
-  `  Actual Retained    ${String(cmData[0]).padStart(4)}     ${String(cmData[1]).padStart(4)}`
-);
-console.log(
-  `  Actual Churned     ${String(cmData[2]).padStart(4)}     ${String(cmData[3]).padStart(4)}`
-);
-
-const tn = cmData[0];
-const fp = cmData[1];
-const fn = cmData[2];
-const tp = cmData[3];
+console.log(`  Actual Retained    ${String(tn).padStart(4)}     ${String(fp).padStart(4)}`);
+console.log(`  Actual Churned     ${String(fn).padStart(4)}     ${String(tp).padStart(4)}`);
 
 console.log(`\n  True Negatives:  ${tn} (correctly predicted retained)`);
 console.log(`  False Positives: ${fp} (incorrectly predicted churned)`);
@@ -544,10 +430,10 @@ console.log(`  Churn Detection Rate: ${(detectionRate * 100).toFixed(1)}%`);
 console.log(`  False Alarm Rate:     ${(falseAlarmRate * 100).toFixed(1)}%`);
 
 // ============================================================================
-// Step 7: Feature Importance (for tree-based models)
+// Step 7: Feature Importance (random forest)
 // ============================================================================
 
-console.log("\n🔍 STEP 7: Feature Importance Analysis");
+console.log("\nSTEP 7: Feature Importance Analysis");
 console.log("─".repeat(70));
 
 // Train Random Forest for feature importance
@@ -556,13 +442,9 @@ const rfForImportance = new RandomForestClassifier({
 });
 rfForImportance.fit(XTrainScaled, yTrain);
 
-const featureImportanceTensor = rfForImportance.featureImportances;
-const featureImportanceData = expectNumericTypedArray(featureImportanceTensor.data);
+const featureImportances = rfForImportance.featureImportances.toArray() as number[];
 const rankedFeatures = featureNames
-  .map((name, index) => ({
-    name,
-    importance: Number(featureImportanceData[featureImportanceTensor.offset + index]),
-  }))
+  .map((name, index) => ({ name, importance: featureImportances[index] }))
   .sort((left, right) => right.importance - left.importance);
 
 console.log("\n  Random Forest feature importances:");
@@ -574,7 +456,7 @@ for (const [index, feature] of rankedFeatures.slice(0, 5).entries()) {
 // Step 8: Visualizations
 // ============================================================================
 
-console.log("\n📊 STEP 8: Generating Visualizations");
+console.log("\nSTEP 8: Generating Visualizations");
 console.log("─".repeat(70));
 
 // Model comparison bar chart
@@ -592,9 +474,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/model-comparison.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/model-comparison.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/model-comparison.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate model comparison plot: ${e}`);
+  console.log(`  Warning: could not generate model comparison plot: ${e}`);
 }
 
 // Cross-validation scores plot
@@ -612,9 +494,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/cv-scores.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/cv-scores.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/cv-scores.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate CV scores plot: ${e}`);
+  console.log(`  Warning: could not generate CV scores plot: ${e}`);
 }
 
 // ============================================================================
@@ -625,7 +507,7 @@ console.log(`\n${"═".repeat(70)}`);
 console.log("  ANALYSIS COMPLETE - SUMMARY");
 console.log("═".repeat(70));
 
-console.log("\n📌 Key Findings:\n");
+console.log("\nKey Findings:\n");
 console.log("  1. Dataset Overview:");
 console.log(`     • ${NUM_SAMPLES} customers analyzed`);
 console.log(`     • ${((numChurned / NUM_SAMPLES) * 100).toFixed(1)}% churn rate`);
@@ -640,18 +522,18 @@ console.log("\n  3. Business Impact:");
 console.log(`     • Can detect ${(detectionRate * 100).toFixed(1)}% of churning customers`);
 console.log(`     • False alarm rate: ${(falseAlarmRate * 100).toFixed(1)}%`);
 
-console.log("\n💡 Recommendations:");
-console.log("   • Focus retention efforts on customers with:");
+console.log("\nNotes:");
+console.log("   • The synthetic data raises churn probability for customers with:");
 console.log("     - Low satisfaction scores");
 console.log("     - No contract");
 console.log("     - High support call frequency");
-console.log("   • Consider ensemble methods for production deployment");
-console.log("   • Implement model monitoring for drift detection");
+console.log("   • Compare the models again on real data before choosing one");
+console.log("   • Monitor the churn rate after deployment to catch drift");
 
-console.log("\n📁 Output Files:");
+console.log("\nOutput Files:");
 console.log(`   • ${OUTPUT_DIR}/model-comparison.svg`);
 console.log(`   • ${OUTPUT_DIR}/cv-scores.svg`);
 
 console.log(`\n${"═".repeat(70)}`);
-console.log("  ✅ Customer Churn Prediction Complete!");
+console.log("  Customer Churn Prediction Complete!");
 console.log("═".repeat(70));

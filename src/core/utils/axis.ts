@@ -15,8 +15,16 @@ import type { Axis } from "../types/common";
  * @param axis - Axis identifier (index or alias)
  * @param ndim - Number of dimensions in the tensor
  * @returns Non-negative integer dimension index
- * @throws {InvalidParameterError} If axis is out of bounds
+ * @throws {InvalidParameterError} If `ndim` is not a non-negative integer
+ * @throws {InvalidParameterError} If axis is not an integer or is out of bounds
+ *   (valid range is `-ndim` to `ndim - 1`)
  * @throws {InvalidParameterError} If axis alias is invalid
+ *
+ * @example
+ * ```ts
+ * normalizeAxis(-1, 3);        // 2
+ * normalizeAxis("columns", 2); // 1
+ * ```
  */
 export function normalizeAxis(axis: Axis, ndim: number): number {
   if (!Number.isInteger(ndim) || ndim < 0) {
@@ -54,20 +62,22 @@ export function normalizeAxis(axis: Axis, ndim: number): number {
     throw new InvalidParameterError(`axis ${axis} is out of bounds for ndim=${ndim}`, "axis", axis);
   }
 
-  return normalized;
+  // `-0` is a valid integer axis; return a plain 0 so callers never see negative zero.
+  return normalized === 0 ? 0 : normalized;
 }
 
 /**
  * Normalize a list of axes to valid dimension indices.
  *
- * Checks for duplicates and validity of each axis.
+ * Checks for duplicates (including a negative axis that resolves to an
+ * already listed one, e.g. `[0, -2]` for ndim=2) and validity of each axis.
  *
  * @param axis - Single axis or array of axes
  * @param ndim - Number of dimensions
  * @returns Array of unique non-negative integer dimension indices
  * @throws {InvalidParameterError} If any axis is invalid, out of bounds, or duplicated
  */
-export function normalizeAxes(axis: Axis | Axis[], ndim: number): number[] {
+export function normalizeAxes(axis: Axis | readonly Axis[], ndim: number): number[] {
   if (!Number.isInteger(ndim) || ndim < 0) {
     throw new InvalidParameterError(
       `ndim must be a non-negative integer; received ${ndim}`,
@@ -76,13 +86,17 @@ export function normalizeAxes(axis: Axis | Axis[], ndim: number): number[] {
     );
   }
 
-  const axes = Array.isArray(axis) ? axis : [axis];
+  const axes: readonly Axis[] = Array.isArray(axis) ? (axis as readonly Axis[]) : [axis as Axis];
   const seen = new Set<number>();
   const normalized: number[] = [];
   for (const ax of axes) {
     const norm = normalizeAxis(ax, ndim);
     if (seen.has(norm)) {
-      throw new InvalidParameterError("duplicate axis", "axis", axis);
+      throw new InvalidParameterError(
+        `duplicate axis: axis ${String(ax)} resolves to dimension ${norm}, which is already listed`,
+        "axis",
+        axis
+      );
     }
     seen.add(norm);
     normalized.push(norm);

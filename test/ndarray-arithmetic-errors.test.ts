@@ -5,9 +5,12 @@ import { Tensor } from "../src/ndarray/tensor/Tensor";
 
 describe("ndarray arithmetic error branches", () => {
   it("throws on dtype mismatch and shape mismatch", () => {
+    // Mixed dtypes are promoted (float32 with int32 gives float32), not rejected.
     const a = tensor([1, 2], { dtype: "float32" });
     const b = tensor([1, 2], { dtype: "int32" });
-    expect(() => add(a, b)).toThrow(/DType mismatch/i);
+    expect(add(a, b).dtype).toBe("float32");
+    const s = tensor(["a", "b"], { dtype: "string" });
+    expect(() => add(a, s)).toThrow(/string/i);
 
     const c = tensor([1, 2]);
     const d = tensor([1, 2, 3]);

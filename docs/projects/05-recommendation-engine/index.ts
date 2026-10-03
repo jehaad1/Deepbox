@@ -1,18 +1,19 @@
 /**
  * Movie Recommendation Engine
  *
- * Collaborative filtering recommendation system using clustering and similarity.
+ * Collaborative filtering on a synthetic rating matrix: user clustering with
+ * KMeans, PCA for a 2D view, user-based and item-based similarity, and a
+ * leave-one-out error check.
  *
  * Deepbox Modules Used:
- * - deepbox/ndarray: Tensor and sparse matrix operations
- * - deepbox/ml: KMeans, PCA, KNN
- * - deepbox/stats: Correlation for similarity
- * - deepbox/metrics: Clustering metrics
- * - deepbox/dataframe: Data manipulation
+ * - deepbox/ndarray: tensor
+ * - deepbox/ml: KMeans, PCA
+ * - deepbox/metrics: silhouetteScore
+ * - deepbox/dataframe: Tables for console output
+ * - deepbox/plot: SVG charts
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { isNumericTypedArray, isTypedArray } from "deepbox/core";
 import { DataFrame } from "deepbox/dataframe";
 import { silhouetteScore } from "deepbox/metrics";
 import { KMeans, PCA } from "deepbox/ml";
@@ -28,15 +29,6 @@ const NUM_USERS = 200;
 const NUM_MOVIES = 50;
 const SPARSITY = 0.7; // 70% of ratings are missing
 const NUM_RECOMMENDATIONS = 5;
-
-const expectNumericTypedArray = (
-  value: unknown
-): Float32Array | Float64Array | Int32Array | Uint8Array => {
-  if (!isTypedArray(value) || !isNumericTypedArray(value)) {
-    throw new Error("Expected numeric typed array");
-  }
-  return value;
-};
 
 // ============================================================================
 // Data Generation
@@ -213,7 +205,7 @@ function predictRating(
 
 console.log("═".repeat(70));
 console.log("  MOVIE RECOMMENDATION ENGINE");
-console.log("  Built with Deepbox — TypeScript toolkit for AI & numerical computing");
+console.log("  Built with Deepbox: TypeScript toolkit for AI & numerical computing");
 console.log("═".repeat(70));
 
 // Create output directory
@@ -225,12 +217,12 @@ if (!existsSync(OUTPUT_DIR)) {
 // Step 1: Generate Data
 // ============================================================================
 
-console.log("\n📊 STEP 1: Generating Rating Data");
+console.log("\nSTEP 1: Generating Rating Data");
 console.log("─".repeat(70));
 
 const { ratings, movieGenres, movieNames } = generateRatingData(NUM_USERS, NUM_MOVIES, SPARSITY);
 
-// Calculate statistics
+// Rating statistics
 let totalRatings = 0;
 let ratingSum = 0;
 const ratingCounts = [0, 0, 0, 0, 0]; // counts for ratings 1-5
@@ -245,7 +237,7 @@ for (const userRatings of ratings) {
   }
 }
 
-console.log(`\n✓ Generated rating matrix`);
+console.log(`\nGenerated rating matrix`);
 console.log(`  Users: ${NUM_USERS}`);
 console.log(`  Movies: ${NUM_MOVIES}`);
 console.log(`  Total Ratings: ${totalRatings}`);
@@ -273,7 +265,7 @@ for (const [genre, count] of Object.entries(genreCounts).sort((a, b) => b[1] - a
 // Step 2: User Clustering
 // ============================================================================
 
-console.log("\n👥 STEP 2: User Clustering (K-Means)");
+console.log("\nSTEP 2: User Clustering (K-Means)");
 console.log("─".repeat(70));
 
 // Create user feature matrix (replace 0s with mean for clustering)
@@ -315,18 +307,18 @@ for (const k of kValues) {
 
 // Select best k based on silhouette score
 const bestK = clusterResults.reduce((best, r) => (r.silhouette > best.silhouette ? r : best)).k;
-console.log(`\n✓ Best k=${bestK} selected`);
+console.log(`\nBest k=${bestK} selected`);
 
 // Final clustering
 const kmeans = new KMeans({ nClusters: bestK, randomState: 42 });
 kmeans.fit(userFeaturesTensor);
 const userLabels = kmeans.predict(userFeaturesTensor);
-const labelData = expectNumericTypedArray(userLabels.data);
+const labelData = userLabels.toArray() as number[];
 
 // Cluster statistics
 console.log(`\nCluster Distribution:`);
 for (let c = 0; c < bestK; c++) {
-  const clusterUsers = Array.from(labelData).filter((l) => l === c).length;
+  const clusterUsers = labelData.filter((l) => l === c).length;
   console.log(
     `  Cluster ${c}: ${clusterUsers} users (${((clusterUsers / NUM_USERS) * 100).toFixed(1)}%)`
   );
@@ -336,15 +328,15 @@ for (let c = 0; c < bestK; c++) {
 // Step 3: Dimensionality Reduction (PCA)
 // ============================================================================
 
-console.log("\n📉 STEP 3: Dimensionality Reduction (PCA)");
+console.log("\nSTEP 3: Dimensionality Reduction (PCA)");
 console.log("─".repeat(70));
 
 const pca = new PCA({ nComponents: 2 });
 pca.fit(userFeaturesTensor);
 const userProjected = pca.transform(userFeaturesTensor);
 
-console.log(`\n✓ Reduced ${NUM_MOVIES} features to 2 components`);
-const explainedVar = expectNumericTypedArray(pca.explainedVarianceRatio.data);
+console.log(`\nReduced ${NUM_MOVIES} features to 2 components`);
+const explainedVar = pca.explainedVarianceRatio.toArray() as number[];
 console.log(`  Component 1 variance: ${(explainedVar[0] * 100).toFixed(1)}%`);
 console.log(`  Component 2 variance: ${(explainedVar[1] * 100).toFixed(1)}%`);
 console.log(`  Total explained: ${((explainedVar[0] + explainedVar[1]) * 100).toFixed(1)}%`);
@@ -353,7 +345,7 @@ console.log(`  Total explained: ${((explainedVar[0] + explainedVar[1]) * 100).to
 // Step 4: User-Based Collaborative Filtering
 // ============================================================================
 
-console.log("\n🎯 STEP 4: User-Based Collaborative Filtering");
+console.log("\nSTEP 4: User-Based Collaborative Filtering");
 console.log("─".repeat(70));
 
 // Select a target user for demonstration
@@ -402,7 +394,7 @@ console.log(recDF.toString());
 // Step 5: Item-Based Similarity
 // ============================================================================
 
-console.log("\n🎬 STEP 5: Item-Based Similarity Analysis");
+console.log("\nSTEP 5: Item-Based Similarity Analysis");
 console.log("─".repeat(70));
 
 // Calculate item similarity matrix (sample)
@@ -451,11 +443,14 @@ for (const { movieId, similarity } of movieSims.slice(0, 5)) {
 // Step 6: Evaluation
 // ============================================================================
 
-console.log("\n📈 STEP 6: Recommendation Evaluation");
+console.log("\nSTEP 6: Recommendation Evaluation");
 console.log("─".repeat(70));
 
 // Simple evaluation: predict known ratings and measure error
+// The baseline predicts the global mean rating for every held-out rating
+const globalMean = ratingSum / totalRatings;
 let totalError = 0;
+let baselineError = 0;
 let totalPredictions = 0;
 
 for (let u = 0; u < Math.min(50, NUM_USERS); u++) {
@@ -474,6 +469,7 @@ for (let u = 0; u < Math.min(50, NUM_USERS); u++) {
 
       if (predicted > 0) {
         totalError += Math.abs(predicted - actualRating);
+        baselineError += Math.abs(globalMean - actualRating);
         totalPredictions++;
       }
     }
@@ -481,16 +477,18 @@ for (let u = 0; u < Math.min(50, NUM_USERS); u++) {
 }
 
 const mae = totalError / totalPredictions;
+const baselineMae = baselineError / totalPredictions;
 console.log(`\nCollaborative Filtering Evaluation (leave-one-out):`);
 console.log(`  Predictions made: ${totalPredictions}`);
 console.log(`  Mean Absolute Error: ${mae.toFixed(3)}`);
-console.log(`  (Lower is better, random guess MAE ≈ 1.5)`);
+console.log(`  Global-mean baseline MAE: ${baselineMae.toFixed(3)}`);
+console.log(`  (Lower is better)`);
 
 // ============================================================================
 // Step 7: Visualizations
 // ============================================================================
 
-console.log("\n📊 STEP 7: Generating Visualizations");
+console.log("\nSTEP 7: Generating Visualizations");
 console.log("─".repeat(70));
 
 // User clusters visualization
@@ -498,13 +496,9 @@ try {
   const fig = new Figure({ width: 800, height: 600 });
   const ax = fig.addAxes();
 
-  const projData = expectNumericTypedArray(userProjected.data);
-  const xCoords: number[] = [];
-  const yCoords: number[] = [];
-  for (let i = 0; i < NUM_USERS; i++) {
-    xCoords.push(projData[i * 2]);
-    yCoords.push(projData[i * 2 + 1]);
-  }
+  const projected = userProjected.toArray() as number[][];
+  const xCoords = projected.map((row) => row[0]);
+  const yCoords = projected.map((row) => row[1]);
 
   ax.scatter(tensor(xCoords), tensor(yCoords), { color: "#2196F3", size: 5 });
   ax.setTitle("User Clusters (PCA Projection)");
@@ -513,9 +507,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/user-clusters.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/user-clusters.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/user-clusters.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate user clusters plot: ${e}`);
+  console.log(`  Warning: could not generate user clusters plot: ${e}`);
 }
 
 // Rating distribution
@@ -530,9 +524,9 @@ try {
 
   const svg = fig.renderSVG();
   writeFileSync(`${OUTPUT_DIR}/rating-distribution.svg`, svg.svg);
-  console.log(`  ✓ Saved: ${OUTPUT_DIR}/rating-distribution.svg`);
+  console.log(`  Saved: ${OUTPUT_DIR}/rating-distribution.svg`);
 } catch (e) {
-  console.log(`  ⚠ Could not generate rating distribution: ${e}`);
+  console.log(`  Warning: could not generate rating distribution: ${e}`);
 }
 
 // ============================================================================
@@ -543,24 +537,22 @@ console.log(`\n${"═".repeat(70)}`);
 console.log("  RECOMMENDATION ENGINE COMPLETE - SUMMARY");
 console.log("═".repeat(70));
 
-console.log("\n📌 Key Findings:\n");
+console.log("\nKey Findings:\n");
 console.log("  1. Data Overview:");
 console.log(`     • ${NUM_USERS} users, ${NUM_MOVIES} movies`);
 console.log(`     • ${totalRatings} ratings (${((1 - SPARSITY) * 100).toFixed(0)}% density)`);
 console.log(`     • Average rating: ${(ratingSum / totalRatings).toFixed(2)}`);
 
 console.log("\n  2. User Clustering:");
-console.log(`     • Optimal clusters: ${bestK}`);
-console.log(`     • Users show distinct preference patterns`);
+console.log(`     • Clusters chosen by silhouette score: ${bestK}`);
 
 console.log("\n  3. Recommendation Quality:");
-console.log(`     • MAE: ${mae.toFixed(3)} (baseline ~1.5)`);
-console.log(`     • Collaborative filtering captures user preferences`);
+console.log(`     • MAE: ${mae.toFixed(3)} (global-mean baseline ${baselineMae.toFixed(3)})`);
 
-console.log("\n📁 Output Files:");
+console.log("\nOutput Files:");
 console.log(`   • ${OUTPUT_DIR}/user-clusters.svg`);
 console.log(`   • ${OUTPUT_DIR}/rating-distribution.svg`);
 
 console.log(`\n${"═".repeat(70)}`);
-console.log("  ✅ Recommendation Engine Complete!");
+console.log("  Recommendation Engine Complete!");
 console.log("═".repeat(70));

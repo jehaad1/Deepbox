@@ -174,9 +174,7 @@ describe("LocalResponseNorm", () => {
     const x = tensor([1, 2, 3, 4, 5, 6], f32).reshape([1, 2, 3]);
     const out = lrn.forward(x);
     for (let i = 0; i < out.size; i++) {
-      expect(Math.abs(Number(out.tensor.data[i]))).toBeLessThanOrEqual(
-        Math.abs(Number(x.data[i])) + 1e-6
-      );
+      expect(Math.abs(Number(out.data[i]))).toBeLessThanOrEqual(Math.abs(Number(x.data[i])) + 1e-6);
     }
   });
 

@@ -2,7 +2,7 @@
  * Real reference values for the Iris dataset.
  *
  * Public-domain data mirrored from the UCI Machine Learning Repository via
- * scikit-learn (load_iris). Values are the canonical measurements — NOT synthetic.
+ * scikit-learn (load_iris). Values are the canonical measurements, NOT synthetic.
  * Generated once and committed; do not hand-edit.
  *
  * @packageDocumentation

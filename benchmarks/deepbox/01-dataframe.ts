@@ -1,5 +1,5 @@
 /**
- * Benchmark 01 — DataFrame Operations
+ * Benchmark 01: DataFrame Operations
  * Deepbox vs Pandas
  */
 
@@ -7,7 +7,7 @@ import { DataFrame, Series, to_datetime } from "deepbox/dataframe";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("dataframe");
-header("Benchmark 01 — DataFrame Operations");
+header("Benchmark 01: DataFrame Operations");
 
 // ── Data generators ──────────────────────────────────────
 

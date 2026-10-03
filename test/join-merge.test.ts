@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DataFrame } from "../src/dataframe";
 
 /**
- * Comprehensive test suite for DataFrame join() and merge() operations.
+ * Test suite for DataFrame join() and merge() operations.
  * Tests hash join algorithm correctness, edge cases, and all join types.
  */
 describe("DataFrame.join()", () => {
@@ -259,7 +259,7 @@ describe("DataFrame.join()", () => {
 });
 
 /**
- * Comprehensive test suite for DataFrame.merge() operations.
+ * Test suite for DataFrame.merge() operations.
  * Tests pandas-style merge with different column names and suffix handling.
  */
 describe("DataFrame.merge()", () => {

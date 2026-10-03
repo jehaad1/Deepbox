@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   add,
   addScalar,
@@ -26,13 +25,35 @@ import {
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
+/**
+ * Options for the RAdam optimizer.
+ *
+ * @property lr - Learning rate
+ * @property beta1 - Decay rate of the first moment estimate
+ * @property beta2 - Decay rate of the second moment estimate
+ * @property eps - Small constant added to the square root of the second moment
+ * @property weightDecay - Weight decay coefficient
+ * @property decoupledWeightDecay - Apply weight decay directly to the parameters
+ *   (`param *= 1 - lr * weightDecay`, as AdamW does) instead of adding it to the gradient
+ * @property maximize - Maximize the objective instead of minimizing it
+ */
 type RAdamOptions = {
   lr: number;
   beta1: number;
   beta2: number;
   eps: number;
   weightDecay: number;
+  decoupledWeightDecay: boolean;
+  maximize: boolean;
 };
+
+function validateRAdamOptions(options: Readonly<RAdamOptions>): void {
+  assertFiniteNonNegative("learning rate", options.lr);
+  assertInRange("beta1", options.beta1, 0, 1);
+  assertInRange("beta2", options.beta2, 0, 1);
+  assertFinitePositive("epsilon", options.eps);
+  assertFiniteNonNegative("weight_decay value", options.weightDecay);
+}
 
 type RAdamState = {
   step: number;
@@ -50,6 +71,16 @@ type RAdamState = {
  * Fixes Adam's early training variance issue by computing a variance
  * rectification term. When the variance is tractable (high enough SMA),
  * uses the adaptive learning rate; otherwise falls back to SGD with momentum.
+ * The update follows PyTorch's `torch.optim.RAdam`:
+ *
+ * ```
+ * rhoInf = 2 / (1 - beta2) - 1
+ * rhoT   = rhoInf - 2 t beta2^t / (1 - beta2^t)
+ * rhoT > 5:  param -= lr * rect * sqrt(1 - beta2^t) * mHat / (sqrt(v) + eps)
+ * otherwise: param -= lr * mHat                      (mHat = m / (1 - beta1^t))
+ * ```
+ *
+ * With the default `beta2 = 0.999` the first five steps use the SGD-with-momentum branch.
  *
  * @example
  * ```ts
@@ -63,12 +94,21 @@ type RAdamState = {
  * @category Optimizers
  */
 export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new RAdam optimizer.
+   *
+   * @param params - Iterable of parameters or parameter groups to optimize
+   * @param options - Optimization options
+   * @param options.lr - Learning rate (default: 0.001)
+   * @param options.beta1 - First moment decay, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Second moment decay, in [0, 1) (default: 0.999)
+   * @param options.eps - Numerical stability constant (default: 1e-8)
+   * @param options.weightDecay - Weight decay coefficient (default: 0)
+   * @param options.decoupledWeightDecay - Decay the parameters directly instead of
+   *   adding the penalty to the gradient (default: false)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<RAdamOptions>>,
     options: {
@@ -77,38 +117,25 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
       readonly beta2?: number;
       readonly eps?: number;
       readonly weightDecay?: number;
+      readonly decoupledWeightDecay?: boolean;
+      readonly maximize?: boolean;
     } = {}
   ) {
-    const defaults = {
+    const defaults: RAdamOptions = {
       lr: options.lr ?? 0.001,
       beta1: options.beta1 ?? 0.9,
       beta2: options.beta2 ?? 0.999,
       eps: options.eps ?? 1e-8,
       weightDecay: options.weightDecay ?? 0,
+      decoupledWeightDecay: options.decoupledWeightDecay ?? false,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(`Invalid group index: ${groupIdx}`, "groupIdx", groupIdx);
-    }
-    return group.options.lr;
-  }
-
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<RAdamOptions>): void {
+    validateRAdamOptions(options);
   }
 
   protected isState(state: Record<string, unknown>): state is RAdamState {
@@ -119,19 +146,32 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
     );
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional closure that reevaluates the model and returns the loss
+   * @returns Loss value if a closure is provided
+   * @throws {InvalidParameterError} If a group option is invalid or a gradient or
+   *   parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
     if (closure) loss = closure();
 
-    this._stepCount++;
+    this.prepareStep("RAdam");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps, weightDecay } = group.options;
+      const { lr, beta1, beta2, eps, weightDecay, decoupledWeightDecay, maximize } = group.options;
 
       // Maximum length of the approximated SMA
       const rhoInf = 2 / (1 - beta2) - 1;
+      const decay = decoupledWeightDecay && weightDecay !== 0 ? 1 - lr * weightDecay : 1;
+      const l2 = decoupledWeightDecay ? 0 : weightDecay;
 
-      for (const param of group.params) {
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the RAdam update from device-dispatched ops. The
         // rectification branch depends only on the (host-side) step scalar, so
         // it is selected here identically to the host loop.
@@ -148,7 +188,9 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
           const biasCorrection1 = 1 - beta1 ** t;
           const biasCorrection2 = 1 - beta2 ** t;
           const rhoT = rhoInf - (2 * t * beta2 ** t) / biasCorrection2;
-          const grad = weightDecay !== 0 ? add(g, mulScalar(param.tensor, weightDecay)) : g;
+          const signed = maximize ? mulScalar(g, -1) : g;
+          const grad = l2 !== 0 ? add(signed, mulScalar(param.tensor, l2)) : signed;
+          const base = decay !== 1 ? mulScalar(param.tensor, decay) : param.tensor;
           const mPrev = dstate.expAvgTensor;
           const vPrev = dstate.expAvgSqTensor;
           const mNew = mPrev
@@ -161,18 +203,17 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
           dstate.expAvgSqTensor = vNew;
           const mCorrected = mulScalar(mNew, 1 / biasCorrection1);
           if (rhoT > 5) {
-            const vCorrected = mulScalar(vNew, 1 / biasCorrection2);
             const rect = Math.sqrt(
               ((rhoT - 4) * (rhoT - 2) * rhoInf) / ((rhoInf - 4) * (rhoInf - 2) * rhoT)
             );
-            const denom = addScalar(sqrt(vCorrected), eps);
+            const denom = addScalar(sqrt(vNew), eps);
             replaceParamStorage(
               param,
               "tensor",
-              sub(param.tensor, mulScalar(div(mCorrected, denom), lr * rect))
+              sub(base, mulScalar(div(mCorrected, denom), lr * rect * Math.sqrt(biasCorrection2)))
             );
           } else {
-            replaceParamStorage(param, "tensor", sub(param.tensor, mulScalar(mCorrected, lr)));
+            replaceParamStorage(param, "tensor", sub(base, mulScalar(mCorrected, lr)));
           }
           continue;
         }
@@ -209,13 +250,23 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
         // SMA for current step
         const rhoT = rhoInf - (2 * state.step * beta2 ** state.step) / biasCorrection2;
 
+        // The rectified branch needs the same scalar for every element.
+        const rectified = rhoT > 5;
+        const adaptiveStep = rectified
+          ? lr *
+            Math.sqrt(((rhoT - 4) * (rhoT - 2) * rhoInf) / ((rhoInf - 4) * (rhoInf - 2) * rhoT)) *
+            Math.sqrt(biasCorrection2)
+          : 0;
+
         for (let i = 0; i < size; i++) {
           const gi0 = safeArrayAccess(gradData, gradOffset + i, "RAdam gradient");
           const pi = safeArrayAccess(paramData, paramOffset + i, "RAdam parameter");
           assertFinite("gradient", gi0);
           assertFinite("parameter", pi);
 
-          const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
+          const gSigned = maximize ? -gi0 : gi0;
+          const gi = l2 !== 0 ? gSigned + l2 * pi : gSigned;
+          const base = decay !== 1 ? pi * decay : pi;
 
           const m = safeArrayAccess(state.expAvg, i, "RAdam expAvg");
           const v = safeArrayAccess(state.expAvgSq, i, "RAdam expAvgSq");
@@ -228,17 +279,13 @@ export class RAdam extends Optimizer<RAdamOptions, RAdamState> {
 
           const mCorrected = mNew / biasCorrection1;
 
-          if (rhoT > 5) {
-            // Variance is tractable — use adaptive learning rate
-            const vCorrected = vNew / biasCorrection2;
-            const rect = Math.sqrt(
-              ((rhoT - 4) * (rhoT - 2) * rhoInf) / ((rhoInf - 4) * (rhoInf - 2) * rhoT)
-            );
+          if (rectified) {
+            // Variance is tractable: use the adaptive learning rate.
             paramData[paramOffset + i] =
-              pi - (lr * rect * mCorrected) / (Math.sqrt(vCorrected) + eps);
+              base - (adaptiveStep * mCorrected) / (Math.sqrt(vNew) + eps);
           } else {
-            // Variance not tractable — fall back to SGD with momentum
-            paramData[paramOffset + i] = pi - lr * mCorrected;
+            // Variance not tractable: fall back to SGD with momentum.
+            paramData[paramOffset + i] = base - lr * mCorrected;
           }
         }
       }

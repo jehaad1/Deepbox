@@ -5,7 +5,7 @@ contact_links:
     about: Check the documentation for usage guides and API reference
   - name: Examples
     url: https://deepbox.dev/examples
-    about: Browse comprehensive examples demonstrating Deepbox features
+    about: Browse runnable examples demonstrating Deepbox features
   - name: Discussions
     url: https://github.com/jehaad1/Deepbox/discussions
     about: Ask questions and discuss ideas with the community

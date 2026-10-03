@@ -1,11 +1,15 @@
 /**
  * Example 28: Recurrent Neural Network Layers
  *
- * Demonstrates RNN, LSTM, and GRU layers for sequence modeling.
- * Recurrent layers process sequential data by maintaining hidden state across time steps.
+ * RNN, LSTM and GRU layers on a small batch of sequences, with output shapes
+ * and parameter counts. Recurrent layers carry a hidden state across time steps.
+ *
+ * The forward passes are inference only, so they run inside noGrad() and
+ * return plain tensors. Without it, the layers return a GradTensor that
+ * tracks the weights. Both kinds of tensor have .shape.
  */
 
-import { GradTensor, tensor } from "deepbox/ndarray";
+import { noGrad, tensor } from "deepbox/ndarray";
 import { GRU, LSTM, RNN } from "deepbox/nn";
 
 console.log("=== Recurrent Neural Network Layers ===\n");
@@ -35,10 +39,9 @@ const rnnInput = tensor([
 ]);
 console.log(`Input shape:  [${rnnInput.shape.join(", ")}]`);
 
-const rnnResult = rnn.forward(rnnInput);
-const rnnOut = rnnResult instanceof GradTensor ? rnnResult.tensor : rnnResult;
+const rnnOut = noGrad(() => rnn.forward(rnnInput));
 console.log(`Output shape: [${rnnOut.shape.join(", ")}]`);
-console.log("  Output contains hidden states for all time steps\n");
+console.log("  The output holds the hidden state at every time step\n");
 
 // ---------------------------------------------------------------------------
 // Part 2: LSTM (Long Short-Term Memory)
@@ -50,8 +53,7 @@ const lstm = new LSTM(4, 8, { batchFirst: true });
 console.log("LSTM(inputSize=4, hiddenSize=8, batchFirst=true)");
 console.log(`Input shape:  [${rnnInput.shape.join(", ")}]`);
 
-const lstmResult = lstm.forward(rnnInput);
-const lstmOut = lstmResult instanceof GradTensor ? lstmResult.tensor : lstmResult;
+const lstmOut = noGrad(() => lstm.forward(rnnInput));
 console.log(`Output shape: [${lstmOut.shape.join(", ")}]`);
 console.log("  LSTM uses forget/input/output gates for selective memory\n");
 
@@ -65,10 +67,9 @@ const gru = new GRU(4, 8, { batchFirst: true });
 console.log("GRU(inputSize=4, hiddenSize=8, batchFirst=true)");
 console.log(`Input shape:  [${rnnInput.shape.join(", ")}]`);
 
-const gruResult = gru.forward(rnnInput);
-const gruOut = gruResult instanceof GradTensor ? gruResult.tensor : gruResult;
+const gruOut = noGrad(() => gru.forward(rnnInput));
 console.log(`Output shape: [${gruOut.shape.join(", ")}]`);
-console.log("  GRU uses reset/update gates — fewer params than LSTM\n");
+console.log("  GRU uses reset/update gates, fewer parameters than LSTM\n");
 
 // ---------------------------------------------------------------------------
 // Part 4: Multi-layer RNN
@@ -79,10 +80,9 @@ const deepRnn = new RNN(4, 16, { numLayers: 2, batchFirst: true });
 console.log("RNN(inputSize=4, hiddenSize=16, numLayers=2)");
 console.log(`Input shape:  [${rnnInput.shape.join(", ")}]`);
 
-const deepResult = deepRnn.forward(rnnInput);
-const deepOut = deepResult instanceof GradTensor ? deepResult.tensor : deepResult;
+const deepOut = noGrad(() => deepRnn.forward(rnnInput));
 console.log(`Output shape: [${deepOut.shape.join(", ")}]`);
-console.log("  2-layer RNN extracts higher-level sequential patterns\n");
+console.log("  2-layer RNN feeds the first layer's hidden states into a second layer\n");
 
 // ---------------------------------------------------------------------------
 // Part 5: Unbatched (single sequence) input
@@ -97,20 +97,24 @@ const singleSeq = tensor([
 console.log("Single sequence (no batch dim):");
 console.log(`Input shape:  [${singleSeq.shape.join(", ")}]`);
 
-const singleResult = rnn.forward(singleSeq);
-const singleOut = singleResult instanceof GradTensor ? singleResult.tensor : singleResult;
+const singleOut = noGrad(() => rnn.forward(singleSeq));
 console.log(`Output shape: [${singleOut.shape.join(", ")}]`);
 console.log("  2D input is treated as unbatched sequence\n");
 
 // ---------------------------------------------------------------------------
 // Part 6: Parameter counts
 // ---------------------------------------------------------------------------
-console.log("--- Part 6: Parameter Comparison ---");
-const rnnParams = Array.from(rnn.parameters()).length;
-const lstmParams = Array.from(lstm.parameters()).length;
-const gruParams = Array.from(gru.parameters()).length;
-console.log(`RNN  parameters: ${rnnParams}`);
-console.log(`LSTM parameters: ${lstmParams} (4x gates)`);
-console.log(`GRU  parameters: ${gruParams} (3x gates)`);
+console.log("--- Part 6: Weight Counts ---");
+// Count scalar weights, not parameter tensors: every layer has 4 tensors
+// (input weights, hidden weights and two biases), but the tensors differ in size.
+const countWeights = (layer: { parameters(): Iterable<{ size: number }> }): number =>
+  Array.from(layer.parameters()).reduce((total, p) => total + p.size, 0);
+
+const rnnWeights = countWeights(rnn);
+const lstmWeights = countWeights(lstm);
+const gruWeights = countWeights(gru);
+console.log(`RNN  weights: ${rnnWeights}  (1 transform per step)`);
+console.log(`LSTM weights: ${lstmWeights}  (4 gates, ${lstmWeights / rnnWeights}x the RNN)`);
+console.log(`GRU  weights: ${gruWeights}  (3 gates, ${gruWeights / rnnWeights}x the RNN)`);
 
 console.log("\n=== Recurrent Layers Complete ===");

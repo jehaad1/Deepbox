@@ -5,11 +5,11 @@
 <clipPath id="dbclip-50-50-700-400"><path d="M50 50 L750 50 L750 450 L50 450 Z" /></clipPath>
 <g clip-path="url(#dbclip-50-50-700-400)">
 <rect x="81.82" y="68.18" width="87.77" height="363.64" fill="#4caf50" stroke="#000000" />
-<rect x="191.54" y="80.73" width="87.77" height="351.09" fill="#4caf50" stroke="#000000" />
-<rect x="301.25" y="82.63" width="87.77" height="349.19" fill="#4caf50" stroke="#000000" />
-<rect x="410.97" y="83.59" width="87.77" height="348.23" fill="#4caf50" stroke="#000000" />
-<rect x="520.69" y="95.36" width="87.77" height="336.46" fill="#4caf50" stroke="#000000" />
-<rect x="630.41" y="106.15" width="87.77" height="325.67" fill="#4caf50" stroke="#000000" />
+<rect x="191.54" y="84.41" width="87.77" height="347.41" fill="#4caf50" stroke="#000000" />
+<rect x="301.25" y="86.13" width="87.77" height="345.68" fill="#4caf50" stroke="#000000" />
+<rect x="410.97" y="89.13" width="87.77" height="342.69" fill="#4caf50" stroke="#000000" />
+<rect x="520.69" y="89.81" width="87.77" height="342.01" fill="#4caf50" stroke="#000000" />
+<rect x="630.41" y="113.20" width="87.77" height="318.61" fill="#4caf50" stroke="#000000" />
 </g>
 <line class="x-tick" x1="125.71" y1="450.00" x2="125.71" y2="455.00" stroke="#000" />
 <text class="tick-label tick-label-x" x="125.71" y="457.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">0</text>
@@ -25,12 +25,12 @@
 <text class="tick-label tick-label-x" x="674.29" y="457.00" text-anchor="middle" dominant-baseline="hanging" font-size="10" fill="#000">5</text>
 <line class="y-tick" x1="50.00" y1="431.82" x2="45.00" y2="431.82" stroke="#000" />
 <text class="tick-label tick-label-y" x="43.00" y="431.82" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">0</text>
-<line class="y-tick" x1="50.00" y1="318.48" x2="45.00" y2="318.48" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="318.48" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
-<line class="y-tick" x1="50.00" y1="205.15" x2="45.00" y2="205.15" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="205.15" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
-<line class="y-tick" x1="50.00" y1="91.82" x2="45.00" y2="91.82" stroke="#000" />
-<text class="tick-label tick-label-y" x="43.00" y="91.82" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
+<line class="y-tick" x1="50.00" y1="316.01" x2="45.00" y2="316.01" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="316.01" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">20</text>
+<line class="y-tick" x1="50.00" y1="200.21" x2="45.00" y2="200.21" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="200.21" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">40</text>
+<line class="y-tick" x1="50.00" y1="84.41" x2="45.00" y2="84.41" stroke="#000" />
+<text class="tick-label tick-label-y" x="43.00" y="84.41" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#000">60</text>
 <text x="400" y="40" text-anchor="middle" font-size="14" font-weight="bold" fill="#000">Model Comparison (F1 Score)</text>
 <text x="400" y="485" text-anchor="middle" font-size="12" fill="#000">Model</text>
 <text x="15" y="250" text-anchor="middle" font-size="12" fill="#000" transform="rotate(-90 15 250)">F1 Score (%)</text>

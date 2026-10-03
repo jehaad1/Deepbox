@@ -1,5 +1,5 @@
 /**
- * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ * @see {@link https://deepbox.dev/docs/ndarray-sparse | Sparse matrices}
  */
 
 export type { CSRMatrixInit } from "./CSRMatrix";

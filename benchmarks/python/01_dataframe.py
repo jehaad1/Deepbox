@@ -1,5 +1,5 @@
 """
-Benchmark 01 — DataFrame Operations
+Benchmark 01: DataFrame Operations
 Pandas
 """
 
@@ -12,7 +12,7 @@ from io import StringIO
 from utils import run, create_suite, header, footer
 
 suite = create_suite("dataframe", "Pandas")
-header("Benchmark 01 — DataFrame Operations", "Pandas")
+header("Benchmark 01: DataFrame Operations", "Pandas")
 
 # ── Data generators ──────────────────────────────────────
 

@@ -11,7 +11,7 @@ import {
   validateDevice,
   validateShape,
 } from "../core";
-import { arange, type Tensor, Tensor as TensorClass, type TypedArray, tensor } from "../ndarray";
+import { type Tensor, Tensor as TensorClass, type TypedArray } from "../ndarray";
 import {
   __clearSeed,
   __fillNormal,
@@ -133,7 +133,7 @@ function fisherYatesTargets(n: number): Int32Array {
     let m = (rnd[p++] as number) * s;
     let l = m >>> 0;
     if (l < s) {
-      // Rare rejection region — compute the threshold once and resample.
+      // Rare rejection region: compute the threshold once and resample.
       const t = UINT32_RANGE % s;
       while (l < t) {
         m = __randomUint32() * s;
@@ -167,6 +167,12 @@ function fillBoundedInts(out: Int32Array, count: number, bound: number): void {
   }
 }
 
+// Largest integer n such that every integer in [0, n] is exactly representable in float32.
+const FLOAT32_EXACT_INT_MAX = 2 ** 24;
+
+// Largest number of draws served by the sparse (Map-backed) pool in choice().
+const SPARSE_POOL_MAX_DRAWS = 4_000_000;
+
 function allocateFloatBuffer(dtype: FloatDType, size: number): FloatBuffer {
   return dtype === "float32" ? new Float32Array(size) : new Float64Array(size);
 }
@@ -175,10 +181,30 @@ function allocateIntegerBuffer(dtype: IntegerDType, size: number): IntegerBuffer
   return dtype === "int64" ? new BigInt64Array(size) : new Int32Array(size);
 }
 
+const INT64_LIMIT = 2 ** 63;
+
+/**
+ * Store an integer sample, refusing values the buffer cannot represent
+ * (typed arrays would otherwise wrap them silently).
+ */
 function writeInteger(buffer: IntegerBuffer, index: number, value: number): void {
   if (buffer instanceof BigInt64Array) {
+    if (!Number.isFinite(value) || Math.abs(value) >= INT64_LIMIT) {
+      throw new InvalidParameterError(
+        `sampled value ${value} does not fit in int64`,
+        "dtype",
+        "int64"
+      );
+    }
     buffer[index] = BigInt(value);
   } else {
+    if (!(value >= INT32_MIN && value <= INT32_MAX)) {
+      throw new InvalidParameterError(
+        `sampled value ${value} does not fit in int32; request dtype "int64"`,
+        "dtype",
+        "int32"
+      );
+    }
     buffer[index] = value;
   }
 }
@@ -192,29 +218,95 @@ function randomOpenUnit(): number {
 }
 
 /**
- * Validate that a tensor is contiguous (no slicing/striding).
+ * Check that a tensor is stored contiguously in row-major order and return its
+ * storage window. Size-1 axes may carry any stride; the tensor may be a
+ * contiguous view into a larger buffer (non-zero offset).
+ *
  * @param t - Tensor to validate
  * @param functionName - Name of the calling function for error messages
+ * @returns `start` (storage offset of the first element) and `length` (element count)
  */
-function validateContiguous(t: Tensor, functionName: string): void {
-  if (t.offset !== 0) {
-    throw new InvalidParameterError(
-      `${functionName} currently requires offset === 0`,
-      "offset",
-      t.offset
-    );
-  }
-  for (let axis = 0; axis < t.ndim; axis++) {
-    const expected = t.strides[axis];
-    const tail = t.shape.slice(axis + 1).reduce((acc, v) => acc * v, 1);
-    if (expected !== tail) {
-      throw new InvalidParameterError(
-        `${functionName} currently requires a contiguous tensor`,
-        "strides",
-        t.strides
-      );
+function contiguousWindow(t: Tensor, functionName: string): { start: number; length: number } {
+  const length = t.size;
+  if (length > 0) {
+    let expected = 1;
+    for (let axis = t.ndim - 1; axis >= 0; axis--) {
+      const dim = t.shape[axis] as number;
+      if (dim !== 1 && t.strides[axis] !== expected) {
+        throw new InvalidParameterError(
+          `${functionName} currently requires a contiguous tensor`,
+          "strides",
+          t.strides
+        );
+      }
+      expected *= dim;
     }
   }
+  return { start: t.offset, length };
+}
+
+/**
+ * Read the elements of a 1D or 2D numeric tensor as float64, honoring its
+ * offset and strides (so sliced and transposed views work).
+ */
+function readNumbers(t: Tensor, functionName: string, name: string): Float64Array {
+  if (t.dtype === "string") {
+    throw new DTypeError(`${functionName} requires a numeric ${name} tensor`);
+  }
+  const out = new Float64Array(t.size);
+  const data = t.data;
+  if (t.ndim === 1) {
+    const stride = t.strides[0] as number;
+    for (let i = 0; i < out.length; i++) out[i] = Number(data[t.offset + i * stride]);
+  } else if (t.ndim === 2) {
+    const rows = t.shape[0] as number;
+    const cols = t.shape[1] as number;
+    const s0 = t.strides[0] as number;
+    const s1 = t.strides[1] as number;
+    for (let i = 0; i < rows; i++) {
+      for (let j = 0; j < cols; j++) {
+        out[i * cols + j] = Number(data[t.offset + i * s0 + j * s1]);
+      }
+    }
+  } else {
+    throw new InvalidParameterError(`${name} must be 1D or 2D`, name, t.shape);
+  }
+  return out;
+}
+
+/** Machine epsilon of a floating-point storage dtype (0 for non-float dtypes). */
+function dtypeEpsilon(dtype: DType): number {
+  switch (dtype) {
+    case "float64":
+      return 2.220446049250313e-16;
+    case "float32":
+      return 1.1920928955078125e-7;
+    case "float16":
+      return 9.765625e-4;
+    case "bfloat16":
+      return 7.8125e-3;
+    default:
+      return 0;
+  }
+}
+
+/** Resolve a `size` argument (count or shape) to the leading output shape. */
+function resolveLeadingShape(size: number | Shape, name: string): number[] {
+  if (typeof size === "number") {
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new InvalidParameterError(`${name} must be a non-negative integer`, name, size);
+    }
+    return [size];
+  }
+  validateShape(size);
+  return [...size];
+}
+
+/** Float dtype for sampling functions that infer it from the library default. */
+function resolveSamplingFloatDType(dtype: DType | undefined, functionName: string): FloatDType {
+  if (dtype !== undefined) return resolveFloatDType(dtype, functionName);
+  const fallback = getConfig().defaultDtype;
+  return fallback === "float64" ? "float64" : "float32";
 }
 
 const LANCZOS_COEFFS = [
@@ -259,8 +351,8 @@ function logFactorial(n: number): number {
 
 /**
  * Sample a single Poisson deviate. Knuth's product method underflows
- * (exp(-lambda) → 0) for lambda ≳ 745 and silently caps samples; the
- * transformed-rejection method (Ahrens & Dieter) is used for lambda ≥ 30.
+ * (exp(-lambda) tends to 0) for lambda ≳ 745 and silently caps samples, so lambda >= 30
+ * uses Atkinson's (1979) logistic-envelope rejection method instead.
  */
 function samplePoissonScalar(lambda: number): number {
   if (!(lambda > 0)) return 0;
@@ -293,12 +385,34 @@ function samplePoissonScalar(lambda: number): number {
   }
 }
 
+/**
+ * Sample from Gamma(shape, 1). Marsaglia-Tsang for shape >= 1; for shape < 1 the
+ * boost `Gamma(shape + 1) * U^(1 / shape)` is applied.
+ */
 function sampleGammaUnit(shape: number): number {
   if (shape < 1) {
     const u = randomOpenUnit();
     return __gammaLarge(shape + 1) * u ** (1 / shape);
   }
   return __gammaLarge(shape);
+}
+
+/**
+ * Natural log of a Gamma(shape, 1) sample, drawn from the same random numbers as
+ * {@link sampleGammaUnit}. Working in log space avoids the underflow of
+ * `U^(1 / shape)` for small shapes, which otherwise turns gamma ratios into 0/0.
+ */
+function sampleLogGammaUnit(shape: number): number {
+  if (shape < 1) {
+    const u = randomOpenUnit();
+    return Math.log(__gammaLarge(shape + 1)) + Math.log(u) / shape;
+  }
+  return Math.log(__gammaLarge(shape));
+}
+
+/** Sample from Gamma(shape, scale). */
+function sampleGamma(shape: number, scale: number): number {
+  return sampleGammaUnit(shape) * scale;
 }
 
 /**
@@ -377,6 +491,8 @@ export function clearSeed(): void {
  * - Values are uniformly distributed in [0, 1) (inclusive lower, exclusive upper bound).
  * - Uses deterministic PRNG when seed is set via {@link setSeed}.
  * - Default dtype is float32; use float64 for higher precision.
+ * - float64 values are multiples of 2^-32; float32 values are rounded to float32
+ *   but never reach 1.
  * - Only float32 and float64 dtypes are supported.
  *
  * @example
@@ -417,7 +533,7 @@ export function rand(shape: Shape, opts: RandomOptions = {}): Tensor {
  * @param opts - Options (dtype, device)
  *
  * @remarks
- * - Uses Box-Muller transform to generate normally distributed values.
+ * - Uses the Ziggurat method (Marsaglia and Tsang, 2000).
  * - Mean = 0, standard deviation = 1.
  * - All values are finite (no infinities from tail behavior).
  * - Deterministic when seed is set via {@link setSeed}.
@@ -447,33 +563,6 @@ export function randn(shape: Shape, opts: RandomOptions = {}): Tensor {
   });
 }
 
-/**
- * Random integers in half-open interval [low, high).
- *
- * @param low - Lowest integer (inclusive)
- * @param high - Highest integer (exclusive)
- * @param shape - Output shape
- * @param opts - Options (dtype, device)
- *
- * @throws {InvalidParameterError} When low or high is not finite
- * @throws {InvalidParameterError} When low or high is not an integer
- * @throws {InvalidParameterError} When high <= low
- *
- * @remarks
- * - Generates integers uniformly in [low, high) range.
- * - Both low and high must be safe integers (within ±2^53-1).
- * - dtype must be int32 or int64; int32 output requires bounds within int32 range.
- * - Deterministic when seed is set via {@link setSeed}.
- *
- * @example
- * ```js
- * import { randint } from 'deepbox/random';
- *
- * const x = randint(0, 10, [5]);  // 5 random integers from 0 to 9
- * ```
- *
- * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
- */
 const RANDINT_CHUNK = 4096;
 
 function fillRandintNum(data: Int32Array, size: number, range: number, low: number): void {
@@ -490,7 +579,7 @@ function fillRandintNum(data: Int32Array, size: number, range: number, low: numb
     for (let j = 0; j < n && produced < size; j++) {
       const value = scratch[j] as number;
       if (value < limit) {
-        // value % range via reciprocal multiply — integer `%` compiles to
+        // value % range via reciprocal multiply. Integer `%` compiles to
         // idiv (~20 cycles). The quotient can be off by one from float
         // rounding; the two fixups make the result exact (all intermediate
         // products are < 2^53, so f64 arithmetic on them is exact).
@@ -525,6 +614,32 @@ function fillRandintBig(data: BigInt64Array, size: number, range: number, low: n
   }
 }
 
+/**
+ * Random integers in half-open interval [low, high).
+ *
+ * @param low - Lowest integer (inclusive)
+ * @param high - Highest integer (exclusive)
+ * @param shape - Output shape
+ * @param opts - Options (dtype, device)
+ *
+ * @throws {InvalidParameterError} When low or high is not a safe integer
+ * @throws {InvalidParameterError} When high <= low
+ *
+ * @remarks
+ * - Generates integers uniformly in [low, high) range (exactly unbiased).
+ * - Both low and high must be safe integers (within ±2^53-1).
+ * - dtype must be int32 or int64; int32 output requires bounds within int32 range.
+ * - Deterministic when seed is set via {@link setSeed}.
+ *
+ * @example
+ * ```js
+ * import { randint } from 'deepbox/random';
+ *
+ * const x = randint(0, 10, [5]);  // 5 random integers from 0 to 9
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
 export function randint(low: number, high: number, shape: Shape, opts: RandomOptions = {}): Tensor {
   assertSafeInteger(low, "low");
   assertSafeInteger(high, "high");
@@ -584,8 +699,11 @@ export function randint(low: number, high: number, shape: Shape, opts: RandomOpt
  * @throws {InvalidParameterError} When high < low
  *
  * @remarks
- * - Values are uniformly distributed in [low, high).
+ * - Values are uniformly distributed in [low, high). When the range is narrow
+ *   relative to the magnitude of `low`, rounding to the output dtype can make a
+ *   value equal to `high`.
  * - For very large ranges, floating-point precision may affect uniformity.
+ * - `high === low` is allowed and returns `low` for every element.
  * - Deterministic when seed is set via {@link setSeed}.
  * - Only float32 and float64 dtypes are supported.
  *
@@ -619,8 +737,16 @@ export function uniform(
   const range = high - low;
 
   __fillUniform(data, size);
-  for (let i = 0; i < size; i++) {
-    data[i] = (data[i] as number) * range + low;
+  if (Number.isFinite(range)) {
+    for (let i = 0; i < size; i++) {
+      data[i] = (data[i] as number) * range + low;
+    }
+  } else {
+    // high - low overflows float64: blend the endpoints instead.
+    for (let i = 0; i < size; i++) {
+      const u = data[i] as number;
+      data[i] = low * (1 - u) + high * u;
+    }
   }
 
   return TensorClass.fromTypedArray({
@@ -643,8 +769,8 @@ export function uniform(
  * @throws {InvalidParameterError} When std < 0
  *
  * @remarks
- * - Uses Box-Muller transform internally.
- * - All values are finite due to RNG resolution (no infinities from log(0)).
+ * - Uses the Ziggurat method (Marsaglia and Tsang, 2000) for the standard normal draw.
+ * - All values are finite (no infinities from tail behavior).
  * - std=0 produces constant values equal to mean.
  * - Deterministic when seed is set via {@link setSeed}.
  * - Only float32 and float64 dtypes are supported.
@@ -708,6 +834,63 @@ function binomialSmallMean(n: number, logQ: number): number {
   }
 }
 
+/**
+ * Stirling-series error `log(n!) - log(sqrt(2 pi n) (n / e)^n)` for an integer
+ * n >= 0 (Loader, 2000). It is small (about 1 / (12 n)), so subtracting it
+ * instead of whole log-factorials avoids the cancellation of terms of size n log n.
+ */
+function stirlingError(n: number): number {
+  if (n === 0) return 0;
+  if (n <= 15) {
+    let logFact = 0;
+    for (let i = 2; i <= n; i++) logFact += Math.log(i);
+    return logFact - (n + 0.5) * Math.log(n) + n - 0.5 * Math.log(2 * Math.PI);
+  }
+  const nn = n * n;
+  if (n > 500) return (1 / 12 - 1 / 360 / nn) / n;
+  if (n > 80) return (1 / 12 - (1 / 360 - 1 / 1260 / nn) / nn) / n;
+  if (n > 35) return (1 / 12 - (1 / 360 - (1 / 1260 - 1 / 1680 / nn) / nn) / nn) / n;
+  return (1 / 12 - (1 / 360 - (1 / 1260 - (1 / 1680 - 1 / 1188 / nn) / nn) / nn) / nn) / n;
+}
+
+/** Deviance term `x log(x / np) + np - x`, evaluated stably when x is close to np. */
+function devianceTerm(x: number, np: number): number {
+  if (Math.abs(x - np) < 0.1 * (x + np)) {
+    const v = (x - np) / (x + np);
+    let s = (x - np) * v;
+    if (Math.abs(s) < Number.MIN_VALUE) return s;
+    let ej = 2 * x * v;
+    const v2 = v * v;
+    for (let j = 1; j < 1000; j++) {
+      ej *= v2;
+      const next = s + ej / (2 * j + 1);
+      if (next === s) return next;
+      s = next;
+    }
+  }
+  return x * Math.log(x / np) + np - x;
+}
+
+/**
+ * Binomial pmf at `k` (0 < k < n) via Loader's saddle-point formula. Accurate to
+ * near machine precision for any n, unlike `exp(logC(n, k) + ...)`, whose
+ * absolute error grows with `n log n`.
+ */
+function binomialPmf(n: number, k: number, p: number, q: number): number {
+  const logPmf =
+    stirlingError(n) -
+    stirlingError(k) -
+    stirlingError(n - k) -
+    devianceTerm(k, n * p) -
+    devianceTerm(n - k, n * q);
+  const logFactor = Math.log(2 * Math.PI) + Math.log(k) + Math.log1p(-k / n);
+  return Math.exp(logPmf - 0.5 * logFactor);
+}
+
+/**
+ * Inversion by "chop-down" search outward from the mode: the pmf is walked in
+ * both directions with the recurrence `pmf(k+1) / pmf(k) = (n-k)/(k+1) * p/q`.
+ */
 function binomialChopDown(n: number, p: number, q: number, mode: number, pmfMode: number): number {
   const u = __random();
   let cumulative = pmfMode;
@@ -721,28 +904,152 @@ function binomialChopDown(n: number, p: number, q: number, mode: number, pmfMode
   let pmfRight = pmfMode;
   const ratioLeft = q / p;
   const ratioRight = p / q;
+  let leftActive = left > 0;
+  let rightActive = right < n;
 
-  while (left > 0 || right < n) {
-    if (left > 0) {
+  while (leftActive || rightActive) {
+    if (leftActive) {
       pmfLeft *= (left / (n - left + 1)) * ratioLeft;
       left -= 1;
       cumulative += pmfLeft;
       if (u <= cumulative) {
         return left;
       }
+      // Stop once the tail underflows (nothing left to add on this side).
+      leftActive = left > 0 && pmfLeft > 0;
     }
-    if (right < n) {
+    if (rightActive) {
       pmfRight *= ((n - right) / (right + 1)) * ratioRight;
       right += 1;
       cumulative += pmfRight;
       if (u <= cumulative) {
         return right;
       }
+      rightActive = right < n && pmfRight > 0;
     }
   }
 
-  // Fallback: due to rounding, return the closest boundary.
-  return u <= cumulative ? left : right;
+  // u fell into the rounding gap above the summed pmf (about 1e-15): use the mode.
+  return mode;
+}
+
+/** Stirling correction used in the BTPE squeeze, as in NumPy's random_binomial_btpe. */
+function btpeStirling(x: number): number {
+  const x2 = x * x;
+  return (13680 - (462 - (132 - (99 - 140 / x2) / x2) / x2) / x2) / x / 166320;
+}
+
+/**
+ * BTPE (Kachitvichyanukul and Schmeiser, 1988), the exact rejection sampler NumPy
+ * uses for large means. Expected work is O(1) per draw for any n, where inversion
+ * needs O(sqrt(n p q)) steps. Requires p <= 0.5 and n * p >= 30.
+ */
+function binomialBtpe(n: number, p: number): number {
+  const q = 1 - p;
+  const fm = n * p + p;
+  const m = Math.floor(fm);
+  const nrq = n * p * q;
+  const p1 = Math.floor(2.195 * Math.sqrt(nrq) - 4.6 * q) + 0.5;
+  const xm = m + 0.5;
+  const xl = xm - p1;
+  const xr = xm + p1;
+  const c = 0.134 + 20.5 / (15.3 + m);
+  let a = (fm - xl) / (fm - xl * p);
+  const laml = a * (1 + a / 2);
+  a = (xr - fm) / (xr * q);
+  const lamr = a * (1 + a / 2);
+  const p2 = p1 * (1 + 2 * c);
+  const p3 = p2 + c / laml;
+  const p4 = p3 + c / lamr;
+
+  for (;;) {
+    const u = __random() * p4;
+    let v = __random();
+    let y: number;
+    if (u <= p1) {
+      // Triangular region: always accepted.
+      return Math.floor(xm - p1 * v + u);
+    }
+    if (u <= p2) {
+      // Parallelograms.
+      const x = xl + (u - p1) / c;
+      v = v * c + 1 - Math.abs(m - x + 0.5) / p1;
+      if (v > 1) continue;
+      y = Math.floor(x);
+    } else if (u <= p3) {
+      // Left exponential tail.
+      if (v === 0) continue;
+      y = Math.floor(xl + Math.log(v) / laml);
+      if (y < 0) continue;
+      v = v * (u - p2) * laml;
+    } else {
+      // Right exponential tail.
+      if (v === 0) continue;
+      y = Math.floor(xr - Math.log(v) / lamr);
+      if (y > n) continue;
+      v = v * (u - p3) * lamr;
+    }
+
+    const k = Math.abs(y - m);
+    if (k <= 20 || k >= nrq / 2 - 1) {
+      // Explicit evaluation of f(y) / f(m) by the recurrence.
+      const s = p / q;
+      const aa = s * (n + 1);
+      let f = 1;
+      if (m < y) {
+        for (let i = m + 1; i <= y; i++) f *= aa / i - s;
+      } else if (m > y) {
+        for (let i = y + 1; i <= m; i++) f /= aa / i - s;
+      }
+      if (v <= f) return y;
+      continue;
+    }
+
+    // Squeeze using upper and lower bounds on log(f(y)), then the final test.
+    const rho = (k / nrq) * ((k * (k / 3 + 0.625) + 0.16666666666666666) / nrq + 0.5);
+    const t = (-k * k) / (2 * nrq);
+    const logV = Math.log(v);
+    if (logV < t - rho) return y;
+    if (logV > t + rho) continue;
+    const x1 = y + 1;
+    const f1 = m + 1;
+    const z = n + 1 - m;
+    const w = n - y + 1;
+    const bound =
+      xm * Math.log(f1 / x1) +
+      (n - m + 0.5) * Math.log(z / w) +
+      (y - m) * Math.log((w * p) / (x1 * q)) +
+      btpeStirling(f1) +
+      btpeStirling(z) +
+      btpeStirling(x1) +
+      btpeStirling(w);
+    if (logV <= bound) return y;
+  }
+}
+
+/**
+ * One Binomial(n, p) draw for a safe-integer n >= 0 and p in [0, 1]. All methods
+ * are exact: the geometric waiting-time method when the mean is below 10,
+ * chop-down inversion from the mode up to a mean of 30, and BTPE above that,
+ * so the cost per draw stays bounded for n as large as 2^53 - 1.
+ */
+function sampleBinomialScalar(n: number, p: number): number {
+  if (n <= 0 || !(p > 0)) return 0;
+  if (p >= 1) return n;
+  const flip = p > 0.5;
+  const prob = flip ? 1 - p : p;
+  const q = 1 - prob;
+  let k: number;
+  const mean = n * prob;
+  if (mean < 10) {
+    k = binomialSmallMean(n, Math.log1p(-prob));
+  } else if (mean < 30) {
+    const mode = Math.floor((n + 1) * prob);
+    k = binomialChopDown(n, prob, q, mode, binomialPmf(n, mode, prob, q));
+  } else {
+    k = binomialBtpe(n, prob);
+  }
+  return flip ? n - k : k;
 }
 
 /**
@@ -758,8 +1065,9 @@ function binomialChopDown(n: number, p: number, q: number, mode: number, pmfMode
  *
  * @remarks
  * - Generates number of successes in n independent Bernoulli trials.
- * - Uses an exact geometric waiting-time method for small means and
- *   a mode-centered chop-down inversion for larger means.
+ * - Uses exact methods throughout: geometric waiting times or CDF inversion for
+ *   means below 10, chop-down inversion from the mode below 30, and BTPE (as
+ *   NumPy does) above that, so the cost per draw stays bounded for large n.
  * - Results are in range [0, n].
  * - Deterministic when seed is set via {@link setSeed}.
  * - Only int32 and int64 dtypes are supported.
@@ -825,20 +1133,9 @@ export function binomial(
   const flip = p > 0.5;
   const prob = flip ? 1 - p : p;
   const q = 1 - prob;
-  if (q === 1) {
-    const value = flip ? n : 0;
-    for (let i = 0; i < size; i++) {
-      writeInteger(data, i, value);
-    }
-    return TensorClass.fromTypedArray({
-      data,
-      shape,
-      dtype,
-      device: resolveDevice(opts.device),
-    });
-  }
   const mean = n * prob;
-  const logQ = Math.log(q);
+  // log1p keeps log(q) accurate (and non-zero) for tiny success probabilities.
+  const logQ = Math.log1p(-prob);
 
   if (mean < 10) {
     if (n <= 1024) {
@@ -871,21 +1168,20 @@ export function binomial(
         writeInteger(data, i, flip ? n - sample : sample);
       }
     }
-  } else {
+  } else if (mean < 30) {
     const mode = Math.floor((n + 1) * prob);
-    const logP = Math.log(prob);
-    const logPmfMode =
-      logFactorial(n) -
-      logFactorial(mode) -
-      logFactorial(n - mode) +
-      mode * logP +
-      (n - mode) * logQ;
-    const pmfMode = Math.exp(logPmfMode);
+    const pmfMode = binomialPmf(n, mode, prob, q);
     if (!Number.isFinite(pmfMode) || pmfMode <= 0) {
       throw new InvalidParameterError("Failed to initialize binomial sampler", "p", p);
     }
     for (let i = 0; i < size; i++) {
       const sample = binomialChopDown(n, prob, q, mode, pmfMode);
+      writeInteger(data, i, flip ? n - sample : sample);
+    }
+  } else {
+    // BTPE: O(1) expected work per draw, where inversion needs O(sqrt(n p q)).
+    for (let i = 0; i < size; i++) {
+      const sample = binomialBtpe(n, prob);
       writeInteger(data, i, flip ? n - sample : sample);
     }
   }
@@ -908,7 +1204,7 @@ export function binomial(
  * @throws {InvalidParameterError} When lambda is not finite or < 0
  *
  * @remarks
- * - Uses Knuth's method for lambda < 30, transformed rejection for lambda >= 30.
+ * - Uses Knuth's method for lambda < 30 and Atkinson's rejection method for lambda >= 30.
  * - Stable and efficient for all lambda values (tested up to lambda=1000+).
  * - lambda=0 always produces 0.
  * - Deterministic when seed is set via {@link setSeed}.
@@ -940,68 +1236,8 @@ export function poisson(lambda: number, shape: Shape = [], opts: RandomOptions =
   }
   const data = allocateIntegerBuffer(dtype, size);
 
-  if (lambda < 30) {
-    // Knuth's method for small lambda
-    const L = Math.exp(-lambda);
-    for (let i = 0; i < size; i++) {
-      let k = 0;
-      let p = 1;
-
-      do {
-        k++;
-        p *= __random();
-      } while (p > L);
-
-      const sample = k - 1;
-      if (!Number.isSafeInteger(sample)) {
-        throw new InvalidParameterError(
-          "poisson sample exceeds safe integer range",
-          "lambda",
-          lambda
-        );
-      }
-      if (dtype === "int32" && sample > INT32_MAX) {
-        throw new InvalidParameterError("poisson sample exceeds int32 range", "lambda", lambda);
-      }
-      writeInteger(data, i, sample);
-    }
-  } else {
-    // Transformed rejection method for large lambda (Ahrens & Dieter)
-    const c = 0.767 - 3.36 / lambda;
-    const beta = Math.PI / Math.sqrt(3 * lambda);
-    const alpha = beta * lambda;
-    const k = Math.log(c) - lambda - Math.log(beta);
-
-    for (let i = 0; i < size; i++) {
-      while (true) {
-        const u = __random();
-        if (u === 0 || u === 1) continue;
-
-        const x = (alpha - Math.log((1 - u) / u)) / beta;
-        const n = Math.floor(x + 0.5);
-        if (n < 0 || !Number.isFinite(n)) continue;
-
-        const v = __random();
-        const y = alpha - beta * x;
-        const lhs = y + Math.log(v / (1 + Math.exp(y)) ** 2);
-        const rhs = k + n * Math.log(lambda) - logFactorial(n);
-
-        if (lhs <= rhs) {
-          if (!Number.isSafeInteger(n)) {
-            throw new InvalidParameterError(
-              "poisson sample exceeds safe integer range",
-              "lambda",
-              lambda
-            );
-          }
-          if (dtype === "int32" && n > INT32_MAX) {
-            throw new InvalidParameterError("poisson sample exceeds int32 range", "lambda", lambda);
-          }
-          writeInteger(data, i, n);
-          break;
-        }
-      }
-    }
+  for (let i = 0; i < size; i++) {
+    writeInteger(data, i, samplePoissonScalar(lambda));
   }
 
   return TensorClass.fromTypedArray({
@@ -1136,8 +1372,10 @@ export function gamma(
  * @throws {InvalidParameterError} When beta_param is not finite or <= 0
  *
  * @remarks
- * - Uses ratio of two gamma distributions: X / (X + Y).
- * - All values are in the open interval (0, 1) up to floating-point rounding.
+ * - Uses ratio of two gamma distributions: X / (X + Y). When either parameter is
+ *   below 1 the ratio is evaluated from log-gamma draws, so tiny parameters
+ *   give values at (or very near) 0 and 1 instead of failing.
+ * - All values are in [0, 1]; they are inside (0, 1) up to floating-point rounding.
  * - Mean = alpha / (alpha + beta), useful for modeling proportions.
  * - Deterministic when seed is set via {@link setSeed}.
  * - Only float32 and float64 dtypes are supported.
@@ -1167,28 +1405,45 @@ export function beta(
   const dtype = resolveFloatDType(opts.dtype, "beta");
   const data = allocateFloatBuffer(dtype, size);
 
-  for (let i = 0; i < size; i++) {
-    let sampled = false;
-    for (let attempt = 0; attempt < 1024; attempt++) {
-      const x = sampleGammaUnit(alpha);
-      const y = sampleGammaUnit(beta_param);
-      const sum = x + y;
-      if (!Number.isFinite(sum) || sum <= 0) {
-        continue;
-      }
-      const value = x / sum;
-      if (Number.isFinite(value) && value >= 0 && value <= 1) {
-        data[i] = value;
-        sampled = true;
-        break;
-      }
+  if (alpha < 1 || beta_param < 1) {
+    // A Gamma(a < 1) draw can underflow to 0, and 0 / (0 + 0) would then be
+    // undefined. Work with log-gammas: x / (x + y) = 1 / (1 + exp(log y - log x)).
+    for (let i = 0; i < size; i++) {
+      const logX = sampleLogGammaUnit(alpha);
+      const logY = sampleLogGammaUnit(beta_param);
+      const diff = logY - logX;
+      // Both logs at -Infinity (shapes near the smallest subnormal): the law
+      // collapses to a Bernoulli draw on the endpoints with weights alpha : beta.
+      data[i] = Number.isNaN(diff)
+        ? __random() < alpha / (alpha + beta_param)
+          ? 1
+          : 0
+        : 1 / (1 + Math.exp(diff));
     }
-    if (!sampled) {
-      throw new InvalidParameterError(
-        "beta sampling failed to produce a finite sample",
-        "alpha/beta_param",
-        { alpha, beta_param }
-      );
+  } else {
+    for (let i = 0; i < size; i++) {
+      let sampled = false;
+      for (let attempt = 0; attempt < 1024; attempt++) {
+        const x = sampleGammaUnit(alpha);
+        const y = sampleGammaUnit(beta_param);
+        const sum = x + y;
+        if (!Number.isFinite(sum) || sum <= 0) {
+          continue;
+        }
+        const value = x / sum;
+        if (Number.isFinite(value) && value >= 0 && value <= 1) {
+          data[i] = value;
+          sampled = true;
+          break;
+        }
+      }
+      if (!sampled) {
+        throw new InvalidParameterError(
+          "beta sampling failed to produce a finite sample",
+          "alpha/beta_param",
+          { alpha, beta_param }
+        );
+      }
     }
   }
 
@@ -1204,7 +1459,7 @@ function readNumericTensorValue(t: Tensor, index: number): number | bigint {
   if (t.dtype === "string") {
     throw new DTypeError("Expected numeric tensor");
   }
-  const value = t.data[index];
+  const value = t.data[t.offset + index];
   if (typeof value === "number" || typeof value === "bigint") {
     return value;
   }
@@ -1259,12 +1514,11 @@ function buildNormalizedProbabilities(probabilities: Tensor, n: number): Float64
       probabilities.size
     );
   }
-  validateContiguous(probabilities, "choice(p)");
 
-  const normalized = new Float64Array(n);
+  const normalized = readNumbers(probabilities, "choice()", "p");
   let sum = 0;
   for (let i = 0; i < n; i++) {
-    const value = Number(readNumericTensorValue(probabilities, i));
+    const value = normalized[i] as number;
     if (!Number.isFinite(value) || value < 0) {
       throw new InvalidParameterError(
         "p must contain finite non-negative probabilities",
@@ -1272,7 +1526,6 @@ function buildNormalizedProbabilities(probabilities: Tensor, n: number): Float64
         value
       );
     }
-    normalized[i] = value;
     sum += value;
   }
   if (!Number.isFinite(sum) || sum <= 0) {
@@ -1313,11 +1566,16 @@ function sampleFromCdf(cdf: Float64Array): number {
  *
  * @throws {InvalidParameterError} When population size is invalid (not finite, not integer, or < 0)
  * @throws {InvalidParameterError} When size > population and replace is false
- * @throws {InvalidParameterError} When tensor is not contiguous (offset !== 0 or non-standard strides)
+ * @throws {InvalidParameterError} When the tensor is not contiguous (non-standard strides)
  * @throws {DTypeError} When input tensor has string dtype
  *
  * @remarks
- * - Input tensor must be contiguous (no slicing/striding).
+ * - Input tensor must be contiguous (no striding); a contiguous view with an offset is fine.
+ * - A multi-dimensional tensor is sampled over its flattened elements, and the result is 1D
+ *   (or `size`-shaped); it is not sampled by rows.
+ * - `p` may be any 1D tensor (strided views included); it is normalized by its sum.
+ * - Without replacement and without `p`, memory use is proportional to `size`, not to a large
+ *   integer population `a`.
  * - With replacement: can sample more elements than population size.
  * - Without replacement: size must be <= population size.
  * - Does NOT modify the input tensor (returns a new tensor).
@@ -1358,9 +1616,10 @@ export function choice(
     }
   }
 
-  const aa: Tensor = typeof a === "number" ? arange(0, a, 1, { dtype: "int32" }) : a;
+  // A numeric `a` means the population 0..a-1, which is never materialized.
+  const aa: Tensor | null = typeof a === "number" ? null : a;
 
-  if (aa.dtype === "string") {
+  if (aa && aa.dtype === "string") {
     throw new DTypeError("choice() does not support string tensors");
   }
 
@@ -1368,13 +1627,17 @@ export function choice(
   // Note: we currently require contiguous storage, because `choice` is defined over
   // the flattened order. Using arbitrary strides would require computing a flat
   // index mapping.
-  const n = aa.size;
+  const n = aa ? aa.size : (a as number);
   if (!Number.isInteger(n) || n < 0) {
     throw new InvalidParameterError("Invalid tensor size", "n", n);
   }
   if (n > INT32_MAX + 1) {
     throw new InvalidParameterError(`Population size must be <= ${INT32_MAX + 1}`, "n", n);
   }
+
+  // Check the layout before any random numbers are drawn so a rejected call
+  // does not advance the seeded stream.
+  if (aa && n > 0) contiguousWindow(aa, "choice()");
 
   let outputSize: number;
   if (typeof size === "number") {
@@ -1400,13 +1663,7 @@ export function choice(
 
   if (weights) {
     if (replace) {
-      const cdf = new Float64Array(weights.length);
-      let cumulative = 0;
-      for (let i = 0; i < weights.length; i++) {
-        cumulative += weights[i] ?? 0;
-        cdf[i] = cumulative;
-      }
-      cdf[cdf.length - 1] = 1;
+      const cdf = buildCdf(weights);
       for (let i = 0; i < outputSize; i++) {
         indices[i] = sampleFromCdf(cdf);
       }
@@ -1423,45 +1680,7 @@ export function choice(
         );
       }
 
-      const remaining = new Float64Array(weights);
-      let remainingMass = 1;
-      for (let i = 0; i < outputSize; i++) {
-        if (remainingMass <= 0) {
-          throw new InvalidParameterError(
-            "Insufficient probability mass to sample",
-            "p",
-            remainingMass
-          );
-        }
-        const u = __random() * remainingMass;
-        let cumulative = 0;
-        let chosen = -1;
-        for (let j = 0; j < remaining.length; j++) {
-          const w = remaining[j] ?? 0;
-          if (w <= 0) {
-            continue;
-          }
-          cumulative += w;
-          if (u <= cumulative) {
-            chosen = j;
-            break;
-          }
-        }
-        if (chosen < 0) {
-          for (let j = remaining.length - 1; j >= 0; j--) {
-            if ((remaining[j] ?? 0) > 0) {
-              chosen = j;
-              break;
-            }
-          }
-        }
-        if (chosen < 0) {
-          throw new InvalidParameterError("Failed to select weighted sample", "p", weights);
-        }
-        indices[i] = chosen;
-        remainingMass -= remaining[chosen] ?? 0;
-        remaining[chosen] = 0;
-      }
+      drawWeightedWithoutReplacement(weights, outputSize, indices);
     }
   } else if (replace) {
     // Uniform sampling with replacement: one batched RNG fill + Lemire map,
@@ -1481,13 +1700,19 @@ export function choice(
         outputSize
       );
     }
-    // Partial Fisher–Yates over an index pool. Draw all bounds in bulk when the
-    // population is small enough for Lemire's exact multiply.
-    const pool = new Int32Array(n);
-    for (let i = 0; i < n; i++) pool[i] = i;
+    // Partial Fisher–Yates. Draw all bounds in bulk when the population is small
+    // enough for Lemire's exact multiply.
     const useBatch = n <= LEMIRE_MAX_BOUND;
     const rnd = useBatch ? new Uint32Array(outputSize) : null;
     if (rnd) __fillUint32(rnd, outputSize);
+    // A dense pool costs O(n) memory even for a handful of draws, so a large
+    // population with few draws keeps only the displaced entries in a Map. Both
+    // layouts apply exactly the same swaps, so the sample is identical. A Map
+    // holds at most ~2^24 entries, so many draws always use the dense pool.
+    const dense = n <= 4 * outputSize || n <= 65536 || outputSize > SPARSE_POOL_MAX_DRAWS;
+    const pool = dense ? new Int32Array(n) : null;
+    if (pool) for (let i = 0; i < n; i++) pool[i] = i;
+    const displaced = new Map<number, number>();
     for (let i = 0; i < outputSize; i++) {
       let j: number;
       const bound = n - i;
@@ -1505,17 +1730,33 @@ export function choice(
       } else {
         j = randomIntBelow(bound) + i;
       }
-      const poolJ = pool[j] as number;
-      pool[j] = pool[i] as number;
-      pool[i] = poolJ;
-      indices[i] = poolJ;
+      if (pool) {
+        const poolJ = pool[j] as number;
+        pool[j] = pool[i] as number;
+        pool[i] = poolJ;
+        indices[i] = poolJ;
+      } else {
+        const poolJ = displaced.get(j) ?? j;
+        displaced.set(j, displaced.get(i) ?? i);
+        indices[i] = poolJ;
+      }
     }
   }
 
-  const outputShape: Shape = typeof size === "number" ? [size] : (size ?? [1]);
+  const outputShape: Shape = typeof size === "number" ? [size] : size ? [...size] : [1];
 
-  // Require contiguous layout for correctness.
-  validateContiguous(aa, "choice()");
+  if (!aa) {
+    return TensorClass.fromTypedArray({
+      data: indices,
+      shape: outputShape,
+      dtype: "int32",
+      device: resolveDevice(),
+    });
+  }
+
+  if (aa.dtype === "string") {
+    throw new DTypeError("choice() does not support string tensors");
+  }
 
   // Allocate output buffer in the same dtype/device.
   const out = allocateNumericBuffer(aa.dtype, outputSize);
@@ -1547,7 +1788,9 @@ export function choice(
  * @remarks
  * - **WARNING: This function mutates the input tensor directly.**
  * - Uses Fisher-Yates shuffle algorithm (O(n) time, optimal).
- * - Input tensor must be contiguous (no slicing/striding).
+ * - Input tensor must be contiguous (no striding); a contiguous view into a larger
+ *   buffer is shuffled without touching the elements outside the view.
+ * - A multi-dimensional tensor is shuffled over its flattened elements, not its rows.
  * - All elements are preserved, only their order changes.
  * - Deterministic when seed is set via {@link setSeed}.
  * - If you need a shuffled copy without mutation, use {@link permutation} instead.
@@ -1567,41 +1810,41 @@ export function shuffle(x: Tensor): void {
   if (x.dtype === "string") {
     throw new DTypeError("shuffle() does not support string tensors");
   }
-  // For correctness, only allow shuffling of a contiguous tensor with offset 0.
-  // This ensures swapping elements maps to the logical flattened order.
-  validateContiguous(x, "shuffle()");
+  // Only a contiguous tensor can be shuffled in place: swapping storage slots
+  // must map onto the logical flattened order.
+  const { start, length: n } = contiguousWindow(x, "shuffle()");
 
   const data = x.data;
   if (!isTypedArray(data)) {
     throw new DTypeError("shuffle() does not support string tensors");
   }
-  const n = data.length;
 
-  // Fisher–Yates shuffle. All swap targets are drawn in one batched pass so the
-  // per-element RNG cost is a table lookup rather than a module-boundary call.
+  // Fisher–Yates shuffle over exactly this tensor's elements (a view must not
+  // disturb the rest of its underlying buffer). All swap targets are drawn in
+  // one batched pass so the per-element RNG cost is a table lookup.
   const js = fisherYatesTargets(n);
 
   // Split into two branches to maintain type safety without assertions.
   if (data instanceof BigInt64Array) {
     for (let i = n - 1; i > 0; i--) {
-      const j = js[i] as number;
-      const temp = data[i];
+      const j = start + (js[i] as number);
+      const temp = data[start + i];
       const swap = data[j];
       if (temp === undefined || swap === undefined) {
         throw new DeepboxError("Internal error: shuffle index out of bounds");
       }
-      data[i] = swap;
+      data[start + i] = swap;
       data[j] = temp;
     }
   } else {
     for (let i = n - 1; i > 0; i--) {
-      const j = js[i] as number;
-      const temp = data[i];
+      const j = start + (js[i] as number);
+      const temp = data[start + i];
       const swap = data[j];
       if (temp === undefined || swap === undefined) {
         throw new DeepboxError("Internal error: shuffle index out of bounds");
       }
-      data[i] = swap;
+      data[start + i] = swap;
       data[j] = temp;
     }
   }
@@ -1613,12 +1856,14 @@ export function shuffle(x: Tensor): void {
  * @param x - Input tensor or integer
  *
  * @throws {DTypeError} When input tensor has string dtype
+ * @throws {InvalidParameterError} When x is a negative or non-integer number, or a non-contiguous tensor
  *
  * @remarks
  * - Returns a NEW tensor (does NOT modify input).
  * - If x is an integer, returns permutation of arange(x).
- * - If x is a tensor, returns a shuffled copy with the same shape.
- * - Tensor inputs must be contiguous (no slicing/striding).
+ * - If x is a tensor, returns a shuffled copy with the same shape (shuffled over its flattened
+ *   elements, not its rows).
+ * - Tensor inputs must be contiguous (no striding); a contiguous view is copied on its own.
  * - Uses Fisher-Yates shuffle algorithm internally.
  * - Deterministic when seed is set via {@link setSeed}.
  * - Numeric input is limited to `x <= 2^31` for int32 output.
@@ -1672,14 +1917,15 @@ export function permutation(x: Tensor | number): Tensor {
     throw new DTypeError("permutation() does not support string tensors");
   }
 
-  validateContiguous(x, "permutation()");
+  const { start, length } = contiguousWindow(x, "permutation()");
   const data = x.data;
   if (!isTypedArray(data)) {
     throw new DTypeError("permutation() does not support string tensors");
   }
+  // Copy only this tensor's elements (not the rest of a larger shared buffer).
   const copy = TensorClass.fromTypedArray({
-    data: data.slice(),
-    shape: x.shape,
+    data: data.slice(start, start + length),
+    shape: [...x.shape],
     dtype: x.dtype,
     device: x.device,
   });
@@ -1688,12 +1934,114 @@ export function permutation(x: Tensor | number): Tensor {
 }
 
 /**
+ * Draw `count` indices without replacement, each draw proportional to the weight
+ * of the entries not yet taken. The caller guarantees that at least `count`
+ * weights are positive. `weights` is not modified.
+ */
+function drawWeightedWithoutReplacement(
+  weights: ArrayLike<number>,
+  count: number,
+  out: Int32Array
+): void {
+  const remaining = Float64Array.from(weights);
+  for (let i = 0; i < count; i++) {
+    let mass = 0;
+    let lastPositive = -1;
+    for (let j = 0; j < remaining.length; j++) {
+      const w = remaining[j] as number;
+      if (w > 0) {
+        mass += w;
+        lastPositive = j;
+      }
+    }
+    if (lastPositive < 0) {
+      throw new InvalidParameterError("Insufficient probability mass to sample", "p", mass);
+    }
+    const u = __random() * mass;
+    let cumulative = 0;
+    let chosen = lastPositive; // rounding drift can leave u just past the last bucket
+    for (let j = 0; j < remaining.length; j++) {
+      const w = remaining[j] as number;
+      if (w <= 0) continue;
+      cumulative += w;
+      if (u < cumulative) {
+        chosen = j;
+        break;
+      }
+    }
+    out[i] = chosen;
+    remaining[chosen] = 0;
+  }
+}
+
+/**
+ * Cumulative distribution for normalized weights. The tail starting at the last
+ * positive-probability entry is pinned to exactly 1, so rounding drift can never
+ * select a zero-probability category at the end.
+ */
+function buildCdf(weights: ArrayLike<number>): Float64Array {
+  const k = weights.length;
+  const cdf = new Float64Array(k);
+  let cumulative = 0;
+  let lastPositive = 0;
+  for (let i = 0; i < k; i++) {
+    const w = weights[i] as number;
+    cumulative += w;
+    cdf[i] = cumulative;
+    if (w > 0) lastPositive = i;
+  }
+  for (let i = lastPositive; i < k; i++) cdf[i] = 1;
+  return cdf;
+}
+
+/**
+ * Read a non-negative, finite weight vector (any strides) and its sum.
+ * Throws when an entry is negative or non-finite, or when the sum is not positive.
+ */
+function readWeights(
+  t: Tensor,
+  functionName: string,
+  name: string
+): { values: Float64Array; total: number; positive: number } {
+  const values = readNumbers(t, functionName, name);
+  let total = 0;
+  let positive = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i] as number;
+    if (!Number.isFinite(v) || v < 0) {
+      throw new InvalidParameterError(
+        `${name} must contain non-negative finite values; got ${v} at index ${i}`,
+        name,
+        v
+      );
+    }
+    if (v > 0) positive++;
+    total += v;
+  }
+  if (!(total > 0) || !Number.isFinite(total)) {
+    throw new InvalidParameterError(`${name} must sum to a positive finite value`, name, total);
+  }
+  return { values, total, positive };
+}
+
+/**
  * Draw samples from a multinomial distribution.
  *
- * @param n - Number of trials
- * @param pvals - Probabilities of each outcome (must sum to 1), 1D tensor of shape (k,)
- * @param size - Number of samples to draw (default: 1)
- * @returns Tensor of shape (size, k) with counts for each outcome
+ * Counts are generated with a chain of conditional binomial draws (one per
+ * category), so the cost does not grow with the number of trials `n`.
+ *
+ * @param n - Number of trials (non-negative integer)
+ * @param pvals - Probabilities of each outcome, 1D tensor of shape (k,). Entries must be
+ *   finite and non-negative with a positive sum; they are normalized by their sum.
+ * @param size - Number of samples to draw (default: 1), or a shape of independent draws
+ * @param opts - Options. `dtype` is int32, int64, float32 or float64. The default is the
+ *   configured float dtype (float32 unless changed), or float64 when `n` exceeds 2^24 so that
+ *   every count is exact.
+ * @returns Tensor of shape (size, k), or (...size, k) when `size` is a shape, holding the
+ *   count of each outcome. Every row sums to `n`.
+ *
+ * @throws {InvalidParameterError} When `n`, `pvals` or `size` is invalid
+ * @throws {DTypeError} When `pvals` is a string tensor or `dtype` is unsupported
  *
  * @example
  * ```ts
@@ -1704,8 +2052,14 @@ export function permutation(x: Tensor | number): Tensor {
  * const samples = multinomial(10, probs, 5); // shape [5, 3]
  * ```
  */
-export function multinomial(n: number, pvals: Tensor, size = 1): Tensor {
-  if (!Number.isInteger(n) || n < 0) {
+export function multinomial(
+  n: number,
+  pvals: Tensor,
+  size: number | Shape = 1,
+  opts: RandomOptions = {}
+): Tensor {
+  assertSafeInteger(n, "n");
+  if (n < 0) {
     throw new InvalidParameterError("n must be a non-negative integer", "n", n);
   }
   if (pvals.ndim !== 1) {
@@ -1716,65 +2070,90 @@ export function multinomial(n: number, pvals: Tensor, size = 1): Tensor {
     );
   }
   const k = pvals.size;
-  const probs: number[] = [];
-  let pSum = 0;
-  for (let i = 0; i < k; i++) {
-    const p = Number(pvals.data[pvals.offset + i]);
-    probs.push(p);
-    pSum += p;
+  if (k === 0) {
+    throw new InvalidParameterError("pvals must have at least one entry", "pvals", k);
   }
-  // Normalize
-  if (Math.abs(pSum - 1) > 1e-6) {
-    for (let i = 0; i < k; i++) {
-      probs[i] = (probs[i] ?? 0) / pSum;
+  const lead = resolveLeadingShape(size, "size");
+  const draws = lead.reduce((acc, v) => acc * v, 1);
+  const { values: probs } = readWeights(pvals, "multinomial()", "pvals");
+  // Without an explicit dtype the counts keep the library's float default (as they always
+  // have), widened to float64 when n is too large for float32 to hold every count exactly.
+  const dtype: DType =
+    opts.dtype ??
+    (n > FLOAT32_EXACT_INT_MAX ? "float64" : resolveSamplingFloatDType(undefined, "multinomial"));
+  if (dtype !== "int32" && dtype !== "int64" && dtype !== "float32" && dtype !== "float64") {
+    throw new DTypeError("multinomial only supports int32, int64, float32 or float64 dtype");
+  }
+  if (dtype === "int32" && n > INT32_MAX) {
+    throw new InvalidParameterError(`n must be <= ${INT32_MAX} for int32 output`, "n", n);
+  }
+
+  // suffix[i] = sum of probs[i..k): conditioning on "not in an earlier category".
+  const suffix = new Float64Array(k + 1);
+  for (let i = k - 1; i >= 0; i--) suffix[i] = (suffix[i + 1] as number) + (probs[i] as number);
+
+  const counts = new Float64Array(draws * k);
+  for (let s = 0; s < draws; s++) {
+    let remaining = n;
+    const base = s * k;
+    for (let i = 0; i < k && remaining > 0; i++) {
+      const tail = suffix[i] as number;
+      if (!(tail > 0)) break;
+      const conditional = Math.min(1, (probs[i] as number) / tail);
+      const c = sampleBinomialScalar(remaining, conditional);
+      counts[base + i] = c;
+      remaining -= c;
     }
   }
 
-  const result: number[] = [];
-  for (let s = 0; s < size; s++) {
-    const counts = new Array<number>(k).fill(0);
-    for (let trial = 0; trial < n; trial++) {
-      const u = __random();
-      let cumSum = 0;
-      for (let i = 0; i < k; i++) {
-        cumSum += probs[i] ?? 0;
-        if (u < cumSum) {
-          counts[i] = (counts[i] ?? 0) + 1;
-          break;
-        }
-      }
-      // Edge case: if rounding puts us past all probs, assign to last
-      if (counts.reduce((a, b) => a + b, 0) < trial + 1) {
-        counts[k - 1] = (counts[k - 1] ?? 0) + 1;
-      }
-    }
-    result.push(...counts);
+  const shape = [...lead, k];
+  const device = resolveDevice(opts.device);
+  if (dtype === "float64") {
+    return TensorClass.fromTypedArray({ data: counts, shape, dtype, device });
   }
-
-  return tensor(result).reshape([size, k]);
+  if (dtype === "float32") {
+    return TensorClass.fromTypedArray({ data: Float32Array.from(counts), shape, dtype, device });
+  }
+  const data = allocateIntegerBuffer(dtype, counts.length);
+  for (let i = 0; i < counts.length; i++) writeInteger(data, i, counts[i] as number);
+  return TensorClass.fromTypedArray({ data, shape, dtype, device });
 }
 
 /**
  * Draw samples from a multivariate normal distribution.
  *
- * Uses Cholesky decomposition of the covariance matrix.
+ * Uses the Cholesky factor of the covariance matrix: `x = mean + L z` with
+ * `z ~ N(0, I)`. Singular (rank-deficient) covariances are supported.
  *
  * @param mean - Mean vector of shape (d,)
- * @param cov - Covariance matrix of shape (d, d), must be symmetric positive semi-definite
- * @param size - Number of samples (default: 1)
- * @returns Tensor of shape (size, d)
+ * @param cov - Covariance matrix of shape (d, d); must be symmetric positive semi-definite
+ * @param size - Number of samples (default: 1), or a shape of independent draws
+ * @param opts - Options. `dtype` is float32 or float64 (default: the configured default dtype).
+ * @returns Tensor of shape (size, d), or (...size, d) when `size` is a shape
+ *
+ * @throws {InvalidParameterError} When shapes do not match, `size` is invalid, an entry is
+ *   not finite, or `cov` is not symmetric positive semi-definite. The check uses a relative
+ *   tolerance of `max(1e-8, 10 * d * eps)`, where `eps` is the machine epsilon of the dtype of
+ *   `cov`, so covariances computed in float32 are not rejected for rounding noise.
  *
  * @example
  * ```ts
- * import { multivariate_normal } from 'deepbox/random';
+ * import { multivariateNormal } from 'deepbox/random';
  * import { tensor } from 'deepbox/ndarray';
  *
  * const mean = tensor([0, 0]);
  * const cov = tensor([[1, 0.5], [0.5, 1]]);
- * const samples = multivariate_normal(mean, cov, 100); // shape [100, 2]
+ * const samples = multivariateNormal(mean, cov, 100); // shape [100, 2]
  * ```
+ *
+ * @deprecated Prefer {@link multivariateNormal}.
  */
-export function multivariate_normal(mean: Tensor, cov: Tensor, size = 1): Tensor {
+export function multivariate_normal(
+  mean: Tensor,
+  cov: Tensor,
+  size: number | Shape = 1,
+  opts: RandomOptions = {}
+): Tensor {
   if (mean.ndim !== 1) {
     throw new InvalidParameterError(`mean must be 1D; got ndim=${mean.ndim}`, "mean", mean.shape);
   }
@@ -1789,66 +2168,101 @@ export function multivariate_normal(mean: Tensor, cov: Tensor, size = 1): Tensor
       cov.shape
     );
   }
+  const lead = resolveLeadingShape(size, "size");
+  const draws = lead.reduce((acc, v) => acc * v, 1);
+  const dtype = resolveSamplingFloatDType(opts.dtype, "multivariate_normal");
 
-  // Extract mean and covariance
-  const mu: number[] = [];
+  const mu = readNumbers(mean, "multivariate_normal()", "mean");
+  const C = readNumbers(cov, "multivariate_normal()", "cov");
   for (let i = 0; i < d; i++) {
-    mu.push(Number(mean.data[mean.offset + i]));
-  }
-  const C: number[][] = [];
-  for (let i = 0; i < d; i++) {
-    const row: number[] = [];
-    for (let j = 0; j < d; j++) {
-      row.push(Number(cov.data[cov.offset + i * d + j]));
+    if (!Number.isFinite(mu[i] as number)) {
+      throw new InvalidParameterError("mean must contain finite values", "mean", mu[i]);
     }
-    C.push(row);
+  }
+  let scale = 0;
+  for (let i = 0; i < C.length; i++) {
+    const v = C[i] as number;
+    if (!Number.isFinite(v)) {
+      throw new InvalidParameterError("cov must contain finite values", "cov", v);
+    }
+    scale = Math.max(scale, Math.abs(v));
+  }
+  // Relative tolerance for symmetry and semi-definiteness. A covariance computed in
+  // float32 (the default dtype) carries rounding of order d * 2^-23, so the check
+  // widens with the storage precision of `cov` instead of rejecting such inputs.
+  const tol = scale * Math.max(1e-8, 10 * d * dtypeEpsilon(cov.dtype));
+  for (let i = 0; i < d; i++) {
+    for (let j = 0; j < i; j++) {
+      if (Math.abs((C[i * d + j] as number) - (C[j * d + i] as number)) > tol) {
+        throw new InvalidParameterError("cov must be symmetric", "cov", cov.shape);
+      }
+    }
   }
 
-  // Cholesky decomposition: C = L * L^T
-  const L: number[][] = Array.from({ length: d }, () => new Array<number>(d).fill(0));
+  // Cholesky factor C = L L^T (lower triangle). A pivot within tolerance of zero
+  // marks a singular direction: its column is zero. Anything more negative, or a
+  // non-zero column under a zero pivot, means C is not positive semi-definite.
+  const L = new Float64Array(d * d);
   for (let i = 0; i < d; i++) {
     for (let j = 0; j <= i; j++) {
       let sum = 0;
       for (let k = 0; k < j; k++) {
-        sum += L[i]![k]! * L[j]![k]!;
+        sum += (L[i * d + k] as number) * (L[j * d + k] as number);
       }
+      const residual = (C[i * d + j] as number) - sum;
       if (i === j) {
-        const val = C[i]![i]! - sum;
-        L[i]![j] = val >= 0 ? Math.sqrt(val) : 0;
+        if (residual < -tol) {
+          throw new InvalidParameterError("cov must be positive semi-definite", "cov", cov.shape);
+        }
+        L[i * d + j] = residual > 0 ? Math.sqrt(residual) : 0;
       } else {
-        const diag = L[j]![j]!;
-        L[i]![j] = diag > 0 ? (C[i]![j]! - sum) / diag : 0;
+        const diag = L[j * d + j] as number;
+        if (diag > 0) {
+          L[i * d + j] = residual / diag;
+        } else if (Math.abs(residual) > tol) {
+          throw new InvalidParameterError("cov must be positive semi-definite", "cov", cov.shape);
+        }
       }
     }
   }
 
-  // Generate samples: x = mu + L * z where z ~ N(0, I)
-  const result: number[] = [];
-  for (let s = 0; s < size; s++) {
-    // Generate standard normal vector
-    const z: number[] = [];
+  // x = mu + L z with z ~ N(0, I); all normals come from one bulk fill.
+  const z = new Float64Array(draws * d);
+  __fillNormal(z, z.length);
+  const data = allocateFloatBuffer(dtype, draws * d);
+  for (let s = 0; s < draws; s++) {
+    const base = s * d;
     for (let i = 0; i < d; i++) {
-      z.push(__normalRandom());
-    }
-    // x = mu + L * z
-    for (let i = 0; i < d; i++) {
-      let val = mu[i]!;
+      let val = mu[i] as number;
       for (let j = 0; j <= i; j++) {
-        val += L[i]![j]! * z[j]!;
+        val += (L[i * d + j] as number) * (z[base + j] as number);
       }
-      result.push(val);
+      data[base + i] = val;
     }
   }
 
-  return tensor(result).reshape([size, d]);
+  return TensorClass.fromTypedArray({
+    data,
+    shape: [...lead, d],
+    dtype,
+    device: resolveDevice(opts.device),
+  });
 }
 
 /**
  * Draw samples from a Dirichlet distribution.
  *
- * @param alpha - Concentration parameters of shape (k,), all must be positive
- * @param size - Number of samples (default: 1)
- * @returns Tensor of shape (size, k) where each row sums to 1
+ * Each row is a vector of independent Gamma(alpha_i, 1) draws divided by their sum.
+ * When any concentration is below 1 the draws are combined in log space, so
+ * very small concentrations give near one-hot rows instead of failing.
+ *
+ * @param alpha - Concentration parameters of shape (k,), all must be positive and finite
+ * @param size - Number of samples (default: 1), or a shape of independent draws
+ * @param opts - Options. `dtype` is float32 or float64 (default: the configured default dtype).
+ * @returns Tensor of shape (size, k), or (...size, k) when `size` is a shape; each row sums to 1
+ *
+ * @throws {InvalidParameterError} When `alpha` is not 1D, is empty, or has a non-positive or
+ *   non-finite entry
  *
  * @example
  * ```ts
@@ -1859,7 +2273,11 @@ export function multivariate_normal(mean: Tensor, cov: Tensor, size = 1): Tensor
  * const samples = dirichlet(alpha, 5); // shape [5, 3], each row sums to 1
  * ```
  */
-export function dirichlet(alpha: Tensor, size = 1): Tensor {
+export function dirichlet(
+  alpha: Tensor,
+  size: number | Shape = 1,
+  opts: RandomOptions = {}
+): Tensor {
   if (alpha.ndim !== 1) {
     throw new InvalidParameterError(
       `alpha must be 1D; got ndim=${alpha.ndim}`,
@@ -1868,48 +2286,93 @@ export function dirichlet(alpha: Tensor, size = 1): Tensor {
     );
   }
   const k = alpha.size;
-  const alphaArr: number[] = [];
+  if (k === 0) {
+    throw new InvalidParameterError("alpha must have at least one entry", "alpha", k);
+  }
+  const lead = resolveLeadingShape(size, "size");
+  const draws = lead.reduce((acc, v) => acc * v, 1);
+  const dtype = resolveSamplingFloatDType(opts.dtype, "dirichlet");
+  const alphaArr = readNumbers(alpha, "dirichlet()", "alpha");
+  let minAlpha = Infinity;
   for (let i = 0; i < k; i++) {
-    const a = Number(alpha.data[alpha.offset + i]);
-    if (a <= 0) {
+    const a = alphaArr[i] as number;
+    if (!(a > 0) || !Number.isFinite(a)) {
       throw new InvalidParameterError(
-        `All alpha values must be > 0; got ${a} at index ${i}`,
+        `All alpha values must be finite and > 0; got ${a} at index ${i}`,
         "alpha",
         a
       );
     }
-    alphaArr.push(a);
+    minAlpha = Math.min(minAlpha, a);
   }
 
-  const result: number[] = [];
-  for (let s = 0; s < size; s++) {
-    // Sample from Gamma(alpha_i, 1) for each component
-    const gammas: number[] = [];
-    let gammaSum = 0;
-    for (let i = 0; i < k; i++) {
-      const g = sampleGamma(alphaArr[i]!, 1);
-      gammas.push(g);
-      gammaSum += g;
+  const data = allocateFloatBuffer(dtype, draws * k);
+  const row = new Float64Array(k);
+  for (let s = 0; s < draws; s++) {
+    let total = 0;
+    if (minAlpha < 1) {
+      // Gamma(a < 1) draws can underflow to 0: normalize in log space instead.
+      let maxLog = -Infinity;
+      for (let i = 0; i < k; i++) {
+        const lg = sampleLogGammaUnit(alphaArr[i] as number);
+        row[i] = lg;
+        if (lg > maxLog) maxLog = lg;
+      }
+      if (maxLog === -Infinity) {
+        // Every draw underflowed (concentrations near the smallest subnormal): the
+        // law collapses to a one-hot row with category weights proportional to alpha.
+        let alphaTotal = 0;
+        for (let i = 0; i < k; i++) alphaTotal += alphaArr[i] as number;
+        let pick = __random() * alphaTotal;
+        let chosen = k - 1;
+        for (let i = 0; i < k; i++) {
+          pick -= alphaArr[i] as number;
+          if (pick < 0) {
+            chosen = i;
+            break;
+          }
+        }
+        for (let i = 0; i < k; i++) row[i] = i === chosen ? 1 : 0;
+        total = 1;
+      } else {
+        for (let i = 0; i < k; i++) {
+          const w = Math.exp((row[i] as number) - maxLog);
+          row[i] = w;
+          total += w;
+        }
+      }
+    } else {
+      for (let i = 0; i < k; i++) {
+        const g = sampleGammaUnit(alphaArr[i] as number);
+        row[i] = g;
+        total += g;
+      }
     }
-    // Normalize
-    for (let i = 0; i < k; i++) {
-      result.push(gammaSum > 0 ? gammas[i]! / gammaSum : 1 / k);
-    }
+    for (let i = 0; i < k; i++) data[s * k + i] = (row[i] as number) / total;
   }
 
-  return tensor(result).reshape([size, k]);
+  return TensorClass.fromTypedArray({
+    data,
+    shape: [...lead, k],
+    dtype,
+    device: resolveDevice(opts.device),
+  });
 }
 
 /**
  * Sample from a categorical distribution.
  *
- * Draws samples from a categorical distribution defined by unnormalized
- * log-probabilities or probabilities.
+ * Draws category indices with probability proportional to `probs`.
  *
- * @param probs - 1D tensor of probabilities (will be normalized)
+ * @param probs - 1D tensor of non-negative weights (normalized internally)
  * @param numSamples - Number of samples to draw (default: 1)
- * @param replacement - Whether to sample with replacement (default: true)
+ * @param replacement - Whether to sample with replacement (default: true). Without
+ *   replacement each draw is proportional to the weight of the categories not yet drawn.
  * @returns 1D int32 tensor of sampled indices
+ *
+ * @throws {InvalidParameterError} When `probs` is not 1D, is empty, has a negative or non-finite
+ *   entry or a non-positive sum, when `numSamples` is not a positive integer, or when sampling
+ *   without replacement needs more categories than have non-zero probability
  */
 export function categorical(
   probs: Tensor,
@@ -1923,7 +2386,7 @@ export function categorical(
       probs.ndim
     );
   }
-  if (numSamples < 1 || !Number.isInteger(numSamples)) {
+  if (numSamples < 1 || !Number.isSafeInteger(numSamples)) {
     throw new InvalidParameterError(
       "numSamples must be a positive integer",
       "numSamples",
@@ -1935,21 +2398,8 @@ export function categorical(
     throw new InvalidParameterError("categorical requires at least one category", "probs", k);
   }
 
-  // Normalize probabilities
-  const p: number[] = [];
-  let total = 0;
-  for (let i = 0; i < k; i++) {
-    const v = Number(probs.data[probs.offset + i]);
-    if (v < 0 || !Number.isFinite(v)) {
-      throw new InvalidParameterError("probs must contain non-negative finite values", "probs", v);
-    }
-    p.push(v);
-    total += v;
-  }
-  if (total <= 0) {
-    throw new InvalidParameterError("probs must sum to a positive value", "probs", total);
-  }
-  for (let i = 0; i < k; i++) p[i] = p[i]! / total;
+  const { values: p, total, positive } = readWeights(probs, "categorical()", "probs");
+  for (let i = 0; i < k; i++) p[i] = (p[i] as number) / total;
 
   if (!replacement && numSamples > k) {
     throw new InvalidParameterError(
@@ -1958,24 +2408,20 @@ export function categorical(
       numSamples
     );
   }
-
-  // Build CDF for sampling
-  const cdf: number[] = [p[0]!];
-  for (let i = 1; i < k; i++) cdf.push(cdf[i - 1]! + p[i]!);
-  cdf[k - 1] = 1.0; // Ensure no floating-point gap
+  if (!replacement && numSamples > positive) {
+    throw new InvalidParameterError(
+      `Cannot draw ${numSamples} samples without replacement: only ${positive} categories have non-zero probability`,
+      "numSamples",
+      numSamples
+    );
+  }
 
   const result = new Int32Array(numSamples);
-  const used = new Set<number>();
-
-  for (let s = 0; s < numSamples; s++) {
-    let idx: number;
-    do {
-      const u = __random();
-      idx = 0;
-      while (idx < k - 1 && u > cdf[idx]!) idx++;
-    } while (!replacement && used.has(idx));
-    result[s] = idx;
-    if (!replacement) used.add(idx);
+  if (replacement) {
+    const cdf = buildCdf(p);
+    for (let s = 0; s < numSamples; s++) result[s] = sampleFromCdf(cdf);
+  } else {
+    drawWeightedWithoutReplacement(p, numSamples, result);
   }
 
   return TensorClass.fromTypedArray({
@@ -1989,12 +2435,20 @@ export function categorical(
 /**
  * Sample from a categorical distribution using the Gumbel-Softmax trick.
  *
- * Produces differentiable approximate one-hot samples from categorical logits.
+ * Adds Gumbel(0, 1) noise to the logits and applies a temperature softmax, giving
+ * approximate one-hot samples. The result is a plain tensor: no gradient flows
+ * through it.
  *
- * @param logits - Unnormalized log-probabilities, shape (n_categories,) or (batch, n_categories)
+ * @param logits - Unnormalized log-probabilities, shape (n_categories,) or (batch, n_categories).
+ *   `-Infinity` masks a category; NaN and `+Infinity` are rejected.
  * @param tau - Temperature parameter (default: 1.0). Lower = more discrete.
  * @param hard - If true, returns hard one-hot vectors (default: false)
- * @returns Tensor of same shape as logits with softmax probabilities
+ * @returns float64 tensor of the same shape as logits with softmax probabilities (or one-hot rows)
+ *
+ * @throws {InvalidParameterError} When `logits` is not 1D/2D or has no categories, `tau` is not
+ *   a positive finite number, a logit is NaN or `+Infinity`, or a row has no finite logit
+ *
+ * @deprecated Prefer {@link gumbelSoftmax}.
  */
 export function gumbel_softmax(logits: Tensor, tau: number = 1.0, hard: boolean = false): Tensor {
   if (logits.ndim < 1 || logits.ndim > 2) {
@@ -2011,47 +2465,63 @@ export function gumbel_softmax(logits: Tensor, tau: number = 1.0, hard: boolean 
   const is1D = logits.ndim === 1;
   const batchSize = is1D ? 1 : (logits.shape[0] ?? 1);
   const nCat = is1D ? logits.size : (logits.shape[1] ?? 1);
+  if (nCat === 0) {
+    throw new InvalidParameterError("gumbel_softmax requires at least one category", "logits", 0);
+  }
   const totalSize = batchSize * nCat;
+  const values = readNumbers(logits, "gumbel_softmax()", "logits");
 
   const result = new Float64Array(totalSize);
+  const vals = new Float64Array(nCat);
 
   for (let b = 0; b < batchSize; b++) {
-    // Sample Gumbel noise and add to logits
-    const vals: number[] = [];
+    // Add Gumbel noise to the logits (Gumbel(0,1) = -log(-log(U))).
     let maxVal = -Infinity;
     for (let j = 0; j < nCat; j++) {
-      const logit = Number(logits.data[logits.offset + b * nCat + j]);
-      // Gumbel(0,1) = -log(-log(U))
+      const logit = values[b * nCat + j] as number;
+      if (Number.isNaN(logit) || logit === Infinity) {
+        throw new InvalidParameterError(
+          `logits must not contain NaN or +Infinity; got ${logit}`,
+          "logits",
+          logit
+        );
+      }
       const u = randomOpenUnit();
       const g = -Math.log(-Math.log(u));
       const v = (logit + g) / tau;
-      vals.push(v);
+      vals[j] = v;
       if (v > maxVal) maxVal = v;
     }
+    if (maxVal === -Infinity) {
+      throw new InvalidParameterError(
+        "each row of logits needs at least one finite value",
+        "logits",
+        b
+      );
+    }
 
-    // Softmax with numerical stability
+    // Softmax with numerical stability.
     let sumExp = 0;
+    let argmax = 0;
+    let maxP = -Infinity;
     for (let j = 0; j < nCat; j++) {
-      vals[j] = Math.exp(vals[j]! - maxVal);
-      sumExp += vals[j]!;
+      const e = Math.exp((vals[j] as number) - maxVal);
+      vals[j] = e;
+      sumExp += e;
+      if (e > maxP) {
+        maxP = e;
+        argmax = j;
+      }
     }
 
     if (hard) {
-      // Straight-through: argmax as one-hot
-      let argmax = 0;
-      let maxP = vals[0]!;
-      for (let j = 1; j < nCat; j++) {
-        if (vals[j]! > maxP) {
-          maxP = vals[j]!;
-          argmax = j;
-        }
-      }
+      // One-hot of the argmax.
       for (let j = 0; j < nCat; j++) {
         result[b * nCat + j] = j === argmax ? 1 : 0;
       }
     } else {
       for (let j = 0; j < nCat; j++) {
-        result[b * nCat + j] = vals[j]! / sumExp;
+        result[b * nCat + j] = (vals[j] as number) / sumExp;
       }
     }
   }
@@ -2070,8 +2540,9 @@ export function gumbel_softmax(logits: Tensor, tau: number = 1.0, hard: boolean 
  *
  * @param p - Probability of success (in [0, 1])
  * @param shape - Output shape
- * @param opts - Options
+ * @param opts - Options. `dtype` is int32 (default) or int64.
  * @returns Tensor of 0s and 1s
+ * @throws {InvalidParameterError} When `p` is not a finite number in [0, 1]
  */
 export function bernoulli(p: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
   if (!Number.isFinite(p) || p < 0 || p > 1) {
@@ -2081,8 +2552,10 @@ export function bernoulli(p: number, shape: Shape = [], opts: RandomOptions = {}
   const dtype = resolveIntegerDType(opts.dtype, "bernoulli");
   const data = allocateIntegerBuffer(dtype, size);
 
+  const us = new Float64Array(size);
+  __fillUniform(us, size);
   for (let i = 0; i < size; i++) {
-    writeInteger(data, i, __random() < p ? 1 : 0);
+    writeInteger(data, i, (us[i] as number) < p ? 1 : 0);
   }
 
   return TensorClass.fromTypedArray({
@@ -2101,8 +2574,10 @@ export function bernoulli(p: number, shape: Shape = [], opts: RandomOptions = {}
  *
  * @param p - Probability of success per trial (in (0, 1])
  * @param shape - Output shape
- * @param opts - Options
+ * @param opts - Options. `dtype` is int32 (default) or int64.
  * @returns Tensor of positive integers
+ * @throws {InvalidParameterError} When `p` is not in (0, 1], or a sample does not fit the
+ *   requested dtype (small `p` with int32 can exceed 2^31 - 1; use `dtype: "int64"`)
  */
 export function geometric(p: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
   if (!Number.isFinite(p) || p <= 0 || p > 1) {
@@ -2117,7 +2592,8 @@ export function geometric(p: number, shape: Shape = [], opts: RandomOptions = {}
       writeInteger(data, i, 1);
     }
   } else {
-    const logQ = Math.log(1 - p);
+    // log1p keeps log(1 - p) accurate (and non-zero) for tiny p.
+    const logQ = Math.log1p(-p);
     for (let i = 0; i < size; i++) {
       const u = randomOpenUnit();
       writeInteger(data, i, Math.floor(Math.log(u) / logQ) + 1);
@@ -2163,7 +2639,7 @@ export function lognormal(
   const data = allocateFloatBuffer(dtype, size);
 
   // Draw the underlying normals in one bulk pass (state stays in the RNG
-  // module), then exponentiate in place — avoids a module-boundary call per
+  // module), then exponentiate in place. This avoids a module-boundary call per
   // element the way randn already does.
   __fillNormal(data, size);
   for (let i = 0; i < size; i++) {
@@ -2228,11 +2704,13 @@ export function chi2(df: number, shape: Shape = [], opts: RandomOptions = {}): T
  *
  * @example
  * ```js
- * import { student_t } from 'deepbox/random';
- * const x = student_t(10, [100]);
+ * import { studentT } from 'deepbox/random';
+ * const x = studentT(10, [100]);
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ *
+ * @deprecated Prefer {@link studentT}.
  */
 export function student_t(df: number, shape: Shape = [], opts: RandomOptions = {}): Tensor {
   if (!Number.isFinite(df) || df <= 0) {
@@ -2269,11 +2747,13 @@ export function student_t(df: number, shape: Shape = [], opts: RandomOptions = {
  *
  * @example
  * ```js
- * import { f_distribution } from 'deepbox/random';
- * const x = f_distribution(5, 10, [100]);
+ * import { fDistribution } from 'deepbox/random';
+ * const x = fDistribution(5, 10, [100]);
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ *
+ * @deprecated Prefer {@link fDistribution}.
  */
 export function f_distribution(
   dfn: number,
@@ -2308,7 +2788,7 @@ export function f_distribution(
 /**
  * Random samples from Laplace distribution.
  *
- * Uses inverse CDF: loc - scale * sign(U - 0.5) * ln(1 - 2|U - 0.5|)
+ * Uses inverse CDF: loc + scale * ln(2U) for U < 1/2, loc - scale * ln(2(1 - U)) otherwise.
  *
  * @param loc - Location parameter (default: 0)
  * @param scale - Scale parameter (default: 1, must be > 0)
@@ -2341,8 +2821,9 @@ export function laplace(
   const data = allocateFloatBuffer(dtype, size);
 
   for (let i = 0; i < size; i++) {
-    const u = __random() - 0.5;
-    data[i] = loc - scale * Math.sign(u) * Math.log(1 - 2 * Math.abs(u));
+    // Open-interval u keeps both logs finite (u = 0 would give -Infinity).
+    const u = randomOpenUnit();
+    data[i] = u < 0.5 ? loc + scale * Math.log(2 * u) : loc - scale * Math.log(2 * (1 - u));
   }
 
   return TensorClass.fromTypedArray({
@@ -2534,11 +3015,13 @@ export function triangular(
  *
  * @example
  * ```js
- * import { negative_binomial } from 'deepbox/random';
- * const x = negative_binomial(5, 0.5, [100]);
+ * import { negativeBinomial } from 'deepbox/random';
+ * const x = negativeBinomial(5, 0.5, [100]);
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ *
+ * @deprecated Prefer {@link negativeBinomial}.
  */
 export function negative_binomial(
   r: number,
@@ -2618,6 +3101,9 @@ export function hypergeometric(
     throw new InvalidParameterError("nsample must be a non-negative integer", "nsample", nsample);
   }
   const N = ngood + nbad;
+  if (!Number.isSafeInteger(N)) {
+    throw new InvalidParameterError("ngood + nbad must be a safe integer", "ngood", ngood);
+  }
   if (nsample > N) {
     throw new InvalidParameterError("nsample must be <= ngood + nbad", "nsample", nsample);
   }
@@ -2649,34 +3135,6 @@ export function hypergeometric(
   });
 }
 
-// Helper: sample from Gamma(shape, scale) using Marsaglia-Tsang method
-function sampleGamma(shape: number, scale: number): number {
-  if (shape < 1) {
-    // Use Ahrens-Dieter for shape < 1
-    const u = __random();
-    return sampleGamma(shape + 1, scale) * u ** (1 / shape);
-  }
-  // Marsaglia and Tsang's method for shape >= 1
-  const d = shape - 1.0 / 3.0;
-  const c = 1.0 / Math.sqrt(9.0 * d);
-  while (true) {
-    let x: number;
-    let v: number;
-    do {
-      x = __normalRandom();
-      v = 1.0 + c * x;
-    } while (v <= 0);
-    v = v * v * v;
-    const u = __random();
-    if (u < 1.0 - 0.0331 * (x * x) * (x * x)) {
-      return d * v * scale;
-    }
-    if (Math.log(u) < 0.5 * x * x + d * (1.0 - v + Math.log(v))) {
-      return d * v * scale;
-    }
-  }
-}
-
 /**
  * Random samples from the von Mises distribution (circular normal).
  *
@@ -2686,7 +3144,8 @@ function sampleGamma(shape: number, scale: number): number {
  * @param opts - Options
  *
  * @remarks
- * - Uses Best & Fisher's algorithm for efficient sampling.
+ * - Uses Best & Fisher's algorithm for efficient sampling; for kappa > 1e6 it uses a
+ *   wrapped normal with standard deviation 1/sqrt(kappa).
  * - When kappa=0, equivalent to uniform on [-pi, pi).
  * - Values are in [-pi, pi).
  * - Deterministic when seed is set via {@link setSeed}.
@@ -2711,6 +3170,14 @@ export function vonmises(
     // Effectively uniform on [-pi, pi)
     for (let i = 0; i < size; i++) {
       data[i] = __random() * 2 * Math.PI - Math.PI;
+    }
+  } else if (kappa > 1e6) {
+    // The Best & Fisher envelope loses all precision here (r - f cancels); the
+    // distribution is indistinguishable from a wrapped normal with variance 1 / kappa.
+    const sd = Math.sqrt(1 / kappa);
+    for (let i = 0; i < size; i++) {
+      const val = mu + sd * __normalRandom();
+      data[i] = val - 2 * Math.PI * Math.floor((val + Math.PI) / (2 * Math.PI));
     }
   } else {
     // Best & Fisher algorithm
@@ -2838,7 +3305,7 @@ export function rayleigh(sigma: number = 1, shape: Shape = [], opts: RandomOptio
  *
  * @remarks
  * - Uses rejection sampling method.
- * - Values are positive integers >= 1.
+ * - Values are positive integers >= 1, truncated at the largest value of the dtype.
  * - P(X=k) proportional to k^(-s).
  * - Deterministic when seed is set via {@link setSeed}.
  * - Only int32 and int64 dtypes are supported.
@@ -2853,13 +3320,16 @@ export function zipf(s: number, shape: Shape = [], opts: RandomOptions = {}): Te
 
   // Rejection method based on Luc Devroye's algorithm
   const b = 2 ** (s - 1);
+  // Values the dtype cannot hold are rejected (as NumPy does for int64) rather
+  // than wrapped. For s close to 1 this truncates the extreme tail.
+  const maxValue = dtype === "int32" ? INT32_MAX : INT64_LIMIT - 1024;
 
   for (let i = 0; i < size; i++) {
     while (true) {
       const u = randomOpenUnit();
       const v = __random();
       const x = Math.floor(u ** (-1 / (s - 1)));
-      if (x < 1 || !Number.isFinite(x)) continue;
+      if (x < 1 || x > maxValue) continue;
       const t = (1 + 1 / x) ** (s - 1);
       if ((v * x * (t - 1)) / (b - 1) <= t / b) {
         writeInteger(data, i, x);
@@ -2875,3 +3345,113 @@ export function zipf(s: number, shape: Shape = [], opts: RandomOptions = {}): Te
     device: resolveDevice(opts.device),
   });
 }
+
+/**
+ * Random samples from F distribution.
+ *
+ * If X1 ~ Chi2(dfn) and X2 ~ Chi2(dfd), then (X1/dfn) / (X2/dfd) ~ F(dfn, dfd).
+ *
+ * @param dfn - Numerator degrees of freedom (must be > 0)
+ * @param dfd - Denominator degrees of freedom (must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of positive floats
+ *
+ * @example
+ * ```js
+ * import { fDistribution } from 'deepbox/random';
+ * const x = fDistribution(5, 10, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export const fDistribution = f_distribution;
+
+/**
+ * Sample from a categorical distribution using the Gumbel-Softmax trick.
+ *
+ * Adds Gumbel(0, 1) noise to the logits and applies a temperature softmax, giving
+ * approximate one-hot samples. The result is a plain tensor: no gradient flows
+ * through it.
+ *
+ * @param logits - Unnormalized log-probabilities, shape (n_categories,) or (batch, n_categories).
+ *   `-Infinity` masks a category; NaN and `+Infinity` are rejected.
+ * @param tau - Temperature parameter (default: 1.0). Lower = more discrete.
+ * @param hard - If true, returns hard one-hot vectors (default: false)
+ * @returns float64 tensor of the same shape as logits with softmax probabilities (or one-hot rows)
+ *
+ * @throws {InvalidParameterError} When `logits` is not 1D/2D or has no categories, `tau` is not
+ *   a positive finite number, a logit is NaN or `+Infinity`, or a row has no finite logit
+ */
+export const gumbelSoftmax = gumbel_softmax;
+
+/**
+ * Draw samples from a multivariate normal distribution.
+ *
+ * Uses the Cholesky factor of the covariance matrix: `x = mean + L z` with
+ * `z ~ N(0, I)`. Singular (rank-deficient) covariances are supported.
+ *
+ * @param mean - Mean vector of shape (d,)
+ * @param cov - Covariance matrix of shape (d, d); must be symmetric positive semi-definite
+ * @param size - Number of samples (default: 1), or a shape of independent draws
+ * @param opts - Options. `dtype` is float32 or float64 (default: the configured default dtype).
+ * @returns Tensor of shape (size, d), or (...size, d) when `size` is a shape
+ *
+ * @throws {InvalidParameterError} When shapes do not match, `size` is invalid, an entry is
+ *   not finite, or `cov` is not symmetric positive semi-definite. The check uses a relative
+ *   tolerance of `max(1e-8, 10 * d * eps)`, where `eps` is the machine epsilon of the dtype of
+ *   `cov`, so covariances computed in float32 are not rejected for rounding noise.
+ *
+ * @example
+ * ```ts
+ * import { multivariateNormal } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const mean = tensor([0, 0]);
+ * const cov = tensor([[1, 0.5], [0.5, 1]]);
+ * const samples = multivariateNormal(mean, cov, 100); // shape [100, 2]
+ * ```
+ */
+export const multivariateNormal = multivariate_normal;
+
+/**
+ * Random samples from negative binomial distribution.
+ *
+ * Number of failures before achieving r successes.
+ * Uses gamma-Poisson mixture: sample lambda ~ Gamma(r, (1-p)/p), then X ~ Poisson(lambda).
+ *
+ * @param r - Number of successes (must be > 0)
+ * @param p - Probability of success per trial (in (0, 1])
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of non-negative integers
+ *
+ * @example
+ * ```js
+ * import { negativeBinomial } from 'deepbox/random';
+ * const x = negativeBinomial(5, 0.5, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export const negativeBinomial = negative_binomial;
+
+/**
+ * Random samples from Student's t distribution.
+ *
+ * If Z ~ N(0,1) and V ~ Chi2(df), then Z / sqrt(V/df) ~ t(df).
+ *
+ * @param df - Degrees of freedom (must be > 0)
+ * @param shape - Output shape
+ * @param opts - Options
+ * @returns Tensor of floats
+ *
+ * @example
+ * ```js
+ * import { studentT } from 'deepbox/random';
+ * const x = studentT(10, [100]);
+ * ```
+ *
+ * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
+ */
+export const studentT = student_t;

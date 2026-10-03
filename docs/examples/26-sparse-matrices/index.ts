@@ -1,6 +1,9 @@
 /**
- * Sparse Matrix Operations Example
- * Demonstrates CSR (Compressed Sparse Row) matrix operations
+ * Example 26: Sparse Matrices
+ *
+ * CSR (Compressed Sparse Row) matrices store only the non-zero entries.
+ * This example builds a CSRMatrix from COO triplets and runs the arithmetic,
+ * products, transpose and dense conversion.
  */
 
 import { CSRMatrix, tensor } from "deepbox/ndarray";
@@ -72,20 +75,20 @@ console.log(`  Result: [${Array.from(resultData).join(", ")}]`);
 
 // Matrix-matrix multiplication
 console.log("\n7. Matrix-matrix multiplication");
-// Matrix B (4x2):
+// Dense matrix (4x2):
 // [1, 0]
 // [0, 1]
 // [1, 1]
 // [0, 1]
-const B = tensor([
+const dense = tensor([
   [1, 0],
   [0, 1],
   [1, 1],
   [0, 1],
 ]);
-const matmul = sparse.matmul(B);
+const matmul = sparse.matmul(dense);
 console.log(`  Result shape: [${matmul.shape.join(", ")}]`);
-console.log(`  Result is a dense tensor`);
+console.log("  The product of a sparse and a dense matrix is a dense tensor");
 
 // Transpose
 console.log("\n8. Transpose");
@@ -100,7 +103,11 @@ const densified = sparse.toDense();
 console.log("  Converted back to dense tensor");
 console.log(`  Shape: [${densified.shape.join(", ")}]`);
 
-console.log("\n=== Benefits of Sparse Matrices ===");
-console.log("- Memory efficient for matrices with many zeros");
-console.log("- Faster operations when sparsity is high");
-console.log("- Common in scientific computing, ML, and graph algorithms");
+console.log("\n=== When to use CSRMatrix ===");
+console.log("- Memory use grows with the number of non-zeros, not with rows * cols");
+console.log(
+  "- Products touch only the stored entries, so they are cheaper when most entries are zero"
+);
+console.log(
+  "- Typical uses: graph adjacency matrices, bag-of-words features, finite-difference operators"
+);

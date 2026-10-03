@@ -72,7 +72,7 @@ describe("ndarray math/trig error branches", () => {
     expect(sub(b, a).toArray()).toEqual([2n, 2n]);
     expect(mul(a, b).toArray()).toEqual([3n, 8n]);
     const divOut = div(b, a);
-    expect(divOut.dtype).toBe("float64");
+    expect(divOut.dtype).toBe("float32");
     expect(divOut.toArray()).toEqual([3, 2]);
   });
 });

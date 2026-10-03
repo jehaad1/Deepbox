@@ -20,7 +20,7 @@ describe("Dropout2d", () => {
     ]);
     const output = d.forward(input);
     expect(output.shape).toEqual([1, 2, 2, 2]);
-    expect(output.tensor.toArray()).toEqual([
+    expect(output.toArray()).toEqual([
       [
         [
           [1, 2],
@@ -67,7 +67,7 @@ describe("Dropout2d", () => {
       ],
     ]);
     const output = d.forward(input);
-    expect(output.tensor.toArray()).toEqual([
+    expect(output.toArray()).toEqual([
       [
         [
           [1, 2],

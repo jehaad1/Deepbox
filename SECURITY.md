@@ -6,6 +6,7 @@ Security fixes are issued for supported release lines only.
 
 | Version | Supported |
 | --- | --- |
+| `1.5.x` | Yes |
 | `1.0.x` | Yes |
 | `0.2.x` | No |
 | `< 0.2.0` | No |
@@ -92,4 +93,4 @@ Public disclosure happens after a fix is available or a coordinated disclosure w
 - Repository: [https://github.com/jehaad1/Deepbox](https://github.com/jehaad1/Deepbox)
 - Website: [https://deepbox.dev](https://deepbox.dev)
 
-Last updated: July 2, 2026
+Last updated: October 3, 2026

@@ -1,6 +1,6 @@
 {
   "columns": [
-    "topTerms"
+    "terms"
   ],
   "index": [
     0,
@@ -25,7 +25,7 @@
     19
   ],
   "data": {
-    "topTerms": [
+    "terms": [
       "503",
       "503 for",
       "above",

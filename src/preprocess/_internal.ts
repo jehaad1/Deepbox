@@ -10,15 +10,19 @@
 
 import { DeepboxError, DTypeError, InvalidParameterError, ShapeError } from "../core/errors";
 import type { Tensor } from "../ndarray";
+import { __randomBelow, __SeededRandom } from "../random/random";
 
 /**
- * Assert that a tensor has numeric dtype (not string).
+ * Assert that a tensor has a real numeric dtype (not string or complex).
  *
  * @internal
  */
 export function assertNumericTensor(X: Tensor, name: string): void {
   if (X.dtype === "string") {
     throw new DTypeError(`${name} must be numeric`);
+  }
+  if (X.dtype === "complex64" || X.dtype === "complex128") {
+    throw new DTypeError(`${name} must be real-valued; received dtype ${X.dtype}`);
   }
 }
 
@@ -73,8 +77,15 @@ export function getStrides2D(X: Tensor): [number, number] {
 }
 
 /**
- * Simple seeded random number generator using Linear Congruential Generator (LCG).
- * Provides reproducible pseudo-random sequences when given a seed.
+ * Seeded random number generator using a 31-bit Linear Congruential Generator
+ * (the ANSI C `rand` constants). Provides reproducible pseudo-random sequences
+ * when given a seed.
+ *
+ * The multiply-add is done in exact 32-bit integer arithmetic with
+ * `Math.imul`. A plain `a * state` exceeds 2^53 and silently drops low bits,
+ * which collapses the sequence into a cycle of a few thousand values.
+ *
+ * Neighbouring seeds give related streams. New code should use {@link createRandomStream}.
  *
  * @param seed - Non-negative safe integer seed value
  * @returns Function that generates random numbers in [0, 1)
@@ -86,12 +97,7 @@ export function createSeededRandom(seed: number): () => number {
   const c = 12345;
   const m = 2 ** 31;
 
-  if (
-    !Number.isFinite(seed) ||
-    !Number.isInteger(seed) ||
-    !Number.isSafeInteger(seed) ||
-    seed < 0
-  ) {
+  if (!Number.isSafeInteger(seed) || seed < 0) {
     throw new InvalidParameterError(
       "randomState must be a non-negative safe integer",
       "randomState",
@@ -102,9 +108,74 @@ export function createSeededRandom(seed: number): () => number {
   let state = seed % m;
 
   return () => {
-    state = (a * state + c) % m;
+    // Math.imul keeps the exact low 32 bits of the product; masking to 31 bits
+    // is the same as reducing modulo 2^31.
+    state = (Math.imul(a, state) + c) & 0x7fffffff;
     return state / m;
   };
+}
+
+const UINT64_MASK = (1n << 64n) - 1n;
+
+/**
+ * Derive an independent seed for stream number `index` from a base seed.
+ *
+ * Splitters that run several iterations (repeated K-fold, shuffle splits) must not
+ * seed iteration `i` with `seed + i`: iteration `i + 1` of seed `s` would then equal
+ * iteration `i` of seed `s + 1`. The pair is hashed with the SplitMix64 finalizer
+ * instead, so every (seed, index) pair gives its own stream.
+ *
+ * @param seed - Non-negative safe integer base seed
+ * @param index - Non-negative integer stream number
+ * @returns Non-negative safe integer seed
+ *
+ * @internal
+ */
+export function deriveSeed(seed: number, index: number): number {
+  assertSeed(seed);
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new InvalidParameterError(
+      "stream index must be a non-negative safe integer",
+      "index",
+      index
+    );
+  }
+  let z =
+    (BigInt(seed) * 0xd1b54a32d192ed03n + (BigInt(index) + 1n) * 0x9e3779b97f4a7c15n) & UINT64_MASK;
+  z = ((z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n) & UINT64_MASK;
+  z = ((z ^ (z >> 27n)) * 0x94d049bb133111ebn) & UINT64_MASK;
+  z ^= z >> 31n;
+  return Number(z & BigInt(Number.MAX_SAFE_INTEGER));
+}
+
+function assertSeed(seed: number): void {
+  if (!Number.isSafeInteger(seed) || seed < 0) {
+    throw new InvalidParameterError(
+      "randomState must be a non-negative safe integer",
+      "randomState",
+      seed
+    );
+  }
+}
+
+/**
+ * Seeded random number generator for shuffles and samples: xoshiro128++ from the random
+ * module, with the state expanded from the hashed pair (`seed`, `stream`).
+ *
+ * Unlike {@link createSeededRandom} (a 31-bit LCG whose streams for neighbouring seeds are
+ * related), neighbouring seeds and neighbouring stream numbers give unrelated sequences.
+ * Splitters that need several streams pass the iteration number as `stream`.
+ *
+ * @param seed - Non-negative safe integer seed value
+ * @param stream - Non-negative integer stream number (default 0)
+ * @returns Function that generates random numbers in [0, 1)
+ *
+ * @internal
+ */
+export function createRandomStream(seed: number, stream = 0): () => number {
+  assertSeed(seed);
+  const rng = new __SeededRandom(BigInt(deriveSeed(seed, stream)));
+  return () => rng.next();
 }
 
 /**
@@ -117,7 +188,7 @@ export function createSeededRandom(seed: number): () => number {
  */
 export function shuffleIndicesInPlace(indices: number[], random: () => number): void {
   for (let i = indices.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
+    const j = __randomBelow(random, i + 1);
     const temp = indices[i];
     if (temp === undefined) {
       throw new DeepboxError("Internal error: shuffle source index missing");

@@ -17,8 +17,22 @@ import { isFiniteNumber } from "../utils/validation";
 import { escapeXml } from "../utils/xml";
 
 /**
+ * Deterministic pseudo-random sequence in [0, 1) for jitter (32-bit LCG with the
+ * glibc constants, so SVG and raster output place every point identically).
+ */
+function createJitterSource(): () => number {
+  let seed = 12345;
+  return () => {
+    seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+    return seed / 0x80000000;
+  };
+}
+
+/**
  * Strip plot: jittered categorical scatter plot.
- * Each category is plotted at an integer x position with random jitter.
+ * Group `g` is plotted at x = g with horizontal jitter of up to `jitter` data
+ * units on either side. The jitter is deterministic, so a figure renders the
+ * same every time.
  * @internal
  */
 export class Strip2D implements Drawable {
@@ -41,8 +55,24 @@ export class Strip2D implements Drawable {
     if (groups.length === 0)
       throw new InvalidParameterError("At least one group is required", "groups", 0);
     this.groups = groups;
-    this.markerSize = options.size ?? 3;
-    this.jitter = options.jitter ?? 0.2;
+    const size = options.size ?? 3;
+    if (!Number.isFinite(size) || size <= 0) {
+      throw new InvalidParameterError(
+        `size must be a positive number; received ${size}`,
+        "size",
+        size
+      );
+    }
+    this.markerSize = size;
+    const jitter = options.jitter ?? 0.2;
+    if (!Number.isFinite(jitter) || jitter < 0) {
+      throw new InvalidParameterError(
+        `jitter must be a non-negative number; received ${jitter}`,
+        "jitter",
+        jitter
+      );
+    }
+    this.jitter = jitter;
     this.colors = groups.map((_, i) =>
       normalizeColor(
         options.colors?.[i],
@@ -64,21 +94,18 @@ export class Strip2D implements Drawable {
       }
     }
     if (!isFiniteNumber(ymin) || !isFiniteNumber(ymax)) return null;
+    // Cover the category slots, widened if the jitter spills past half a slot.
+    const pad = Math.max(0.5, this.jitter);
     return {
-      xmin: -0.5,
-      xmax: this.groups.length - 0.5,
+      xmin: -pad,
+      xmax: this.groups.length - 1 + pad,
       ymin,
       ymax,
     };
   }
 
   drawSVG(ctx: SvgDrawContext): void {
-    // Simple seeded random for deterministic jitter
-    let seed = 12345;
-    const nextRand = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
+    const nextRand = createJitterSource();
 
     for (let g = 0; g < this.groups.length; g++) {
       const group = this.groups[g];
@@ -98,11 +125,7 @@ export class Strip2D implements Drawable {
   }
 
   drawRaster(ctx: RasterDrawContext): void {
-    let seed = 12345;
-    const nextRand = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
+    const nextRand = createJitterSource();
 
     for (let g = 0; g < this.groups.length; g++) {
       const group = this.groups[g];

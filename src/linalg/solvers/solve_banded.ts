@@ -1,7 +1,6 @@
-import { DataValidationError, ShapeError } from "../../core";
+import { DataValidationError, InvalidParameterError, ShapeError } from "../../core";
 import type { Tensor } from "../../ndarray";
 import {
-  at,
   fromDenseMatrix2D,
   fromDenseVector1D,
   getDim,
@@ -18,20 +17,25 @@ import {
  *
  * Band storage format: `ab` has shape `(l + u + 1, N)` where
  * `ab[u + i - j, j] = A[i, j]` for `max(0, j-u) <= i <= min(N-1, j+l)`.
+ * Entries of `ab` that do not correspond to a matrix element (the corners)
+ * are ignored, but must still be finite.
  *
- * Uses banded LU factorization with partial pivoting (Thomas algorithm
- * for tridiagonal, general banded Gaussian elimination otherwise).
+ * Tridiagonal systems that are diagonally dominant use the Thomas algorithm
+ * (no pivoting is needed for those); every other system uses banded LU with
+ * partial pivoting. The matrix is factored once, however many right-hand
+ * sides there are.
  *
- * **Time Complexity**: O(N * (l + u)²) — much faster than dense O(N³)
+ * **Time Complexity**: O(N * (l + u)²) for the factorization plus O(N * (l + u)) per
+ * right-hand side, much faster than dense O(N³)
  *
  * @param luBands - Tuple [l, u] where l = number of lower diagonals, u = number of upper diagonals
  * @param ab - Band matrix in compact form, shape (l + u + 1, N)
  * @param b - Right-hand side vector of shape (N,) or matrix of shape (N, nrhs)
- * @returns Solution x with same shape as b
+ * @returns Solution x with same shape as b (float64)
  *
  * @example
  * ```ts
- * import { solve_banded } from 'deepbox/linalg';
+ * import { solveBanded } from 'deepbox/linalg';
  * import { tensor } from 'deepbox/ndarray';
  *
  * // Tridiagonal system: [2 -1 0; -1 2 -1; 0 -1 2] x = [1; 0; 1]
@@ -41,17 +45,28 @@ import {
  * //   row 2 (lower): [-1, -1, 0]
  * const ab = tensor([[0, -1, -1], [2, 2, 2], [-1, -1, 0]]);
  * const b = tensor([1, 0, 1]);
- * const x = solve_banded([1, 1], ab, b);
+ * const x = solveBanded([1, 1], ab, b); // [1, 1, 1]
  * ```
  *
+ * @throws {InvalidParameterError} If l or u is not a non-negative integer
+ * @throws {ShapeError} If ab is not 2-D with l + u + 1 rows, or b does not match N
+ * @throws {DTypeError} If ab or b has string or complex dtype
+ * @throws {DataValidationError} If the matrix is singular, or ab or b contain NaN or Infinity
+ *
  * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra}
+ *
+ * @deprecated Prefer {@link solveBanded}.
  */
 export function solve_banded(luBands: readonly [number, number], ab: Tensor, b: Tensor): Tensor {
   const l = luBands[0];
   const u = luBands[1];
 
-  if (l < 0 || u < 0 || !Number.isInteger(l) || !Number.isInteger(u)) {
-    throw new ShapeError(`Band widths must be non-negative integers; got l=${l}, u=${u}`);
+  if (!Number.isInteger(l) || !Number.isInteger(u) || l < 0 || u < 0) {
+    throw new InvalidParameterError(
+      `Band widths must be non-negative integers; got l=${l}, u=${u}`,
+      "luBands",
+      luBands
+    );
   }
 
   if (ab.ndim !== 2) {
@@ -65,162 +80,198 @@ export function solve_banded(luBands: readonly [number, number], ab: Tensor, b: 
     throw new ShapeError(`ab must have ${l + u + 1} rows for l=${l}, u=${u}; got ${bandRows}`);
   }
 
-  if (N === 0) {
-    if (b.ndim === 1) return fromDenseVector1D(new Float64Array(0));
-    return fromDenseMatrix2D(0, 0, new Float64Array(0));
-  }
-
-  const abMat = toDenseMatrix2D(ab);
-
-  // Helper to get A[i,j] from banded storage
-  const getA = (i: number, j: number): number => {
-    const row = u + i - j;
-    if (row < 0 || row >= bandRows || j < 0 || j >= N) return 0;
-    return at(abMat.data, row * N + j);
-  };
-
-  if (b.ndim === 1) {
-    // Single RHS
-    const bSize = getDim(b, 0, "solve_banded()");
-    if (bSize !== N) {
-      throw new ShapeError(`b length (${bSize}) must match matrix size (${N})`);
-    }
-    const bVec = toDenseVector1D(b);
-
-    if (l === 1 && u === 1) {
-      // Thomas algorithm for tridiagonal; falls back to the pivoting general
-      // solver on a near-zero pivot (Thomas has no pivoting and would wrongly
-      // reject nonsingular but non-diagonally-dominant systems).
-      const tri = solveTridiagonal(abMat.data, N, u, bVec);
-      if (tri !== null) return fromDenseVector1D(tri);
-      return fromDenseVector1D(solveBandedGeneral(l, u, N, getA, bVec));
-    }
-
-    return fromDenseVector1D(solveBandedGeneral(l, u, N, getA, bVec));
-  }
-
-  // Multiple RHS: b is (N, nrhs)
-  if (b.ndim !== 2) {
+  if (b.ndim !== 1 && b.ndim !== 2) {
     throw new ShapeError("b must be 1D or 2D");
   }
   const bRows = getDim(b, 0, "solve_banded()");
-  const nrhs = getDim(b, 1, "solve_banded()");
   if (bRows !== N) {
-    throw new ShapeError(`b rows (${bRows}) must match matrix size (${N})`);
+    throw new ShapeError(
+      b.ndim === 1
+        ? `b length (${bRows}) must match matrix size (${N})`
+        : `b rows (${bRows}) must match matrix size (${N})`
+    );
+  }
+  const nrhs = b.ndim === 1 ? 1 : getDim(b, 1, "solve_banded()");
+
+  // Right-hand sides as one dense (N, nrhs) row-major block (a vector is one column).
+  const B =
+    b.ndim === 1 ? toDenseVector1D(b, "solve_banded()") : toDenseMatrix2D(b, "solve_banded()").data;
+
+  const finish = (X: Float64Array): Tensor =>
+    b.ndim === 1 ? fromDenseVector1D(X) : fromDenseMatrix2D(N, nrhs, X);
+
+  if (N === 0) return finish(new Float64Array(0));
+
+  const abData = toDenseMatrix2D(ab, "solve_banded()").data;
+
+  // Tridiagonal and diagonally dominant: Thomas algorithm, no pivoting required.
+  if (l === 1 && u === 1 && isDiagonallyDominantTridiagonal(abData, N)) {
+    const thomas = factorTridiagonal(abData, N);
+    if (thomas !== null) {
+      solveTridiagonalInPlace(thomas, N, B, nrhs);
+      return finish(B);
+    }
   }
 
-  const bMat = toDenseMatrix2D(b);
-  const result = new Float64Array(N * nrhs);
-
-  for (let j = 0; j < nrhs; j++) {
-    const col = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      col[i] = at(bMat.data, i * nrhs + j);
-    }
-
-    let sol: Float64Array | null;
-    if (l === 1 && u === 1) {
-      sol = solveTridiagonal(abMat.data, N, u, col);
-      if (sol === null) sol = solveBandedGeneral(l, u, N, getA, col);
-    } else {
-      sol = solveBandedGeneral(l, u, N, getA, col);
-    }
-
-    for (let i = 0; i < N; i++) {
-      result[i * nrhs + j] = at(sol, i);
-    }
-  }
-
-  return fromDenseMatrix2D(N, nrhs, result);
+  const factors = factorBanded(l, u, N, abData);
+  solveBandedInPlace(factors, l, u, N, B, nrhs);
+  return finish(B);
 }
 
 /**
- * Thomas algorithm for tridiagonal systems.
- * Time: O(N), Space: O(N).
- */
-function solveTridiagonal(
-  abData: Float64Array,
-  N: number,
-  u: number,
-  b: Float64Array
-): Float64Array | null {
-  // Extract diagonals from band storage
-  // Upper diagonal: ab[0, 1..N-1]  (a[i, i+1])
-  // Main diagonal:  ab[u, 0..N-1]  (a[i, i])
-  // Lower diagonal: ab[u+1, 0..N-2]  (a[i+1, i])
-  const x = new Float64Array(b);
-  const c = new Float64Array(N); // modified upper diagonal
-
-  // Forward sweep
-  const d0 = at(abData, u * N + 0); // main diagonal[0]
-  if (Math.abs(d0) < 1e-15) {
-    // Zero pivot: Thomas cannot proceed without pivoting — signal the caller
-    // to retry with the pivoting general solver rather than declaring the
-    // (possibly nonsingular) system singular.
-    return null;
-  }
-  c[0] = at(abData, 0 * N + 1) / d0; // upper[0] / diag[0]
-  x[0] = at(x, 0) / d0;
-
-  for (let i = 1; i < N; i++) {
-    const lower = at(abData, (u + 1) * N + (i - 1)); // a[i, i-1]
-    const diag = at(abData, u * N + i); // a[i, i]
-    const m = diag - lower * at(c, i - 1);
-    if (Math.abs(m) < 1e-15) {
-      return null;
-    }
-    if (i < N - 1) {
-      c[i] = at(abData, 0 * N + (i + 1)) / m; // upper[i] / m
-    }
-    x[i] = (at(x, i) - lower * at(x, i - 1)) / m;
-  }
-
-  // Back substitution
-  for (let i = N - 2; i >= 0; i--) {
-    x[i] = at(x, i) - at(c, i) * at(x, i + 1);
-  }
-
-  return x;
-}
-
-/**
- * General banded Gaussian elimination with partial pivoting, using LAPACK
- * dgbtrf-style column-oriented banded storage.
+ * Solve a banded linear system A x = b.
  *
- * Element A[i][j] is stored at row `l + u + i - j`, column `j` in a storage
- * of `2*l + u + 1` rows. The extra `l` rows above the band hold fill-in that
- * partial pivoting introduces. Because storage is keyed by absolute column,
- * a matrix-row swap becomes a per-column swap between two storage rows that
- * shift together with the column — so pivoting never misaligns entries (the
- * previous row-relative layout silently corrupted the result on any swap).
+ * The banded matrix A is specified by its lower and upper bandwidths
+ * and the band data in compact banded storage (same convention as
+ * scipy.linalg.solve_banded).
+ *
+ * Band storage format: `ab` has shape `(l + u + 1, N)` where
+ * `ab[u + i - j, j] = A[i, j]` for `max(0, j-u) <= i <= min(N-1, j+l)`.
+ * Entries of `ab` that do not correspond to a matrix element (the corners)
+ * are ignored, but must still be finite.
+ *
+ * Tridiagonal systems that are diagonally dominant use the Thomas algorithm
+ * (no pivoting is needed for those); every other system uses banded LU with
+ * partial pivoting. The matrix is factored once, however many right-hand
+ * sides there are.
+ *
+ * **Time Complexity**: O(N * (l + u)²) for the factorization plus O(N * (l + u)) per
+ * right-hand side, much faster than dense O(N³)
+ *
+ * @param luBands - Tuple [l, u] where l = number of lower diagonals, u = number of upper diagonals
+ * @param ab - Band matrix in compact form, shape (l + u + 1, N)
+ * @param b - Right-hand side vector of shape (N,) or matrix of shape (N, nrhs)
+ * @returns Solution x with same shape as b (float64)
+ *
+ * @example
+ * ```ts
+ * import { solveBanded } from 'deepbox/linalg';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * // Tridiagonal system: [2 -1 0; -1 2 -1; 0 -1 2] x = [1; 0; 1]
+ * // l=1, u=1, band storage:
+ * //   row 0 (upper): [0, -1, -1]
+ * //   row 1 (diag):  [2,  2,  2]
+ * //   row 2 (lower): [-1, -1, 0]
+ * const ab = tensor([[0, -1, -1], [2, 2, 2], [-1, -1, 0]]);
+ * const b = tensor([1, 0, 1]);
+ * const x = solveBanded([1, 1], ab, b); // [1, 1, 1]
+ * ```
+ *
+ * @throws {InvalidParameterError} If l or u is not a non-negative integer
+ * @throws {ShapeError} If ab is not 2-D with l + u + 1 rows, or b does not match N
+ * @throws {DTypeError} If ab or b has string or complex dtype
+ * @throws {DataValidationError} If the matrix is singular, or ab or b contain NaN or Infinity
+ *
+ * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra}
  */
-function solveBandedGeneral(
-  l: number,
-  u: number,
-  N: number,
-  getA: (i: number, j: number) => number,
-  b: Float64Array
-): Float64Array {
-  const ldab = 2 * l + u + 1;
-  const AB = new Float64Array(ldab * N);
-  // storage(r, j) helpers: r in [0, ldab), j in [0, N)
-  const idx = (r: number, j: number): number => r * N + j;
-  const set = (i: number, j: number, v: number): void => {
-    AB[idx(l + u + i - j, j)] = v;
-  };
-  const get = (i: number, j: number): number => {
-    const r = l + u + i - j;
-    if (r < 0 || r >= ldab) return 0;
-    return at(AB, idx(r, j));
-  };
+export const solveBanded = solve_banded;
+
+/** Row diagonal dominance |a_ii| >= |a_i,i-1| + |a_i,i+1| of a tridiagonal band (u = 1). */
+function isDiagonallyDominantTridiagonal(abData: Float64Array, N: number): boolean {
+  for (let i = 0; i < N; i++) {
+    const diag = Math.abs(abData[N + i] as number); // a[i, i]
+    const lower = i > 0 ? Math.abs(abData[2 * N + (i - 1)] as number) : 0; // a[i, i-1]
+    const upper = i < N - 1 ? Math.abs(abData[i + 1] as number) : 0; // a[i, i+1]
+    if (diag < lower + upper) return false;
+  }
+  return true;
+}
+
+type TridiagonalFactors = {
+  /** Sub-diagonal a[i, i-1] for i = 1..N-1 (index i-1). */
+  readonly lower: Float64Array;
+  /** Eliminated pivots. */
+  readonly pivots: Float64Array;
+  /** Scaled super-diagonal c[i] = a[i, i+1] / pivots[i]. */
+  readonly upper: Float64Array;
+};
+
+/**
+ * Thomas factorization of a tridiagonal band (ab rows: upper, diagonal, lower).
+ * Returns null on an exactly zero pivot, which a pivoting solver may still
+ * get past or report as singular.
+ */
+function factorTridiagonal(abData: Float64Array, N: number): TridiagonalFactors | null {
+  const lower = new Float64Array(Math.max(N - 1, 0));
+  const pivots = new Float64Array(N);
+  const upper = new Float64Array(Math.max(N - 1, 0));
 
   for (let i = 0; i < N; i++) {
-    for (let j = Math.max(0, i - l); j <= Math.min(N - 1, i + u); j++) {
-      set(i, j, getA(i, j));
+    let m = abData[N + i] as number; // a[i, i]
+    if (i > 0) {
+      const sub = abData[2 * N + (i - 1)] as number; // a[i, i-1]
+      lower[i - 1] = sub;
+      m -= sub * (upper[i - 1] as number);
+    }
+    if (m === 0) return null;
+    pivots[i] = m;
+    if (i < N - 1) upper[i] = (abData[i + 1] as number) / m; // a[i, i+1] / m
+  }
+  return { lower, pivots, upper };
+}
+
+function solveTridiagonalInPlace(
+  f: TridiagonalFactors,
+  N: number,
+  B: Float64Array,
+  nrhs: number
+): void {
+  for (let c = 0; c < nrhs; c++) {
+    // Forward sweep
+    B[c] = (B[c] as number) / (f.pivots[0] as number);
+    for (let i = 1; i < N; i++) {
+      const prev = B[(i - 1) * nrhs + c] as number;
+      B[i * nrhs + c] =
+        ((B[i * nrhs + c] as number) - (f.lower[i - 1] as number) * prev) / (f.pivots[i] as number);
+    }
+    // Back substitution
+    for (let i = N - 2; i >= 0; i--) {
+      B[i * nrhs + c] =
+        (B[i * nrhs + c] as number) - (f.upper[i] as number) * (B[(i + 1) * nrhs + c] as number);
+    }
+  }
+}
+
+type BandedFactors = {
+  /** LAPACK dgbtrf-style storage: A[i][j] at row `l + u + i - j`, column `j`, `2l + u + 1` rows. */
+  readonly AB: Float64Array;
+  /** piv[k] is the row swapped with row k at elimination step k. */
+  readonly piv: Int32Array;
+};
+
+/**
+ * General banded LU with partial pivoting in dgbtrf-style column-oriented
+ * storage.
+ *
+ * Element A[i][j] is stored at row `l + u + i - j`, column `j`, in a storage
+ * of `2*l + u + 1` rows. The extra `l` rows above the band hold the fill-in
+ * that partial pivoting introduces. Because storage is keyed by absolute
+ * column, a matrix-row swap becomes a per-column swap between two storage
+ * rows that shift together with the column, so pivoting never misaligns
+ * entries. The multipliers of L stay in the sub-diagonal positions they were
+ * computed for and are replayed (swap, then eliminate) by the solve.
+ */
+function factorBanded(l: number, u: number, N: number, abData: Float64Array): BandedFactors {
+  const ldab = 2 * l + u + 1;
+  const AB = new Float64Array(ldab * N);
+  const at = (i: number, j: number): number => {
+    const r = l + u + i - j;
+    return r < 0 || r >= ldab ? 0 : (AB[r * N + j] as number);
+  };
+  const put = (i: number, j: number, v: number): void => {
+    AB[(l + u + i - j) * N + j] = v;
+  };
+
+  // Copy the band of A out of the compact (l + u + 1, N) input.
+  for (let j = 0; j < N; j++) {
+    const iLo = Math.max(0, j - u);
+    const iHi = Math.min(N - 1, j + l);
+    for (let i = iLo; i <= iHi; i++) {
+      put(i, j, abData[(u + i - j) * N + j] as number);
     }
   }
 
-  const x = new Float64Array(b);
   const piv = new Int32Array(N);
 
   // Forward elimination with partial pivoting. After eliminating column k,
@@ -229,60 +280,94 @@ function solveBandedGeneral(
     const iMax = Math.min(N - 1, k + l);
 
     let pivotRow = k;
-    let pivotVal = Math.abs(get(k, k));
+    let pivotVal = Math.abs(at(k, k));
     for (let i = k + 1; i <= iMax; i++) {
-      const v = Math.abs(get(i, k));
+      const v = Math.abs(at(i, k));
       if (v > pivotVal) {
         pivotVal = v;
         pivotRow = i;
       }
     }
 
-    if (pivotVal < 1e-15) {
+    if (pivotVal === 0) {
       throw new DataValidationError("Singular banded matrix");
     }
 
     piv[k] = pivotRow;
     if (pivotRow !== k) {
-      // Swap matrix rows k and pivotRow across all columns they touch.
-      const jMax = Math.min(N - 1, pivotRow + u + l);
-      for (let j = k; j <= jMax; j++) {
-        const a = get(k, j);
-        const bb = get(pivotRow, j);
-        set(k, j, bb);
-        set(pivotRow, j, a);
+      // Swap matrix rows k and pivotRow in the columns they still share
+      // (both rows are zero beyond column k + u + l).
+      const jSwap = Math.min(N - 1, k + u + l);
+      for (let j = k; j <= jSwap; j++) {
+        const a = at(k, j);
+        const bb = at(pivotRow, j);
+        put(k, j, bb);
+        put(pivotRow, j, a);
       }
-      const tmp = at(x, k);
-      x[k] = at(x, pivotRow);
-      x[pivotRow] = tmp;
     }
 
-    const pivot = get(k, k);
+    const pivot = at(k, k);
     const jMax = Math.min(N - 1, k + u + l);
     for (let i = k + 1; i <= iMax; i++) {
-      const m = get(i, k) / pivot;
-      set(i, k, 0);
+      const m = at(i, k) / pivot;
+      put(i, k, m);
       if (m === 0) continue;
       for (let j = k + 1; j <= jMax; j++) {
-        set(i, j, get(i, j) - m * get(k, j));
+        put(i, j, at(i, j) - m * at(k, j));
       }
-      x[i] = at(x, i) - m * at(x, k);
+    }
+  }
+
+  return { AB, piv };
+}
+
+/** Solve L U X = P B in place in B, an (N, nrhs) row-major block. */
+function solveBandedInPlace(
+  f: BandedFactors,
+  l: number,
+  u: number,
+  N: number,
+  B: Float64Array,
+  nrhs: number
+): void {
+  const { AB, piv } = f;
+  const ldab = 2 * l + u + 1;
+  const at = (i: number, j: number): number => {
+    const r = l + u + i - j;
+    return r < 0 || r >= ldab ? 0 : (AB[r * N + j] as number);
+  };
+
+  // Forward: replay the row swaps and eliminations in factorization order.
+  for (let k = 0; k < N; k++) {
+    const p = piv[k] as number;
+    if (p !== k) {
+      for (let c = 0; c < nrhs; c++) {
+        const tmp = B[k * nrhs + c] as number;
+        B[k * nrhs + c] = B[p * nrhs + c] as number;
+        B[p * nrhs + c] = tmp;
+      }
+    }
+    const iMax = Math.min(N - 1, k + l);
+    for (let i = k + 1; i <= iMax; i++) {
+      const m = at(i, k);
+      if (m === 0) continue;
+      for (let c = 0; c < nrhs; c++) {
+        B[i * nrhs + c] = (B[i * nrhs + c] as number) - m * (B[k * nrhs + c] as number);
+      }
     }
   }
 
   // Back substitution (fill-in widened the upper band to u + l)
   for (let i = N - 1; i >= 0; i--) {
-    let sum = at(x, i);
     const jMax = Math.min(N - 1, i + u + l);
     for (let j = i + 1; j <= jMax; j++) {
-      sum -= get(i, j) * at(x, j);
+      const v = at(i, j);
+      if (v === 0) continue;
+      for (let c = 0; c < nrhs; c++) {
+        B[i * nrhs + c] = (B[i * nrhs + c] as number) - v * (B[j * nrhs + c] as number);
+      }
     }
-    const diag = get(i, i);
-    if (Math.abs(diag) < 1e-15) {
-      throw new DataValidationError("Singular banded matrix");
-    }
-    x[i] = sum / diag;
+    const diag = at(i, i);
+    for (let c = 0; c < nrhs; c++) B[i * nrhs + c] = (B[i * nrhs + c] as number) / diag;
   }
-
-  return x;
 }

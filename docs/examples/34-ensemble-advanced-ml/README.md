@@ -2,16 +2,16 @@
 
 > **View online:** https://deepbox.dev/examples/34-ensemble-advanced-ml
 
-Advanced ensemble methods and ML models new in v1.0.0: AdaBoost, Bagging, Voting, Stacking, ExtraTrees, Gaussian Processes, Discriminant Analysis, and Semi-supervised Learning.
+Trains AdaBoost, Bagging, Voting, Stacking and ExtraTrees classifiers, a Gaussian process regressor and Linear Discriminant Analysis on synthetic data, then prints a comparison table. It also shows `classWeight` and `clone()`.
 
 ## Deepbox Modules Used
 
-| Module              | Features Used                                                                          |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `deepbox/ml`        | AdaBoostClassifier, BaggingClassifier, VotingClassifier, StackingClassifier, ExtraTreesClassifier, GaussianProcessRegressor, LinearDiscriminantAnalysis, LabelPropagation |
-| `deepbox/metrics`   | accuracy, r2Score, f1Score                                                             |
-| `deepbox/datasets`  | makeClassification, makeRegression                                                     |
-| `deepbox/preprocess`| trainTestSplit                                                                         |
+| Module               | Features Used                                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbox/ml`         | AdaBoostClassifier, BaggingClassifier, VotingClassifier, StackingClassifier, ExtraTreesClassifier, GaussianProcessRegressor, LinearDiscriminantAnalysis |
+| `deepbox/metrics`    | accuracy, r2Score, f1Score                                                                                                                              |
+| `deepbox/datasets`   | makeClassification, makeRegression                                                                                                                      |
+| `deepbox/preprocess` | trainTestSplit                                                                                                                                          |
 
 ## Usage
 
@@ -19,10 +19,15 @@ Advanced ensemble methods and ML models new in v1.0.0: AdaBoost, Bagging, Voting
 npm run example:34
 ```
 
-## Architecture
+## Output
+
+- Console output only: accuracy and F1 for each classifier, the R² of the Gaussian process regressor, and a comparison table.
+- Results are seeded with `randomState`, so they repeat between runs.
+
+## Files
 
 ```
 34-ensemble-advanced-ml/
-├── index.ts     # Main entry point
+├── index.ts     # Example script
 └── README.md    # This file
 ```

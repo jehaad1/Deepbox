@@ -3,11 +3,12 @@
  */
 
 export { lstsq } from "./lstsq";
-export { solve, solveTriangular } from "./solve";
-export { solve_banded } from "./solve_banded";
+export { type SolveTriangularOptions, solve, solveTriangular } from "./solve";
+export { solve_banded, solveBanded } from "./solve_banded";
 export {
   type CSRMatrix,
   denseToCSR,
+  type SparseMatrixInput,
   sparseCholeskySolve,
   sparseSolve,
 } from "./sparse";

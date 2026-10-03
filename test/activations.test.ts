@@ -122,11 +122,13 @@ describe("deepbox/nn - Activation Layers", () => {
       const input = tensor([-10, -5, 0, 5, 10]);
       const output = tanh.forward(input);
 
+      // The output keeps the float32 dtype of the input, so tanh(+-10) rounds to +-1 exactly.
       for (let i = 0; i < output.size; i++) {
         const val = output.data[i] as number;
-        expect(val).toBeGreaterThan(-1);
-        expect(val).toBeLessThan(1);
+        expect(val).toBeGreaterThanOrEqual(-1);
+        expect(val).toBeLessThanOrEqual(1);
       }
+      expect(output.dtype).toBe("float32");
     });
 
     it("should be zero-centered", () => {

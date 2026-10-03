@@ -1,8 +1,8 @@
 /**
  * Example 45: Core Runtime Tooling
  *
- * Focuses on v1.0.0 runtime primitives in `deepbox/core`: logger,
- * warnings, backend registry, and JSON/file serialization.
+ * Runtime tools in `deepbox/core`: the logger, warning filters, JSON and file
+ * serialization, and the backend registry with the WASM SIMD backend.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -34,7 +34,7 @@ await mkdir(OUTPUT_DIR, { recursive: true });
 // ============================================================================
 // Part 1: Structured logging
 // ============================================================================
-console.log("\n🪵 Part 1: Logger");
+console.log("\nPart 1: Logger");
 console.log("-".repeat(60));
 
 const capturedLogs: string[] = [];
@@ -46,7 +46,7 @@ setLogHandler((entry) => {
 
 const logger = new Logger(2, "Example45");
 logger.info("Starting serialization and backend checks");
-logger.debug("Using verbosity level 2 to emit summary + progress events");
+logger.debug("Level 2 emits summary and progress events");
 logger.trace("This trace entry is recorded but not emitted at level 2");
 
 console.log(`Captured log entries: ${capturedLogs.length}`);
@@ -60,7 +60,7 @@ setLogHandler(undefined);
 // ============================================================================
 // Part 2: Warning filtering and collection
 // ============================================================================
-console.log("\n⚠️  Part 2: Warnings");
+console.log("\nPart 2: Warnings");
 console.log("-".repeat(60));
 
 resetWarnings();
@@ -84,7 +84,7 @@ resetWarnings();
 // ============================================================================
 // Part 3: In-memory and file serialization
 // ============================================================================
-console.log("\n💾 Part 3: Serialization");
+console.log("\nPart 3: Serialization");
 console.log("-".repeat(60));
 
 const tensorPayload = {
@@ -135,16 +135,17 @@ console.log(`Loaded payload types: ${loadedTensor.__type}, ${loadedModule.__type
 // ============================================================================
 // Part 4: Backend registry
 // ============================================================================
-console.log("\n🧠 Part 4: Backend Registry");
+console.log("\nPart 4: Backend Registry");
 console.log("-".repeat(60));
 
 console.log(`Backends before registration: ${listBackends().join(", ")}`);
-console.log(`Is WebGPU available? ${isBackendAvailable("webgpu") ? "yes" : "no"}`);
-console.log(`Is WASM available?   ${isBackendAvailable("wasm") ? "yes" : "no"}`);
+console.log(`WebGPU registered: ${isBackendAvailable("webgpu") ? "yes" : "no"}`);
+console.log(`WASM registered:   ${isBackendAvailable("wasm") ? "yes" : "no"}`);
 
-// The WASM SIMD backend ships precompiled kernels: init() instantiates
-// them, and once registered, contiguous float32 arithmetic on
-// `wasm`-device tensors runs through 4-lane SIMD.
+// The WASM SIMD backend ships precompiled kernels, and init() instantiates them.
+// Once it is registered, same-shape contiguous float32 add, sub, mul and div on
+// tensors with at least 512 elements run through 4-lane SIMD kernels. Every other
+// op uses the normal CPU code and gives the same results.
 const wasm = new WasmBackend();
 await wasm.init();
 if (wasm.info().available) {
@@ -152,7 +153,7 @@ if (wasm.info().available) {
 }
 
 console.log(`Backends after registration:  ${listBackends().join(", ")}`);
-console.log(`Is WASM available now? ${isBackendAvailable("wasm") ? "yes" : "no"}`);
+console.log(`WASM registered now: ${isBackendAvailable("wasm") ? "yes" : "no"}`);
 console.log(`WASM SIMD kernels: ${wasm.listModules().join(", ")}`);
 
 const simdA = new Float32Array([1, 2, 3, 4, 5]);
@@ -163,14 +164,19 @@ console.log(`SIMD add result: [${simdOut ? Array.from(simdOut).join(", ") : "una
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• Logger captures structured events independently from console output");
-console.log("• Warning filters let you silence, dedupe, or escalate numerical issues");
-console.log("• Serialization helpers round-trip Deepbox payloads in memory or on disk");
 console.log(
-  "• The backend registry makes CPU mandatory; WebGPU/WASM backends plug in real kernels"
+  "• Logger: structured entries that a handler can capture, separate from console output"
+);
+console.log("• Warning filters: silence, show once, or turn numerical warnings into errors");
+console.log("• toJSON, fromJSON, save, load: round-trip payloads in memory or on disk");
+console.log(
+  "• Backend registry: CPU is always present. WebGPU and WASM are registered on request."
+);
+console.log(
+  "• A device that cannot run an op throws a DeviceError. Move the tensor with await t.cpu()."
 );
 
-console.log("\n✅ Core Runtime Tooling Example Complete!");
+console.log("\nCore Runtime Tooling Example Complete!");
 console.log("=".repeat(60));

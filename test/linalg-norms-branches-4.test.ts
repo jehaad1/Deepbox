@@ -5,7 +5,7 @@ import { tensor, zeros } from "../src/ndarray";
 describe("linalg norms branches 4", () => {
   it("cond validates inputs and handles fro errors", () => {
     expect(() => cond(tensor([1, 2]))).toThrow(/2D/);
-    expect(() => cond(tensor([[1, 2]]), 1)).toThrow(/Only 2-norm/);
+    expect(() => cond(tensor([[1, 2]]), 3)).toThrow(/Unsupported norm order/);
 
     const bad = tensor([
       [1, NaN],

@@ -1,8 +1,8 @@
 /**
  * Example 12: Complete ML Pipeline
  *
- * Bring everything together in a comprehensive machine learning workflow.
- * From data loading to model evaluation and visualization.
+ * A regression workflow from start to finish on the Housing-Mini dataset:
+ * load, explore, split, scale, fit a Ridge model, evaluate and plot.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -20,101 +20,90 @@ console.log("=".repeat(60));
 
 mkdirSync("docs/examples/12-complete-pipeline/output", { recursive: true });
 
-// Step 1: Load Data
-console.log("\n📦 Step 1: Loading Dataset");
+// Step 1: Load data
+console.log("\nStep 1: Loading the dataset");
 console.log("-".repeat(60));
 
 const dataset = loadHousingMini();
-console.log(`✓ Loaded Housing-Mini dataset`);
+console.log("Loaded the Housing-Mini dataset");
 console.log(`  Samples: ${dataset.data.shape[0]}`);
 console.log(`  Features: ${dataset.data.shape[1]}`);
 
-// Step 2: Exploratory Data Analysis
-console.log("\n📊 Step 2: Exploratory Data Analysis");
+// Step 2: Exploratory data analysis
+console.log("\nStep 2: Exploratory data analysis");
 console.log("-".repeat(60));
 
-// Extract first feature for analysis
-const feature_data: number[] = [];
-const numFeatures = dataset.data.shape[1] || 0;
-for (let i = 0; i < dataset.data.shape[0]; i++) {
-  feature_data.push(Number(dataset.data.data[dataset.data.offset + i * numFeatures]));
-}
-const feature = tensor(feature_data);
+// Take the first feature column. slice({}, 0) keeps every row of axis 0
+// and selects index 0 on axis 1.
+const feature = dataset.data.slice({}, 0);
 
-const meanVal = Number(mean(feature).data[0]);
-const stdVal = Number(std(feature).data[0]);
+console.log("Feature 1 statistics:");
+console.log(`  Mean: ${Number(mean(feature).item()).toFixed(2)}`);
+console.log(`  Std:  ${Number(std(feature).item()).toFixed(2)}`);
 
-console.log(`Feature 1 Statistics:`);
-console.log(`  Mean: ${meanVal.toFixed(2)}`);
-console.log(`  Std:  ${stdVal.toFixed(2)}`);
-
-// Step 3: Data Preprocessing
-console.log("\n🔄 Step 3: Data Preprocessing");
+// Step 3: Data preprocessing
+console.log("\nStep 3: Data preprocessing");
 console.log("-".repeat(60));
 
-const [X_train, X_test, y_train, y_test] = trainTestSplit(dataset.data, dataset.target, {
+const [XTrain, XTest, yTrain, yTest] = trainTestSplit(dataset.data, dataset.target, {
   testSize: 0.2,
   randomState: 42,
   shuffle: true,
 });
 
-console.log(`✓ Split data:`);
-console.log(`  Training: ${X_train.shape[0]} samples`);
-console.log(`  Testing:  ${X_test.shape[0]} samples`);
+console.log("Split the data:");
+console.log(`  Training: ${XTrain.shape[0]} samples`);
+console.log(`  Testing:  ${XTest.shape[0]} samples`);
 
+// Fit the scaler on the training rows only, so no test information leaks in.
 const scaler = new StandardScaler();
-scaler.fit(X_train);
-const X_train_scaled = scaler.transform(X_train);
-const X_test_scaled = scaler.transform(X_test);
+scaler.fit(XTrain);
+const XTrainScaled = scaler.transform(XTrain);
+const XTestScaled = scaler.transform(XTest);
 
-console.log(`✓ Scaled features using StandardScaler`);
+console.log("Scaled the features with StandardScaler");
 
-// Step 4: Model Training
-console.log("\n🤖 Step 4: Model Training");
+// Step 4: Model training
+console.log("\nStep 4: Model training");
 console.log("-".repeat(60));
 
 const model = new Ridge({ alpha: 1.0 });
-model.fit(X_train_scaled, y_train);
+model.fit(XTrainScaled, yTrain);
 
-console.log(`✓ Trained Ridge Regression (α=1.0)`);
+console.log("Trained Ridge regression (alpha = 1.0)");
 
-// Step 5: Model Evaluation
-console.log("\n📈 Step 5: Model Evaluation");
+// Step 5: Model evaluation
+console.log("\nStep 5: Model evaluation");
 console.log("-".repeat(60));
 
-const y_pred = model.predict(X_test_scaled);
+const yPred = model.predict(XTestScaled);
 
-const r2 = r2Score(y_test, y_pred);
-const mseVal = mse(y_test, y_pred);
-const maeVal = mae(y_test, y_pred);
+const r2 = r2Score(yTest, yPred);
+const mseVal = mse(yTest, yPred);
+const maeVal = mae(yTest, yPred);
 
-console.log(`Performance Metrics:`);
+console.log("Performance metrics:");
 console.log(`  R² Score: ${r2.toFixed(4)}`);
 console.log(`  MSE:      ${mseVal.toFixed(4)}`);
 console.log(`  MAE:      ${maeVal.toFixed(4)}`);
 
 // Step 6: Visualization
-console.log("\n🎨 Step 6: Results Visualization");
+console.log("\nStep 6: Results visualization");
 console.log("-".repeat(60));
 
-// Extract predictions and actual values
-const y_test_array: number[] = [];
-const y_pred_array: number[] = [];
-
-for (let i = 0; i < y_test.size; i++) {
-  y_test_array.push(Number(y_test.data[y_test.offset + i]));
-  y_pred_array.push(Number(y_pred.data[y_pred.offset + i]));
-}
-
-// Create predictions vs actual plot
+// Predictions vs actual values. Tensors go straight into the plot.
 const fig = new Figure({ width: 640, height: 480 });
 const ax = fig.addAxes();
 
-ax.scatter(tensor(y_test_array), tensor(y_pred_array), {
+ax.scatter(yTest, yPred, {
   color: "#1f77b4",
   size: 8,
 });
-ax.plot(tensor([0, 1, 2]), tensor([0, 1, 2]), {
+
+// The red line marks perfect predictions (predicted equals actual).
+const lo = Math.min(Number(yTest.min().item()), Number(yPred.min().item()));
+const hi = Math.max(Number(yTest.max().item()), Number(yPred.max().item()));
+ax.plot(tensor([lo, hi]), tensor([lo, hi]), {
   color: "#ff0000",
   linewidth: 2,
 });
@@ -124,28 +113,25 @@ ax.setYLabel("Predicted");
 
 const svg = fig.renderSVG();
 writeFileSync("docs/examples/12-complete-pipeline/output/predictions.svg", svg.svg);
-console.log("✓ Saved: output/predictions.svg");
+console.log("Saved: output/predictions.svg");
 
 // Step 7: Summary
-console.log("\n📋 Step 7: Pipeline Summary");
+console.log("\nStep 7: Pipeline summary");
 console.log("-".repeat(60));
 
-console.log(`Complete ML Pipeline Executed:`);
-console.log(`  1. ✓ Data Loading (Housing-Mini dataset)`);
-console.log(`  2. ✓ Exploratory Analysis`);
-console.log(`  3. ✓ Train/Test Split (80/20)`);
-console.log(`  4. ✓ Feature Scaling (StandardScaler)`);
-console.log(`  5. ✓ Model Training (Ridge Regression)`);
-console.log(`  6. ✓ Model Evaluation (R²=${r2.toFixed(3)})`);
-console.log(`  7. ✓ Results Visualization`);
+console.log("Steps run:");
+console.log("  1. Load data (Housing-Mini)");
+console.log("  2. Exploratory analysis");
+console.log("  3. Train/test split (80/20)");
+console.log("  4. Feature scaling (StandardScaler)");
+console.log("  5. Model training (Ridge)");
+console.log(`  6. Model evaluation (R² = ${r2.toFixed(3)})`);
+console.log("  7. Results visualization");
 
-console.log("\n💡 Key Takeaways:");
-console.log("• Always split data before scaling to prevent data leakage");
-console.log("• Feature scaling improves model performance");
-console.log("• Use multiple metrics to evaluate models");
-console.log("• Visualize results to understand model behavior");
-console.log("• Ridge regression adds L2 regularization to prevent overfitting");
+console.log("\nNotes:");
+console.log("  Split first, then fit the scaler on the training set, to avoid data leakage.");
+console.log("  Report more than one metric: R² shows fit quality, MAE is in the target's units.");
 
 console.log(`\n${"=".repeat(60)}`);
-console.log("✅ Complete ML Pipeline Finished Successfully!");
+console.log("Pipeline finished");
 console.log("=".repeat(60));

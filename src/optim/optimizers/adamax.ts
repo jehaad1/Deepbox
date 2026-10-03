@@ -2,7 +2,6 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { InvalidParameterError } from "../../core";
 import {
   abs,
   add,
@@ -22,7 +21,6 @@ import {
   assertInRange,
   deviceMaxTensor,
   replaceParamStorage,
-  safeArrayAccess,
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
@@ -32,6 +30,7 @@ type AdamaxOptions = {
   beta2: number;
   eps: number;
   weightDecay: number;
+  maximize: boolean;
 };
 
 type AdamaxState = {
@@ -45,14 +44,19 @@ type AdamaxState = {
 };
 
 /**
- * Adamax optimizer — variant of Adam using the infinity norm.
+ * Adamax optimizer, a variant of Adam based on the infinity norm (Kingma and Ba, 2015).
  *
- * Particularly well-suited for embeddings and sparse gradients.
+ * Often used for embeddings and sparse gradients. The update follows
+ * `torch.optim.Adamax`:
  *
- * Update rule:
- *   m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
- *   u_t = max(beta2 * u_{t-1}, |g_t|)
- *   theta_t = theta_{t-1} - (lr / (1 - beta1^t)) * m_t / (u_t + eps)
+ * ```
+ * m = beta1 * m + (1 - beta1) * g
+ * u = max(beta2 * u, |g| + eps)
+ * theta -= (lr / (1 - beta1^t)) * m / u
+ * ```
+ *
+ * When `weightDecay` is non-zero, `weightDecay * theta` is added to the gradient
+ * (L2 penalty) before the update.
  *
  * @example
  * ```ts
@@ -64,12 +68,19 @@ type AdamaxState = {
  * @category Optimizers
  */
 export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new Adamax optimizer.
+   *
+   * @param params - Parameters to optimize, or an array of parameter groups with per-group options
+   * @param options - Hyperparameters
+   * @param options.lr - Learning rate (default: 0.002)
+   * @param options.beta1 - Decay rate of the first moment, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Decay rate of the infinity norm, in [0, 1) (default: 0.999)
+   * @param options.eps - Term added to the infinity norm for numerical stability (default: 1e-8)
+   * @param options.weightDecay - L2 penalty coefficient (default: 0)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<AdamaxOptions>>,
     options: {
@@ -78,6 +89,7 @@ export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
       readonly beta2?: number;
       readonly eps?: number;
       readonly weightDecay?: number;
+      readonly maximize?: boolean;
     } = {}
   ) {
     const defaults = {
@@ -86,30 +98,18 @@ export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
       beta2: options.beta2 ?? 0.999,
       eps: options.eps ?? 1e-8,
       weightDecay: options.weightDecay ?? 0,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
-    assertFiniteNonNegative("weight_decay value", defaults.weightDecay);
   }
 
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(`Invalid group index: ${groupIdx}`, "groupIdx", groupIdx);
-    }
-    return group.options.lr;
-  }
-
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<AdamaxOptions>): void {
+    assertFiniteNonNegative("learning rate", options.lr);
+    assertInRange("beta1", options.beta1, 0, 1);
+    assertInRange("beta2", options.beta2, 0, 1);
+    assertFinitePositive("epsilon", options.eps);
+    assertFiniteNonNegative("weight_decay value", options.weightDecay);
   }
 
   protected isState(state: Record<string, unknown>): state is AdamaxState {
@@ -120,20 +120,33 @@ export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
     );
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional function that re-evaluates the model and returns the loss
+   * @returns The value returned by `closure`, or undefined when no closure is given
+   * @throws {InvalidParameterError} If a gradient or parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
     if (closure) loss = closure();
 
-    this._stepCount++;
+    this.prepareStep("Adamax");
+    this.countStep();
 
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps, weightDecay } = group.options;
+      const { lr, beta1, beta2, eps, weightDecay, maximize } = group.options;
 
-      for (const param of group.params) {
+      // Re-validate hyperparameters (they might have been changed)
+
+      for (const param of this.trainableParams(group)) {
         // Device path: compose the Adamax update from device-dispatched ops.
         if (param.tensor.isDeviceTensor) {
-          const g = param.grad;
-          if (!g) continue;
+          const rawGrad = param.grad;
+          if (!rawGrad) continue;
+          const g = maximize ? mulScalar(rawGrad, -1) : rawGrad;
           let dstate = this.state.get(param);
           if (!dstate) {
             dstate = { step: 0, expAvg: new Float64Array(0), expInfNorm: new Float64Array(0) };
@@ -149,15 +162,15 @@ export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
           const mNew = mPrev
             ? add(mulScalar(mPrev, beta1), mulScalar(grad, 1 - beta1))
             : mulScalar(grad, 1 - beta1);
-          // u(t) = max(beta2 * u(t-1), |g|); first step u=0 -> |g|.
-          const uNew = uPrev ? deviceMaxTensor(mulScalar(uPrev, beta2), abs(grad)) : abs(grad);
+          // u(t) = max(beta2 * u(t-1), |g| + eps); first step u=0 -> |g| + eps.
+          const absGradEps = addScalar(abs(grad), eps);
+          const uNew = uPrev ? deviceMaxTensor(mulScalar(uPrev, beta2), absGradEps) : absGradEps;
           dstate.expAvgTensor = mNew;
           dstate.expInfNormTensor = uNew;
-          const denom = addScalar(uNew, eps);
           replaceParamStorage(
             param,
             "tensor",
-            sub(param.tensor, mulScalar(div(mNew, denom), stepSize))
+            sub(param.tensor, mulScalar(div(mNew, uNew), stepSize))
           );
           continue;
         }
@@ -191,24 +204,27 @@ export class Adamax extends Optimizer<AdamaxOptions, AdamaxState> {
         const biasCorrection1 = 1 - beta1 ** state.step;
         const stepSize = lr / biasCorrection1;
 
-        for (let i = 0; i < size; i++) {
-          const gi0 = safeArrayAccess(gradData, gradOffset + i, "Adamax gradient");
-          const pi = safeArrayAccess(paramData, paramOffset + i, "Adamax parameter");
-          assertFinite("gradient", gi0);
-          assertFinite("parameter", pi);
+        const expAvg = state.expAvg;
+        const expInfNorm = state.expInfNorm;
 
+        for (let i = 0; i < size; i++) {
+          const rawGi = gradData[gradOffset + i] as number;
+          const pi = paramData[paramOffset + i] as number;
+          if (!Number.isFinite(rawGi)) assertFinite("gradient", rawGi);
+          const gi0 = maximize ? -rawGi : rawGi;
+          if (!Number.isFinite(pi)) assertFinite("parameter", pi);
+
+          // L2 weight decay
           const gi = weightDecay !== 0 ? gi0 + weightDecay * pi : gi0;
 
-          const m = safeArrayAccess(state.expAvg, i, "Adamax expAvg");
-          const u = safeArrayAccess(state.expInfNorm, i, "Adamax expInfNorm");
+          const mNew = beta1 * (expAvg[i] as number) + (1 - beta1) * gi;
+          // eps is folded into the norm (as torch does) so the denominator is never zero.
+          const uNew = Math.max(beta2 * (expInfNorm[i] as number), Math.abs(gi) + eps);
 
-          const mNew = beta1 * m + (1 - beta1) * gi;
-          const uNew = Math.max(beta2 * u, Math.abs(gi));
+          expAvg[i] = mNew;
+          expInfNorm[i] = uNew;
 
-          state.expAvg[i] = mNew;
-          state.expInfNorm[i] = uNew;
-
-          paramData[paramOffset + i] = pi - (stepSize * mNew) / (uNew + eps);
+          paramData[paramOffset + i] = pi - (stepSize * mNew) / uNew;
         }
       }
     }

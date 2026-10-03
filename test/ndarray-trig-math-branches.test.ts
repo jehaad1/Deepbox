@@ -37,34 +37,34 @@ import { toNumArr } from "./_helpers";
 describe("deepbox/ndarray - Trig & Math Branches", () => {
   it("covers BigInt paths", () => {
     const t = tensor([1, 2], { dtype: "int64" });
-    expect(sin(t).dtype).toBe("float64");
-    expect(cos(t).dtype).toBe("float64");
-    expect(tan(t).dtype).toBe("float64");
-    expect(asin(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float64");
-    expect(acos(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float64");
-    expect(atan(t).dtype).toBe("float64");
-    expect(sinh(t).dtype).toBe("float64");
-    expect(cosh(t).dtype).toBe("float64");
-    expect(tanh(t).dtype).toBe("float64");
-    expect(asinh(t).dtype).toBe("float64");
-    expect(acosh(tensor([1, 2], { dtype: "int64" })).dtype).toBe("float64");
-    expect(atanh(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float64");
+    expect(sin(t).dtype).toBe("float32");
+    expect(cos(t).dtype).toBe("float32");
+    expect(tan(t).dtype).toBe("float32");
+    expect(asin(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float32");
+    expect(acos(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float32");
+    expect(atan(t).dtype).toBe("float32");
+    expect(sinh(t).dtype).toBe("float32");
+    expect(cosh(t).dtype).toBe("float32");
+    expect(tanh(t).dtype).toBe("float32");
+    expect(asinh(t).dtype).toBe("float32");
+    expect(acosh(tensor([1, 2], { dtype: "int64" })).dtype).toBe("float32");
+    expect(atanh(tensor([0, 1], { dtype: "int64" })).dtype).toBe("float32");
 
-    expect(exp(t).dtype).toBe("float64");
-    expect(log(t).dtype).toBe("float64");
-    expect(sqrt(t).dtype).toBe("float64");
-    expect(rsqrt(t).dtype).toBe("float64");
-    expect(cbrt(t).dtype).toBe("float64");
-    expect(expm1(t).dtype).toBe("float64");
-    expect(exp2(t).dtype).toBe("float64");
-    expect(log1p(t).dtype).toBe("float64");
-    expect(log2(t).dtype).toBe("float64");
-    expect(log10(t).dtype).toBe("float64");
-    expect(floor(t).dtype).toBe("float64");
-    expect(ceil(t).dtype).toBe("float64");
-    expect(round(t).dtype).toBe("float64");
-    expect(trunc(t).dtype).toBe("float64");
-    expect(square(t).dtype).toBe("float64");
+    expect(exp(t).dtype).toBe("float32");
+    expect(log(t).dtype).toBe("float32");
+    expect(sqrt(t).dtype).toBe("float32");
+    expect(rsqrt(t).dtype).toBe("float32");
+    expect(cbrt(t).dtype).toBe("float32");
+    expect(expm1(t).dtype).toBe("float32");
+    expect(exp2(t).dtype).toBe("float32");
+    expect(log1p(t).dtype).toBe("float32");
+    expect(log2(t).dtype).toBe("float32");
+    expect(log10(t).dtype).toBe("float32");
+    expect(floor(t).dtype).toBe("int64");
+    expect(ceil(t).dtype).toBe("int64");
+    expect(round(t).dtype).toBe("int64");
+    expect(trunc(t).dtype).toBe("int64");
+    expect(square(t).dtype).toBe("int64");
   });
 
   it("throws on string dtype and bad atan2 sizes", () => {
@@ -75,13 +75,13 @@ describe("deepbox/ndarray - Trig & Math Branches", () => {
     expect(() => atan2(tensor([1, 2]), tensor([1, 2, 3]))).toThrow();
   });
 
-  it("promotes integer/bool log outputs to float64", () => {
+  it("promotes integer/bool log outputs to float32", () => {
     const intLog = log(tensor([1, 2], { dtype: "int32" }));
-    expect(intLog.dtype).toBe("float64");
+    expect(intLog.dtype).toBe("float32");
     expect(toNumArr(intLog.toArray())[0]).toBeCloseTo(0, 6);
 
     const boolLog = log(tensor([1, 1], { dtype: "bool" }));
-    expect(boolLog.dtype).toBe("float64");
+    expect(boolLog.dtype).toBe("float32");
     expect(toNumArr(boolLog.toArray())[0]).toBeCloseTo(0, 6);
   });
 });

@@ -26,6 +26,7 @@ import {
   tensor,
   where,
 } from "../ndarray";
+import { offsetFromFlatIndex } from "../ndarray/tensor/strides";
 
 /**
  * Replace a parameter's underlying storage tensor in place. Optimizers that
@@ -65,7 +66,8 @@ export function deviceSign(t: Tensor): Tensor {
 /**
  * Device analogue of `Math.max(t, c)` for a scalar `c`, composed from
  * device-dispatched ops (the exported `maximum` op is host-only). Uses the
- * identity `max(t, c) = c + relu(t - c)`, which is exact for finite values.
+ * identity `max(t, c) = c + relu(t - c)`, which holds for finite values up to
+ * one rounding of the final addition.
  *
  * @internal
  */
@@ -85,7 +87,8 @@ export function deviceMinScalar(t: Tensor, c: number): Tensor {
 
 /**
  * Device analogue of element-wise `maximum(a, b)`, composed from
- * device-dispatched ops via `max(a, b) = a + relu(b - a)`.
+ * device-dispatched ops via `max(a, b) = a + relu(b - a)` (equal to the true
+ * maximum for finite values up to one rounding of the final addition).
  *
  * @internal
  */
@@ -97,6 +100,28 @@ export function deviceMaxTensor(a: Tensor, b: Tensor): Tensor {
  * Supported floating-point typed array types for optimizer parameters.
  */
 export type FloatTypedArray = Float32Array | Float64Array;
+
+/**
+ * True when the elements of a tensor are laid out densely in row-major order
+ * (dimensions of size 1 may carry any stride). Optimizers update flat typed
+ * arrays as `offset + i`, which is only right for such a layout.
+ */
+function isDenseRowMajor(shape: readonly number[], strides: readonly number[]): boolean {
+  if (shape.length !== strides.length) return false;
+  let expected = 1;
+  for (let axis = shape.length - 1; axis >= 0; axis--) {
+    const dim = shape[axis] ?? 1;
+    if (dim === 0) return true;
+    if (dim === 1) continue;
+    if (strides[axis] !== expected) return false;
+    expected *= dim;
+  }
+  return true;
+}
+
+function sameShape(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((dim, i) => dim === b[i]);
+}
 
 function isFloatTypedArray(value: unknown): value is FloatTypedArray {
   return value instanceof Float32Array || value instanceof Float64Array;
@@ -135,7 +160,7 @@ export function safeArrayAccess<T>(array: ArrayLike<T>, index: number, context: 
  */
 export function assertFiniteNonNegative(name: string, value: number): void {
   if (!Number.isFinite(value) || value < 0) {
-    throw new InvalidParameterError(`Invalid ${name}: ${value}`, name, value);
+    throw new InvalidParameterError(`Invalid ${name}: ${value} (must be >= 0)`, name, value);
   }
 }
 
@@ -161,7 +186,7 @@ export function assertFinitePositive(name: string, value: number): void {
  */
 export function assertFinite(name: string, value: number): void {
   if (!Number.isFinite(value)) {
-    throw new InvalidParameterError(`Invalid ${name}: ${value}`, name, value);
+    throw new InvalidParameterError(`Invalid ${name}: ${value} (must be finite)`, name, value);
   }
 }
 
@@ -185,7 +210,11 @@ export function assertInRange(name: string, value: number, min: number, max: num
 }
 
 /**
- * Validates that a parameter has a gradient and returns gradient information.
+ * Validates that a parameter has a gradient and returns flat views of both.
+ *
+ * The parameter must be stored densely (row-major, no strides) because optimizers
+ * update it in place as `offset + i`. A strided gradient is copied into a dense
+ * buffer first (reported with `gradOffset` 0), so the gradient may be any view.
  *
  * @param param - Parameter to validate
  * @param optimizerName - Name of the optimizer for error messages
@@ -193,7 +222,8 @@ export function assertInRange(name: string, value: number, min: number, max: num
  * @throws {InvalidParameterError} If parameter doesn't require gradients
  * @throws {NotFittedError} If parameter has no gradient
  * @throws {DTypeError} If parameter or gradient has unsupported dtype
- * @throws {ShapeError} If gradient shape doesn't match parameter shape
+ * @throws {ShapeError} If the gradient shape differs from the parameter shape, or the
+ *   parameter is a non-contiguous view
  */
 export function assertHasGradFloat(
   param: GradTensor,
@@ -234,10 +264,30 @@ export function assertHasGradFloat(
     );
   }
 
-  if (param.tensor.size !== g.size) {
+  if (!sameShape(param.tensor.shape, g.shape)) {
     throw new ShapeError(
-      `Gradient shape must match parameter shape (param: ${param.tensor.size}, grad: ${g.size})`
+      `Gradient shape must match parameter shape (param: [${param.tensor.shape}], grad: [${g.shape}])`
     );
+  }
+
+  if (!isDenseRowMajor(param.tensor.shape, param.tensor.strides)) {
+    throw new ShapeError(
+      `${optimizerName} optimizer requires a contiguous parameter (got a strided view with shape [${param.tensor.shape}])`
+    );
+  }
+
+  if (!isDenseRowMajor(g.shape, g.strides)) {
+    const dense = new (gradData.constructor as new (length: number) => FloatTypedArray)(g.size);
+    const logicalStrides: number[] = new Array(g.shape.length);
+    let running = 1;
+    for (let axis = g.shape.length - 1; axis >= 0; axis--) {
+      logicalStrides[axis] = running;
+      running *= g.shape[axis] ?? 1;
+    }
+    for (let flat = 0; flat < g.size; flat++) {
+      dense[flat] = gradData[offsetFromFlatIndex(flat, logicalStrides, g.strides, g.offset)] ?? 0;
+    }
+    return { grad: dense, gradOffset: 0, param: paramData, paramOffset: param.tensor.offset };
   }
 
   return {
@@ -246,6 +296,41 @@ export function assertHasGradFloat(
     param: paramData,
     paramOffset: param.tensor.offset,
   };
+}
+
+/**
+ * Validates that a parameter is stored as a dense float32 or float64 host buffer and returns
+ * its flat view. Unlike {@link assertHasGradFloat} it does not look at the gradient, so it
+ * also accepts a parameter whose gradient is `null`.
+ *
+ * @param param - Parameter to validate
+ * @param optimizerName - Name of the optimizer for error messages
+ * @returns The parameter data and its offset
+ * @throws {InvalidParameterError} If the parameter doesn't require gradients
+ * @throws {DTypeError} If the parameter has an unsupported dtype
+ * @throws {ShapeError} If the parameter is a non-contiguous view
+ */
+export function assertFloatParam(
+  param: GradTensor,
+  optimizerName: string
+): { param: FloatTypedArray; paramOffset: number } {
+  if (!param.requiresGrad) {
+    throw new InvalidParameterError(
+      "Cannot optimize a parameter with requiresGrad=false",
+      "requiresGrad",
+      false
+    );
+  }
+  const paramData = param.tensor.data;
+  if (!isFloatTypedArray(paramData)) {
+    throw new DTypeError(`${optimizerName} optimizer supports float32 and float64 parameters only`);
+  }
+  if (!isDenseRowMajor(param.tensor.shape, param.tensor.strides)) {
+    throw new ShapeError(
+      `${optimizerName} optimizer requires a contiguous parameter (got a strided view with shape [${param.tensor.shape}])`
+    );
+  }
+  return { param: paramData, paramOffset: param.tensor.offset };
 }
 
 /**

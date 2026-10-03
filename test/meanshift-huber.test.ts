@@ -119,7 +119,7 @@ describe("HuberRegressor", () => {
     expect(pred.size).toBe(8);
   });
 
-  it("robust to outliers compared to plain linear model", () => {
+  it("is less sensitive to outliers compared to plain linear model", () => {
     // Data with outlier
     const Xout = tensor([[1], [2], [3], [4], [5], [6], [7], [100]]);
     const yout = tensor([3, 5, 7, 9, 11, 13, 15, 500]);

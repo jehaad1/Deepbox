@@ -20,8 +20,9 @@ export class NotImplementedError extends DeepboxError {
    * Create a new NotImplementedError.
    *
    * @param message - Optional error message.
+   * @param options - Optional `cause` to chain.
    */
-  constructor(message = "Not implemented") {
-    super(message);
+  constructor(message = "Not implemented", options?: { readonly cause?: unknown }) {
+    super(message, options);
   }
 }

@@ -1,9 +1,9 @@
 /**
  * Example 43: Statistical Distributions & Hypothesis Tests
  *
- * New in v1.0.0: Full stats module with probability distributions (normal, t,
- * chi2, F, binomial, Poisson, etc.), hypothesis tests (t-test, chi-square,
- * KS, Shapiro-Wilk, ANOVA), correlations, and confidence intervals.
+ * Probability distributions (normal, t, chi-square, exponential, beta, uniform,
+ * binomial, Poisson), hypothesis tests (t-tests, chi-square, Shapiro-Wilk, KS, ANOVA)
+ * and correlations (Pearson, Spearman, Kendall).
  */
 
 import { tensor } from "deepbox/ndarray";
@@ -13,7 +13,7 @@ import {
   chi2,
   chisquare,
   expon,
-  f_oneway,
+  fOneway,
   kendalltau,
   kstest,
   norm,
@@ -22,9 +22,9 @@ import {
   shapiro,
   spearmanr,
   t,
-  ttest_1samp,
-  ttest_ind,
-  ttest_rel,
+  ttest1samp,
+  ttestInd,
+  ttestRel,
   uniform,
 } from "deepbox/stats";
 
@@ -35,15 +35,15 @@ console.log("=".repeat(60));
 // ============================================================================
 // Part 1: Continuous Distributions
 // ============================================================================
-console.log("\n📊 Part 1: Continuous Distributions");
+console.log("\nPart 1: Continuous Distributions");
 console.log("-".repeat(60));
 
-// Normal distribution
-const normal = norm(0, 1); // mean=0, std=1
+// Normal distribution: norm(mean, standardDeviation)
+const normal = norm(0, 1);
 console.log("Normal(0, 1):");
 console.log(`  PDF at x=0:   ${normal.pdf(0).toFixed(6)}`);
 console.log(`  CDF at x=0:   ${normal.cdf(0).toFixed(6)}`);
-console.log(`  PPF at p=0.975: ${normal.ppf(0.975).toFixed(6)} (z-critical)`);
+console.log(`  PPF at p=0.975: ${normal.ppf(0.975).toFixed(6)} (z critical value)`);
 console.log(`  Mean:  ${normal.mean().toFixed(4)}, Var: ${normal.variance().toFixed(4)}`);
 
 // Student's t distribution
@@ -82,7 +82,7 @@ console.log(`  Mean: ${uniformDist.mean().toFixed(4)}`);
 // ============================================================================
 // Part 2: Discrete Distributions
 // ============================================================================
-console.log("\n🎲 Part 2: Discrete Distributions");
+console.log("\nPart 2: Discrete Distributions");
 console.log("-".repeat(60));
 
 // Binomial distribution
@@ -103,12 +103,12 @@ console.log(`  Mean: ${poisDist.mean().toFixed(4)}, Var: ${poisDist.variance().t
 // ============================================================================
 // Part 3: T-Tests
 // ============================================================================
-console.log("\n🧪 Part 3: T-Tests");
+console.log("\nPart 3: T-Tests");
 console.log("-".repeat(60));
 
-// One-sample t-test: is the mean significantly different from 0?
+// One-sample t-test: is the mean different from 0?
 const sample1 = tensor([2.1, 2.5, 2.3, 2.8, 2.2, 2.6, 2.4, 2.7, 2.3, 2.5]);
-const onesamp = ttest_1samp(sample1, 0);
+const onesamp = ttest1samp(sample1, 0);
 console.log("One-sample t-test (H0: mean = 0):");
 console.log(`  t-statistic: ${onesamp.statistic.toFixed(4)}`);
 console.log(`  p-value:     ${onesamp.pvalue.toFixed(6)}`);
@@ -117,7 +117,7 @@ console.log(`  Reject H0 at α=0.05: ${onesamp.pvalue < 0.05 ? "Yes" : "No"}`);
 // Independent two-sample t-test
 const groupA = tensor([5.1, 5.3, 5.0, 5.5, 5.2, 5.4, 5.1, 5.3]);
 const groupB = tensor([4.8, 4.6, 4.9, 4.5, 4.7, 4.6, 4.8, 4.5]);
-const twosamp = ttest_ind(groupA, groupB);
+const twosamp = ttestInd(groupA, groupB);
 console.log("\nIndependent two-sample t-test (H0: mean_A = mean_B):");
 console.log(`  t-statistic: ${twosamp.statistic.toFixed(4)}`);
 console.log(`  p-value:     ${twosamp.pvalue.toFixed(6)}`);
@@ -126,7 +126,7 @@ console.log(`  Reject H0 at α=0.05: ${twosamp.pvalue < 0.05 ? "Yes" : "No"}`);
 // Paired t-test
 const before = tensor([85, 90, 78, 92, 88, 76, 95, 89]);
 const after = tensor([88, 93, 82, 95, 91, 80, 97, 92]);
-const paired = ttest_rel(before, after);
+const paired = ttestRel(before, after);
 console.log("\nPaired t-test (H0: no difference before/after):");
 console.log(`  t-statistic: ${paired.statistic.toFixed(4)}`);
 console.log(`  p-value:     ${paired.pvalue.toFixed(6)}`);
@@ -135,7 +135,7 @@ console.log(`  Reject H0 at α=0.05: ${paired.pvalue < 0.05 ? "Yes" : "No"}`);
 // ============================================================================
 // Part 4: Chi-Square Test
 // ============================================================================
-console.log("\n📐 Part 4: Chi-Square Goodness of Fit");
+console.log("\nPart 4: Chi-Square Goodness of Fit");
 console.log("-".repeat(60));
 
 // Test if observed frequencies match expected (uniform)
@@ -143,8 +143,8 @@ const observed = tensor([18, 22, 20, 15, 25]);
 const expected = tensor([20, 20, 20, 20, 20]);
 const chiResult = chisquare(observed, expected);
 console.log("Chi-square test (H0: observed matches expected):");
-console.log(`  Observed: [18, 22, 20, 15, 25]`);
-console.log(`  Expected: [20, 20, 20, 20, 20]`);
+console.log("  Observed: [18, 22, 20, 15, 25]");
+console.log("  Expected: [20, 20, 20, 20, 20]");
 console.log(`  χ² statistic: ${chiResult.statistic.toFixed(4)}`);
 console.log(`  p-value:      ${chiResult.pvalue.toFixed(6)}`);
 console.log(`  Reject H0 at α=0.05: ${chiResult.pvalue < 0.05 ? "Yes" : "No"}`);
@@ -152,7 +152,7 @@ console.log(`  Reject H0 at α=0.05: ${chiResult.pvalue < 0.05 ? "Yes" : "No"}`)
 // ============================================================================
 // Part 5: Normality Tests
 // ============================================================================
-console.log("\n📏 Part 5: Normality Tests");
+console.log("\nPart 5: Normality Tests");
 console.log("-".repeat(60));
 
 // Shapiro-Wilk test for normality
@@ -177,16 +177,16 @@ console.log(`  p-value:      ${ksResult.pvalue.toFixed(6)}`);
 // ============================================================================
 // Part 6: ANOVA (One-way)
 // ============================================================================
-console.log("\n📊 Part 6: One-way ANOVA");
+console.log("\nPart 6: One-way ANOVA");
 console.log("-".repeat(60));
 
 // Test if three groups have the same mean
 const group1 = tensor([6.1, 5.8, 6.3, 5.9, 6.0]);
 const group2 = tensor([7.2, 7.0, 7.4, 7.1, 7.3]);
 const group3 = tensor([5.5, 5.3, 5.7, 5.4, 5.6]);
-const anovaResult = f_oneway(group1, group2, group3);
+const anovaResult = fOneway(group1, group2, group3);
 console.log("One-way ANOVA (H0: all group means are equal):");
-console.log(`  Groups: [~6.0], [~7.2], [~5.5]`);
+console.log("  Group means: about 6.0, 7.2 and 5.5");
 console.log(`  F-statistic: ${anovaResult.statistic.toFixed(4)}`);
 console.log(`  p-value:     ${anovaResult.pvalue.toFixed(6)}`);
 console.log(`  Reject H0 at α=0.05: ${anovaResult.pvalue < 0.05 ? "Yes" : "No"}`);
@@ -194,7 +194,7 @@ console.log(`  Reject H0 at α=0.05: ${anovaResult.pvalue < 0.05 ? "Yes" : "No"}
 // ============================================================================
 // Part 7: Correlation Analysis
 // ============================================================================
-console.log("\n🔗 Part 7: Correlation Analysis");
+console.log("\nPart 7: Correlation Analysis");
 console.log("-".repeat(60));
 
 const x = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -210,10 +210,19 @@ const [rSpearman, pSpearman] = spearmanr(x, y);
 console.log("\nSpearman rank correlation (monotonic relationship):");
 console.log(`  ρ = ${rSpearman.toFixed(4)}, p-value = ${pSpearman.toFixed(6)}`);
 
-// Kendall's tau (ordinal association)
+// Kendall's tau (ordinal association). The p-value is exact for small samples without ties.
 const [tauKendall, pKendall] = kendalltau(x, y);
 console.log("\nKendall's tau (ordinal association):");
 console.log(`  τ = ${tauKendall.toFixed(4)}, p-value = ${pKendall.toFixed(6)}`);
+
+// The correlation tests take an alternative: "two-sided" (default), "less" or "greater".
+// kendalltau also takes variant ("b" or "c") and method ("auto", "exact" or "asymptotic").
+const [, pGreater] = pearsonr(x, y, { alternative: "greater" });
+console.log(`\nPearson, alternative "greater" (H1: r > 0): p-value = ${pGreater.toExponential(2)}`);
+const [tauAsym, pAsym] = kendalltau(x, y, { method: "asymptotic" });
+console.log(
+  `Kendall, asymptotic p-value: τ = ${tauAsym.toFixed(4)}, p-value = ${pAsym.toFixed(6)}`
+);
 
 // Non-linear relationship example
 const xNonlin = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -223,16 +232,16 @@ const [rMono] = spearmanr(xNonlin, yNonlin);
 console.log(
   `\nNon-linear (y=x²): Pearson r = ${rLin.toFixed(4)}, Spearman ρ = ${rMono.toFixed(4)}`
 );
-console.log("  (Spearman captures monotonic relationship better)");
+console.log("  (Spearman is 1 for any monotonic relationship, Pearson is lower for a curve)");
 
 // ============================================================================
 // Part 8: Distribution Sampling & Quantiles
 // ============================================================================
-console.log("\n🎯 Part 8: Distribution Quantiles & Summary");
+console.log("\nPart 8: Distribution Quantiles");
 console.log("-".repeat(60));
 
 const stdNorm = norm(0, 1);
-console.log("Standard Normal — Key Quantiles:");
+console.log("Standard normal quantiles:");
 for (const p of [0.01, 0.025, 0.05, 0.5, 0.95, 0.975, 0.99]) {
   console.log(`  P(X < ${stdNorm.ppf(p).toFixed(4).padStart(7)}) = ${p}`);
 }
@@ -245,16 +254,17 @@ console.log(`  P(-3 < X < 3) = ${(stdNorm.cdf(3) - stdNorm.cdf(-3)).toFixed(4)} 
 // ============================================================================
 // Summary
 // ============================================================================
-console.log("\n💡 Key Takeaways");
+console.log("\nKey Takeaways");
 console.log("-".repeat(60));
-console.log("• Continuous distributions: norm, t, chi2, F, expon, beta, uniform, gamma, etc.");
+console.log("• Continuous distributions: norm, t, chi2, f, expon, beta, uniform, gamma and more");
 console.log("• Discrete distributions: binom, poisson, geom, hypergeom, nbinom");
-console.log("• Each distribution has: pdf/pmf, cdf, ppf (quantile), mean, variance");
-console.log("• T-tests: one-sample, independent, paired — compare means");
-console.log("• Chi-square: goodness of fit and contingency tables");
-console.log("• Normality: Shapiro-Wilk, KS test, Anderson-Darling");
-console.log("• ANOVA: compare means across 3+ groups");
-console.log("• Correlations: Pearson (linear), Spearman (monotonic), Kendall (ordinal)");
+console.log("• Each distribution has pdf or pmf, cdf, ppf (quantile), mean and variance");
+console.log("• T-tests (ttest1samp, ttestInd, ttestRel): compare means");
+console.log("• chisquare, chi2Contingency: goodness of fit and contingency tables");
+console.log("• Normality: shapiro, kstest, anderson");
+console.log("• fOneway: compare the means of three or more groups");
+console.log("• Correlations: pearsonr (linear), spearmanr (monotonic), kendalltau (ordinal)");
+console.log("• Correlation tests accept alternative: two-sided, less or greater");
 
-console.log("\n✅ Statistical Distributions & Tests Example Complete!");
+console.log("\nStatistical Distributions & Tests Example Complete!");
 console.log("=".repeat(60));

@@ -3,7 +3,7 @@ import { dot, reshape, tensor } from "../src/ndarray";
 import { matmul } from "../src/ndarray/linalg/basic";
 import { numData } from "./_helpers";
 
-describe("deepbox/ndarray - Linear Algebra Comprehensive Tests", () => {
+describe("deepbox/ndarray - Linear Algebra Tests", () => {
   describe("dot product - 1D vectors", () => {
     it("should compute dot product of simple vectors", () => {
       const a = tensor([1, 2, 3]);
@@ -273,9 +273,21 @@ describe("deepbox/ndarray - Linear Algebra Comprehensive Tests", () => {
       expect(numData(c)).toEqual([19, 22, 43, 50]);
     });
 
-    it("should throw on mismatched batch dimensions", () => {
+    it("should broadcast a size-1 batch dimension like numpy.matmul", () => {
       const a = tensor([[[1, 2]], [[3, 4]]]);
       const b = tensor([[[5], [6]]]);
+      const c = dot(a, b);
+      expect(c.shape).toEqual([2, 1, 1]);
+      expect(numData(c)).toEqual([17, 39]);
+    });
+
+    it("should throw on batch dimensions that cannot be broadcast", () => {
+      const a = tensor([[[1, 2]], [[3, 4]]]);
+      const b = tensor([
+        [[5], [6]],
+        [[7], [8]],
+        [[9], [10]],
+      ]);
       expect(() => dot(a, b)).toThrow("batch dimensions");
     });
 

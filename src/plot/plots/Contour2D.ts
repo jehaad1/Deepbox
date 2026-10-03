@@ -12,7 +12,7 @@ import type {
   RasterDrawContext,
   SvgDrawContext,
 } from "../types";
-import { applyColormap } from "../utils/colormaps";
+import { applyColormap, assertColormapName } from "../utils/colormaps";
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import type { ContourGrid } from "../utils/contours";
 import { buildLegendEntry, normalizeLegendLabel } from "../utils/legend";
@@ -87,6 +87,7 @@ function resolveLevelColors(
 } {
   const count = levels.length;
   const colors: Color[] = [];
+  if (options.colormap !== undefined) assertColormapName(options.colormap);
 
   if (options.colors && options.colors.length > 0) {
     for (let i = 0; i < count; i++) {
@@ -97,16 +98,13 @@ function resolveLevelColors(
     const normalized = normalizeColor(options.color, "#1f77b4");
     for (let i = 0; i < count; i++) colors.push(normalized);
   } else if (options.colormap) {
-    if (!["viridis", "plasma", "inferno", "magma", "grayscale"].includes(options.colormap)) {
-      throw new InvalidParameterError(
-        `colormap must be one of viridis, plasma, inferno, magma, grayscale; received ${options.colormap}`,
-        "colormap",
-        options.colormap
-      );
-    }
+    // Position on the colormap follows the level value, so a level keeps its color
+    // whether or not the other levels cross the data.
+    const first = levels[0] ?? 0;
+    const span = (levels[count - 1] ?? 0) - first;
     const denom = Math.max(1, count - 1);
     for (let i = 0; i < count; i++) {
-      const t = i / denom;
+      const t = span > 0 ? ((levels[i] ?? 0) - first) / span : i / denom;
       const [r, g, b] = applyColormap(t, options.colormap);
       colors.push(normalizeColor(`rgb(${r},${g},${b})`, "#1f77b4"));
     }
@@ -128,6 +126,12 @@ function interpolate(level: number, v0: number, v1: number, c0: number, c1: numb
 }
 
 /**
+ * Contour lines of a rectilinear grid, found with marching squares and linear
+ * interpolation along cell edges (saddle cells are resolved with the cell mean).
+ *
+ * `levels` is either a count (that many evenly spaced values from the data
+ * minimum to the maximum, inclusive) or explicit values. Cells with a
+ * non-finite corner are skipped.
  * @internal
  */
 export class Contour2D implements Drawable {
@@ -260,6 +264,8 @@ export class Contour2D implements Drawable {
             const pushSegment = (e1: number, e2: number): void => {
               const p1 = edgePoint(e1);
               const p2 = edgePoint(e2);
+              // A level that only touches a corner value yields a zero-length piece.
+              if (p1.x === p2.x && p1.y === p2.y) return;
               segments.push({
                 x1: p1.x,
                 y1: p1.y,
@@ -338,20 +344,22 @@ export class Contour2D implements Drawable {
       }
     }
 
-    if (segments.length > 0) {
+    // With the automatic palette there is no color the user tied to a level, so deal
+    // the colors out to the levels that are actually drawn (the first line is always
+    // the first palette color). Explicit `colors` and colormaps keep one color per
+    // level, so a level does not change color when its neighbours miss the data.
+    const automatic = !options.colors?.length && !options.color && !options.colormap;
+    if (automatic && segments.length > 0) {
       const used = Array.from(new Set(segments.map((seg) => seg.levelIndex))).sort((a, b) => a - b);
-      if (used.length > 0 && used.length < levels.length) {
-        const usedLevels = used.map((idx) => levels[idx] ?? 0);
-        const resolved = resolveLevelColors(usedLevels, options);
+      if (used.length < levels.length) {
+        const resolved = resolveLevelColors(
+          used.map((idx) => levels[idx] ?? 0),
+          options
+        );
         levelColors = resolved.colors;
         levelRGBA = resolved.rgba;
         const map = new Map<number, number>();
-        for (let i = 0; i < used.length; i++) {
-          const idx = used[i];
-          if (idx !== undefined) {
-            map.set(idx, i);
-          }
-        }
+        for (let i = 0; i < used.length; i++) map.set(used[i] ?? 0, i);
         segments = segments.map((seg) => ({
           x1: seg.x1,
           y1: seg.y1,
@@ -415,7 +423,9 @@ export class Contour2D implements Drawable {
   }
 
   getLegendEntries(): readonly LegendEntry[] | null {
-    const color = this.levelColors[0] ?? "#1f77b4";
+    // Use the color of the lowest level that actually has contour lines.
+    const firstDrawn = this.segments[0]?.levelIndex ?? 0;
+    const color = this.levelColors[firstDrawn] ?? "#1f77b4";
     const entry = buildLegendEntry(this.label, {
       color,
       shape: "line",

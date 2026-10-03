@@ -30,6 +30,7 @@ function requiredDocPaths(relFromPkg) {
     rest === "backend/WebGpuBackend.ts" ||
     rest === "backend/WasmBackend.ts" ||
     rest === "backend/kernels.ts" ||
+    rest === "backend/webgpu_types.ts" ||
     rest === "backend/wasm_modules.generated.ts"
   ) {
     return ["devices-and-execution"];

@@ -1,14 +1,16 @@
 /**
  * Support Ticket Triage
  *
- * A production-style NLP operations project built with Deepbox text
- * preprocessing, classical ML, model selection, and reporting utilities.
+ * Routes synthetic support tickets to one of four queues. Compares three text
+ * vectorizers (count, TF-IDF, hashing) with logistic regression and Naive Bayes,
+ * tunes logistic regression with GridSearchCV, and writes a confusion matrix
+ * and JSON summaries.
  */
 
 import { mkdir } from "node:fs/promises";
 import { DataFrame } from "deepbox/dataframe";
 import { accuracy, confusionMatrix, f1Score } from "deepbox/metrics";
-import { cross_validate, GridSearchCV, LogisticRegression, MultinomialNB } from "deepbox/ml";
+import { crossValidate, GridSearchCV, LogisticRegression, MultinomialNB } from "deepbox/ml";
 import { tensor } from "deepbox/ndarray";
 import { figure, plotConfusionMatrix, saveFig } from "deepbox/plot";
 import { CountVectorizer, HashingVectorizer, TfidfVectorizer } from "deepbox/preprocess";
@@ -140,7 +142,7 @@ function splitArray<T>(values: readonly T[], testFraction: number): [T[], T[]] {
 
 console.log("═".repeat(72));
 console.log("  SUPPORT TICKET TRIAGE");
-console.log("  Deepbox v1.0.0 production example");
+console.log("  Deepbox 1.5.0 example project");
 console.log("═".repeat(72));
 
 await mkdir(OUTPUT_DIR, { recursive: true });
@@ -158,7 +160,7 @@ const ticketFrame = new DataFrame({
 // ============================================================================
 // Step 1: Operations view
 // ============================================================================
-console.log("\n📨 STEP 1: Ticket Operations View");
+console.log("\nSTEP 1: Ticket Operations View");
 console.log("─".repeat(72));
 
 const urgentMask = ticketFrame.get("text").str.contains("urgent|sev1|prioritize|blocked");
@@ -183,9 +185,9 @@ console.log(
 );
 
 // ============================================================================
-// Step 2: Train/test text split
+// Step 2: Vectorization and model selection
 // ============================================================================
-console.log("\n🧰 STEP 2: Vectorization + Model Selection");
+console.log("\nSTEP 2: Vectorization + Model Selection");
 console.log("─".repeat(72));
 
 const texts = tickets.map((row) => row.text);
@@ -244,20 +246,20 @@ const hashPred = hashModel.predict(XTestHash);
 const comparisonRows = [
   {
     pipeline: "TF-IDF + GridSearchCV(LogReg)",
-    accuracy: Number(accuracy(yTest, logisticPred)),
-    weightedF1: Number(f1Score(yTest, logisticPred, "weighted")),
+    accuracy: accuracy(yTest, logisticPred),
+    weightedF1: f1Score(yTest, logisticPred, "weighted"),
     predictions: logisticPred,
   },
   {
     pipeline: "Count + MultinomialNB",
-    accuracy: Number(accuracy(yTest, nbPred)),
-    weightedF1: Number(f1Score(yTest, nbPred, "weighted")),
+    accuracy: accuracy(yTest, nbPred),
+    weightedF1: f1Score(yTest, nbPred, "weighted"),
     predictions: nbPred,
   },
   {
     pipeline: "Hashing + LogisticRegression",
-    accuracy: Number(accuracy(yTest, hashPred)),
-    weightedF1: Number(f1Score(yTest, hashPred, "weighted")),
+    accuracy: accuracy(yTest, hashPred),
+    weightedF1: f1Score(yTest, hashPred, "weighted"),
     predictions: hashPred,
   },
 ];
@@ -273,17 +275,17 @@ const results = new DataFrame({
 });
 
 console.log(`Best logistic params: ${JSON.stringify(ticketSearch.bestParams)}`);
-console.log(`Best deployable pipeline: ${bestPipeline.pipeline}`);
+console.log(`Best pipeline by weighted F1 (first one wins a tie): ${bestPipeline.pipeline}`);
 console.log(results.toString());
 
-const cv = cross_validate(bestLogistic, XTrainTfidf, yTrain, { cv: 4 });
+const cv = crossValidate(bestLogistic, XTrainTfidf, yTrain, { cv: 4 });
 const cvScores = cv.testScores["score"] ?? [];
 console.log(`Cross-validation scores: ${cvScores.map((score) => score.toFixed(4)).join(", ")}`);
 
 // ============================================================================
 // Step 3: Confusion matrix and artifacts
 // ============================================================================
-console.log("\n📈 STEP 3: Reporting Outputs");
+console.log("\nSTEP 3: Reporting Outputs");
 console.log("─".repeat(72));
 
 const confusion = confusionMatrix(yTest, bestPipeline.predictions);
@@ -299,7 +301,7 @@ await saveFig(`${OUTPUT_DIR}/best-model-confusion-matrix.svg`, {
 await results.toJson(`${OUTPUT_DIR}/model-comparison.json`);
 
 const vocabularyPreview = new DataFrame({
-  topTerms: tfidfVectorizer.getFeatureNames().slice(0, 20),
+  terms: tfidfVectorizer.getFeatureNames().slice(0, 20),
 });
 await vocabularyPreview.toJson(`${OUTPUT_DIR}/tfidf-vocabulary-preview.json`);
 
@@ -307,4 +309,4 @@ console.log(`Saved confusion matrix: ${OUTPUT_DIR}/best-model-confusion-matrix.s
 console.log(`Saved model summary:    ${OUTPUT_DIR}/model-comparison.json`);
 console.log(`Saved vocabulary dump:  ${OUTPUT_DIR}/tfidf-vocabulary-preview.json`);
 
-console.log("\n✅ Support Ticket Triage Complete!");
+console.log("\nSupport Ticket Triage Complete!");

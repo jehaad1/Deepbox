@@ -1,5 +1,5 @@
 """
-Benchmark 12 — Statistics
+Benchmark 12: Statistics
 SciPy / NumPy
 """
 
@@ -14,7 +14,7 @@ from utils import run, create_suite, header, footer
 warnings.filterwarnings("ignore", message="As of SciPy 1.17, users must choose a p-value calculation method.*")
 
 suite = create_suite("stats", "SciPy")
-header("Benchmark 12 — Statistics", "SciPy")
+header("Benchmark 12: Statistics", "SciPy")
 
 rng = np.random.RandomState(42)
 

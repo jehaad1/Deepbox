@@ -1,47 +1,17 @@
+/**
+ * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
+ */
+
 import {
   type DType,
-  dtypeToTypedArrayCtor,
   InvalidParameterError,
   type Shape,
   ShapeError,
-  shapeToSize,
-  type TypedArray,
   validateShape,
 } from "../../core";
-import { isContiguous, offsetFromFlatIndex } from "./strides";
-import { computeStrides, Tensor } from "./Tensor";
+import { Tensor } from "./Tensor";
 
 type NumericDType = Exclude<DType, "string">;
-
-/**
- * Resolve a shape that may contain a single -1 dimension.
- * Replaces -1 with the inferred size based on total element count.
- */
-function resolveInferredShape(newShape: Shape, totalSize: number): Shape {
-  let inferIdx = -1;
-  let known = 1;
-  for (let i = 0; i < newShape.length; i++) {
-    const d = newShape[i];
-    if (d === undefined) continue;
-    if (d === -1) {
-      if (inferIdx !== -1) {
-        throw new ShapeError("Only one dimension can be -1 in reshape");
-      }
-      inferIdx = i;
-    } else {
-      known *= d;
-    }
-  }
-  if (inferIdx === -1) return newShape;
-  if (known === 0 || totalSize % known !== 0) {
-    throw new ShapeError(
-      `Cannot infer dimension for shape [${newShape}] with total size ${totalSize}`
-    );
-  }
-  const resolved = [...newShape];
-  resolved[inferIdx] = totalSize / known;
-  return resolved;
-}
 
 function isStringTensor(t: Tensor): t is Tensor<Shape, "string"> {
   return t.dtype === "string";
@@ -52,100 +22,41 @@ function isNumericTensor(t: Tensor): t is Tensor<Shape, NumericDType> {
 }
 
 /**
- * Change shape (view) without copying.
+ * Give a tensor a new shape with the same number of elements.
  *
- * Notes:
- * - Currently only supports contiguous tensors.
- * - In the future, reshape should support more view cases using strides.
+ * Returns a view that shares memory with `t` when its layout is contiguous.
+ * Otherwise (for example after `transpose`) the elements are copied into
+ * row-major order first, so writes to the result do not affect `t`.
+ *
+ * @param t - Input tensor
+ * @param rawShape - Target shape. One dimension may be `-1`, in which case it
+ *   is inferred from the remaining dimensions.
+ * @returns Tensor with shape `rawShape`
+ * @throws {ShapeError} If the shape has more than one `-1`, `-1` cannot be
+ *   inferred, or the element count does not match
+ * @throws {DataValidationError} If a dimension is negative (other than a
+ *   single `-1`), fractional or not finite
+ *
+ * @example
+ * ```ts
+ * const x = tensor([[1, 2, 3], [4, 5, 6]]);
+ * reshape(x, [3, 2]);   // [[1, 2], [3, 4], [5, 6]]
+ * reshape(x, [-1]);     // [1, 2, 3, 4, 5, 6]
+ * ```
  */
 export function reshape(t: Tensor, rawShape: Shape): Tensor {
-  const newShape = resolveInferredShape(rawShape, t.size);
-  validateShape(newShape);
-  const newSize = shapeToSize(newShape);
-  if (newSize !== t.size) {
-    throw new ShapeError(`Cannot reshape tensor of size ${t.size} to shape [${newShape}]`);
-  }
-
-  // Device tensors: the Tensor method handles views and on-device copies.
-  if (t.isDeviceTensor) {
-    return t.reshape(newShape);
-  }
-
-  const contiguous = isContiguous(t.shape, t.strides);
-
-  if (isStringTensor(t)) {
-    if (!contiguous) {
-      const logicalStrides = computeStrides(t.shape);
-      const out = new Array<string>(t.size);
-      const data = t.data as string[];
-      for (let i = 0; i < t.size; i++) {
-        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        out[i] = data[off] ?? "";
-      }
-      return Tensor.fromStringArray({
-        data: out,
-        shape: newShape,
-        device: t.device,
-      });
-    }
-    return Tensor.fromStringArray({
-      data: t.data,
-      shape: newShape,
-      device: t.device,
-      offset: t.offset,
-      strides: computeStrides(newShape),
-    });
-  }
-
-  if (!isNumericTensor(t)) {
-    throw new ShapeError("reshape is not defined for string dtype");
-  }
-
-  if (!contiguous) {
-    const Ctor = dtypeToTypedArrayCtor(t.dtype);
-    const logicalStrides = computeStrides(t.shape);
-    const data = t.data as TypedArray;
-    if (data instanceof BigInt64Array) {
-      const out = new BigInt64Array(t.size);
-      for (let i = 0; i < t.size; i++) {
-        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        out[i] = data[off] ?? 0n;
-      }
-      return Tensor.fromTypedArray({
-        data: out,
-        shape: newShape,
-        dtype: t.dtype,
-        device: t.device,
-      });
-    }
-    const out = new Ctor(t.size);
-    if (!(out instanceof BigInt64Array)) {
-      const numData = data as Exclude<TypedArray, BigInt64Array>;
-      for (let i = 0; i < t.size; i++) {
-        const off = offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
-        out[i] = numData[off] ?? 0;
-      }
-    }
-    return Tensor.fromTypedArray({
-      data: out,
-      shape: newShape,
-      dtype: t.dtype,
-      device: t.device,
-    });
-  }
-
-  return Tensor.fromTypedArray({
-    data: t.data,
-    shape: newShape,
-    dtype: t.dtype,
-    device: t.device,
-    offset: t.offset,
-    strides: computeStrides(newShape),
-  });
+  // One implementation for both entry points: Tensor.reshape handles the -1
+  // inference, device tensors, strings and the copy of non-contiguous views.
+  return t.reshape(rawShape);
 }
 
 /**
- * Flatten to 1D.
+ * Flatten a tensor to 1D in row-major order.
+ *
+ * Returns a view for contiguous input and a copy otherwise (see {@link reshape}).
+ *
+ * @param t - Input tensor
+ * @returns 1D tensor with `t.size` elements
  */
 export function flatten(t: Tensor): Tensor {
   return reshape(t, [t.size]);
@@ -154,11 +65,15 @@ export function flatten(t: Tensor): Tensor {
 /**
  * Transpose tensor dimensions.
  *
- * Reverses or permutes the axes of a tensor.
+ * Reverses or permutes the axes of a tensor. The result is a view that shares
+ * memory with the input.
  *
  * @param t - Input tensor
  * @param axes - Permutation of axes. If undefined, reverses all axes
- * @returns Transposed tensor
+ * @returns Transposed tensor (view)
+ * @throws {ShapeError} If `axes` does not have one entry per dimension
+ * @throws {InvalidParameterError} If `axes` contains a non-integer, an
+ *   out-of-range axis or a duplicate
  *
  * @example
  * ```ts
@@ -195,6 +110,9 @@ export function transpose(t: Tensor, axes?: readonly number[]): Tensor {
     const seen = new Set<number>();
     const normalized: number[] = [];
     for (const axis of axesArr) {
+      if (!Number.isInteger(axis)) {
+        throw new InvalidParameterError(`axes must be integers; received ${axis}`, "axes", axis);
+      }
       const norm = axis < 0 ? t.ndim + axis : axis;
       if (norm < 0 || norm >= t.ndim) {
         throw new InvalidParameterError(

@@ -1,5 +1,5 @@
 /**
- * Benchmark 07 — Neural Networks
+ * Benchmark 07: Neural Networks
  * Deepbox vs PyTorch
  */
 
@@ -39,7 +39,7 @@ import { Adam, SGD } from "deepbox/optim";
 import { createSuite, footer, header, run } from "../utils";
 
 const suite = createSuite("nn");
-header("Benchmark 07 — Neural Networks");
+header("Benchmark 07: Neural Networks");
 
 // ── Layer Creation ──────────────────────────────────────
 
@@ -247,7 +247,7 @@ run(suite, "inference (noGrad)", "batch=32", () => noGrad(() => inferModel.forwa
 
 run(suite, "parameters()", "3-layer", () => model1.parameters());
 run(suite, "stateDict()", "3-layer", () => model1.stateDict());
-run(suite, "train/eval toggle", "—", () => {
+run(suite, "train/eval toggle", "n/a", () => {
   model1.train();
   model1.eval();
 });

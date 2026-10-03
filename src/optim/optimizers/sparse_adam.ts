@@ -2,7 +2,7 @@
  * @see {@link https://deepbox.dev/docs/optim-optimizers | Deepbox documentation}
  */
 
-import { DeviceError, InvalidParameterError } from "../../core";
+import { DeviceError } from "../../core";
 import type { GradTensor } from "../../ndarray";
 import {
   assertBufferSize,
@@ -15,12 +15,29 @@ import {
 } from "../_internal";
 import { Optimizer, type ParamGroup } from "../Optimizer";
 
+/**
+ * Options for the SparseAdam optimizer.
+ *
+ * @property lr - Learning rate
+ * @property beta1 - Decay rate of the first moment estimate
+ * @property beta2 - Decay rate of the second moment estimate
+ * @property eps - Small constant added to the square root of the second moment
+ * @property maximize - Maximize the objective instead of minimizing it
+ */
 type SparseAdamOptions = {
   lr: number;
   beta1: number;
   beta2: number;
   eps: number;
+  maximize: boolean;
 };
+
+function validateSparseAdamOptions(options: Readonly<SparseAdamOptions>): void {
+  assertFiniteNonNegative("learning rate", options.lr);
+  assertInRange("beta1", options.beta1, 0, 1);
+  assertInRange("beta2", options.beta2, 0, 1);
+  assertFinitePositive("epsilon", options.eps);
+}
 
 type SparseAdamState = {
   step: number;
@@ -29,23 +46,24 @@ type SparseAdamState = {
 };
 
 /**
- * SparseAdam optimizer — a variant of Adam designed for sparse gradients.
+ * SparseAdam optimizer, a variant of Adam designed for sparse gradients.
  *
  * Only updates the moment estimates for gradient indices that are non-zero,
- * making it efficient for parameters with sparse gradient updates such as
- * embedding layers.
+ * making it suited to parameters with sparse gradient updates such as
+ * embedding layers. Gradients are dense tensors here, and an exact zero marks an
+ * index that was not touched. The update follows PyTorch's `torch.optim.SparseAdam`.
+ * Weight decay is not supported.
  *
  * **Algorithm:**
  * For each parameter element where gradient ≠ 0:
  * ```
  * m_t = β₁ * m_{t-1} + (1 - β₁) * g_t
  * v_t = β₂ * v_{t-1} + (1 - β₂) * g_t²
- * m̂_t = m_t / (1 - β₁^t)
- * v̂_t = v_t / (1 - β₂^t)
- * θ_t = θ_{t-1} - lr * m̂_t / (√v̂_t + ε)
+ * θ_t = θ_{t-1} - lr * √(1 - β₂^t) / (1 - β₁^t) * m_t / (√v_t + ε)
  * ```
  *
  * For indices where gradient = 0, moment estimates and parameters are unchanged.
+ * The step counter `t` advances on every call to `step()`.
  *
  * @example
  * ```ts
@@ -63,12 +81,18 @@ type SparseAdamState = {
  * @category Optimizers
  */
 export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
-  private _stepCount = 0;
-
-  get stepCount(): number {
-    return this._stepCount;
-  }
-
+  /**
+   * Create a new SparseAdam optimizer.
+   *
+   * @param params - Iterable of parameters or parameter groups to optimize
+   * @param options - Optimization options
+   * @param options.lr - Learning rate (default: 0.001)
+   * @param options.beta1 - First moment decay, in [0, 1) (default: 0.9)
+   * @param options.beta2 - Second moment decay, in [0, 1) (default: 0.999)
+   * @param options.eps - Numerical stability constant (default: 1e-8)
+   * @param options.maximize - Maximize the objective instead of minimizing it (default: false)
+   * @throws {InvalidParameterError} If a hyperparameter is out of range
+   */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<SparseAdamOptions>>,
     options: {
@@ -76,51 +100,22 @@ export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
       readonly beta1?: number;
       readonly beta2?: number;
       readonly eps?: number;
+      readonly maximize?: boolean;
     } = {}
   ) {
-    const defaults = {
+    const defaults: SparseAdamOptions = {
       lr: options.lr ?? 0.001,
       beta1: options.beta1 ?? 0.9,
       beta2: options.beta2 ?? 0.999,
       eps: options.eps ?? 1e-8,
+      maximize: options.maximize ?? false,
     };
 
     super(params, defaults);
-
-    assertFiniteNonNegative("learning rate", defaults.lr);
-    assertInRange("beta1", defaults.beta1, 0, 1);
-    assertInRange("beta2", defaults.beta2, 0, 1);
-    assertFinitePositive("epsilon", defaults.eps);
   }
 
-  /**
-   * Get the current learning rate.
-   *
-   * @param groupIdx - Parameter group index (default: 0)
-   * @returns Current learning rate
-   */
-  getLearningRate(groupIdx = 0): number {
-    const group = this.paramGroups[groupIdx];
-    if (!group) {
-      throw new InvalidParameterError(
-        `Invalid group index: ${groupIdx} (valid range: [0, ${this.paramGroups.length}))`,
-        "groupIdx",
-        groupIdx
-      );
-    }
-    return group.options.lr;
-  }
-
-  /**
-   * Set the learning rate for all parameter groups.
-   *
-   * @param lr - New learning rate
-   */
-  setLearningRate(lr: number): void {
-    assertFiniteNonNegative("learning rate", lr);
-    for (const group of this.paramGroups) {
-      group.options.lr = lr;
-    }
+  protected override validateOptions(options: Readonly<SparseAdamOptions>): void {
+    validateSparseAdamOptions(options);
   }
 
   protected isState(state: Record<string, unknown>): state is SparseAdamState {
@@ -131,6 +126,17 @@ export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
     );
   }
 
+  /**
+   * Perform a single optimization step.
+   *
+   * A parameter whose gradient is `null` (it took no part in the loss) is skipped, as in PyTorch.
+   *
+   * @param closure - Optional closure that reevaluates the model and returns the loss
+   * @returns Loss value if a closure is provided
+   * @throws {DeviceError} If a parameter lives on a kernel device
+   * @throws {InvalidParameterError} If a group option is invalid or a gradient or
+   *   parameter value is not finite
+   */
   step(closure?: () => number): number | undefined {
     let loss: number | undefined;
 
@@ -138,26 +144,26 @@ export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
       loss = closure();
     }
 
-    this._stepCount++;
-
+    // SparseAdam skips zero-gradient entries, which requires per-index scatter over
+    // host-readable gradients. That cannot be expressed with the dense device tensor ops,
+    // so device parameters are rejected up front, before any parameter is modified.
     for (const group of this.paramGroups) {
-      const { lr, beta1, beta2, eps } = group.options;
-
-      assertFiniteNonNegative("learning rate", lr);
-      assertInRange("beta1", beta1, 0, 1);
-      assertInRange("beta2", beta2, 0, 1);
-      assertFinitePositive("epsilon", eps);
-
-      for (const param of group.params) {
-        // SparseAdam skips zero-gradient entries, which requires per-index
-        // scatter over host-readable gradients. That cannot be expressed with the
-        // dense device tensor ops, so device parameters are explicitly rejected.
+      for (const param of this.trainableParams(group)) {
         if (param.tensor.isDeviceTensor) {
           throw new DeviceError(
             "SparseAdam is not supported on device tensors (it needs sparse/host-readable gradients). Move the parameters to CPU with `.to('cpu')` before optimizing."
           );
         }
+      }
+    }
 
+    this.prepareStep("SparseAdam");
+    this.countStep();
+
+    for (const group of this.paramGroups) {
+      const { lr, beta1, beta2, eps, maximize } = group.options;
+
+      for (const param of this.trainableParams(group)) {
         const {
           grad: gradData,
           gradOffset,
@@ -184,17 +190,20 @@ export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
 
         state.step += 1;
 
-        // Bias correction factors
+        // Bias correction folded into one step size, as PyTorch does:
+        // lr * sqrt(1 - beta2^t) / (1 - beta1^t).
         const biasCorrection1 = 1 - beta1 ** state.step;
         const biasCorrection2 = 1 - beta2 ** state.step;
+        const stepSize = (lr * Math.sqrt(biasCorrection2)) / biasCorrection1;
 
         for (let i = 0; i < size; i++) {
-          const gi = safeArrayAccess(gradData, gradOffset + i, "SparseAdam gradient");
+          const giRaw = safeArrayAccess(gradData, gradOffset + i, "SparseAdam gradient");
 
           // Only update for non-zero gradients (sparse update)
-          if (gi === 0) continue;
+          if (giRaw === 0) continue;
 
-          assertFinite("gradient", gi);
+          assertFinite("gradient", giRaw);
+          const gi = maximize ? -giRaw : giRaw;
 
           const pi = safeArrayAccess(paramData, paramOffset + i, "SparseAdam parameter");
           assertFinite("parameter", pi);
@@ -209,12 +218,8 @@ export class SparseAdam extends Optimizer<SparseAdamOptions, SparseAdamState> {
           state.expAvg[i] = mNew;
           state.expAvgSq[i] = vNew;
 
-          // Bias-corrected estimates
-          const mHat = mNew / biasCorrection1;
-          const vHat = vNew / biasCorrection2;
-
           // Parameter update
-          paramData[paramOffset + i] = pi - (lr * mHat) / (Math.sqrt(vHat) + eps);
+          paramData[paramOffset + i] = pi - (stepSize * mNew) / (Math.sqrt(vNew) + eps);
         }
       }
     }

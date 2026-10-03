@@ -1,4 +1,4 @@
-import { DeepboxError, IndexError, InvalidParameterError } from "../../core";
+import { IndexError, InvalidParameterError } from "../../core";
 import type { AnyTensor } from "../../ndarray";
 import { Module } from "../module/Module";
 
@@ -13,6 +13,10 @@ import { Module } from "../module/Module";
  * **Behavior:**
  * The output of each layer becomes the input to the next layer.
  * Layers are executed in the order they were added.
+ *
+ * A plain `Tensor` input needs no wrapping for training: the first layer with trainable
+ * weights returns a `GradTensor` that tracks them, and the layers after it pass it on. Inside
+ * `noGrad()`, or when every weight is frozen, the result is a plain `Tensor`.
  *
  * @example
  * ```ts
@@ -44,9 +48,9 @@ import { Module } from "../module/Module";
  * ```
  *
  * References:
- * - Deepbox Sequential: https://deepbox.dev/docs/nn-module
  * - Keras Sequential: https://keras.io/guides/sequential_model/
  *
+ * @see {@link https://deepbox.dev/docs/nn-module | Deepbox Module & Sequential}
  * @category Neural Network Containers
  */
 export class Sequential extends Module {
@@ -57,8 +61,7 @@ export class Sequential extends Module {
    * Create a new Sequential container.
    *
    * @param layers - Variable number of Module instances to stack sequentially
-   * @throws {InvalidParameterError} If no layers are provided
-   * @throws {DeepboxError} If a layer is undefined
+   * @throws {InvalidParameterError} If no layers are provided or a layer is not a Module
    */
   constructor(...layers: Module[]) {
     super();
@@ -72,29 +75,47 @@ export class Sequential extends Module {
       );
     }
 
+    // Validate every layer before registering any of them
+    for (let i = 0; i < layers.length; i++) {
+      Sequential.assertLayer(layers[i], i);
+    }
+
     // Store layers in execution order
     this.layers = layers;
+    this.reregisterAll();
+  }
 
-    // Register each layer as a child module with numeric index as name
-    // This enables parameter tracking and hierarchical naming
-    for (let i = 0; i < layers.length; i++) {
-      const layer = layers[i];
-      if (!layer) {
-        throw new DeepboxError(`Layer at index ${i} is undefined`);
-      }
-      this.registerModule(String(i), layer);
+  private static assertLayer(layer: unknown, index: number): asserts layer is Module {
+    if (
+      typeof layer !== "object" ||
+      layer === null ||
+      typeof (layer as Module).forward !== "function"
+    ) {
+      throw new InvalidParameterError(
+        `Layer at index ${index} is not a Module (received ${layer === null ? "null" : typeof layer})`,
+        "layers",
+        layer
+      );
+    }
+  }
+
+  /** Register each layer as a child module under its numeric index (parameter names like "0.weight"). */
+  private reregisterAll(): void {
+    this._modules.clear();
+    for (let i = 0; i < this.layers.length; i++) {
+      this.registerModule(String(i), this.layers[i] as Module);
     }
   }
 
   /**
    * Forward pass: sequentially apply all layers.
    *
-   * The output of each layer becomes the input to the next layer.
+   * The output of each layer becomes the input to the next layer, and each
+   * layer is invoked through `call()` so its forward hooks run.
    *
-   * @param input - Input tensor (Tensor or GradTensor)
+   * @param inputs - Exactly one input tensor (Tensor or GradTensor)
    * @returns Output tensor after passing through all layers
-   * @throws {InvalidParameterError} If the input count is invalid or a layer returns multiple outputs
-   * @throws {DeepboxError} If a layer is undefined
+   * @throws {InvalidParameterError} If the input count is not one or a layer returns multiple outputs
    */
   forward(...inputs: AnyTensor[]): AnyTensor {
     if (inputs.length !== 1) {
@@ -112,20 +133,12 @@ export class Sequential extends Module {
         input
       );
     }
-    // Start with the input tensor
     let output = input;
 
-    // Sequentially apply each layer's forward pass
     // Each layer transforms the output from the previous layer
     for (let i = 0; i < this.layers.length; i++) {
-      const layer = this.layers[i];
-      if (!layer) {
-        throw new DeepboxError(`Layer at index ${i} is undefined`);
-      }
-
-      // Apply current layer's transformation
-      // Type assertion needed because forward can return Tensor | Tensor[]
-      const result = layer.call(output);
+      const layer = this.layers[i] as Module;
+      const result: AnyTensor | AnyTensor[] = layer.call(output);
       if (Array.isArray(result)) {
         throw new InvalidParameterError(
           `Sequential does not support layers that return multiple tensors (layer ${i})`,
@@ -136,7 +149,6 @@ export class Sequential extends Module {
       output = result;
     }
 
-    // Return final output after all transformations
     return output;
   }
 
@@ -145,24 +157,61 @@ export class Sequential extends Module {
    *
    * @param index - Zero-based index of the layer
    * @returns The layer at the specified index
-   * @throws {IndexError} If index is out of bounds
-   * @throws {DeepboxError} If a layer is undefined
+   * @throws {IndexError} If index is not an integer in `[0, length)`
    */
   getLayer(index: number): Module {
-    // Validate index is within bounds
-    if (index < 0 || index >= this.layers.length) {
+    const layer = Number.isInteger(index) ? this.layers[index] : undefined;
+    if (layer === undefined) {
       throw new IndexError(`Layer index ${index} out of bounds [0, ${this.layers.length})`, {
         index,
         validRange: [0, this.layers.length - 1],
       });
     }
-
-    const layer = this.layers[index];
-    if (!layer) {
-      throw new DeepboxError(`Layer at index ${index} is undefined`);
-    }
-
     return layer;
+  }
+
+  /**
+   * Append a layer to the end of the pipeline.
+   *
+   * @throws {InvalidParameterError} If `layer` is not a Module
+   */
+  append(layer: Module): this {
+    Sequential.assertLayer(layer, this.layers.length);
+    this.layers.push(layer);
+    this.registerModule(String(this.layers.length - 1), layer);
+    return this;
+  }
+
+  /**
+   * Append several layers, in order.
+   *
+   * @throws {InvalidParameterError} If an element is not a Module
+   */
+  extend(layers: Iterable<Module>): this {
+    for (const layer of layers) {
+      this.append(layer);
+    }
+    return this;
+  }
+
+  /**
+   * Insert a layer at `index`; later layers shift one position up and their
+   * parameter names are renumbered.
+   *
+   * @throws {IndexError} If `index` is not an integer in `[0, length]`
+   * @throws {InvalidParameterError} If `layer` is not a Module
+   */
+  insert(index: number, layer: Module): this {
+    if (!Number.isInteger(index) || index < 0 || index > this.layers.length) {
+      throw new IndexError(`Insert index ${index} out of bounds [0, ${this.layers.length}]`, {
+        index,
+        validRange: [0, this.layers.length],
+      });
+    }
+    Sequential.assertLayer(layer, index);
+    this.layers.splice(index, 0, layer);
+    this.reregisterAll();
+    return this;
   }
 
   /**

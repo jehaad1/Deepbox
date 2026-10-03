@@ -2,13 +2,13 @@
 
 > **Browse online:** https://deepbox.dev/projects
 
-This directory contains **9 production-style projects**. Run them from the Deepbox package root.
+This directory holds nine projects. Run them from the Deepbox package root.
 
 ## Prerequisites
 
 - Node.js `>= 24.13.0`
 - `npm install`
-- Working directory: the `Deepbox` package root
+- Working directory: the Deepbox package root
 
 ## Individual Project Commands
 
@@ -24,26 +24,37 @@ npm run project:08
 npm run project:09
 ```
 
+Each script runs `tsx --tsconfig docs/projects/tsconfig.json docs/projects/<name>/index.ts`. The tsconfig maps `deepbox` and `deepbox/*` imports to `src/`, so no build is needed.
+
 ## Run Everything
 
 ```bash
 npm run projects:all
 ```
 
-## Output Highlights
+## Type Check
 
-- `project:01`-`project:06` continue to generate the SVG artifacts already documented in their local READMEs.
-- `project:07` writes calibration and feature-importance SVGs plus a JSON model report.
-- `project:08` writes a labeled confusion-matrix SVG plus JSON summaries for model comparison and vocabulary preview.
-- `project:09` writes rollout scorecards, decision reports, grouped rate charts, and KDE/significance SVGs.
+```bash
+npm run typecheck:docs
+```
+
+This checks the examples and the projects. To check only the projects, run `npx tsc --noEmit -p docs/projects/tsconfig.json`.
+
+## Output
+
+Every run rewrites the files in the project's `output/` folder.
+
+- `project:01` to `project:06` write SVG charts, listed in each project README.
+- `project:07` writes a calibration curve, a feature-importance chart and `model-report.json`.
+- `project:08` writes a confusion-matrix SVG and two JSON files: the model comparison and a preview of the TF-IDF vocabulary.
+- `project:09` writes two JSON reports (variant scorecard and decision report) and three SVG charts.
 
 ## Troubleshooting
 
 If a project cannot resolve `deepbox/...` imports:
 
 1. Run it from the package root, not from inside `docs/projects/`.
-2. Use the npm scripts so `docs/projects/tsconfig.json` aliases are applied.
-3. If needed, rebuild first with `npm run build`.
+2. Use the npm scripts, or pass `--tsconfig docs/projects/tsconfig.json` to `tsx`, so the path aliases apply.
 
 ## Development Notes
 
@@ -53,4 +64,4 @@ If a project cannot resolve `deepbox/...` imports:
 
 ## License
 
-MIT — See the parent directory.
+MIT. See the parent directory.

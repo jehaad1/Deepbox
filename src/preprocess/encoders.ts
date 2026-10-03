@@ -1,4 +1,5 @@
 import {
+  DataValidationError,
   DeepboxError,
   DTypeError,
   getConfig,
@@ -21,64 +22,137 @@ type EncoderInput1D = Tensor | readonly (string | number | bigint | boolean)[];
  */
 type EncoderInput2D = Tensor | readonly (readonly (string | number | bigint)[])[];
 
+type RawValue = string | number | bigint | boolean;
+
+function isTensorLike(input: unknown): input is Tensor {
+  return typeof input === "object" && input !== null && "shape" in input && "dtype" in input;
+}
+
+/**
+ * Decide the element type of a plain array of values.
+ *
+ * Booleans count as numbers (true -> 1, false -> 0). When strings are mixed
+ * with other values, everything is treated as a string (the other values are
+ * converted with `String`), so a table such as `[["red", 1], ["blue", 2]]`
+ * works. Numbers and bigints cannot be mixed, because that would silently
+ * lose precision or change the category type.
+ */
+function inferRawKind(
+  values: Iterable<unknown>,
+  paramName: string
+): "string" | "number" | "bigint" | null {
+  let hasString = false;
+  let hasNumber = false;
+  let hasBigInt = false;
+  for (const v of values) {
+    if (typeof v === "string") hasString = true;
+    else if (typeof v === "number" || typeof v === "boolean") hasNumber = true;
+    else if (typeof v === "bigint") hasBigInt = true;
+    else {
+      throw new InvalidParameterError(
+        `${paramName} values must be strings, numbers, bigints or booleans`,
+        paramName,
+        v
+      );
+    }
+  }
+  if (hasString) return "string";
+  if (hasNumber && hasBigInt) {
+    throw new InvalidParameterError(`${paramName} must not mix numbers and bigints`, paramName);
+  }
+  if (hasBigInt) return "bigint";
+  if (hasNumber) return "number";
+  return null;
+}
+
 /**
  * Coerce a plain 1D array to a Tensor. If already a Tensor, return as-is.
  */
-function coerceToTensor1D(input: EncoderInput1D): Tensor {
-  if (typeof input === "object" && "shape" in input && "dtype" in input) {
+function coerceToTensor1D(input: EncoderInput1D, paramName = "y"): Tensor {
+  if (isTensorLike(input)) {
     return input;
   }
-  const arr = input as readonly (string | number | bigint | boolean)[];
+  if (!Array.isArray(input)) {
+    throw new InvalidParameterError(
+      `${paramName} must be a Tensor or an array of values`,
+      paramName,
+      input
+    );
+  }
+  const arr = input as readonly RawValue[];
   if (arr.length === 0) {
     return tensor([]);
   }
-  const first = arr[0];
-  if (typeof first === "string") {
-    const strArr: string[] = [];
-    for (const v of arr) {
-      strArr.push(String(v));
-    }
-    return tensor(strArr);
+  const kind = inferRawKind(arr, paramName);
+  if (kind === "string") {
+    return tensor(arr.map((v) => String(v)));
   }
-  const numArr: number[] = [];
-  for (const v of arr) {
-    numArr.push(Number(v));
+  if (kind === "bigint") {
+    const data = new BigInt64Array(arr.length);
+    for (let i = 0; i < arr.length; i++) data[i] = arr[i] as bigint;
+    return tensor(data);
   }
-  return tensor(numArr, { dtype: "float64" });
+  const numArr = new Float64Array(arr.length);
+  for (let i = 0; i < arr.length; i++) numArr[i] = Number(arr[i]);
+  return tensor(numArr);
 }
 
 /**
  * Coerce a plain 2D array to a Tensor. If already a Tensor, return as-is.
  */
-function coerceToTensor2D(input: EncoderInput2D): Tensor {
-  if (typeof input === "object" && "shape" in input && "dtype" in input) {
+function coerceToTensor2D(input: EncoderInput2D, paramName = "X"): Tensor {
+  if (isTensorLike(input)) {
     return input;
   }
-  const arr = input as readonly (readonly (string | number | bigint)[])[];
-  if (arr.length === 0 || (arr[0] && arr[0].length === 0)) {
+  if (!Array.isArray(input)) {
+    throw new InvalidParameterError(
+      `${paramName} must be a Tensor or an array of arrays`,
+      paramName,
+      input
+    );
+  }
+  const arr = input as readonly (readonly RawValue[])[];
+  if (arr.length === 0 || (Array.isArray(arr[0]) && arr[0].length === 0)) {
     return tensor([[]]);
   }
-  const first = arr[0]?.[0];
-  if (typeof first === "string") {
-    const strArr: string[][] = [];
-    for (const row of arr) {
-      const strRow: string[] = [];
-      for (const v of row) {
-        strRow.push(String(v));
-      }
-      strArr.push(strRow);
-    }
-    return tensor(strArr);
+  if (!Array.isArray(arr[0])) {
+    throw new ShapeError(`${paramName} must be a 2D array (an array of rows)`);
   }
-  const numArr: number[][] = [];
+  const nCols = (arr[0] as readonly RawValue[]).length;
+  const flat: RawValue[] = [];
   for (const row of arr) {
-    const numRow: number[] = [];
-    for (const v of row) {
-      numRow.push(Number(v));
+    if (!Array.isArray(row) || row.length !== nCols) {
+      throw new ShapeError(`${paramName} rows must all have the same length (${nCols})`);
     }
-    numArr.push(numRow);
+    for (const v of row) flat.push(v);
   }
-  return tensor(numArr, { dtype: "float64" });
+  const kind = inferRawKind(flat, paramName);
+  const shape: [number, number] = [arr.length, nCols];
+  if (kind === "string") {
+    return TensorImpl.fromStringArray({
+      data: flat.map((v) => String(v)),
+      shape,
+      device: getConfig().defaultDevice,
+    });
+  }
+  if (kind === "bigint") {
+    const data = new BigInt64Array(flat.length);
+    for (let i = 0; i < flat.length; i++) data[i] = flat[i] as bigint;
+    return TensorImpl.fromTypedArray({
+      data,
+      shape,
+      dtype: "int64",
+      device: getConfig().defaultDevice,
+    });
+  }
+  const data = new Float64Array(flat.length);
+  for (let i = 0; i < flat.length; i++) data[i] = Number(flat[i]);
+  return TensorImpl.fromTypedArray({
+    data,
+    shape,
+    dtype: "float64",
+    device: getConfig().defaultDevice,
+  });
 }
 
 /**
@@ -106,6 +180,9 @@ function getStringData(t: Tensor): string[] {
 function getNumericData(t: Tensor): ArrayLike<number | bigint> {
   if (t.dtype === "string") {
     throw new DTypeError("Expected numeric tensor");
+  }
+  if (t.dtype === "complex64" || t.dtype === "complex128") {
+    throw new DTypeError(`Complex tensors are not supported; received dtype ${t.dtype}`);
   }
   if (Array.isArray(t.data)) {
     throw new DeepboxError("Internal error: invalid numeric tensor storage");
@@ -144,6 +221,29 @@ function inferCategoryType(values: Category[], paramName: string): CategoryType 
   return "number";
 }
 
+/**
+ * Order two strings by Unicode code point, the order NumPy and scikit-learn
+ * use for string categories. `localeCompare` is locale dependent and puts
+ * "a" before "B", which would make class order differ between machines.
+ */
+function compareCodePoints(a: string, b: string): number {
+  if (a === b) return 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    let ca = a.charCodeAt(i);
+    let cb = b.charCodeAt(i);
+    if (ca !== cb) {
+      // UTF-16 surrogates (astral code points) must sort above U+E000..U+FFFF.
+      if (ca >= 0xd800 && cb >= 0xd800) {
+        ca += ca >= 0xe000 ? -0x800 : 0x2000;
+        cb += cb >= 0xe000 ? -0x800 : 0x2000;
+      }
+      return ca - cb;
+    }
+  }
+  return a.length - b.length;
+}
+
 function sortCategories(values: Iterable<Category>, paramName: string): Category[] {
   const arr = Array.from(values);
   if (arr.length === 0) return arr;
@@ -155,7 +255,7 @@ function sortCategories(values: Iterable<Category>, paramName: string): Category
       if (typeof a !== "string" || typeof b !== "string") {
         throw new DeepboxError("Internal error: inconsistent category types");
       }
-      return a.localeCompare(b);
+      return compareCodePoints(a, b);
     });
     return arr;
   }
@@ -228,54 +328,73 @@ function resolveCategoriesOption(
 }
 
 /**
- * Reads a single value from a 1D tensor at the specified index.
- * Handles both string and numeric dtypes safely.
- *
- * @param t - The tensor to read from
- * @param i - The index to read at
- * @returns The value as a string, number, or bigint
+ * Build a reader for a 1D tensor that resolves storage, offset and stride once.
+ * Handles both string and numeric dtypes; bigint stays bigint, everything else
+ * becomes a number.
  */
-function read1DValue(t: Tensor, i: number): Category {
+function makeReader1D(t: Tensor): (i: number) => Category {
   const stride = getStride1D(t);
-  const idx = t.offset + i * stride;
+  const base = t.offset;
   if (t.dtype === "string") {
-    const value = getStringData(t)[idx];
+    const data = getStringData(t);
+    return (i) => {
+      const value = data[base + i * stride];
+      if (value === undefined) {
+        throw new DeepboxError("Internal error: string tensor access out of bounds");
+      }
+      return value;
+    };
+  }
+  const data = getNumericData(t);
+  return (i) => {
+    const value = data[base + i * stride];
     if (value === undefined) {
-      throw new DeepboxError("Internal error: string tensor access out of bounds");
+      throw new DeepboxError("Internal error: numeric tensor access out of bounds");
     }
-    return value;
-  }
-  const value = getNumericData(t)[idx];
-  if (value === undefined) {
-    throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-  }
-  return typeof value === "bigint" ? value : Number(value);
+    return typeof value === "bigint" ? value : Number(value);
+  };
 }
 
 /**
- * Reads a value from a 2D tensor at the specified row and column.
- * Handles both string and numeric dtypes safely.
- *
- * @param t - The tensor to read from
- * @param row - The row index
- * @param col - The column index
- * @returns The value as a string, number, or bigint
+ * Build a reader for a 2D tensor that resolves storage, offset and strides once.
  */
-function read2DValue(t: Tensor, row: number, col: number): Category {
+function makeReader2D(t: Tensor): (row: number, col: number) => Category {
   const [stride0, stride1] = getStrides2D(t);
-  const idx = t.offset + row * stride0 + col * stride1;
+  const base = t.offset;
   if (t.dtype === "string") {
-    const value = getStringData(t)[idx];
+    const data = getStringData(t);
+    return (row, col) => {
+      const value = data[base + row * stride0 + col * stride1];
+      if (value === undefined) {
+        throw new DeepboxError("Internal error: string tensor access out of bounds");
+      }
+      return value;
+    };
+  }
+  const data = getNumericData(t);
+  return (row, col) => {
+    const value = data[base + row * stride0 + col * stride1];
     if (value === undefined) {
-      throw new DeepboxError("Internal error: string tensor access out of bounds");
+      throw new DeepboxError("Internal error: numeric tensor access out of bounds");
     }
-    return value;
-  }
-  const value = getNumericData(t)[idx];
-  if (value === undefined) {
-    throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-  }
-  return typeof value === "bigint" ? value : Number(value);
+    return typeof value === "bigint" ? value : Number(value);
+  };
+}
+
+/**
+ * Read a numeric 2D tensor element as a number (used by inverse transforms).
+ */
+function makeNumberReader2D(t: Tensor): (row: number, col: number) => number {
+  const [stride0, stride1] = getStrides2D(t);
+  const base = t.offset;
+  const data = getNumericData(t);
+  return (row, col) => {
+    const value = data[base + row * stride0 + col * stride1];
+    if (value === undefined) {
+      throw new DeepboxError("Internal error: numeric tensor access out of bounds");
+    }
+    return Number(value);
+  };
 }
 
 function assert1D(t: Tensor, name: string): void {
@@ -446,14 +565,108 @@ function toCategoryMatrixTensor(values: Category[][], paramName = "X"): Tensor {
 }
 
 /**
+ * Build the category -> index lookup for one feature.
+ */
+function buildIndexMap(cats: readonly Category[], context: string): Map<Category, number> {
+  const map = new Map<Category, number>();
+  for (let k = 0; k < cats.length; k++) {
+    map.set(categoryValueAt(cats as Category[], k, context), k);
+  }
+  return map;
+}
+
+/**
+ * Build the category -> index lookup for each feature.
+ */
+function buildIndexMaps(
+  categories: readonly Category[][],
+  context: string
+): Map<Category, number>[] {
+  return categories.map((cats) => buildIndexMap(cats, context));
+}
+
+/**
+ * Learn (or validate) the categories of every feature of a 2D tensor.
+ *
+ * With explicit categories, values of X that are not listed are an error unless
+ * `allowUnknown` is true (the encoder will then handle them at transform time).
+ */
+function learnCategories(
+  X: Tensor,
+  categoriesOption: CategoriesOption,
+  allowUnknown: boolean
+): Category[][] {
+  const [nSamples, nFeatures] = getShape2D(X);
+  const explicitCategories = resolveCategoriesOption(categoriesOption, nFeatures, "categories");
+  const read = makeReader2D(X);
+  const result: Category[][] = [];
+
+  for (let j = 0; j < nFeatures; j++) {
+    let cats: Category[];
+
+    if (explicitCategories) {
+      const featureCats = explicitCategories[j];
+      if (!featureCats) {
+        throw new InvalidParameterError("Missing categories for feature", "categories", j);
+      }
+      if (!Array.isArray(featureCats)) {
+        throw new InvalidParameterError(
+          "categories must be an array of category arrays",
+          "categories",
+          featureCats
+        );
+      }
+      cats = validateCategoryValues(featureCats, "categories");
+      if (!allowUnknown) {
+        const known = new Set<Category>(cats);
+        for (let i = 0; i < nSamples; i++) {
+          const val = read(i, j);
+          if (!known.has(val)) {
+            throw new InvalidParameterError(
+              `Unknown category: ${String(val)} in feature ${j}`,
+              "X",
+              val
+            );
+          }
+        }
+      }
+    } else {
+      const uniqueSet = new Set<Category>();
+      for (let i = 0; i < nSamples; i++) {
+        uniqueSet.add(read(i, j));
+      }
+      cats = sortCategories(uniqueSet, "X");
+    }
+
+    if (cats.length === 0) {
+      throw new InvalidParameterError("Each feature must have at least one category", "X", j);
+    }
+    result.push(cats);
+  }
+  return result;
+}
+
+function emptyCSR(rows: number, cols: number): CSRMatrix {
+  return CSRMatrix.fromCOO({
+    rows,
+    cols,
+    rowIndices: new Int32Array(0),
+    colIndices: new Int32Array(0),
+    values: new Float64Array(0),
+  });
+}
+
+/**
  * Encode target labels with value between 0 and n_classes-1.
  *
  * This transformer encodes categorical labels (strings or numbers) into integers
  * in the range [0, n_classes-1]. It maintains a mapping of unique classes to
  * their integer representations and can reverse the transformation.
+ * Classes are sorted: numbers numerically, bigints numerically and strings by
+ * Unicode code point (so "B" sorts before "a", as in NumPy).
  *
  * **Time Complexity:**
- * - fit: O(n) where n is the number of samples
+ * - fit: O(n + k log k) where n is the number of samples and k the number of classes
  * - transform: O(n) with O(1) lookup per sample
  * - inverseTransform: O(n)
  *
@@ -482,6 +695,14 @@ export class LabelEncoder {
   private classToIndex_?: Map<Category, number>;
 
   /**
+   * The sorted classes learned during fit (a new tensor on every access),
+   * or `undefined` before fit.
+   */
+  get classes(): Tensor | undefined {
+    return this.classes_ ? toCategoryVectorTensor(this.classes_, "y") : undefined;
+  }
+
+  /**
    * Fit label encoder to a set of labels.
    * Extracts unique classes and creates an index mapping.
    *
@@ -496,21 +717,19 @@ export class LabelEncoder {
       throw new InvalidParameterError("Cannot fit LabelEncoder on empty array", "y");
     }
 
+    const read = makeReader1D(t);
     // Collect unique classes using a Set for O(n) complexity
     const uniqueSet = new Set<Category>();
     for (let i = 0; i < t.size; i++) {
-      uniqueSet.add(read1DValue(t, i));
+      uniqueSet.add(read(i));
     }
 
     // Sort classes for consistent ordering across fits
-    this.classes_ = sortCategories(uniqueSet, "y");
+    const classes = sortCategories(uniqueSet, "y");
 
-    // Build index map for O(1) transform lookups
-    this.classToIndex_ = new Map();
-    for (let i = 0; i < this.classes_.length; i++) {
-      this.classToIndex_.set(categoryValueAt(this.classes_, i, "LabelEncoder.fit"), i);
-    }
-
+    // Commit only after everything succeeded so a failed refit keeps the old state.
+    this.classes_ = classes;
+    this.classToIndex_ = buildIndexMap(classes, "LabelEncoder.fit");
     this.fitted = true;
     return this;
   }
@@ -520,7 +739,7 @@ export class LabelEncoder {
    * Each unique label is mapped to an integer in [0, n_classes-1].
    *
    * @param y - Target labels to encode (1D tensor)
-   * @returns Encoded labels as integer tensor
+   * @returns Encoded labels as a float64 tensor of integer values
    * @throws {NotFittedError} If encoder is not fitted
    * @throws {InvalidParameterError} If y contains labels not seen during fit
    */
@@ -530,21 +749,21 @@ export class LabelEncoder {
     }
     const t = coerceToTensor1D(y);
     assert1D(t, "y");
-    if (t.size === 0) {
-      return tensor([]);
-    }
 
     const lookup = this.classToIndex_;
     if (!this.classes_ || !lookup) {
       throw new DeepboxError("LabelEncoder internal error: missing fitted state");
     }
+    if (t.size === 0) {
+      return tensor([]);
+    }
 
-    // Pre-allocate result array for better performance
-    const result = new Array<number>(t.size);
+    const read = makeReader1D(t);
+    const result = new Float64Array(t.size);
 
     // Transform each label using O(1) map lookup
     for (let i = 0; i < t.size; i++) {
-      const val = read1DValue(t, i);
+      const val = read(i);
       const idx = lookup.get(val);
       if (idx === undefined) {
         throw new InvalidParameterError(
@@ -556,7 +775,7 @@ export class LabelEncoder {
       result[i] = idx;
     }
 
-    return tensor(result, { dtype: "float64" });
+    return tensor(result);
   }
 
   /**
@@ -564,7 +783,7 @@ export class LabelEncoder {
    * Convenience method equivalent to calling fit(y).transform(y).
    *
    * @param y - Target labels (1D tensor)
-   * @returns Encoded labels as integer tensor
+   * @returns Encoded labels as a float64 tensor of integer values
    */
   fitTransform(y: EncoderInput1D): Tensor {
     return this.fit(y).transform(y);
@@ -595,21 +814,15 @@ export class LabelEncoder {
     }
 
     const classesLen = classes.length;
-
+    const read = makeReader1D(t);
     const result = new Array<Category>(t.size);
-    const stride = getStride1D(t);
-    const data = getNumericData(t);
 
     // Map each encoded index back to its original class
     for (let i = 0; i < t.size; i++) {
-      const raw = data[t.offset + i * stride];
-      if (raw === undefined) {
-        throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-      }
-      const idx = Number(raw);
+      const idx = Number(read(i));
 
       // Validate index is in valid range
-      if (idx < 0 || idx >= classesLen || !Number.isInteger(idx)) {
+      if (!Number.isInteger(idx) || idx < 0 || idx >= classesLen) {
         throw new InvalidParameterError(
           `Invalid label index: ${idx}. Must be integer in [0, ${classesLen - 1}]`,
           "y",
@@ -630,12 +843,14 @@ export class LabelEncoder {
  *
  * This encoder transforms categorical features into a binary one-hot encoding.
  * Each categorical feature with n unique values is transformed into n binary features,
- * with only one active (set to 1) per sample.
+ * with only one active (set to 1) per sample. Categories of each feature are
+ * sorted (numbers numerically, strings by Unicode code point) unless given
+ * explicitly through the `categories` option.
  *
  * **Time Complexity:**
- * - fit: O(n*m) where n is samples, m is features
- * - transform: O(n*m*k) where k is average categories per feature
- * - Sparse mode is more efficient for high-cardinality features
+ * - fit: O(n*m + sum(k_i log k_i)) where n is samples, m is features, k_i the categories of feature i
+ * - transform: O(n*m) with O(1) lookup per value, plus O(n * sum(k_i)) to allocate the dense output
+ * - Sparse mode avoids the dense allocation, which matters for high-cardinality features
  *
  * **Space Complexity:**
  * - Dense: O(n * sum(k_i)) where k_i is unique categories for feature i
@@ -647,7 +862,8 @@ export class LabelEncoder {
  * const encoder = new OneHotEncoder({ sparse: false });
  * encoder.fit(X);
  * const encoded = encoder.transform(X);
- * // Result: [[1,0,1,0,0], [0,1,0,1,0], [1,0,0,0,1]]
+ * // Categories: [blue, red] and [L, M, S]
+ * // Result: [[0,1,0,0,1], [1,0,0,1,0], [0,1,1,0,0]]
  * ```
  *
  * @see {@link https://deepbox.dev/docs/preprocess-encoders | Deepbox Encoders}
@@ -676,7 +892,7 @@ export class OneHotEncoder {
    * @param options - Configuration options
    * @param options.sparse - If true, returns CSRMatrix; if false, returns dense Tensor (default: false)
    * @param options.sparseOutput - Alias for sparse (default: false)
-   * @param options.handleUnknown - How to handle unknown categories (default: "error")
+   * @param options.handleUnknown - How to handle unknown categories (default: "error"). With "ignore", an unknown value encodes as all zeros.
    * @param options.drop - If set, drops the first or binary category per feature
    * @param options.categories - "auto" or explicit category list per feature
    */
@@ -724,6 +940,13 @@ export class OneHotEncoder {
   }
 
   /**
+   * The categories learned for each feature (a copy), or `undefined` before fit.
+   */
+  get categories(): Category[][] | undefined {
+    return this.categories_?.map((c) => c.slice());
+  }
+
+  /**
    * Fit OneHotEncoder to X.
    * Learns the unique categories for each feature.
    *
@@ -741,80 +964,19 @@ export class OneHotEncoder {
       throw new InvalidParameterError("Cannot fit OneHotEncoder on empty array", "X");
     }
 
-    // Initialize storage for categories and lookup maps
-    this.categories_ = [];
-    this.categoryToIndex_ = [];
+    // With handleUnknown="ignore", explicit categories may omit values present in X.
+    const categories = learnCategories(_X, this.categoriesOption, this.handleUnknown === "ignore");
 
-    const explicitCategories = resolveCategoriesOption(
-      this.categoriesOption,
-      nFeatures,
-      "categories"
-    );
-
-    // For each feature, collect or validate categories
-    for (let j = 0; j < nFeatures; j++) {
-      let cats: Category[];
-
-      if (explicitCategories) {
-        const featureCats = explicitCategories[j];
-        if (!featureCats) {
-          throw new InvalidParameterError("Missing categories for feature", "categories", j);
-        }
-        if (!Array.isArray(featureCats)) {
-          throw new InvalidParameterError(
-            "categories must be an array of category arrays",
-            "categories",
-            featureCats
-          );
-        }
-        cats = validateCategoryValues(featureCats, "categories");
-      } else {
-        const uniqueSet = new Set<Category>();
-
-        // Scan all samples to find unique values in this feature
-        for (let i = 0; i < nSamples; i++) {
-          uniqueSet.add(read2DValue(_X, i, j));
-        }
-
-        // Sort categories for consistent ordering
-        cats = sortCategories(uniqueSet, "X");
-      }
-
-      if (cats.length === 0) {
-        throw new InvalidParameterError("Each feature must have at least one category", "X", j);
-      }
-
-      this.categories_.push(cats);
-
-      // Build index map for O(1) transform lookups
-      const map = new Map<Category, number>();
-      for (let k = 0; k < cats.length; k++) {
-        map.set(categoryValueAt(cats, k, "OneHotEncoder.fit"), k);
-      }
-      this.categoryToIndex_.push(map);
-
-      // Validate training data against explicit categories
-      if (explicitCategories) {
-        for (let i = 0; i < nSamples; i++) {
-          const val = read2DValue(_X, i, j);
-          if (!map.has(val)) {
-            throw new InvalidParameterError(
-              `Unknown category: ${String(val)} in feature ${j}`,
-              "X",
-              val
-            );
-          }
-        }
-      }
-    }
-
-    this.dropIndices_ = this.categories_.map((cats) => {
-      if (this.drop === null) return null;
-      if (this.drop === "first") return cats.length > 0 ? 0 : null;
+    const dropIndices = categories.map((cats): number | null => {
+      if (this.drop === "first") return 0;
       if (this.drop === "if_binary") return cats.length === 2 ? 0 : null;
       return null;
     });
 
+    // Commit only after everything succeeded so a failed refit keeps the old state.
+    this.categories_ = categories;
+    this.categoryToIndex_ = buildIndexMaps(categories, "OneHotEncoder.fit");
+    this.dropIndices_ = dropIndices;
     this.fitted = true;
     return this;
   }
@@ -852,116 +1014,114 @@ export class OneHotEncoder {
 
     const dropIndices = this.dropIndices_ ?? categories.map(() => null);
 
-    // Calculate total output columns (sum of all category counts minus drops)
+    // Output width of each feature (category count minus the dropped one).
+    const outSizes = new Array<number>(nFeatures);
+    const colOffsets = new Array<number>(nFeatures);
     let totalCols = 0;
-    for (let j = 0; j < categories.length; j++) {
+    for (let j = 0; j < nFeatures; j++) {
       const cats = categories[j];
-      if (!cats) continue;
-      const dropIndex = dropIndices[j] ?? null;
-      totalCols += cats.length - (dropIndex === null ? 0 : 1);
+      if (!cats) {
+        throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
+      }
+      outSizes[j] = cats.length - ((dropIndices[j] ?? null) === null ? 0 : 1);
+      colOffsets[j] = totalCols;
+      totalCols += outSizes[j] as number;
     }
 
-    if (nSamples === 0 || nFeatures === 0) {
-      return this.sparse
-        ? CSRMatrix.fromCOO({
-            rows: 0,
-            cols: totalCols,
-            rowIndices: new Int32Array(0),
-            colIndices: new Int32Array(0),
-            values: new Float64Array(0),
-          })
-        : zeros([0, totalCols], { dtype: "float64" });
+    if (nSamples === 0) {
+      return this.sparse ? emptyCSR(0, totalCols) : zeros([0, totalCols], { dtype: "float64" });
+    }
+
+    // Output column of the active entry for each (sample, feature); -1 means all zeros.
+    const active = new Int32Array(nSamples * nFeatures).fill(-1);
+    const read = makeReader2D(_X);
+    let nnz = 0;
+    for (let j = 0; j < nFeatures; j++) {
+      const map = categoryMaps[j];
+      if (!map) {
+        throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
+      }
+      const dropIndex = dropIndices[j] ?? null;
+      const colOffset = colOffsets[j] as number;
+      for (let i = 0; i < nSamples; i++) {
+        const val = read(i, j);
+        const idx = map.get(val);
+        if (idx === undefined) {
+          if (this.handleUnknown === "ignore") continue;
+          throw new InvalidParameterError(
+            `Unknown category: ${String(val)} in feature ${j}`,
+            "X",
+            val
+          );
+        }
+        if (dropIndex !== null && idx === dropIndex) continue;
+        const adjusted = dropIndex !== null && idx > dropIndex ? idx - 1 : idx;
+        active[i * nFeatures + j] = colOffset + adjusted;
+        nnz++;
+      }
     }
 
     if (this.sparse) {
-      const rowIdx: number[] = [];
-      const colIdx: number[] = [];
-      const vals: number[] = [];
-
+      const rowIdx = new Int32Array(nnz);
+      const colIdx = new Int32Array(nnz);
+      const vals = new Float64Array(nnz).fill(1);
+      let p = 0;
       for (let i = 0; i < nSamples; i++) {
-        let colOffset = 0;
         for (let j = 0; j < nFeatures; j++) {
-          const cats = categories[j];
-          const map = categoryMaps[j];
-          const dropIndex = dropIndices[j] ?? null;
-          if (!cats || !map) {
-            throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
-          }
-          const outSize = cats.length - (dropIndex === null ? 0 : 1);
-          const val = read2DValue(_X, i, j);
-          const idx = map.get(val);
-          if (idx === undefined) {
-            if (this.handleUnknown === "ignore") {
-              colOffset += outSize;
-              continue;
-            }
-            throw new InvalidParameterError(`Unknown category: ${String(val)}`, "X", val);
-          }
-
-          if (dropIndex !== null && idx === dropIndex) {
-            colOffset += outSize;
-            continue;
-          }
-
-          const adjusted = dropIndex !== null && idx > dropIndex ? idx - 1 : idx;
-          rowIdx.push(i);
-          colIdx.push(colOffset + adjusted);
-          vals.push(1);
-          colOffset += outSize;
+          const col = active[i * nFeatures + j] as number;
+          if (col < 0) continue;
+          rowIdx[p] = i;
+          colIdx[p] = col;
+          p++;
         }
       }
-
       return CSRMatrix.fromCOO({
         rows: nSamples,
         cols: totalCols,
-        rowIndices: Int32Array.from(rowIdx),
-        colIndices: Int32Array.from(colIdx),
-        values: Float64Array.from(vals),
+        rowIndices: rowIdx,
+        colIndices: colIdx,
+        values: vals,
       });
     }
 
-    const result = Array.from({ length: nSamples }, () => new Array<number>(totalCols).fill(0));
-
+    const result = new Float64Array(nSamples * totalCols);
     for (let i = 0; i < nSamples; i++) {
-      let colOffset = 0;
       for (let j = 0; j < nFeatures; j++) {
-        const cats = categories[j];
-        const map = categoryMaps[j];
-        const dropIndex = dropIndices[j] ?? null;
-        if (!cats || !map) {
-          throw new DeepboxError("OneHotEncoder internal error: missing fitted categories");
-        }
-        const outSize = cats.length - (dropIndex === null ? 0 : 1);
-        const val = read2DValue(_X, i, j);
-        const idx = map.get(val);
-        if (idx === undefined) {
-          if (this.handleUnknown === "ignore") {
-            colOffset += outSize;
-            continue;
-          }
-          throw new InvalidParameterError(`Unknown category: ${String(val)}`, "X", val);
-        }
-        if (dropIndex !== null && idx === dropIndex) {
-          colOffset += outSize;
-          continue;
-        }
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        const adjusted = dropIndex !== null && idx > dropIndex ? idx - 1 : idx;
-        row[colOffset + adjusted] = 1;
-        colOffset += outSize;
+        const col = active[i * nFeatures + j] as number;
+        if (col >= 0) result[i * totalCols + col] = 1;
       }
     }
-
-    return tensor(result, { dtype: "float64", device: _X.device });
+    return TensorImpl.fromTypedArray({
+      data: result,
+      shape: [nSamples, totalCols],
+      dtype: "float64",
+      device: _X.device,
+    });
   }
 
+  /**
+   * Fit encoder and transform X in one step.
+   *
+   * @param X - Training data (2D tensor)
+   * @returns Encoded data as dense Tensor or sparse CSRMatrix
+   */
   fitTransform(X: EncoderInput2D): Tensor | CSRMatrix {
     return this.fit(X).transform(X);
   }
 
+  /**
+   * Convert one-hot encoded data back to the original categories.
+   *
+   * For each feature the column with the largest value wins. A block of all
+   * zeros decodes to the dropped category when `drop` is set; otherwise it is
+   * an error (it cannot be mapped back, for example after unknown categories
+   * were ignored).
+   *
+   * @param X - One-hot data (dense Tensor or CSRMatrix)
+   * @returns Matrix of original categories
+   * @throws {NotFittedError} If encoder is not fitted
+   * @throws {InvalidParameterError} If the column count does not match or a block has no active column
+   */
   inverseTransform(X: Tensor | CSRMatrix): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("OneHotEncoder must be fitted before inverse_transform");
@@ -988,13 +1148,11 @@ export class OneHotEncoder {
     }
 
     const result = new Array<Category[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<Category>(nFeatures);
-    }
-    const denseData = getNumericData(dense);
-    const [stride0, stride1] = getStrides2D(dense);
+    const readNum = makeNumberReader2D(dense);
 
     for (let i = 0; i < nSamples; i++) {
+      const row = new Array<Category>(nFeatures);
+      result[i] = row;
       let colOffset = 0;
       for (let j = 0; j < nFeatures; j++) {
         const cats = categories[j];
@@ -1004,43 +1162,22 @@ export class OneHotEncoder {
         }
         const outSize = cats.length - (dropIndex === null ? 0 : 1);
         if (outSize === 0) {
-          const row = result[i];
-          if (!row) {
-            throw new DeepboxError("Internal error: result row access failed");
-          }
           row[j] = categoryValueAt(cats, dropIndex ?? 0, "OneHotEncoder.inverseTransform");
           continue;
         }
 
-        let maxIdx = 0;
-        const rowBase = dense.offset + i * stride0 + colOffset * stride1;
-        const first = denseData[rowBase];
-        if (first === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        let maxVal = Number(first);
-        let hasPositive = maxVal > 0;
-
-        for (let k = 1; k < outSize; k++) {
-          const raw = denseData[rowBase + k * stride1];
-          if (raw === undefined) {
-            throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-          }
-          const val = Number(raw);
+        // NaN never wins the comparison, so it cannot hide a real active column.
+        let maxIdx = -1;
+        let maxVal = Number.NEGATIVE_INFINITY;
+        for (let k = 0; k < outSize; k++) {
+          const val = readNum(i, colOffset + k);
           if (val > maxVal) {
             maxVal = val;
             maxIdx = k;
           }
-          if (val > 0) {
-            hasPositive = true;
-          }
         }
 
-        const row = result[i];
-        if (row === undefined) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        if (!hasPositive) {
+        if (!(maxVal > 0)) {
           if (dropIndex !== null) {
             row[j] = categoryValueAt(cats, dropIndex, "OneHotEncoder.inverseTransform");
           } else if (this.handleUnknown === "ignore") {
@@ -1069,12 +1206,12 @@ export class OneHotEncoder {
  *
  * This encoder transforms categorical features into ordinal integers.
  * Each feature's categories are mapped to integers [0, n_categories-1]
- * based on their sorted order. Unlike OneHotEncoder, this maintains
- * a single column per feature.
+ * based on their sorted order (or the order of the `categories` option).
+ * Unlike OneHotEncoder, this maintains a single column per feature.
  *
  * **Time Complexity:**
- * - fit: O(n*m*log(k)) where n=samples, m=features, k=avg categories
- * - transform: O(n*m*log(k)) due to indexOf lookup
+ * - fit: O(n*m + sum(k_j log k_j)) where n=samples, m=features, k_j=categories of feature j
+ * - transform: O(n*m) with O(1) map lookup per value
  *
  * **Space Complexity:** O(m*k) where m=features, k=avg categories per feature
  *
@@ -1108,7 +1245,7 @@ export class OrdinalEncoder {
    *
    * @param options - Configuration options
    * @param options.handleUnknown - How to handle unknown categories
-   * @param options.unknownValue - Encoded value for unknown categories when handleUnknown="useEncodedValue"
+   * @param options.unknownValue - Encoded value for unknown categories when handleUnknown="useEncodedValue" (default -1)
    * @param options.categories - "auto" or explicit categories per feature
    */
   constructor(
@@ -1129,6 +1266,13 @@ export class OrdinalEncoder {
         this.handleUnknown
       );
     }
+    if (typeof this.unknownValue !== "number") {
+      throw new InvalidParameterError(
+        "unknownValue must be an integer or NaN",
+        "unknownValue",
+        this.unknownValue
+      );
+    }
     if (!Number.isFinite(this.unknownValue) && !Number.isNaN(this.unknownValue)) {
       throw new InvalidParameterError(
         "unknownValue must be a finite number or NaN",
@@ -1146,6 +1290,13 @@ export class OrdinalEncoder {
   }
 
   /**
+   * The categories learned for each feature (a copy), or `undefined` before fit.
+   */
+  get categories(): Category[][] | undefined {
+    return this.categories_?.map((c) => c.slice());
+  }
+
+  /**
    * Fit OrdinalEncoder to X.
    * Learns the unique categories for each feature and their ordering.
    *
@@ -1158,80 +1309,20 @@ export class OrdinalEncoder {
     assert2D(_X, "X");
     const [nSamples, nFeatures] = getShape2D(_X);
 
-    if (nSamples === 0) {
+    if (nSamples === 0 || nFeatures === 0) {
       throw new InvalidParameterError("Cannot fit OrdinalEncoder on empty array", "X");
     }
 
-    this.categories_ = [];
-    this.categoryToIndex_ = [];
-
-    const explicitCategories = resolveCategoriesOption(
+    // With handleUnknown="useEncodedValue", explicit categories may omit values present in X.
+    const categories = learnCategories(
+      _X,
       this.categoriesOption,
-      nFeatures,
-      "categories"
+      this.handleUnknown === "useEncodedValue"
     );
 
-    // For each feature, collect and sort unique categories
-    for (let j = 0; j < nFeatures; j++) {
-      let sorted: Category[];
-
-      if (explicitCategories) {
-        const featureCats = explicitCategories[j];
-        if (!featureCats) {
-          throw new InvalidParameterError("Missing categories for feature", "categories", j);
-        }
-        if (!Array.isArray(featureCats)) {
-          throw new InvalidParameterError(
-            "categories must be an array of category arrays",
-            "categories",
-            featureCats
-          );
-        }
-        sorted = validateCategoryValues(featureCats, "categories");
-      } else {
-        const uniqueSet = new Set<Category>();
-
-        // Collect all unique values in this feature
-        for (let i = 0; i < nSamples; i++) {
-          uniqueSet.add(read2DValue(_X, i, j));
-        }
-
-        // Sort categories for consistent ordering
-        sorted = sortCategories(uniqueSet, "X");
-      }
-
-      if (sorted.length === 0) {
-        throw new InvalidParameterError("Each feature must have at least one category", "X", j);
-      }
-
-      this.categories_.push(sorted);
-
-      // Build index map for O(1) transform lookups
-      const map = new Map<Category, number>();
-      for (let k = 0; k < sorted.length; k++) {
-        map.set(categoryValueAt(sorted, k, "OrdinalEncoder.fit"), k);
-      }
-      this.categoryToIndex_.push(map);
-
-      if (explicitCategories) {
-        for (let i = 0; i < nSamples; i++) {
-          const val = read2DValue(_X, i, j);
-          if (!map.has(val)) {
-            throw new InvalidParameterError(
-              `Unknown category: ${String(val)} in feature ${j}`,
-              "X",
-              val
-            );
-          }
-        }
-      }
-
-      if (this.handleUnknown === "useEncodedValue") {
-        if (
-          Number.isFinite(this.unknownValue) &&
-          this.unknownValue >= 0 &&
-          this.unknownValue < sorted.length
-        ) {
+    if (this.handleUnknown === "useEncodedValue" && Number.isFinite(this.unknownValue)) {
+      for (const cats of categories) {
+        if (this.unknownValue >= 0 && this.unknownValue < cats.length) {
           throw new InvalidParameterError(
             "unknownValue must be outside the range of encoded categories",
             "unknownValue",
@@ -1241,6 +1332,9 @@ export class OrdinalEncoder {
       }
     }
 
+    // Commit only after everything succeeded so a failed refit keeps the old state.
+    this.categories_ = categories;
+    this.categoryToIndex_ = buildIndexMaps(categories, "OrdinalEncoder.fit");
     this.fitted = true;
     return this;
   }
@@ -1261,8 +1355,11 @@ export class OrdinalEncoder {
     const _X = coerceToTensor2D(X);
     assert2D(_X, "X");
     const [nSamples, nFeatures] = getShape2D(_X);
-    const fittedFeatures = this.categories_?.length ?? 0;
-    if (nFeatures !== fittedFeatures) {
+    const maps = this.categoryToIndex_;
+    if (!maps) {
+      throw new DeepboxError("OrdinalEncoder internal error: missing fitted categories");
+    }
+    if (nFeatures !== maps.length) {
       throw new InvalidParameterError(
         "X has a different feature count than during fit",
         "X",
@@ -1274,30 +1371,21 @@ export class OrdinalEncoder {
       return zeros([0, nFeatures], { dtype: "float64" });
     }
 
-    // Pre-allocate result array
-    const result = new Array<number[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<number>(nFeatures);
-    }
+    const result = new Float64Array(nSamples * nFeatures);
+    const read = makeReader2D(_X);
 
     // Transform each value to its ordinal index using O(1) map lookup
-    for (let i = 0; i < nSamples; i++) {
-      for (let j = 0; j < nFeatures; j++) {
-        const val = read2DValue(_X, i, j);
-        const map = this.categoryToIndex_?.[j];
-        if (!map) {
-          throw new DeepboxError("OrdinalEncoder internal error: missing fitted categories");
-        }
-
-        // Use O(1) map lookup instead of O(n) indexOf
+    for (let j = 0; j < nFeatures; j++) {
+      const map = maps[j];
+      if (!map) {
+        throw new DeepboxError("OrdinalEncoder internal error: missing fitted categories");
+      }
+      for (let i = 0; i < nSamples; i++) {
+        const val = read(i, j);
         const idx = map.get(val);
-        const row = result[i];
-        if (!row) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
         if (idx === undefined) {
           if (this.handleUnknown === "useEncodedValue") {
-            row[j] = this.unknownValue;
+            result[i * nFeatures + j] = this.unknownValue;
             continue;
           }
           throw new InvalidParameterError(
@@ -1306,12 +1394,16 @@ export class OrdinalEncoder {
             val
           );
         }
-
-        row[j] = idx;
+        result[i * nFeatures + j] = idx;
       }
     }
 
-    return tensor(result, { dtype: "float64" });
+    return TensorImpl.fromTypedArray({
+      data: result,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: getConfig().defaultDevice,
+    });
   }
 
   /**
@@ -1342,8 +1434,8 @@ export class OrdinalEncoder {
     assert2D(_X, "X");
     assertNumericTensor(_X, "X");
     const [nSamples, nFeatures] = getShape2D(_X);
-    const fittedFeatures = this.categories_?.length ?? 0;
-    if (nFeatures !== fittedFeatures) {
+    const categories = this.categories_ ?? [];
+    if (nFeatures !== categories.length) {
       throw new InvalidParameterError(
         "X has a different feature count than during fit",
         "X",
@@ -1351,34 +1443,19 @@ export class OrdinalEncoder {
       );
     }
 
-    if (nSamples === 0 || nFeatures === 0) {
-      const categoryRows = this.categories_ ?? [];
-      const categoryType = inferCategoryTypeFromRows(categoryRows, "X");
-      if (categoryType === "string") {
-        return empty([0, nFeatures], { dtype: "string" });
-      }
-      if (categoryType === "bigint") {
-        return empty([0, nFeatures], { dtype: "int64" });
-      }
-      return zeros([0, nFeatures], { dtype: "float64" });
+    if (nSamples === 0) {
+      return emptyCategoryMatrixFromCategories(categories, nFeatures, "X");
     }
 
-    // Pre-allocate result array
     const result = new Array<Category[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<Category>(nFeatures);
-    }
+    const readNum = makeNumberReader2D(_X);
 
     // Map each ordinal index back to its original category
-    const [stride0, stride1] = getStrides2D(_X);
-    const data = getNumericData(_X);
     for (let i = 0; i < nSamples; i++) {
+      const row = new Array<Category>(nFeatures);
+      result[i] = row;
       for (let j = 0; j < nFeatures; j++) {
-        const raw = data[_X.offset + i * stride0 + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const idx = Number(raw);
+        const idx = readNum(i, j);
         const isUnknownValue =
           this.handleUnknown === "useEncodedValue" &&
           (Number.isNaN(idx) ? Number.isNaN(this.unknownValue) : idx === this.unknownValue);
@@ -1389,30 +1466,42 @@ export class OrdinalEncoder {
             idx
           );
         }
-        const cats = this.categories_?.[j];
+        const cats = categories[j];
 
         // Validate index is in valid range
-        if (!cats || idx < 0 || idx >= cats.length || !Number.isInteger(idx)) {
+        if (!cats || !Number.isInteger(idx) || idx < 0 || idx >= cats.length) {
           throw new InvalidParameterError(
             `Invalid encoded value: ${idx} for feature ${j}. Must be integer in [0, ${(cats?.length ?? 0) - 1}]`,
             "X",
             idx
           );
         }
-
-        const row = result[i];
-        if (!row) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        const catVal = cats[idx];
-        if (catVal === undefined) {
-          throw new DeepboxError("Internal error: category value missing");
-        }
-        row[j] = catVal;
+        row[j] = categoryValueAt(cats, idx, "OrdinalEncoder.inverseTransform");
       }
     }
 
     return toCategoryMatrixTensor(result, "X");
+  }
+}
+
+/**
+ * Check that every element of a label-set array is itself an array of
+ * strings, numbers or bigints.
+ */
+function assertLabelSets(y: ReadonlyArray<ReadonlyArray<Category>>): void {
+  for (const labels of y) {
+    if (!Array.isArray(labels)) {
+      throw new InvalidParameterError("MultiLabelBinarizer expects label arrays", "y", labels);
+    }
+    for (const label of labels) {
+      if (typeof label !== "string" && typeof label !== "number" && typeof label !== "bigint") {
+        throw new InvalidParameterError(
+          "MultiLabelBinarizer labels must be strings, numbers, or bigints",
+          "y",
+          label
+        );
+      }
+    }
   }
 }
 
@@ -1452,6 +1541,14 @@ export class LabelBinarizer {
   private negLabel: number;
   /** Whether to return sparse matrix output */
   private sparse: boolean;
+
+  /**
+   * The sorted classes learned during fit (a new tensor on every access),
+   * or `undefined` before fit.
+   */
+  get classes(): Tensor | undefined {
+    return this.classes_ ? toCategoryVectorTensor(this.classes_, "y") : undefined;
+  }
 
   /**
    * Creates a new LabelBinarizer instance.
@@ -1521,18 +1618,16 @@ export class LabelBinarizer {
     }
 
     // Collect unique classes
+    const read = makeReader1D(_y);
     const uniqueSet = new Set<Category>();
     for (let i = 0; i < _y.size; i++) {
-      uniqueSet.add(read1DValue(_y, i));
+      uniqueSet.add(read(i));
     }
 
-    // Sort classes for consistent ordering
-    this.classes_ = sortCategories(uniqueSet, "y");
-    this.classToIndex_ = new Map();
-    for (let i = 0; i < this.classes_.length; i++) {
-      this.classToIndex_.set(categoryValueAt(this.classes_, i, "LabelBinarizer.fit"), i);
-    }
-
+    // Sort classes for consistent ordering; commit only after everything succeeded.
+    const classes = sortCategories(uniqueSet, "y");
+    this.classes_ = classes;
+    this.classToIndex_ = buildIndexMap(classes, "LabelBinarizer.fit");
     this.fitted = true;
     return this;
   }
@@ -1552,68 +1647,23 @@ export class LabelBinarizer {
     }
     const _y = coerceToTensor1D(y);
     assert1D(_y, "y");
+    const nClasses = this.classes_?.length ?? 0;
     if (_y.size === 0) {
-      const nClasses = this.classes_?.length ?? 0;
-      return this.sparse
-        ? CSRMatrix.fromCOO({
-            rows: 0,
-            cols: nClasses,
-            rowIndices: new Int32Array(0),
-            colIndices: new Int32Array(0),
-            values: new Float64Array(0),
-          })
-        : zeros([0, nClasses], { dtype: "float64" });
+      return this.sparse ? emptyCSR(0, nClasses) : zeros([0, nClasses], { dtype: "float64" });
     }
 
     const nSamples = _y.size;
-    const nClasses = this.classes_?.length ?? 0;
     const lookup = this.classToIndex_;
     if (!lookup) {
       throw new DeepboxError("LabelBinarizer internal error: missing fitted lookup");
     }
 
-    if (this.sparse) {
-      const rowIdx: number[] = [];
-      const colIdx: number[] = [];
-      const vals: number[] = [];
-
-      for (let i = 0; i < nSamples; i++) {
-        const val = read1DValue(_y, i);
-        const idx = lookup.get(val);
-
-        if (idx === undefined) {
-          throw new InvalidParameterError(
-            `Unknown label: ${String(val)}. Label must be present during fit.`,
-            "y",
-            val
-          );
-        }
-
-        rowIdx.push(i);
-        colIdx.push(idx);
-        vals.push(this.posLabel);
-      }
-
-      return CSRMatrix.fromCOO({
-        rows: nSamples,
-        cols: nClasses,
-        rowIndices: Int32Array.from(rowIdx),
-        colIndices: Int32Array.from(colIdx),
-        values: Float64Array.from(vals),
-      });
-    }
-
-    // Pre-allocate binary matrix
-    const result = new Array<number[]>(nSamples);
+    // Class index of every sample.
+    const read = makeReader1D(_y);
+    const classIdx = new Int32Array(nSamples);
     for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<number>(nClasses).fill(this.negLabel);
-    }
-
-    // Set appropriate bit for each label
-    for (let i = 0; i < nSamples; i++) {
-      const val = read1DValue(_y, i);
+      const val = read(i);
       const idx = lookup.get(val);
-
       if (idx === undefined) {
         throw new InvalidParameterError(
           `Unknown label: ${String(val)}. Label must be present during fit.`,
@@ -1621,15 +1671,32 @@ export class LabelBinarizer {
           val
         );
       }
-
-      const row = result[i];
-      if (!row) {
-        throw new DeepboxError("Internal error: result row access failed");
-      }
-      row[idx] = this.posLabel;
+      classIdx[i] = idx;
     }
 
-    return tensor(result, { dtype: "float64" });
+    if (this.sparse) {
+      const rowIdx = new Int32Array(nSamples);
+      for (let i = 0; i < nSamples; i++) rowIdx[i] = i;
+      return CSRMatrix.fromCOO({
+        rows: nSamples,
+        cols: nClasses,
+        rowIndices: rowIdx,
+        colIndices: classIdx,
+        values: new Float64Array(nSamples).fill(this.posLabel),
+      });
+    }
+
+    const result = new Float64Array(nSamples * nClasses);
+    if (this.negLabel !== 0) result.fill(this.negLabel);
+    for (let i = 0; i < nSamples; i++) {
+      result[i * nClasses + (classIdx[i] as number)] = this.posLabel;
+    }
+    return TensorImpl.fromTypedArray({
+      data: result,
+      shape: [nSamples, nClasses],
+      dtype: "float64",
+      device: getConfig().defaultDevice,
+    });
   }
 
   /**
@@ -1680,14 +1747,16 @@ export class LabelBinarizer {
         return emptyCategoryVectorFromClasses(classes, "y");
       }
 
+      // Repeated entries of a non-canonical matrix must count as their sum.
+      const canon = Y.hasCanonicalFormat ? Y : Y.canonicalize();
       const result = new Array<Category>(rows);
       for (let i = 0; i < rows; i++) {
         let maxIdx = 0;
         let maxVal = this.negLabel;
-        const start = Y.indptr[i] ?? 0;
-        const end = Y.indptr[i + 1] ?? start;
+        const start = canon.indptr[i] ?? 0;
+        const end = canon.indptr[i + 1] ?? start;
         for (let p = start; p < end; p++) {
-          const col = Y.indices[p];
+          const col = canon.indices[p];
           if (col === undefined) {
             throw new DeepboxError("Internal error: sparse column index missing");
           }
@@ -1698,7 +1767,7 @@ export class LabelBinarizer {
               col
             );
           }
-          const raw = Y.data[p];
+          const raw = canon.data[p];
           if (raw === undefined) {
             throw new DeepboxError("Internal error: sparse value missing");
           }
@@ -1736,33 +1805,21 @@ export class LabelBinarizer {
       return emptyCategoryVectorFromClasses(classes, "y");
     }
     const result = new Array<Category>(nSamples);
-    const [stride0, stride1] = getStrides2D(Y);
-    const data = getNumericData(Y);
+    const readNum = makeNumberReader2D(Y);
 
-    // For each sample, find the class with maximum activation
+    // For each sample, find the class with maximum activation. NaN never wins.
     for (let i = 0; i < nSamples; i++) {
-      let maxIdx = 0;
-      const rowBase = Y.offset + i * stride0;
-      const first = data[rowBase];
-      if (first === undefined) {
-        throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-      }
-      let maxVal = Number(first);
-
-      // Find column with highest value
-      for (let j = 1; j < nCols; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
+      let maxIdx = -1;
+      let maxVal = Number.NEGATIVE_INFINITY;
+      for (let j = 0; j < nCols; j++) {
+        const val = readNum(i, j);
         if (val > maxVal) {
           maxVal = val;
           maxIdx = j;
         }
       }
 
-      if (maxVal <= this.negLabel) {
+      if (maxIdx < 0 || maxVal <= this.negLabel) {
         throw new InvalidParameterError(
           `No active label found for sample ${i}. LabelBinarizer expects exactly one active label.`,
           "Y"
@@ -1814,6 +1871,14 @@ export class MultiLabelBinarizer {
   private classesOption?: Category[];
 
   /**
+   * The classes in column order (a new tensor on every access), or `undefined`
+   * before fit.
+   */
+  get classes(): Tensor | undefined {
+    return this.classes_ ? toCategoryVectorTensor(this.classes_, "classes") : undefined;
+  }
+
+  /**
    * Creates a new MultiLabelBinarizer instance.
    *
    * @param options - Configuration options
@@ -1856,30 +1921,21 @@ export class MultiLabelBinarizer {
    * @throws {InvalidParameterError} If y is empty
    */
   fit(y: ReadonlyArray<ReadonlyArray<Category>>): this {
+    if (!Array.isArray(y)) {
+      throw new InvalidParameterError(
+        "MultiLabelBinarizer expects an array of label arrays",
+        "y",
+        y
+      );
+    }
     if (y.length === 0) {
       throw new InvalidParameterError("Cannot fit MultiLabelBinarizer on empty array", "y");
     }
-    for (const labels of y) {
-      if (!Array.isArray(labels)) {
-        throw new InvalidParameterError("MultiLabelBinarizer expects label arrays", "y", labels);
-      }
-      for (const label of labels) {
-        if (typeof label !== "string" && typeof label !== "number" && typeof label !== "bigint") {
-          throw new InvalidParameterError(
-            "MultiLabelBinarizer labels must be strings, numbers, or bigints",
-            "y",
-            label
-          );
-        }
-      }
-    }
+    assertLabelSets(y);
 
-    if (this.classesOption && this.classesOption.length === 0) {
-      throw new InvalidParameterError("classes must contain at least one value", "classes");
-    }
-
+    let classes: Category[];
     if (this.classesOption) {
-      this.classes_ = Array.from(this.classesOption);
+      classes = Array.from(this.classesOption);
     } else {
       // Collect all unique labels across all samples
       const uniqueSet = new Set<Category>();
@@ -1890,16 +1946,13 @@ export class MultiLabelBinarizer {
       }
 
       // Sort classes for consistent ordering
-      this.classes_ = sortCategories(uniqueSet, "y");
+      classes = sortCategories(uniqueSet, "y");
     }
-    this.classToIndex_ = new Map();
-    for (let i = 0; i < this.classes_.length; i++) {
-      this.classToIndex_.set(categoryValueAt(this.classes_, i, "MultiLabelBinarizer.fit"), i);
-    }
+    const lookup = buildIndexMap(classes, "MultiLabelBinarizer.fit");
     if (this.classesOption) {
       for (const labels of y) {
         for (const label of labels) {
-          if (!this.classToIndex_.has(label)) {
+          if (!lookup.has(label)) {
             throw new InvalidParameterError(
               `Unknown label: ${String(label)}. Label must be present in classes.`,
               "y",
@@ -1910,6 +1963,9 @@ export class MultiLabelBinarizer {
       }
     }
 
+    // Commit only after everything succeeded so a failed refit keeps the old state.
+    this.classes_ = classes;
+    this.classToIndex_ = lookup;
     this.fitted = true;
     return this;
   }
@@ -1927,86 +1983,32 @@ export class MultiLabelBinarizer {
     if (!this.fitted) {
       throw new NotFittedError("MultiLabelBinarizer must be fitted before transform");
     }
-    for (const labels of y) {
-      if (!Array.isArray(labels)) {
-        throw new InvalidParameterError("MultiLabelBinarizer expects label arrays", "y", labels);
-      }
-      for (const label of labels) {
-        if (typeof label !== "string" && typeof label !== "number" && typeof label !== "bigint") {
-          throw new InvalidParameterError(
-            "MultiLabelBinarizer labels must be strings, numbers, or bigints",
-            "y",
-            label
-          );
-        }
-      }
+    if (!Array.isArray(y)) {
+      throw new InvalidParameterError(
+        "MultiLabelBinarizer expects an array of label arrays",
+        "y",
+        y
+      );
     }
+    assertLabelSets(y);
+    const nClasses = this.classes_?.length ?? 0;
     if (y.length === 0) {
-      const nClasses = this.classes_?.length ?? 0;
-      return this.sparse
-        ? CSRMatrix.fromCOO({
-            rows: 0,
-            cols: nClasses,
-            rowIndices: new Int32Array(0),
-            colIndices: new Int32Array(0),
-            values: new Float64Array(0),
-          })
-        : zeros([0, nClasses], { dtype: "float64" });
+      return this.sparse ? emptyCSR(0, nClasses) : zeros([0, nClasses], { dtype: "float64" });
     }
 
     const nSamples = y.length;
-    const nClasses = this.classes_?.length ?? 0;
     const lookup = this.classToIndex_;
     if (!lookup) {
       throw new DeepboxError("MultiLabelBinarizer internal error: missing fitted lookup");
     }
 
-    if (this.sparse) {
-      const rowIdx: number[] = [];
-      const colIdx: number[] = [];
-      const vals: number[] = [];
-
-      for (let i = 0; i < nSamples; i++) {
-        const yRow = y[i];
-        if (!yRow) continue;
-        const seen = new Set<number>();
-        for (const label of yRow) {
-          const idx = lookup.get(label);
-          if (idx === undefined) {
-            throw new InvalidParameterError(
-              `Unknown label: ${String(label)}. Label must be present during fit.`,
-              "y",
-              label
-            );
-          }
-          if (seen.has(idx)) continue;
-          seen.add(idx);
-          rowIdx.push(i);
-          colIdx.push(idx);
-          vals.push(1);
-        }
-      }
-
-      return CSRMatrix.fromCOO({
-        rows: nSamples,
-        cols: nClasses,
-        rowIndices: Int32Array.from(rowIdx),
-        colIndices: Int32Array.from(colIdx),
-        values: Float64Array.from(vals),
-      });
-    }
-
-    // Pre-allocate binary matrix
-    const result = new Array<number[]>(nSamples);
-    for (let i = 0; i < nSamples; i++) {
-      result[i] = new Array<number>(nClasses).fill(0);
-    }
-
-    // Set bits for all labels in each sample
+    // Distinct class indices of every sample (a repeated label counts once).
+    const rowIdx: number[] = [];
+    const colIdx: number[] = [];
     for (let i = 0; i < nSamples; i++) {
       const yRow = y[i];
       if (!yRow) continue;
-
+      const seen = new Set<number>();
       for (const label of yRow) {
         const idx = lookup.get(label);
         if (idx === undefined) {
@@ -2016,16 +2018,33 @@ export class MultiLabelBinarizer {
             label
           );
         }
-
-        const row = result[i];
-        if (!row) {
-          throw new DeepboxError("Internal error: result row access failed");
-        }
-        row[idx] = 1;
+        if (seen.has(idx)) continue;
+        seen.add(idx);
+        rowIdx.push(i);
+        colIdx.push(idx);
       }
     }
 
-    return tensor(result, { dtype: "float64" });
+    if (this.sparse) {
+      return CSRMatrix.fromCOO({
+        rows: nSamples,
+        cols: nClasses,
+        rowIndices: Int32Array.from(rowIdx),
+        colIndices: Int32Array.from(colIdx),
+        values: new Float64Array(rowIdx.length).fill(1),
+      });
+    }
+
+    const result = new Float64Array(nSamples * nClasses);
+    for (let p = 0; p < rowIdx.length; p++) {
+      result[(rowIdx[p] as number) * nClasses + (colIdx[p] as number)] = 1;
+    }
+    return TensorImpl.fromTypedArray({
+      data: result,
+      shape: [nSamples, nClasses],
+      dtype: "float64",
+      device: getConfig().defaultDevice,
+    });
   }
 
   /**
@@ -2070,13 +2089,15 @@ export class MultiLabelBinarizer {
         throw new DeepboxError("MultiLabelBinarizer internal error: missing fitted classes");
       }
 
+      // Repeated entries of a non-canonical matrix must count as their sum.
+      const canon = Y.hasCanonicalFormat ? Y : Y.canonicalize();
       const result: Category[][] = [];
       for (let i = 0; i < rows; i++) {
         const labels: Category[] = [];
-        const start = Y.indptr[i] ?? 0;
-        const end = Y.indptr[i + 1] ?? start;
+        const start = canon.indptr[i] ?? 0;
+        const end = canon.indptr[i + 1] ?? start;
         for (let p = start; p < end; p++) {
-          const col = Y.indices[p];
+          const col = canon.indices[p];
           if (col === undefined) {
             throw new DeepboxError("Internal error: sparse column index missing");
           }
@@ -2087,7 +2108,7 @@ export class MultiLabelBinarizer {
               col
             );
           }
-          const raw = Y.data[p];
+          const raw = canon.data[p];
           if (raw === undefined) {
             throw new DeepboxError("Internal error: sparse value missing");
           }
@@ -2124,27 +2145,17 @@ export class MultiLabelBinarizer {
     }
 
     const result: Category[][] = [];
-    const [stride0, stride1] = getStrides2D(Y);
-    const data = getNumericData(Y);
+    const readNum = makeNumberReader2D(Y);
 
     // For each sample, collect all active classes
     for (let i = 0; i < nSamples; i++) {
       const labels: Category[] = [];
-      const rowBase = Y.offset + i * stride0;
-
-      // Check each class column
       for (let j = 0; j < nClasses; j++) {
-        const raw = data[rowBase + j * stride1];
-        if (raw === undefined) {
-          throw new DeepboxError("Internal error: numeric tensor access out of bounds");
-        }
-        const val = Number(raw);
-        // If this class is active (typically 1, but allow any positive value)
-        if (val > 0) {
+        // A class is active when its value is positive (typically 1); NaN is inactive.
+        if (readNum(i, j) > 0) {
           labels.push(categoryValueAt(classes, j, "MultiLabelBinarizer.inverseTransform"));
         }
       }
-
       result.push(labels);
     }
 
@@ -2155,8 +2166,14 @@ export class MultiLabelBinarizer {
 /**
  * Target-based encoding for categorical features.
  *
- * Replaces each category with the mean of the target variable for that category.
- * Uses smoothing to regularize estimates for rare categories toward the global mean.
+ * Replaces each category with a smoothed mean of the target for that category:
+ * `(n * categoryMean + smooth * targetMean) / (n + smooth)`, which pulls rare
+ * categories toward the overall target mean. Categories not seen during fit
+ * encode as the overall target mean. Features may be numbers, bigints or strings.
+ *
+ * `fitTransform` uses cross-fitting (as scikit-learn does), so the training
+ * encoding of a row never uses that row's own target. Rows are assigned to
+ * `cv` folds deterministically (row `i` goes to fold `i % cv`).
  *
  * @example
  * ```ts
@@ -2171,184 +2188,259 @@ export class MultiLabelBinarizer {
  */
 export class TargetEncoder {
   private _smooth: number;
-  private _encodings: Map<number, Map<number, number>> = new Map();
+  private _cv: number;
+  private _encodings: Array<Map<Category, number>> = [];
   private _globalMean = 0;
   private _nFeatures = 0;
   private _fitted = false;
 
-  constructor(options: { smooth?: number } = {}) {
+  /**
+   * @param options.smooth - Weight of the overall target mean, as a number of pseudo-observations (default 5, must be >= 0).
+   * @param options.cv - Number of folds used by `fitTransform` (default 5, must be an integer >= 2).
+   */
+  constructor(options: { smooth?: number; cv?: number } = {}) {
     this._smooth = options.smooth ?? 5;
+    this._cv = options.cv ?? 5;
+    if (typeof this._smooth !== "number" || !Number.isFinite(this._smooth) || this._smooth < 0) {
+      throw new InvalidParameterError(
+        "smooth must be a non-negative finite number",
+        "smooth",
+        this._smooth
+      );
+    }
+    if (!Number.isInteger(this._cv) || this._cv < 2) {
+      throw new InvalidParameterError("cv must be an integer >= 2", "cv", this._cv);
+    }
   }
 
   get isFitted(): boolean {
     return this._fitted;
   }
 
+  /** Mean of the training target, used for unseen categories (`undefined` before fit). */
+  get targetMean(): number | undefined {
+    return this._fitted ? this._globalMean : undefined;
+  }
+
+  /** Learned encoding of every category, one map per feature (copies; `undefined` before fit). */
+  get encodings(): Array<Map<Category, number>> | undefined {
+    return this._fitted ? this._encodings.map((m) => new Map(m)) : undefined;
+  }
+
+  private static prepare(
+    X: EncoderInput2D,
+    y: EncoderInput1D
+  ): {
+    xt: Tensor;
+    nSamples: number;
+    nFeatures: number;
+    yVals: Float64Array;
+  } {
+    const xt = coerceToTensor2D(X, "X");
+    const yt = coerceToTensor1D(y, "y");
+    if (xt.ndim !== 2) {
+      throw new ShapeError(`X must be 2D, got ${xt.ndim}D`);
+    }
+    if (yt.ndim !== 1) {
+      throw new ShapeError(`y must be 1D, got ${yt.ndim}D`);
+    }
+    assertNumericTensor(yt, "y");
+    const [nSamples, nFeatures] = getShape2D(xt);
+    if (nSamples !== yt.size) {
+      throw new ShapeError("X and y must have same number of samples");
+    }
+    if (nSamples === 0 || nFeatures === 0) {
+      throw new InvalidParameterError("Cannot fit TargetEncoder on empty array", "X");
+    }
+    const readY = makeReader1D(yt);
+    const yVals = new Float64Array(nSamples);
+    for (let i = 0; i < nSamples; i++) {
+      const v = Number(readY(i));
+      if (!Number.isFinite(v)) {
+        throw new DataValidationError(`y must be finite; found ${v} at index ${i}`);
+      }
+      yVals[i] = v;
+    }
+    return { xt, nSamples, nFeatures, yVals };
+  }
+
   /**
    * Fit the encoder to training data.
    *
-   * @param X - Feature matrix (2D Tensor of category indices)
-   * @param y - Target values (1D Tensor)
+   * @param X - Feature matrix (2D tensor or array of categories: numbers, bigints or strings)
+   * @param y - Numeric target values (1D, finite)
    */
-  fit(X: Tensor, y: Tensor): this {
-    const xShape = X.shape;
-    const yShape = y.shape;
+  fit(X: EncoderInput2D, y: EncoderInput1D): this {
+    const { xt, nSamples, nFeatures, yVals } = TargetEncoder.prepare(X, y);
+    const read = makeReader2D(xt);
 
-    if (xShape.length !== 2) {
-      throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
-    }
-    if (yShape.length !== 1) {
-      throw new ShapeError(`y must be 1D, got ${yShape.length}D`);
-    }
-    const [nSamples, nFeatures] = xShape as [number, number];
-    if (nSamples !== yShape[0]) {
-      throw new ShapeError(`X and y must have same number of samples`);
-    }
-
-    this._nFeatures = nFeatures;
-
-    const xData = getNumericData(X);
-    const yData = getNumericData(y);
-    const [xStride0, xStride1] = getStrides2D(X);
-    const yStride = getStride1D(y);
-
-    // Compute global mean
     let globalSum = 0;
-    for (let i = 0; i < nSamples; i++) {
-      globalSum += Number(yData[y.offset + i * yStride] ?? 0);
-    }
-    this._globalMean = globalSum / nSamples;
+    for (let i = 0; i < nSamples; i++) globalSum += yVals[i] as number;
+    const globalMean = globalSum / nSamples;
 
-    this._encodings.clear();
-
+    const encodings: Array<Map<Category, number>> = [];
     for (let f = 0; f < nFeatures; f++) {
-      const catSums = new Map<number, number>();
-      const catCounts = new Map<number, number>();
-
+      const stats = new Map<Category, [number, number]>();
       for (let i = 0; i < nSamples; i++) {
-        const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
-        const target = Number(yData[y.offset + i * yStride] ?? 0);
-        catSums.set(cat, (catSums.get(cat) ?? 0) + target);
-        catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+        const cat = read(i, f);
+        let entry = stats.get(cat);
+        if (entry === undefined) {
+          entry = [0, 0];
+          stats.set(cat, entry);
+        }
+        entry[0] += yVals[i] as number;
+        entry[1] += 1;
       }
-
-      const featureMap = new Map<number, number>();
-      for (const [cat, sum] of catSums) {
-        const count = catCounts.get(cat) ?? 0;
-        // Smoothed target encoding: (count * catMean + smooth * globalMean) / (count + smooth)
-        const catMean = sum / count;
-        const smoothed =
-          (count * catMean + this._smooth * this._globalMean) / (count + this._smooth);
-        featureMap.set(cat, smoothed);
+      const featureMap = new Map<Category, number>();
+      for (const [cat, [sum, count]] of stats) {
+        // (count * catMean + smooth * globalMean) / (count + smooth)
+        featureMap.set(cat, (sum + this._smooth * globalMean) / (count + this._smooth));
       }
-      this._encodings.set(f, featureMap);
+      encodings.push(featureMap);
     }
 
+    // Commit only after everything succeeded so a failed refit keeps the old state.
+    this._encodings = encodings;
+    this._globalMean = globalMean;
+    this._nFeatures = nFeatures;
     this._fitted = true;
     return this;
   }
 
   /**
    * Transform categorical features to target-encoded values.
+   * Categories that were not seen during fit are encoded as the target mean.
    *
-   * @param X - Feature matrix (2D Tensor of category indices)
-   * @returns Encoded 2D Tensor
+   * @param X - Feature matrix (2D tensor or array of categories)
+   * @returns Encoded 2D float64 tensor
    */
-  transform(X: Tensor): Tensor {
+  transform(X: EncoderInput2D): Tensor {
     if (!this._fitted) {
       throw new NotFittedError("TargetEncoder is not fitted yet");
     }
 
-    const xShape = X.shape;
-    if (xShape.length !== 2) {
-      throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
+    const xt = coerceToTensor2D(X, "X");
+    if (xt.ndim !== 2) {
+      throw new ShapeError(`X must be 2D, got ${xt.ndim}D`);
     }
-    const [nSamples, nFeatures] = xShape as [number, number];
+    const [nSamples, nFeatures] = getShape2D(xt);
     if (nFeatures !== this._nFeatures) {
       throw new ShapeError(`Expected ${this._nFeatures} features, got ${nFeatures}`);
     }
 
-    const xData = getNumericData(X);
-    const [xStride0, xStride1] = getStrides2D(X);
-    const resultArr: number[][] = [];
-
-    for (let i = 0; i < nSamples; i++) {
-      const row: number[] = [];
+    const out = new Float64Array(nSamples * nFeatures);
+    if (nSamples > 0) {
+      const read = makeReader2D(xt);
       for (let f = 0; f < nFeatures; f++) {
-        const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
-        const featureMap = this._encodings.get(f);
-        row.push(featureMap?.get(cat) ?? this._globalMean);
+        const featureMap = this._encodings[f];
+        for (let i = 0; i < nSamples; i++) {
+          out[i * nFeatures + f] = featureMap?.get(read(i, f)) ?? this._globalMean;
+        }
       }
-      resultArr.push(row);
     }
 
-    return tensor(resultArr);
+    return TensorImpl.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: getConfig().defaultDevice,
+    });
   }
 
   /**
    * Fit and transform in one step using internal cross-fitting (scikit-learn's
    * TargetEncoder.fit_transform behavior): each row's encoding is computed from
-   * the OTHER folds, so a row never sees its own target. A plain
-   * fit(X,y)+transform(X) would leak the target and give optimistically biased
-   * cross-validation scores. The encoder is also fit on the full data so later
-   * `transform` calls use the complete statistics.
+   * the OTHER folds, so a row never sees its own target. Within a fold split,
+   * both the category statistics and the fallback target mean come from the
+   * training folds only. A plain fit(X,y)+transform(X) would leak the target
+   * and give optimistically biased cross-validation scores. The encoder is also
+   * fit on the full data so later `transform` calls use the complete statistics.
+   *
+   * @throws {InvalidParameterError} If there are fewer than 2 samples
    */
-  fitTransform(X: Tensor, y: Tensor): Tensor {
-    const xShape = X.shape;
-    const yShape = y.shape;
-    if (xShape.length !== 2) throw new ShapeError(`X must be 2D, got ${xShape.length}D`);
-    if (yShape.length !== 1) throw new ShapeError(`y must be 1D, got ${yShape.length}D`);
-    const [nSamples, nFeatures] = xShape as [number, number];
-    if (nSamples !== yShape[0]) throw new ShapeError("X and y must have same number of samples");
+  fitTransform(X: EncoderInput2D, y: EncoderInput1D): Tensor {
+    const { xt, nSamples, nFeatures, yVals } = TargetEncoder.prepare(X, y);
+    if (nSamples < 2) {
+      throw new InvalidParameterError(
+        "TargetEncoder.fitTransform needs at least 2 samples for cross-fitting",
+        "X",
+        nSamples
+      );
+    }
+    const read = makeReader2D(xt);
 
-    const xData = getNumericData(X);
-    const yData = getNumericData(y);
-    const [xStride0, xStride1] = getStrides2D(X);
-    const yStride = getStride1D(y);
+    const nFolds = Math.min(this._cv, nSamples);
+    const foldOf = (i: number): number => i % nFolds;
 
-    const nFolds = Math.min(5, nSamples);
-    // Deterministic fold assignment (contiguous is fine; sklearn shuffles, but
-    // determinism matters more than shuffle here and avoids an RNG dependency).
-    const foldOf = (i: number): number => (nFolds > 0 ? i % nFolds : 0);
-
-    const globalSum = (() => {
+    const foldYSum = new Float64Array(nFolds);
+    const foldYCount = new Float64Array(nFolds);
+    for (let i = 0; i < nSamples; i++) {
+      foldYSum[foldOf(i)] = (foldYSum[foldOf(i)] as number) + (yVals[i] as number);
+      foldYCount[foldOf(i)] = (foldYCount[foldOf(i)] as number) + 1;
+    }
+    // Mean of the training folds for each held-out fold.
+    const trainMean = new Float64Array(nFolds);
+    for (let h = 0; h < nFolds; h++) {
       let s = 0;
-      for (let i = 0; i < nSamples; i++) s += Number(yData[y.offset + i * yStride] ?? 0);
-      return s;
-    })();
-    const globalMean = nSamples > 0 ? globalSum / nSamples : 0;
+      let c = 0;
+      for (let k = 0; k < nFolds; k++) {
+        if (k === h) continue;
+        s += foldYSum[k] as number;
+        c += foldYCount[k] as number;
+      }
+      trainMean[h] = s / c;
+    }
 
-    const result: number[][] = Array.from({ length: nSamples }, () => new Array(nFeatures).fill(0));
-
+    const out = new Float64Array(nSamples * nFeatures);
+    const ids = new Int32Array(nSamples);
     for (let f = 0; f < nFeatures; f++) {
-      for (let hold = 0; hold < Math.max(1, nFolds); hold++) {
-        // Statistics from all folds EXCEPT the held-out one.
-        const sums = new Map<number, number>();
-        const counts = new Map<number, number>();
-        for (let i = 0; i < nSamples; i++) {
-          if (foldOf(i) === hold) continue;
-          const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
-          const t = Number(yData[y.offset + i * yStride] ?? 0);
-          sums.set(cat, (sums.get(cat) ?? 0) + t);
-          counts.set(cat, (counts.get(cat) ?? 0) + 1);
+      const catIds = new Map<Category, number>();
+      for (let i = 0; i < nSamples; i++) {
+        const cat = read(i, f);
+        let id = catIds.get(cat);
+        if (id === undefined) {
+          id = catIds.size;
+          catIds.set(cat, id);
         }
-        // Encode the held-out rows with those out-of-fold statistics.
-        for (let i = 0; i < nSamples; i++) {
-          if (foldOf(i) !== hold) continue;
-          const cat = Number(xData[X.offset + i * xStride0 + f * xStride1] ?? 0);
-          const count = counts.get(cat) ?? 0;
-          if (count === 0) {
-            result[i]![f] = globalMean;
-          } else {
-            const catMean = (sums.get(cat) ?? 0) / count;
-            result[i]![f] = (count * catMean + this._smooth * globalMean) / (count + this._smooth);
-          }
+        ids[i] = id;
+      }
+      const nCats = catIds.size;
+      const totalSum = new Float64Array(nCats);
+      const totalCount = new Float64Array(nCats);
+      const foldSum = new Float64Array(nCats * nFolds);
+      const foldCount = new Float64Array(nCats * nFolds);
+      for (let i = 0; i < nSamples; i++) {
+        const id = ids[i] as number;
+        const y = yVals[i] as number;
+        const slot = id * nFolds + foldOf(i);
+        totalSum[id] = (totalSum[id] as number) + y;
+        totalCount[id] = (totalCount[id] as number) + 1;
+        foldSum[slot] = (foldSum[slot] as number) + y;
+        foldCount[slot] = (foldCount[slot] as number) + 1;
+      }
+
+      for (let i = 0; i < nSamples; i++) {
+        const id = ids[i] as number;
+        const hold = foldOf(i);
+        const slot = id * nFolds + hold;
+        const count = (totalCount[id] as number) - (foldCount[slot] as number);
+        const mean = trainMean[hold] as number;
+        if (count === 0) {
+          out[i * nFeatures + f] = mean;
+        } else {
+          const sum = (totalSum[id] as number) - (foldSum[slot] as number);
+          out[i * nFeatures + f] = (sum + this._smooth * mean) / (count + this._smooth);
         }
       }
     }
 
     // Fit the full-data encodings for subsequent transform() calls.
-    this.fit(X, y);
-    return tensor(result);
+    this.fit(xt, y);
+    return TensorImpl.fromTypedArray({
+      data: out,
+      shape: [nSamples, nFeatures],
+      dtype: "float64",
+      device: getConfig().defaultDevice,
+    });
   }
 }

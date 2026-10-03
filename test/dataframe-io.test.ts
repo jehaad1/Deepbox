@@ -160,8 +160,9 @@ describe("parquet writer/reader round-trip", () => {
     expect(empty.columns).toEqual(["a"]);
     expect(empty.data).toEqual([]);
 
-    expect(readParquet(new Uint8Array(4))).toEqual({ columns: [], data: [] });
-    expect(readParquet(new Uint8Array(64))).toEqual({ columns: [], data: [] });
+    // Not a Parquet file: throw instead of returning an empty table.
+    expect(() => readParquet(new Uint8Array(4))).toThrow(DataValidationError);
+    expect(() => readParquet(new Uint8Array(64))).toThrow(DataValidationError);
   });
 
   it("reads a pyarrow-written uncompressed PLAIN v1 file, nulls included", () => {
@@ -225,8 +226,8 @@ describe("xlsx writer/reader round-trip", () => {
     expect(readXlsx(buf, { sheet: "Custom" }).data).toEqual([{ a: 1 }]);
   });
 
-  it("returns empty results for non-zip buffers", () => {
-    expect(readXlsx(new Uint8Array(16))).toEqual({ columns: [], data: [] });
+  it("throws for non-zip buffers instead of returning an empty sheet", () => {
+    expect(() => readXlsx(new Uint8Array(16))).toThrow(DataValidationError);
   });
 
   it("reads an openpyxl file (deflate zip, inline strings, multiple sheets)", () => {

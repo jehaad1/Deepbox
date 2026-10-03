@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tensor } from "../src/ndarray";
+import { type GradTensor, tensor } from "../src/ndarray";
 import { AvgPool2d, Conv1d, Conv2d, MaxPool2d } from "../src/nn/layers/conv";
 import { expectFloatTypedArray } from "./nn-test-utils";
 
@@ -13,7 +13,7 @@ describe("deepbox/nn - Convolution and Pooling", () => {
     wData[2] = -1;
 
     const x = tensor([[[1, 2, 3, 4, 5]]], { dtype: "float32" });
-    const out = conv.forward(x);
+    const out = conv.forward(x) as GradTensor; // tracks the weights, so a GradTensor
     expect(out.shape).toEqual([1, 1, 3]);
     expect(out.tensor.toArray()).toEqual([[[-2, -2, -2]]]);
   });
@@ -64,7 +64,7 @@ describe("deepbox/nn - Convolution and Pooling", () => {
       ],
     ]);
 
-    const out = conv.forward(x);
+    const out = conv.forward(x) as GradTensor; // tracks the weights, so a GradTensor
     expect(out.shape).toEqual([1, 1, 1, 1]);
     expect(out.tensor.toArray()).toEqual([[[[10]]]]);
   });
@@ -82,12 +82,12 @@ describe("deepbox/nn - Convolution and Pooling", () => {
     const maxPool = new MaxPool2d(2);
     const maxOut = maxPool.forward(x);
     expect(maxOut.shape).toEqual([1, 1, 1, 1]);
-    expect(maxOut.tensor.toArray()).toEqual([[[[4]]]]);
+    expect(maxOut.toArray()).toEqual([[[[4]]]]);
 
     const avgPool = new AvgPool2d(2);
     const avgOut = avgPool.forward(x);
     expect(avgOut.shape).toEqual([1, 1, 1, 1]);
-    expect(avgOut.tensor.toArray()).toEqual([[[[2.5]]]]);
+    expect(avgOut.toArray()).toEqual([[[[2.5]]]]);
   });
 
   it("Pool layers validate parameters", () => {

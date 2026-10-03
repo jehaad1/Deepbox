@@ -127,7 +127,7 @@ describe("stats - Descriptive Statistics", () => {
       expectClose(Number(stats.median(tensor([42])).data[0]), 42);
     });
 
-    it("is robust to outliers", () => {
+    it("is not sensitive to outliers", () => {
       expectClose(Number(stats.median(tensor([1, 2, 3, 4, 100])).data[0]), 3);
     });
 
@@ -971,7 +971,13 @@ describe("stats - Statistical Tests", () => {
     });
 
     it("flags clearly non-normal data", () => {
-      const result = stats.anderson(tensor([-10, -5, -2, 0, 0, 2, 5, 10, 20]));
+      // Skewed sample: scipy.stats.anderson gives A^2 = 1.8251 against a 5% critical
+      // value of 0.698 (the earlier sample [-10, ..., 20] is symmetric enough to stay
+      // below its 5% value, scipy: A^2 = 0.2947 < 0.677).
+      const result = stats.anderson(
+        tensor([0.1, 0.2, 0.2, 0.3, 0.4, 0.5, 0.7, 1.1, 1.9, 3.8, 7.2, 14.5], { dtype: "float64" })
+      );
+      expect(result.statistic).toBeCloseTo(1.825092723, 6);
       expect(result.statistic).toBeGreaterThan(result.critical_values[2] ?? 0);
     });
   });
@@ -987,10 +993,15 @@ describe("stats - Statistical Tests", () => {
 
     it("rejects when distributions differ significantly", () => {
       const result = stats.mannwhitneyu(tensor([1, 2, 3, 4, 5]), tensor([10, 20, 30, 40, 50]));
-      // Fully-separated samples: scipy's asymptotic (continuity-corrected)
-      // two-sided p-value is ≈0.0122 for n1=n2=5.
-      expect(result.pvalue).toBeCloseTo(0.0122, 3);
+      // Fully-separated samples with n1 = n2 = 5 and no ties: scipy (method "auto")
+      // uses the exact distribution, p = 2 / C(10, 5) = 0.0079365.
+      expect(result.pvalue).toBeCloseTo(0.0079365, 6);
       expect(result.pvalue).toBeLessThan(0.05);
+      // The asymptotic (continuity-corrected) p-value is 0.0121858.
+      const asymptotic = stats.mannwhitneyu(tensor([1, 2, 3, 4, 5]), tensor([10, 20, 30, 40, 50]), {
+        method: "asymptotic",
+      });
+      expect(asymptotic.pvalue).toBeCloseTo(0.0121858, 6);
     });
 
     it("accepts similar distributions", () => {
@@ -1021,8 +1032,16 @@ describe("stats - Statistical Tests", () => {
     });
 
     it("rejects when differences are significant", () => {
-      const result = stats.wilcoxon(tensor([1, 2, 3, 4, 5]), tensor([10, 20, 30, 40, 50]));
+      // With 5 pairs the smallest possible exact two-sided p-value is 2 / 2^5 = 0.0625,
+      // so this needs at least 6 pairs. scipy: p = 2 / 2^8 = 0.0078125 for 8 pairs.
+      const result = stats.wilcoxon(
+        tensor([1, 2, 3, 4, 5, 6, 7, 8]),
+        tensor([10, 20, 30, 40, 50, 60, 70, 80])
+      );
+      expect(result.pvalue).toBeCloseTo(0.0078125, 10);
       expect(result.pvalue).toBeLessThan(0.05);
+      const five = stats.wilcoxon(tensor([1, 2, 3, 4, 5]), tensor([10, 20, 30, 40, 50]));
+      expect(five.pvalue).toBeCloseTo(0.0625, 10);
     });
 
     it("ignores zero differences", () => {
@@ -1184,7 +1203,7 @@ describe("stats - Edge Cases", () => {
     expect(Number(result.data[0])).toBeGreaterThan(0);
   });
 
-  it("handles extreme outliers in robust statistics", () => {
+  it("handles extreme outliers in outlier-resistant statistics", () => {
     const median = Number(stats.median(tensor([1, 2, 3, 4, 1e10])).data[0]);
     const mean = Number(stats.mean(tensor([1, 2, 3, 4, 1e10])).data[0]);
     expect(median).toBeLessThan(mean);
