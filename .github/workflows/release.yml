@@ -26,6 +26,14 @@ jobs:
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Check that the tag matches package.json
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
+            exit 1
+          fi
+
       - name: Install dependencies
         run: npm ci
 
@@ -36,11 +44,25 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        # Skips the publish when this version is already on npm, for example after
+        # a manual publish, so the GitHub Release below is still created.
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "deepbox@${VERSION}" version >/dev/null 2>&1; then
+            echo "deepbox@${VERSION} is already on npm, skipping publish."
+          else
+            npm publish --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="${VERSION}" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "No CHANGELOG.md section for ${VERSION}" >&2; exit 1; }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: release-notes.md
