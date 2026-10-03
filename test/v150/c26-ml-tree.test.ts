@@ -396,7 +396,10 @@ describe("DecisionTree: validation and parameters", () => {
 describe("DecisionTree: deep trees and traversal order", () => {
   it("grows a tree thousands of levels deep without overflowing the call stack", () => {
     // Labels with period 3 make every split peel off two samples, so the tree is a long chain.
-    const n = 15000;
+    // 1.0.0 overflowed the call stack from about 9000 samples (depth about 6000) on, and the
+    // cost grows with n squared, which coverage instrumentation makes about 9 times slower,
+    // so n stays just above that point.
+    const n = 10000;
     const X = f64(Array.from({ length: n }, (_, i) => [i]));
     const y = i32(Array.from({ length: n }, (_, i) => (i % 3 === 0 ? 1 : 0)));
     const clf = new DecisionTreeClassifier({ maxDepth: Number.POSITIVE_INFINITY }).fit(X, y);
@@ -404,8 +407,7 @@ describe("DecisionTree: deep trees and traversal order", () => {
     expect(clf.getNLeaves()).toBe(clf.getDepth() + 1);
     expect(clf.score(X, y)).toBe(1);
     expect(toArray(clf.featureImportances)).toEqual([1]);
-    // Building a 5000-level chain is quadratic by nature; allow time under a loaded test run.
-  }, 30_000);
+  }, 60_000);
 
   it("remapLeaves visits leaves left to right and export_text lists branches in order", () => {
     const X = f64([[1], [2], [3], [4], [5], [6]]);
