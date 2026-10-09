@@ -221,7 +221,7 @@ for (const b of BENCHMARKS) {
   }
   if (!py) {
     const hint = PYTHON_SCRIPT_HINTS[b.python] ?? "benchmarks/python/<script>.py";
-    console.log(`  Missing: ${b.python}. Run: python3 ${hint}`);
+    console.log(`  Missing: ${b.python}. Run: python ${hint}`);
     sections.push({ name: b.name, lib: b.lib, rows: [] });
     continue;
   }

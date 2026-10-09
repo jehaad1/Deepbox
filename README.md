@@ -272,25 +272,25 @@ These defaults are kept in 1.x for compatibility and may change in 2.0.
 
 Deepbox is pure TypeScript with no native addons and no C bindings. Operations run on V8's JIT compiler with `TypedArray` backing. The Python libraries it is compared with use hand-tuned C and Fortran (BLAS, LAPACK, ATen).
 
-930 head-to-head benchmarks across 12 categories, run on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
+931 head-to-head benchmarks across 12 categories, run on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
 
-Two win rates are reported. Overall: 586/930 (63.0%). Realized-work, which excludes 120 sub-microsecond lazy-view and spec-build cases that only rewrite shape and stride metadata: 483/810 (59.6%). See benchmarks/RESULTS.md for the per-case breakdown.
+Two win rates are reported. Overall: 623/931 (66.9%). Realized-work, which excludes 101 sub-microsecond lazy-view and spec-build cases that only rewrite shape and stride metadata: 539/830 (64.9%). See benchmarks/RESULTS.md for the per-case breakdown.
 
 | Category | Deepbox Wins | Python Package Wins | Competing Against |
 | --- | ---: | ---: | --- |
-| DataFrames | 43 | 28 | Pandas (C / Cython) |
-| Datasets | 51 | 0 | scikit-learn |
+| DataFrames | 49 | 22 | Pandas (C / Cython) |
+| Datasets | 42 | 9 | scikit-learn |
 | Linear Algebra | 15 | 50 | NumPy + SciPy (LAPACK) |
-| Metrics | 125 | 4 | scikit-learn (C / Cython) |
-| ML Training | 60 | 28 | scikit-learn (C / Cython) |
-| NDArray Ops | 41 | 169 | NumPy (C / BLAS) |
+| Metrics | 126 | 3 | scikit-learn (C / Cython) |
+| ML Training | 79 | 9 | scikit-learn (C / Cython) |
+| NDArray Ops | 43 | 167 | NumPy (C / BLAS) |
 | Neural Networks | 28 | 19 | PyTorch (C++ ATen) |
-| Optimizers | 46 | 3 | PyTorch (C++ ATen) |
+| Optimizers | 45 | 4 | PyTorch (C++ ATen) |
 | Plotting | 6 | 0 | Matplotlib (C / Agg) |
-| Preprocessing | 48 | 16 | scikit-learn (C / Cython) |
-| Random | 47 | 6 | NumPy (C) |
-| Statistics | 76 | 21 | SciPy (C / Fortran) |
-| Total | 586 | 344 | n/a |
+| Preprocessing | 61 | 3 | scikit-learn (C / Cython) |
+| Random | 39 | 14 | NumPy (C) |
+| Statistics | 90 | 8 | SciPy (C / Fortran) |
+| Total | 623 | 308 | n/a |
 
 The gap is largest for BLAS-bound operations (matmul, decompositions) and smallest for memory-layout operations (transpose, reshape, indexing), where the lazy-view design helps.
 
