@@ -10,7 +10,7 @@
  * All functions modify the tensor in-place and return it for chaining. They
  * accept a `Tensor` or a `GradTensor` (the underlying tensor is filled), work on
  * non-contiguous views, and draw from the global generator, so
- * `manualSeed(...)` from `deepbox/random` makes them reproducible.
+ * `setSeed(...)` from `deepbox/random` makes them reproducible.
  *
  * Random fills require a floating-point tensor (`float16`, `bfloat16`,
  * `float32` or `float64`); half-precision values are rounded to the nearest
@@ -40,7 +40,7 @@ import { __random, __randomBelow } from "../random/random";
  * Create a uniform random number generator on [0, 1).
  *
  * Without a seed this returns the global generator (which honors
- * `manualSeed`). With a seed it returns an independent, deterministic
+ * `setSeed`). With a seed it returns an independent, deterministic
  * mulberry32 stream; fractional seeds are truncated and negative seeds wrap
  * modulo 2^32.
  *

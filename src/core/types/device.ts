@@ -5,7 +5,8 @@
  * - `webgpu`: GPU execution. Register `WebGpuBackend` from `deepbox/core`
  *   (after `await backend.init()`); tensors created on (or moved to) this
  *   device store their data in GPU memory and the accelerated op set
- *   (element-wise arithmetic, activations, matmul, full reductions)
+ *   (element-wise arithmetic, activations, matmul and batched matmul, reductions
+ *   over all or selected axes, 2-D convolution and pooling)
  *   dispatches to WGSL compute kernels automatically. Read results back
  *   with `await t.cpu()`.
  * - `wasm`: WASM SIMD host accelerator. Register `WasmBackend`; tensors on

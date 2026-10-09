@@ -125,6 +125,10 @@ export type TrainerResult = {
  * epoch 1 and early-stopping state is reset. The model is left in the mode it
  * was last in (evaluation mode when validation data was given).
  *
+ * The loss value is read on the host after each step, so `Trainer` is meant for
+ * CPU tensors. A loss that lives in device memory throws a `DeviceError`; train
+ * on a device with an explicit loop instead.
+ *
  * @example
  * ```ts
  * import { Linear, mseLoss, Trainer } from 'deepbox/nn';

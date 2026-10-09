@@ -586,8 +586,9 @@ export abstract class Module {
    *
    * Frozen parameters have `requiresGrad = false` and their stored gradient is
    * cleared. The parameter objects themselves are kept, so references held by
-   * the model, containers and optimizers stay valid. Optimizers reject parameters
-   * with `requiresGrad = false`, so build them from the trainable subset:
+   * the model, containers and optimizers stay valid. Optimizers skip parameters
+   * with `requiresGrad = false` or without a gradient, as PyTorch does. You can
+   * also build them from the trainable subset:
    * `new Adam([...model.parameters()].filter((p) => p.requiresGrad))`.
    *
    * @param names - Array of parameter names to freeze (e.g., ['fc1.weight']). If undefined, freezes all parameters.

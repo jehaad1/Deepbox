@@ -457,7 +457,7 @@ export function isBigIntArray(arr: TypedArray): arr is BigInt64Array {
  * - Device placement (`cpu`, `webgpu`, `wasm`): with a registered
  *   `WebGpuBackend`, tensors on `webgpu` store their data in GPU memory and
  *   the accelerated op set (element-wise arithmetic, activations, matmul,
- *   full reductions) executes on the GPU, so move data with `await t.to(device)`
+ *   reductions over all or selected axes, 2-D convolution and pooling) executes on the GPU, so move data with `await t.to(device)`
  *   / `await t.cpu()`. With a registered `WasmBackend`, `wasm` tensors keep
  *   zero-copy host storage and accelerate eligible float32 arithmetic with
  *   SIMD. Ops a device cannot execute throw `DeviceError` with a transfer
