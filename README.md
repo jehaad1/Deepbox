@@ -274,7 +274,7 @@ These defaults are kept in 1.x for compatibility and may change in 2.0.
 
 Deepbox is pure TypeScript with no native addons and no C bindings. Operations run on V8's JIT compiler with `TypedArray` backing. The Python libraries it is compared with use hand-tuned C and Fortran (BLAS, LAPACK, ATen).
 
-931 head-to-head benchmarks across 12 categories, run on the same machine with identical data sizes and median-based winner selection. Deepbox-only local cases are tracked separately and excluded from the win totals.
+931 head-to-head benchmarks across 12 categories, run on the same machine with identical data sizes and median-based winner selection. These figures are from the run of 2026-10-09 on the 1.5.0 code (`benchmarks/RESULTS.md`); 1.6.0 was checked against 1.5.0 case by case and the two slowdowns found were addressed before release: CSV reading is back to 1.5.0 speed and `jaccardScore` went from 1.37x to 1.19x the 1.5.0 time. Deepbox-only local cases are tracked separately and excluded from the win totals.
 
 Two win rates are reported. Overall: 623/931 (66.9%). Realized-work, which excludes 101 sub-microsecond lazy-view and spec-build cases that only rewrite shape and stride metadata: 539/830 (64.9%). See benchmarks/RESULTS.md for the per-case breakdown.
 
@@ -302,7 +302,7 @@ Run `npm run bench:all` to reproduce. Full results are in benchmarks/RESULTS.md.
 ## Repository Contents
 
 - [`src`](./src) holds the library, one folder per module.
-- [`test`](./test) holds the Vitest suite. Regression tests for the 1.5.0 audit are in [`test/v150`](./test/v150).
+- [`test`](./test) holds the Vitest suite. Regression tests for the 1.5.0 and 1.6.0 audits are in [`test/v150`](./test/v150) and [`test/v151`](./test/v151).
 - [`docs/examples`](./docs/examples) holds the numbered examples, each runnable on its own.
 - [`docs/projects`](./docs/projects) holds larger end-to-end projects.
 - [`CHANGELOG.md`](./CHANGELOG.md) lists the changes in each release.

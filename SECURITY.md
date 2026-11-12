@@ -6,7 +6,8 @@ Security fixes are issued for supported release lines only.
 
 | Version | Supported |
 | --- | --- |
-| `1.5.x` | Yes |
+| `1.6.x` | Yes |
+| `1.5.x` | Security fixes only |
 | `1.0.x` | Yes |
 | `0.2.x` | No |
 | `< 0.2.0` | No |

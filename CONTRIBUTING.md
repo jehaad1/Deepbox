@@ -5,7 +5,7 @@
 > Examples: https://deepbox.dev/examples
 > Projects: https://deepbox.dev/projects
 
-Thanks for contributing. This document covers the workflow and standards for the Deepbox repository (release line 1.5).
+Thanks for contributing. This document covers the workflow and standards for the Deepbox repository (release line 1.6).
 
 ## Code of Conduct
 
@@ -64,7 +64,7 @@ For a quick loop, run one file with `npx vitest run test/<file>.test.ts` and for
 | `src/random` | RNG, distributions, sampling |
 | `src/datasets` | Built-in datasets, generators, samplers, remote loaders |
 | `src/plot` | Figure API, plot types, renderers |
-| `test` | Vitest suite. `test/v150` holds the regression tests for the 1.5.0 audit |
+| `test` | Vitest suite. `test/v150` and `test/v151` hold the regression tests for the 1.5.0 and 1.6.0 audits |
 | `docs/examples` | Numbered, runnable examples |
 | `docs/projects` | Larger end-to-end projects |
 | `benchmarks` | Deepbox and Python benchmark harnesses (`npm run bench:deepbox`, `bench:python`, `bench:all`) |
@@ -118,7 +118,7 @@ Error messages should be specific and include the offending value, shape, dtype,
 
 - Add or update tests for every user-visible behavior change.
 - Put tests in `test/` and name them `*.test.ts`. Vitest's `include` pattern is `test/**/*.test.ts`. Other `.ts` files in `test/` (helpers such as `*_helpers.ts`, benches such as `*.bench.ts`) are not run as tests.
-- Regression tests for bugs fixed in 1.5.0 and tests for new 1.5.0 behavior live in `test/v150`. Add new tests of that kind there and name the file after the area it covers. Tests for older, unchanged behavior stay next to their module's existing test file.
+- Regression tests for bugs fixed in 1.6.0 and tests for new 1.6.0 behavior live in `test/v151` (1.5.0 ones in `test/v150`). Add new tests of that kind there and name the file after the area it covers. Tests for older, unchanged behavior stay next to their module's existing test file.
 - Cover edge cases, invalid inputs and regression paths when changing numerical code. Check expected values against NumPy, SciPy, scikit-learn, PyTorch or pandas when one applies, and say which in a comment.
 - Do not commit focused tests (`.only`).
 - If you change exports, add or update export coverage tests.

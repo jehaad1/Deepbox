@@ -12,12 +12,12 @@ Use it when generating Deepbox code, selecting modules, following the website do
 ## Project Facts
 
 - Package: `deepbox`
-- Release line described by this file: `v1.5.0`
+- Release line described by this file: `v1.6.0`
 - Runtime requirement: Node.js `>= 22.12.0`
 - Package shape: ESM + CommonJS + `.d.ts`
 - Runtime dependencies: `0`
 - Root import behavior: `deepbox` exports namespaces, not direct named APIs
-- Compatibility: 1.5.0 is backward compatible with 1.0.0. No export was removed or renamed. Deprecated snake_case names still work. Some results changed because 1.0.0 returned wrong values (see "Upgrading from 1.0.0").
+- Compatibility: 1.6.0 keeps every 1.5.0 export except the internal `dropoutMask`; some invalid inputs now throw and some results follow the reference libraries more closely (see "Upgrading from 1.5" in CHANGELOG.md). 1.5.0 is backward compatible with 1.0.0. No export was removed or renamed. Deprecated snake_case names still work. Some results changed because 1.0.0 returned wrong values (see "Upgrading from 1.0.0").
 
 ## Install
 
@@ -365,7 +365,7 @@ try {
 
 ## Public API Inventory
 
-This section lists exports that exist in the 1.5.0 barrels. It is still not a replacement for the barrel files; treat it as a fast map of what exists and where to fetch the exhaustive list. Deprecated snake_case aliases are left out unless noted.
+This section lists exports that exist in the 1.6.0 barrels. It is still not a replacement for the barrel files; treat it as a fast map of what exists and where to fetch the exhaustive list. Deprecated snake_case aliases are left out unless noted.
 
 ### `deepbox/core`
 
@@ -530,7 +530,7 @@ If this repo is present locally:
 
 ## Common Recipes
 
-Every recipe below runs as written against 1.5.0 (ESM, Node 24).
+Every recipe below runs as written against 1.6.0 (ESM, Node 22.12 or newer).
 
 ### Tensor and Autograd
 

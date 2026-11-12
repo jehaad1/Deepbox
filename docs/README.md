@@ -1,6 +1,6 @@
 # Deepbox Docs
 
-This directory holds the documentation that ships with the repository, written for Deepbox 1.5.0.
+This directory holds the documentation that ships with the repository, written for Deepbox 1.6.0.
 
 ## What Lives Here
 
