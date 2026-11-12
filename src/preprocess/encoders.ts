@@ -1810,14 +1810,29 @@ export class LabelBinarizer {
    * Transform binary matrix back to labels.
    * Finds the column with maximum value for each row.
    *
-   * @param Y - Binary matrix (2D tensor or CSRMatrix)
+   * With two classes `Y` may also be a single column (or a 1-D tensor), the form that
+   * scikit-learn's `LabelBinarizer.transform` returns: a value above `threshold` selects the
+   * second class and any other value the first.
+   *
+   * @param Y - Binary matrix (2D tensor or CSRMatrix) with one column per class, or one column
+   *   for two classes
+   * @param threshold - Cut-off of the single-column form. Default `(posLabel + negLabel) / 2`
    * @returns Original labels (1D tensor)
    * @throws {NotFittedError} If binarizer is not fitted
-   * @throws {InvalidParameterError} If Y has invalid shape
+   * @throws {InvalidParameterError} If Y has invalid shape or `threshold` is not a finite number
    */
-  inverseTransform(Y: Tensor | CSRMatrix): Tensor {
+  inverseTransform(Y: Tensor | CSRMatrix, threshold?: number): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("LabelBinarizer must be fitted before inverse_transform");
+    }
+    if (threshold !== undefined && !Number.isFinite(threshold)) {
+      throw new InvalidParameterError("threshold must be a finite number", "threshold", threshold);
+    }
+    if (this.classes_?.length === 2) {
+      const dense = Y instanceof CSRMatrix ? Y.toDense() : Y;
+      if (dense.ndim === 1 || (dense.ndim === 2 && dense.shape[1] === 1)) {
+        return this.inverseTransformColumn(dense, threshold ?? (this.posLabel + this.negLabel) / 2);
+      }
     }
     if (Y instanceof CSRMatrix) {
       if (this.negLabel !== 0) {
@@ -1928,6 +1943,28 @@ export class LabelBinarizer {
     // Return tensor with appropriate dtype
     return toCategoryVectorTensor(result, "y");
   }
+
+  /** Decode one score per sample for two classes: above `threshold` is the second class. */
+  private inverseTransformColumn(Y: Tensor, threshold: number): Tensor {
+    assertNumericTensor(Y, "Y");
+    const classes = this.classes_;
+    if (!classes) {
+      throw new DeepboxError("LabelBinarizer internal error: missing fitted classes");
+    }
+    const nSamples = Y.shape[0] ?? 0;
+    if (nSamples === 0) return emptyCategoryVectorFromClasses(classes, "y");
+    const readNum = makeNumberReader2D(Y.ndim === 1 ? Y.reshape([nSamples, 1]) : Y);
+    const result = new Array<Category>(nSamples);
+    for (let i = 0; i < nSamples; i++) {
+      result[i] = categoryValueAt(
+        classes,
+        readNum(i, 0) > threshold ? 1 : 0,
+        "LabelBinarizer.inverseTransform"
+      );
+    }
+    return toCategoryVectorTensor(result, "y");
+  }
+
   /** Constructor options of this binarizer. */
   getParams(): Record<string, unknown> {
     return { posLabel: this.posLabel, negLabel: this.negLabel, sparse: this.sparse };

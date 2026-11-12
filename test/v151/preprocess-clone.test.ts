@@ -183,3 +183,36 @@ describe("preprocess estimators can be cloned", () => {
     expect(scores.length).toBe(4);
   });
 });
+
+describe("LabelBinarizer.inverseTransform with one column for two classes", () => {
+  // scikit-learn: LabelBinarizer(neg_label=-1, pos_label=2).fit(["a", "b"])
+  //   .inverse_transform([[2], [-1], [2]]) -> ['b', 'a', 'b']; the default threshold is
+  //   (pos_label + neg_label) / 2 and a value above it selects classes_[1].
+  it("decodes a single column with the default threshold", () => {
+    const lb = new P.LabelBinarizer({ posLabel: 2, negLabel: -1 }).fit(["a", "b", "a"]);
+    expect(lb.inverseTransform(tensor([[2], [-1], [2]])).toArray()).toEqual(["b", "a", "b"]);
+    expect(lb.inverseTransform(tensor([2, -1, 2])).toArray()).toEqual(["b", "a", "b"]);
+  });
+
+  it("honors an explicit threshold", () => {
+    const lb = new P.LabelBinarizer().fit(["no", "yes", "no"]);
+    const scores = tensor([[0.2], [0.6], [0.9]]);
+    expect(lb.inverseTransform(scores).toArray()).toEqual(["no", "yes", "yes"]);
+    expect(lb.inverseTransform(scores, 0.7).toArray()).toEqual(["no", "no", "yes"]);
+  });
+
+  it("still decodes the two-column output of transform", () => {
+    const lb = new P.LabelBinarizer().fit(["a", "b", "a"]);
+    const dense = lb.transform(["a", "b", "a"]);
+    expect(lb.inverseTransform(dense as ReturnType<typeof tensor>).toArray()).toEqual([
+      "a",
+      "b",
+      "a",
+    ]);
+  });
+
+  it("keeps rejecting a column count that matches neither form", () => {
+    const lb = new P.LabelBinarizer().fit(["a", "b", "c"]);
+    expect(() => lb.inverseTransform(tensor([[1], [0]]))).toThrow(InvalidParameterError);
+  });
+});
