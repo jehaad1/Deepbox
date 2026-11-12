@@ -82,3 +82,66 @@ describe("ML-5: LDA and QDA use scikit-learn's divisors", () => {
     expect(maxAbsDiff(p, QDA_PROBA)).toBeLessThan(1e-10);
   });
 });
+
+// Reference values: scikit-learn 1.9.1 on makeWide() (600 samples, 100 features, 3 classes),
+// evaluated on the first 3 rows.
+const WIDE_LDA_PROBA = [
+  [0.0013523280886971617, 0.998646756030161, 9.158811417070679e-7],
+  [1.6361509869560515e-10, 0.7131798909551794, 0.2868201088812055],
+  [5.325222731130655e-21, 7.71681025013e-8, 0.9999999228318974],
+];
+const WIDE_LDA_TRANSFORM_ABS = [
+  [0.8272360420582603, 0.7440424720542437],
+  [2.4611812719899318, 1.5975897481995014],
+  [5.387530333907887, 1.0466790384522173],
+];
+const WIDE_QDA_PROBA = [
+  [0.9999999999710338, 2.637513505127178e-25, 2.8966220252481e-11],
+  [8.199585901709026e-35, 0.9999998996962552, 1.0030374484563777e-7],
+  [2.365370874950055e-64, 3.203276708555997e-94, 1.0],
+];
+
+function makeWide(n: number, f: number) {
+  const d = new Float64Array(n * f);
+  const labels = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    labels[i] = i % 3;
+    for (let j = 0; j < f; j++) {
+      d[i * f + j] =
+        Math.sin(i * 0.37 + j * 1.1) +
+        0.5 * Math.cos(i * j * 0.013 + 1) +
+        0.4 * Math.sin(i * 0.91 * (j + 1) * 0.1) +
+        (j < 5 ? (labels[i] ?? 0) * 0.6 : 0);
+    }
+  }
+  return { X: tensor(d, { dtype: "float64" }).reshape([n, f]), y: tensor(labels) };
+}
+
+describe("ML-7: LDA and QDA eigen-decomposition on wide data", () => {
+  const { X, y } = makeWide(600, 100);
+  const head = tensor((X.toArray() as number[][]).slice(0, 3), { dtype: "float64" });
+
+  it("LDA matches scikit-learn to 1e-8 with 100 features", () => {
+    const m = new LinearDiscriminantAnalysis().fit(X, y);
+    expect(maxAbsDiff(m.predictProba(head).toArray() as number[][], WIDE_LDA_PROBA)).toBeLessThan(
+      1e-8
+    );
+    const t = (m.transform(head).toArray() as number[][]).map((r) => r.map(Math.abs));
+    expect(maxAbsDiff(t, WIDE_LDA_TRANSFORM_ABS)).toBeLessThan(1e-8);
+  });
+
+  it("QDA matches scikit-learn to 1e-8 with 100 features", () => {
+    const m = new QuadraticDiscriminantAnalysis().fit(X, y);
+    expect(maxAbsDiff(m.predictProba(head).toArray() as number[][], WIDE_QDA_PROBA)).toBeLessThan(
+      1e-8
+    );
+  });
+
+  it("fits 1000 x 400 data in seconds, not tens of seconds (cyclic Jacobi took 18 s for LDA, 45 s for QDA)", () => {
+    const big = makeWide(1000, 400);
+    const start = performance.now();
+    new LinearDiscriminantAnalysis().fit(big.X, big.y);
+    new QuadraticDiscriminantAnalysis({ regParam: 0.1 }).fit(big.X, big.y);
+    expect(performance.now() - start).toBeLessThan(15000);
+  }, 60000);
+});

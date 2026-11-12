@@ -18,7 +18,7 @@ import {
   warn,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { assertKnownOptions, jacobiEigenSymmetric, optionKeys } from "./_internal";
+import { assertKnownOptions, optionKeys, symmetricEigenDescending } from "./_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -435,7 +435,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
     }
 
     // Whitening of the pooled covariance: Sigma = V diag(lambda) V^T
-    const eig = jacobiEigenSymmetric(sigma, f);
+    const eig = symmetricEigenDescending(sigma, f);
     const lambdaMax = eig.values[0] ?? 0;
     if (!(lambdaMax > 0)) {
       throw new DataValidationError(
@@ -486,7 +486,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
         }
       }
     }
-    const betweenEig = jacobiEigenSymmetric(between, rank);
+    const betweenEig = symmetricEigenDescending(between, rank);
 
     // Discriminant directions: scalings = whitener @ U[:, :nComp]
     const scalings = new Float64Array(f * nComp);
@@ -953,7 +953,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
         }
         cov[p * f + p] = (cov[p * f + p] ?? 0) + this.regParam;
       }
-      const eig = jacobiEigenSymmetric(cov, f);
+      const eig = symmetricEigenDescending(cov, f);
       const top = eig.values[0] ?? 0;
       const floor = top > 0 ? top * 1e-12 : 1e-12;
       const rotation = new Float64Array(f * f);

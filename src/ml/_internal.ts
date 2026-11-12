@@ -7,6 +7,8 @@
  */
 
 import { InvalidParameterError } from "../core";
+import { fromDenseMatrix2D } from "../linalg/_internal";
+import { eigh } from "../linalg/decomposition/eig";
 
 /** What `cloneEstimator` needs from an estimator. */
 type CloneableEstimator = {
@@ -249,6 +251,38 @@ export function r2Score(yTrue: ArrayLike<number>, yPred: ArrayLike<number>): num
     ssTot += c * c;
   }
   return ssTot === 0 ? (ssRes === 0 ? 1 : 0) : 1 - ssRes / ssTot;
+}
+
+/**
+ * Eigen-decomposition of a real symmetric matrix with `eigh` (Householder tridiagonalization and
+ * implicit QL), the fast path for the covariance matrices of the discriminant analyses.
+ *
+ * @param A - Row-major (n x n) symmetric matrix; it is not modified
+ * @param n - Matrix size
+ * @returns Eigenvalues in descending order and the matching eigenvectors as the
+ *   columns of a row-major (n x n) matrix (`vectors[i * n + j]` is component `i` of eigenvector `j`)
+ * @throws {DataValidationError} If `A` is not symmetric (beyond rounding) or holds non-finite values
+ * @throws {ConvergenceError} If the QL iteration does not converge
+ *
+ * @internal
+ */
+export function symmetricEigenDescending(
+  A: Float64Array,
+  n: number
+): { values: Float64Array; vectors: Float64Array } {
+  const [w, V] = eigh(fromDenseMatrix2D(n, n, Float64Array.from(A)));
+  const wd = w.data as Float64Array;
+  const vd = V.data as Float64Array;
+  const vs0 = V.strides[0] ?? n;
+  const vs1 = V.strides[1] ?? 1;
+  const values = new Float64Array(n);
+  const vectors = new Float64Array(n * n);
+  for (let k = 0; k < n; k++) {
+    const src = n - 1 - k;
+    values[k] = wd[w.offset + src * (w.strides[0] ?? 1)] as number;
+    for (let i = 0; i < n; i++) vectors[i * n + k] = vd[V.offset + i * vs0 + src * vs1] as number;
+  }
+  return { values, vectors };
 }
 
 /**
