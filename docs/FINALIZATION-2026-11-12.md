@@ -107,3 +107,50 @@ Format: id, priority, area, evidence, status.
 | NN-21 | P3 | core | `WorkerPool` is sequential; `taskTimeout` stored but not enforced. | open |
 | NN-22 | P3 | core | `SerializedEstimator` unused; `save()` not atomic; checkpoints pretty-printed. | open |
 | NN-23 | P3 | nn | Conv2d and pooling reject unbatched `(C,H,W)` input. | open |
+| ND-1 | P1 | linalg | `eig`/`eigvals` throw for complex eigenvalues: 91 of 100 random 4x4 matrices. Verified. Documented limitation. | open (additive option; default is owner decision) |
+| ND-2 | P1 | random | `shuffle`/`permutation`/`choice` on N-D tensors work over flattened elements and scramble rows (numpy/torch use axis 0). Verified. Documented, so changing the default is breaking. | owner decision; additive `axis` option |
+| ND-3 | P2 | ndarray | `matmul` accepts 2-D only; `dot` is batched. | open |
+| ND-4 | P2 | ndarray | int64 beyond 2^53: `searchsorted`, `isclose`, `allclose` compare as Number. Verified. | open |
+| ND-5 | P2 | ndarray | int32/uint8/bool casts silently produce garbage (`NaN` to 0, 3e9 wraps, `"0x10"` to 16); int64 path throws `DTypeError`. Verified. | open |
+| ND-6 | P2 | ndarray | String dtype unsupported in `equal`, `where`, `unique`, `flip`, `roll`, `booleanIndex`, `fancyIndex`, `union1d`, `sort`. | open |
+| ND-7 | P2 | linalg | `sparseSolve` allocates a dense N x N workspace with no guard (n=20000 needs 3.2 GB). | open |
+| ND-8 | P2 | ndarray | Unknown option keys ignored: `slice({start, stop})` drops `stop`; `histogram(t, {bins})` raw RangeError. Verified. | open |
+| ND-9 | P2 | ndarray | `nanmax`/`nanmin` on empty return NaN while `max`/`min` throw (numpy raises). | open |
+| ND-10 | P2 | ndarray | `astype` to the same dtype returns `this` (aliasing). Documented. | owner decision |
+| ND-11 | P3 | linalg | `norm`, `cond`, `det`, `matrixRank` throw on NaN/Inf instead of propagating. | open |
+| ND-12 | P3 | ndarray | `logspace` parameter order differs from `linspace`; `base` unvalidated. | open |
+| ND-13 | P3 | ndarray | `@internal` `dropoutMask` exported; dropout rejects p = 1. | open |
+| ND-14 | P3 | ndarray | `rot90` 3-D, set ops on N-D, `expandDims` axis tuple, 0-d axis 0, `repeat` message, `diff(bool)` narrower than numpy. | open |
+| ND-15 | P3 | ndarray | `eye(3, {dtype})` misleading error; `multinomial` counts float32; integer GradTensor accepts `requiresGrad`. | open |
+| ND-16 | P3 | ndarray | `gcd`/`lcm` truncate non-integer floats silently. | open |
+| ND-17 | P3 | ndarray | `sort(x, undefined)` sorts last axis instead of flattening. | open |
+| ND-18 | P3 | linalg | `trace` returns shape `[1]`; `cov` of 1-D returns `[1,1]`; one-observation `cov` throws. | open |
+| ML-1 | P1 | ml | `crossValScore`/`crossValidate`/`GridSearchCV`/`RandomizedSearchCV` accept only integer `cv`; the shipped splitters (`KFold`, `TimeSeriesSplit`, `GroupKFold`) cannot be used, so time-ordered data leaks. Verified. | open |
+| ML-2 | P1 | ml | `MLPClassifier` wraps labels outside int32 (3e9 becomes -1294967296). Verified. | open |
+| ML-3 | P2 | ml | 74 estimator constructors ignore unknown keys (`KMeans({n_clusters})`, `SVC({probability})`, `TSNE({maxIter})`). | open |
+| ML-4 | P2 | ml | `setParams(getParams())` throws for Voting, Stacking, CalibratedClassifierCV. | open |
+| ML-5 | P2 | ml | LDA/QDA use unbiased covariance; JSDoc claims sklearn parity; probabilities differ by 1e-2. | open |
+| ML-6 | P2 | ml | `Ridge` builds the p x p Gram matrix when p > n (p=3000: 10.9 s vs 0.6 s for svd). | open |
+| ML-7 | P2 | ml | LDA/QDA use Jacobi eigen (x400 features: 12.5 s). | open |
+| ML-8 | P2 | ml | 17 estimators silently ignore `sampleWeight`; `LinearSVR` has none. | open |
+| ML-9 | P2 | ml | `coef`/`intercept` types differ across linear models (Tensor, Float64Array, number, array). | owner decision (unify with deprecated aliases) |
+| ML-10 | P3 | ml | Defaults differ from sklearn (tree `maxDepth` 10, GMM `diag`, LinearSVC `hinge`, ...). Changing them is breaking. | owner decision; document in one table |
+| ML-11 | P3 | ml | `KDTree`/`BallTree` keep a reference to the caller's buffer. | open |
+| ML-12 | P3 | ml | Lasso/ElasticNet/Ridge/SGD/RANSAC/KernelRidge validate hyperparameters only in `fit`. | open |
+| ML-13 | P3 | ml | TSNE `nIter` vs `maxIter`; predict label dtype varies; `crossValScore` positional vs options. | open |
+| PP-1 | P1 | preprocess | Encoders and `KBinsDiscretizer` lack `getParams`/`setParams`/`clone`; Pipeline clone and CV fail. Verified. | open |
+| MT-1 | P1 | metrics | `classificationReport` accepts only binary 0/1 labels. Verified. | open |
+| MT-2 | P1 | metrics | No `posLabel`; `{-1,1}` and `{1,2}` labels throw by default. Verified. | open |
+| MT-3 | P2 | metrics | Two-class string labels silently use "weighted" while the JSDoc says "binary". Verified. | open |
+| PP-2 | P2 | preprocess | `ngramRange: [1, 1e9]` loops to 1e9 per document (8.5 s for 5 tokens). | open |
+| PP-3 | P2 | preprocess | Scaler `setParams` accept unknown keys; `MaxAbsScaler.setParams` ignores all input. | open |
+| PP-4 | P2 | preprocess | Text vectorizers lack `fit`/`transform`/`clone`; cannot be Pipeline steps. | open |
+| MT-4 | P2 | metrics | `daviesBouldinScore`/`calinskiHarabaszScore` return a score for a single cluster (sklearn raises). | open |
+| MT-5 | P2 | metrics | No multioutput regression or multilabel classification metrics. | open |
+| MT-6 | P3 | metrics | `cohenKappaScore` lacks `sampleWeight`; error prints `[object Object]`. | open |
+| MT-7 | P3 | metrics | String labels ordered by UTF-16 unit, not code point; `LabelEncoder` disagrees. | open |
+| PP-5 | P3 | preprocess | `LabelBinarizer` returns 2 columns for 2 classes (sklearn 1). Changing is breaking. | owner decision; accept 1-column inverse |
+| PP-6 | P3 | preprocess | Transformers upcast float32 to float64. | open |
+| ST-1 | P3 | stats | `kendalltau` constant input returns NaN while `pearsonr`/`spearmanr` throw (scipy: NaN). | open |
+| ST-2 | P3 | stats | `poisson(0)` rejected. | open |
+| PP-7 | P3 | preprocess | `HashingVectorizer` uses FNV-1a, not MurmurHash3. | open |
