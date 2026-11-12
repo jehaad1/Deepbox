@@ -32,26 +32,26 @@ Format: id, priority, area, evidence, status.
 
 | Id | P | Area | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| BASE-1 | P2 | tests | `test/v150/c22-ml-manifold.test.ts:346` wall-clock assertion fails under load (6178 ms vs 5000 ms). Flaky by design. | open |
-| BASE-2 | P3 | docs | `CONTRIBUTING.md` says `prose:check` is not part of `validate:all`; `package.json` runs it first. | open |
+| BASE-1 | P2 | tests | `test/v150/c22-ml-manifold.test.ts:346` wall-clock assertion fails under load (6178 ms vs 5000 ms). Flaky by design. | fixed 6b9f026 |
+| BASE-2 | P3 | docs | `CONTRIBUTING.md` says `prose:check` is not part of `validate:all`; `package.json` runs it first. | fixed 6b9f026 |
 | BENCHPRIV-1 | P2 | bench-private | `npm run docs:check` fails: `bench/docs.ts` older than DeepboxDocs. | open (after docs pass) |
 | BENCHWEB-1 | P1 | bench-web | Uncommitted `src/app/components/LabLogo.tsx` corrupts the DeepSeek and MiniMax SVG paths. | dropped (D2) |
-| PKG-1 | P1 | packaging | Emitted `.d.ts` use extensionless relative imports; `moduleResolution: node16/nodenext` users get TS2834 errors, or untyped imports with `skipLibCheck`. attw flags all 14 entry points. Reproduced. | open |
+| PKG-1 | P1 | packaging | Emitted `.d.ts` use extensionless relative imports; `moduleResolution: node16/nodenext` users get TS2834 errors, or untyped imports with `skipLibCheck`. attw flags all 14 entry points. Reproduced. | fixed bb0672f |
 | PKG-2 | P2 | packaging | `import {tensor} from "deepbox/ndarray"` bundles 342 KB minified; namespace `__export` objects share chunks with code. Marking them pure gives 127 KB. | open |
-| PKG-3 | P2 | packaging | `engines.node >=24.13.0` blocks Node 22 with `--engine-strict`, while all entry points, WASM and a fit/predict smoke test pass on Node 22.23.4. | open |
+| PKG-3 | P2 | packaging | `engines.node >=24.13.0` blocks Node 22 with `--engine-strict`, while all entry points, WASM and a fit/predict smoke test pass on Node 22.23.4. | fixed ce103a0 (CI confirms 22.12.0 on push) |
 | PKG-4 | P2 | packaging | Dual package hazard: ESM and CJS copies do not share `Tensor` class, error classes, seed or backend registry. | open |
-| PKG-5 | P2 | packaging | Browser bundling of `deepbox/plot`, `deepbox/datasets` and the root fails on `fs/promises`, `path`, `os` dynamic imports (tsup strips `node:`). | open |
-| PKG-6 | P3 | packaging | No `./package.json` export. | open |
+| PKG-5 | P2 | packaging | Browser bundling of `deepbox/plot`, `deepbox/datasets` and the root fails on `fs/promises`, `path`, `os` dynamic imports (tsup strips `node:`). | fixed 99ea22e |
+| PKG-6 | P3 | packaging | No `./package.json` export. | fixed bb0672f |
 | PKG-7 | P3 | packaging | Published 1.5.0 differs from `main` in README numbers, five `.d.ts` JSDoc edits and `bench:python`; no `[Unreleased]` in CHANGELOG; published without provenance. | open |
 | PKG-8 | P3 | types | Public `.d.ts` need `WebAssembly` and `AbortSignal` types without referencing them. | open |
 | PKG-9 | P3 | types | `any` in public signatures: `DataFrame.filter` row, `DataLoader` collate types. | open |
-| SEC-1 | P2 | CI | `release.yml` grants `contents: write` and `id-token: write` during `npm ci` and the full test run; long-lived `NPM_TOKEN`; no check that the tag is on `main`; `ci.yml` has no `permissions` block; actions not SHA-pinned. | open |
+| SEC-1 | P2 | CI | `release.yml` grants `contents: write` and `id-token: write` during `npm ci` and the full test run; long-lived `NPM_TOKEN`; no check that the tag is on `main`; `ci.yml` has no `permissions` block; actions not SHA-pinned. | fixed 9a6b355 (trusted publishing is an owner action) |
 | SEC-2 | P3 | deps | `npm audit`: 7 dev-only advisories (vitest, vite, postcss, nanoid, source-map-js); 0 in the runtime tree. Three Dependabot branches unmerged since March. | open |
 | SEC-3 | P3 | history | Five published commits on `main` (73a7d90, 0befc08, 2761140, fd8bac9, 49180bb) carry agent co-author trailers; author name spelled two ways. History is not rewritten (owner rule); `.mailmap` can unify names. | owner decision |
-| SEC-4 | P3 | repo | Issue chooser has no private security report link. | open |
-| SEC-5 | P3 | deps | `allowScripts` covers `webgpu` only; `npm ci` warns about `esbuild`. | open |
-| DOC-1 | P2 | docs | Same as BASE-2; also `validate:fix` omits `prose:check`. | open |
-| DOC-2 | P2 | repo | Five dead old-layout benchmark files (`benchmarks/0{2,3,5,6}-*/deepset.ts`, `benchmarks/07-scalability/deepbox.ts`) referenced nowhere. | open |
+| SEC-4 | P3 | repo | Issue chooser has no private security report link. | fixed 6b9f026 |
+| SEC-5 | P3 | deps | `allowScripts` covers `webgpu` only; `npm ci` warns about `esbuild`. | fixed ce103a0 |
+| DOC-1 | P2 | docs | Same as BASE-2; also `validate:fix` omits `prose:check`. | fixed 6b9f026, ce103a0 |
+| DOC-2 | P2 | repo | Five dead old-layout benchmark files (`benchmarks/0{2,3,5,6}-*/deepset.ts`, `benchmarks/07-scalability/deepbox.ts`) referenced nowhere. | fixed 6b9f026 |
 | DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | open |
 | DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | open |
 | DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | open |
@@ -70,12 +70,12 @@ Format: id, priority, area, evidence, status.
 | DF-11 | P2 | dataframe io | CSV sign plus leading zero inconsistent (`007` text, `-007` number); `1e400` becomes Infinity. | open |
 | DF-12 | P2 | dataframe | `merge`/`join` accept one key column only; `on: ""` gives a misleading error. | open |
 | DF-13 | P2 | dataframe | `Series([]).sum()` throws; boolean `sum` throws (pandas: 0, count of true). | open |
-| DF-14 | P2 | datasets | `mapDataset` flattens N-D data and drops `images`. | open |
-| DF-15 | P2 | datasets | Archive loaders: no timeout, download size cap, inflate cap, checksum or cache. | open |
-| DF-16 | P2 | datasets | `fetchMNIST` does not validate labels. | open |
-| DF-17 | P2 | datasets | `makeClassification` draws labels i.i.d., not balanced as documented by sklearn parity. | open |
+| DF-14 | P2 | datasets | `mapDataset` flattens N-D data and drops `images`. | fixed 8f656fa |
+| DF-15 | P2 | datasets | Archive loaders: no timeout, download size cap, inflate cap, checksum or cache. | fixed 0874c84 |
+| DF-16 | P2 | datasets | `fetchMNIST` does not validate labels. | fixed 0874c84 |
+| DF-17 | P2 | datasets | `makeClassification` draws labels i.i.d., not balanced as documented by sklearn parity. | fixed e867cf8 (behavior change) |
 | DF-18 | P2 | dataframe io | CSV reader: no `NA`/`N/A`/`TRUE` handling, duplicate headers throw (xlsx dedupes), short rows throw. | open |
-| PL-1 | P2 | plot | `Axes.surface/wireframe/scatter3d` given Tensors draw nothing silently. | open |
+| PL-1 | P2 | plot | `Axes.surface/wireframe/scatter3d` given Tensors draw nothing silently. | fixed c969759 |
 | DF-19 | P3 | dataframe | `diff`/`pctChange` reject negative periods. | open |
 | DF-20 | P3 | dataframe | `valueCounts({dropna:false})` counts NaN and null separately. | open |
 | DF-21 | P3 | dataframe | Mixed-type sort gives an inconsistent order instead of an error. | open |
@@ -154,3 +154,5 @@ Format: id, priority, area, evidence, status.
 | ST-1 | P3 | stats | `kendalltau` constant input returns NaN while `pearsonr`/`spearmanr` throw (scipy: NaN). | open |
 | ST-2 | P3 | stats | `poisson(0)` rejected. | open |
 | PP-7 | P3 | preprocess | `HashingVectorizer` uses FNV-1a, not MurmurHash3. | open |
+| TEST-1 | P2 | tests | `test/plot-png-zlib-mock.test.ts` timed out at the 5 s default on an unchanged tree under load. | fixed b9ac513 |
+| BUILD-1 | P3 | tooling | `benchmarks/tsconfig.json` had 143 type errors (no Node types) and was not checked. | fixed ce103a0 (`typecheck:bench` in `validate:all`) |
