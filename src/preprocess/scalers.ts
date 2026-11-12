@@ -10,6 +10,7 @@ import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { __random } from "../random/random";
 import {
   assert2D,
+  assertKnownParams,
   assertNumericTensor,
   createRandomStream,
   getShape2D,
@@ -559,15 +560,15 @@ export class StandardScaler {
   /**
    * Change options. Fitted statistics are kept; they cover both options.
    *
-   * @throws {InvalidParameterError} If a recognised option is not a boolean
+   * @throws {InvalidParameterError} On an unknown option or an option that is not a boolean; the scaler is left unchanged
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["withMean"] !== undefined) {
-      this.withMean = parseBooleanOption(params["withMean"], "withMean", this.withMean);
-    }
-    if (params["withStd"] !== undefined) {
-      this.withStd = parseBooleanOption(params["withStd"], "withStd", this.withStd);
-    }
+    assertKnownParams(params, ["withMean", "withStd", "copy"], "StandardScaler");
+    parseBooleanOption(params["copy"], "copy", true);
+    const withMean = parseBooleanOption(params["withMean"], "withMean", this.withMean);
+    const withStd = parseBooleanOption(params["withStd"], "withStd", this.withStd);
+    this.withMean = withMean;
+    this.withStd = withStd;
     return this;
   }
 
@@ -843,12 +844,15 @@ export class MinMaxScaler {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["featureRange"] !== undefined) {
-      this.featureRange = validateFeatureRange(params["featureRange"]);
-    }
-    if (params["clip"] !== undefined) {
-      this.clip = parseBooleanOption(params["clip"], "clip", this.clip);
-    }
+    assertKnownParams(params, ["featureRange", "clip", "copy"], "MinMaxScaler");
+    parseBooleanOption(params["copy"], "copy", true);
+    const featureRange =
+      params["featureRange"] !== undefined
+        ? validateFeatureRange(params["featureRange"])
+        : this.featureRange;
+    const clip = parseBooleanOption(params["clip"], "clip", this.clip);
+    this.featureRange = featureRange;
+    this.clip = clip;
     return this;
   }
 
@@ -1060,8 +1064,15 @@ export class MaxAbsScaler {
     return {};
   }
 
-  /** This scaler has no options; present for API consistency. */
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * This scaler has no options besides `copy`, which is accepted for API parity. Fitted
+   * statistics are kept.
+   *
+   * @throws {InvalidParameterError} On an unknown option or a `copy` that is not a boolean
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["copy"], "MaxAbsScaler");
+    parseBooleanOption(params["copy"], "copy", true);
     return this;
   }
 
@@ -1304,6 +1315,12 @@ export class RobustScaler {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(
+      params,
+      ["withCentering", "withScaling", "quantileRange", "unitVariance", "copy"],
+      "RobustScaler"
+    );
+    parseBooleanOption(params["copy"], "copy", true);
     const withCentering = parseBooleanOption(
       params["withCentering"],
       "withCentering",
@@ -1469,6 +1486,8 @@ export class Normalizer {
    * @throws {InvalidParameterError} If `norm` is not one of the supported values
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["norm", "copy"], "Normalizer");
+    parseBooleanOption(params["copy"], "copy", true);
     if (params["norm"] !== undefined) {
       this.norm = parseNorm(params["norm"]);
     }
@@ -1766,30 +1785,36 @@ export class QuantileTransformer {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    let changed = false;
-    if (params["nQuantiles"] !== undefined) {
-      const v = parseNQuantiles(params["nQuantiles"]);
-      changed ||= v !== this.nQuantiles;
-      this.nQuantiles = v;
-    }
-    if (params["outputDistribution"] !== undefined) {
-      const v = parseOutputDistribution(params["outputDistribution"]);
-      changed ||= v !== this.outputDistribution;
-      this.outputDistribution = v;
-    }
-    if ("subsample" in params) {
-      const v = parseSubsample(params["subsample"]);
-      changed ||= v !== this.subsample;
-      this.subsample = v;
-    }
+    assertKnownParams(
+      params,
+      ["nQuantiles", "outputDistribution", "subsample", "randomState", "copy"],
+      "QuantileTransformer"
+    );
+    parseBooleanOption(params["copy"], "copy", true);
+    const nQuantiles =
+      params["nQuantiles"] !== undefined ? parseNQuantiles(params["nQuantiles"]) : this.nQuantiles;
+    const outputDistribution =
+      params["outputDistribution"] !== undefined
+        ? parseOutputDistribution(params["outputDistribution"])
+        : this.outputDistribution;
+    const subsample = "subsample" in params ? parseSubsample(params["subsample"]) : this.subsample;
+    let randomState = this.randomState;
     if ("randomState" in params) {
       const v = params["randomState"];
       if (v !== undefined && typeof v !== "number") {
         throw new InvalidParameterError("randomState must be a number", "randomState", v);
       }
-      changed ||= v !== this.randomState;
-      this.randomState = v;
+      randomState = v;
     }
+    const changed =
+      nQuantiles !== this.nQuantiles ||
+      outputDistribution !== this.outputDistribution ||
+      subsample !== this.subsample ||
+      randomState !== this.randomState;
+    this.nQuantiles = nQuantiles;
+    this.outputDistribution = outputDistribution;
+    this.subsample = subsample;
+    this.randomState = randomState;
     if (changed) {
       this.quantiles_ = undefined;
       this.references_ = undefined;
@@ -2175,19 +2200,19 @@ export class PowerTransformer {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["method"] !== undefined) {
-      const method = parsePowerMethod(params["method"]);
-      if (method !== this.method) {
-        this.method = method;
-        this.lambdas_ = undefined;
-        this.mean_ = undefined;
-        this.scale_ = undefined;
-        this.nFeaturesIn_ = 0;
-      }
+    assertKnownParams(params, ["method", "standardize", "copy"], "PowerTransformer");
+    parseBooleanOption(params["copy"], "copy", true);
+    const method =
+      params["method"] !== undefined ? parsePowerMethod(params["method"]) : this.method;
+    const standardize = parseBooleanOption(params["standardize"], "standardize", this.standardize);
+    if (method !== this.method) {
+      this.method = method;
+      this.lambdas_ = undefined;
+      this.mean_ = undefined;
+      this.scale_ = undefined;
+      this.nFeaturesIn_ = 0;
     }
-    if (params["standardize"] !== undefined) {
-      this.standardize = parseBooleanOption(params["standardize"], "standardize", this.standardize);
-    }
+    this.standardize = standardize;
     return this;
   }
 

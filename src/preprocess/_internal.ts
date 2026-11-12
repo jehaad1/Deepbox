@@ -13,6 +13,41 @@ import type { Tensor } from "../ndarray";
 import { __randomBelow, __SeededRandom } from "../random/random";
 
 /**
+ * Throw unless `params` only contains names from `known`.
+ *
+ * @internal
+ */
+export function assertKnownParams(
+  params: Record<string, unknown>,
+  known: readonly string[],
+  who: string
+): void {
+  for (const key of Object.keys(params)) {
+    if (!known.includes(key)) {
+      throw new InvalidParameterError(
+        `Invalid parameter '${key}' for ${who}; valid parameters are ${known.join(", ")}`,
+        key,
+        params[key]
+      );
+    }
+  }
+}
+
+/**
+ * Copy of `params` without the entries whose value is `undefined`, so they do not override
+ * existing values when merged.
+ *
+ * @internal
+ */
+export function definedEntries(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+/**
  * Assert that a tensor has a real numeric dtype (not string or complex).
  *
  * @internal

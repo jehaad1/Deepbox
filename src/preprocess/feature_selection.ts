@@ -14,37 +14,18 @@ import {
 } from "../core/errors";
 import { getEstimatorTags } from "../ml/base";
 import { type DType, type Tensor, Tensor as TensorClass, type TypedArray } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  definedEntries,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/** Throw unless `params` only contains names from `known`. */
-function assertKnownParams(
-  params: Record<string, unknown>,
-  known: readonly string[],
-  who: string
-): void {
-  for (const key of Object.keys(params)) {
-    if (!known.includes(key)) {
-      throw new InvalidParameterError(
-        `Invalid parameter '${key}' for ${who}; valid parameters are ${known.join(", ")}`,
-        key,
-        params[key]
-      );
-    }
-  }
-}
-
-/** Drop `undefined` entries so they do not override existing values. */
-function definedEntries(params: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
-}
 
 /**
  * Throw if any element of a 2D tensor is infinite, or NaN when `allowNaN` is false.

@@ -14,7 +14,13 @@ import {
 } from "../core/errors";
 import type { Transformer } from "../ml/base";
 import { type Tensor, Tensor as TensorClass } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 /**
  * How `transform` treats values outside the range of the fitted knots.
@@ -409,6 +415,11 @@ export class SplineTransformer implements Transformer {
    * @throws {InvalidParameterError} If the resulting options are invalid; the transformer is left unchanged
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(
+      params,
+      ["nKnots", "degree", "extrapolation", "includeBias", "knots"],
+      "SplineTransformer"
+    );
     const previous = this.getParams() as Required<SplineOptions>;
     const next = {
       nKnots: params["nKnots"] ?? previous.nKnots,
