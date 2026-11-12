@@ -7218,21 +7218,63 @@ export class DataFrameGroupBy {
   }
 
   /**
-   * First value of every non-grouping column in each group (missing values included).
+   * First or last value of every non-grouping column in each group. With `skipna` the
+   * first present value counts, and a group without any gives null.
    *
-   * @returns DataFrame with one row per group
+   * @private
    */
-  first(): DataFrame {
-    return this.aggAll("first");
+  private edgeValues(which: "first" | "last", options: { readonly skipna?: boolean }): DataFrame {
+    const skipna = options.skipna ?? false;
+    if (typeof skipna !== "boolean") {
+      throw new InvalidParameterError("skipna must be a boolean", "skipna", skipna);
+    }
+    if (!skipna) return this.aggAll(which);
+    const groupByCols = Array.isArray(this.by) ? this.by : [this.by];
+    const otherCols = this.df.columns.filter((c) => !groupByCols.includes(c));
+    const outputColumns = [...groupByCols, ...otherCols];
+    const resultData: DataFrameData = newColumnMap();
+    for (const col of outputColumns) resultData[col] = [];
+    const plan: GroupPlanEntry[] = otherCols.map((col) => ({
+      outCol: col,
+      data: this.df.getColumnData(col),
+      run: (data, indices) => {
+        for (let k = 0; k < indices.length; k++) {
+          const value = data[indices[which === "first" ? k : indices.length - 1 - k] as number];
+          if (!isMissing(value)) return value;
+        }
+        return null;
+      },
+    }));
+    return this.runPlan(plan, outputColumns, resultData);
   }
 
   /**
-   * Last value of every non-grouping column in each group (missing values included).
+   * First value of every non-grouping column in each group.
    *
+   * Missing values are included by default (a group whose first row is missing gives the
+   * missing value). pandas skips them; pass `{ skipna: true }` for that, which returns the
+   * first present value of each group and null when a group has none.
+   *
+   * @param options - `skipna`: skip null, undefined and NaN (default: false)
    * @returns DataFrame with one row per group
+   * @throws {InvalidParameterError} If `skipna` is not a boolean
    */
-  last(): DataFrame {
-    return this.aggAll("last");
+  first(options: { readonly skipna?: boolean } = {}): DataFrame {
+    return this.edgeValues("first", options);
+  }
+
+  /**
+   * Last value of every non-grouping column in each group.
+   *
+   * Missing values are included by default. Pass `{ skipna: true }` to return the last
+   * present value of each group instead, like pandas; a group without one gives null.
+   *
+   * @param options - `skipna`: skip null, undefined and NaN (default: false)
+   * @returns DataFrame with one row per group
+   * @throws {InvalidParameterError} If `skipna` is not a boolean
+   */
+  last(options: { readonly skipna?: boolean } = {}): DataFrame {
+    return this.edgeValues("last", options);
   }
 
   /**

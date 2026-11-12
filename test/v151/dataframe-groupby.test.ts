@@ -61,3 +61,40 @@ describe("valueCounts counts every missing value as one key when dropna is false
     expect(out.get("count").toArray()).toEqual([2, 1]);
   });
 });
+
+// pandas 3.1: df.groupby('k').first() skips missing values by default (skipna=True);
+// df.groupby('k').first(skipna=False) keeps them. Deepbox keeps missing values by default
+// (documented 1.x behavior), so the pandas behavior is opt-in with { skipna: true }.
+describe("groupBy first and last take a skipna option (DF-22)", () => {
+  const df = new DataFrame({
+    k: ["a", "a", "a", "b", "b", "c"],
+    v: [Number.NaN, 2, 3, Number.NaN, Number.NaN, 7],
+    s: ["x", null, "z", null, "y", "w"],
+  });
+
+  it("keeps missing values by default", () => {
+    const out = df.groupBy("k").first();
+    expect(out.get("v").toArray()[0]).toBeNaN();
+    expect(out.get("s").toArray()).toEqual(["x", null, "w"]);
+    expect(df.groupBy("k").first({ skipna: false }).get("s").toArray()).toEqual(["x", null, "w"]);
+  });
+
+  it("first({ skipna: true }) returns the first present value", () => {
+    const out = df.groupBy("k").first({ skipna: true });
+    expect(out.columns).toEqual(["k", "v", "s"]);
+    expect(out.get("v").toArray()).toEqual([2, null, 7]);
+    expect(out.get("s").toArray()).toEqual(["x", "y", "w"]);
+  });
+
+  it("last({ skipna: true }) returns the last present value", () => {
+    const out = df.groupBy("k").last({ skipna: true });
+    expect(out.get("v").toArray()).toEqual([3, null, 7]);
+    expect(out.get("s").toArray()).toEqual(["z", "y", "w"]);
+  });
+
+  it("rejects a non-boolean skipna", () => {
+    expect(() => df.groupBy("k").first({ skipna: "yes" as unknown as boolean })).toThrow(
+      /skipna must be a boolean/
+    );
+  });
+});
