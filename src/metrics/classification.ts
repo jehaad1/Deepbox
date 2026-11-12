@@ -203,8 +203,12 @@ function hasMoreThanTwoClasses(a: DenseLabels, b: DenseLabels): boolean {
   return false;
 }
 
-function isMulticlass(yTrue: Tensor, yPred: Tensor): boolean {
-  const { trueLabels, predLabels } = readLabelPair(yTrue, yPred);
+function isMulticlass(
+  yTrue: Tensor,
+  yPred: Tensor,
+  pair: LabelPair = readLabelPair(yTrue, yPred)
+): boolean {
+  const { trueLabels, predLabels } = pair;
   return hasMoreThanTwoClasses(trueLabels, predLabels);
 }
 
@@ -364,14 +368,20 @@ function binaryCounts(
   yTrue: Tensor,
   yPred: Tensor,
   weights: Float64Array | undefined,
-  posLabel: Label
+  posLabel: Label,
+  pair: LabelPair = readLabelPair(yTrue, yPred)
 ): { tp: number; fp: number; fn: number; tn: number } {
-  const { kind, trueLabels: t, predLabels: p } = readLabelPair(yTrue, yPred);
-  const present = new Set<Label>();
-  for (let i = 0; i < t.length; i++) {
-    present.add(t[i] as Label);
-    present.add(p[i] as Label);
+  const { kind, trueLabels: t, predLabels: p } = pair;
+  // Distinct labels seen so far; the scan stops counting at three, which already means multiclass.
+  const distinct: Label[] = [];
+  const note = (v: Label): void => {
+    if (distinct.length < 3 && v !== distinct[0] && v !== distinct[1]) distinct.push(v);
+  };
+  for (let i = 0; i < t.length && distinct.length < 3; i++) {
+    note(t[i] as Label);
+    note(p[i] as Label);
   }
+  const present = new Set<Label>(distinct);
   if (present.size > 2) {
     throw new InvalidParameterError(
       "Target is multiclass but average='binary'. Please choose another average setting, one of [null, 'micro', 'macro', 'weighted'].",
@@ -617,10 +627,11 @@ function resolveAverage(
   yTrue: Tensor,
   yPred: Tensor,
   average: Average | null | undefined,
-  hasLabels: boolean
+  hasLabels: boolean,
+  pair?: LabelPair
 ): Exclude<Average, "samples"> | null {
   if (average === undefined) {
-    return hasLabels || isMulticlass(yTrue, yPred) ? "weighted" : "binary";
+    return hasLabels || isMulticlass(yTrue, yPred, pair) ? "weighted" : "binary";
   }
   if (average === "samples") {
     throw new InvalidParameterError(
@@ -660,7 +671,13 @@ function averagedScore(
     return multilabelScore(multilabel, multilabelWeights, options, score, zeroDivision);
   }
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  const mode = resolveAverage(yTrue, yPred, options.average, options.labels !== undefined);
+  // Read the labels once for the average resolution and the binary counts (other modes count
+  // classes from the tensors directly).
+  const pair =
+    options.average === undefined || options.average === "binary"
+      ? readLabelPair(yTrue, yPred)
+      : undefined;
+  const mode = resolveAverage(yTrue, yPred, options.average, options.labels !== undefined, pair);
   const weights = readSampleWeight(options.sampleWeight, yTrue.size);
   const posLabel = options.posLabel ?? 1;
   if (
@@ -681,7 +698,7 @@ function averagedScore(
   }
 
   if (mode === "binary") {
-    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights, posLabel);
+    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights, posLabel, pair);
     return defined(score(tp, fp, fn));
   }
 
