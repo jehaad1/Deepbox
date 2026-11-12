@@ -59,7 +59,7 @@ describe("metrics regression contracts", () => {
     expect(() => explainedVarianceScore(empty, empty)).toThrow(/at least one sample/i);
   });
 
-  it("rejects non-vector shapes for classification metrics", () => {
+  it("treats 2D indicator targets as multilabel and rejects other shapes", () => {
     const yTrue = tensor([
       [0, 1],
       [1, 0],
@@ -69,8 +69,15 @@ describe("metrics regression contracts", () => {
       [1, 0],
     ]);
 
-    expect(() => accuracy(yTrue, yPred)).toThrow(/column vector|1D/i);
-    expect(() => precision(yTrue, yPred, "binary")).toThrow(/column vector|1D/i);
+    // Several columns form a multilabel target since 1.5.1.
+    expect(accuracy(yTrue, yPred)).toBe(1);
+    expect(() => precision(yTrue, yPred, "binary")).toThrow(/multilabel-indicator/);
+    const cube = tensor([
+      [[0], [1]],
+      [[1], [0]],
+    ]);
+    expect(() => accuracy(cube, cube)).toThrow(/column vector|1D/i);
+    expect(() => precision(cube, cube, "binary")).toThrow(/column vector|1D/i);
   });
 
   it("scores 2D regression targets per output and rejects other shapes", () => {

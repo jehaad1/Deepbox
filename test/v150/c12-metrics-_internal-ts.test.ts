@@ -128,8 +128,8 @@ describe("v1.5.0 metrics/_internal", () => {
   });
 
   it("shape errors name the offending shape", () => {
-    expect(() => accuracy(tensor([[1, 2]]), tensor([[1, 2]]))).toThrow(
-      /1D or a column vector; got shape \[1, 2\]/
+    expect(() => accuracy(tensor([[[1, 2]]]), tensor([[[1, 2]]]))).toThrow(
+      /1D or a column vector; got shape \[1, 1, 2\]/
     );
   });
 });
