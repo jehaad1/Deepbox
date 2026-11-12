@@ -37,7 +37,7 @@ const SMALL_SORT_THRESHOLD = 256;
  */
 export type AveragedMetricOptions = {
   /**
-   * Averaging strategy: `"binary"` (positive class 1), `"micro"`, `"macro"`,
+   * Averaging strategy: `"binary"` (positive class `posLabel`, default 1), `"micro"`, `"macro"`,
    * `"weighted"` (by support) or `null` for one value per class in label order.
    * When omitted, `"binary"` is used for at most two distinct labels and `"weighted"`
    * otherwise; with `labels` given and no `average`, `"weighted"` is used.
@@ -61,6 +61,13 @@ export type AveragedMetricOptions = {
   readonly zeroDivision?: number | "warn";
   /** One weight per sample; every count and support is a weighted sum. */
   readonly sampleWeight?: SampleWeightInput;
+  /**
+   * The class that `"binary"` scores as positive (default `1`). It must be one of the labels
+   * when yTrue and yPred together hold two labels, which makes string labels and labels such
+   * as `{-1, 1}` or `{1, 2}` work: pass the positive class here. It is ignored by the other
+   * averages. For int64 tensors a plain integer is converted to bigint.
+   */
+  readonly posLabel?: number | string | bigint;
 };
 
 type AveragedArg = Average | null | AveragedMetricOptions | undefined;
@@ -193,7 +200,6 @@ function hasMoreThanTwoClasses(a: DenseLabels, b: DenseLabels): boolean {
 }
 
 function isMulticlass(yTrue: Tensor, yPred: Tensor): boolean {
-  if (yTrue.dtype === "string" || yPred.dtype === "string") return true;
   const { trueLabels, predLabels } = readLabelPair(yTrue, yPred);
   return hasMoreThanTwoClasses(trueLabels, predLabels);
 }
@@ -325,24 +331,69 @@ function classCounts(
   return { classes, tp, fp, fn, support, totalTp, totalFp, totalFn, hasUnlisted };
 }
 
-/** Confusion counts for validated 0/1 labels (positive class = 1). */
+/** Label as scikit-learn prints it in error messages: strings quoted, numbers as they are. */
+function describeLabel(label: unknown): string {
+  return typeof label === "string" ? `'${label}'` : String(label);
+}
+
+/**
+ * Express the positive class on the same footing as the label arrays of `kind`. Returns
+ * `undefined` when it cannot be a label of that kind (a string for numbers, a fraction for
+ * int64 labels, and so on), so it matches no sample.
+ */
+function positiveLabelOfKind(posLabel: Label, kind: LabelKind): Label | undefined {
+  if (kind === "string") return typeof posLabel === "string" ? posLabel : undefined;
+  if (typeof posLabel === "string") return undefined;
+  if (kind === "int64") {
+    if (typeof posLabel === "bigint") return posLabel;
+    return Number.isSafeInteger(posLabel) ? BigInt(posLabel) : undefined;
+  }
+  if (typeof posLabel === "number") return posLabel;
+  return Number.isSafeInteger(Number(posLabel)) ? Number(posLabel) : undefined;
+}
+
+/**
+ * Confusion counts of the positive class `posLabel`. Like scikit-learn, the binary average
+ * needs at most two distinct labels, and `posLabel` must be one of them when there are two.
+ */
 function binaryCounts(
   yTrue: Tensor,
   yPred: Tensor,
-  weights?: Float64Array
+  weights: Float64Array | undefined,
+  posLabel: Label
 ): { tp: number; fp: number; fn: number; tn: number } {
-  const t = binaryLabels(yTrue, "yTrue");
-  const p = binaryLabels(yPred, "yPred");
+  const { kind, trueLabels: t, predLabels: p } = readLabelPair(yTrue, yPred);
+  const present = new Set<Label>();
+  for (let i = 0; i < t.length; i++) {
+    present.add(t[i] as Label);
+    present.add(p[i] as Label);
+  }
+  if (present.size > 2) {
+    throw new InvalidParameterError(
+      "Target is multiclass but average='binary'. Please choose another average setting, one of [null, 'micro', 'macro', 'weighted'].",
+      "average",
+      "binary"
+    );
+  }
+  const positive = positiveLabelOfKind(posLabel, kind);
+  if (present.size === 2 && (positive === undefined || !present.has(positive))) {
+    const sorted = [...present].sort(compareLabels);
+    throw new InvalidParameterError(
+      `posLabel=${describeLabel(posLabel)} is not a valid label. It should be one of [${sorted.map(describeLabel).join(" ")}] when average is 'binary'`,
+      "posLabel",
+      posLabel
+    );
+  }
   let tp = 0;
   let fp = 0;
   let fn = 0;
   let tn = 0;
   for (let i = 0; i < t.length; i++) {
     const w = weights === undefined ? 1 : (weights[i] as number);
-    if (t[i] === 1) {
-      if (p[i] === 1) tp += w;
+    if (t[i] === positive) {
+      if (p[i] === positive) tp += w;
       else fn += w;
-    } else if (p[i] === 1) fp += w;
+    } else if (p[i] === positive) fp += w;
     else tn += w;
   }
   return { tp, fp, fn, tn };
@@ -437,6 +488,18 @@ function averagedScore(
   const zeroDivision = resolveZeroDivision(options.zeroDivision, defaultZeroDivision);
   const mode = resolveAverage(yTrue, yPred, options.average, options.labels !== undefined);
   const weights = readSampleWeight(options.sampleWeight, yTrue.size);
+  const posLabel = options.posLabel ?? 1;
+  if (
+    typeof posLabel !== "number" &&
+    typeof posLabel !== "string" &&
+    typeof posLabel !== "bigint"
+  ) {
+    throw new InvalidParameterError(
+      "posLabel must be a number, a string or a bigint",
+      "posLabel",
+      posLabel
+    );
+  }
   const defined = (value: number): number => (Number.isNaN(value) ? zeroDivision : value);
 
   if (yTrue.size === 0 && options.labels === undefined) {
@@ -444,14 +507,7 @@ function averagedScore(
   }
 
   if (mode === "binary") {
-    if (yTrue.dtype === "string" || yPred.dtype === "string") {
-      throw new InvalidParameterError(
-        "Binary average requires numeric labels (0/1). Use 'macro', 'micro', or 'weighted' for string labels.",
-        "average",
-        mode
-      );
-    }
-    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights);
+    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights, posLabel);
     return defined(score(tp, fp, fn));
   }
 
@@ -575,21 +631,23 @@ export function accuracy(
  * @param yPred - Estimated targets as returned by a classifier
  * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
- *   - 'binary': Calculate metrics for the positive class (label 1) only; labels must be 0 or 1
+ *   - 'binary': Calculate metrics for the positive class `posLabel` (default 1) only. yTrue and
+ *     yPred may hold at most two distinct labels, and `posLabel` must be one of them when they
+ *     hold two. String labels, and labels such as {-1, 1}, need `posLabel`, as in scikit-learn
  *   - 'micro': Calculate metrics globally by counting total TP, FP, FN
  *   - 'macro': Calculate metrics for each class, return unweighted mean
  *   - 'weighted': Calculate metrics for each class, return mean weighted by support
  *   - null: Return array of scores for each class, in ascending label order
  *
  *   Instead of the string an options object {@link AveragedMetricOptions} can be passed:
- *   `{ average, labels, zeroDivision, sampleWeight }`.
+ *   `{ average, labels, zeroDivision, sampleWeight, posLabel }`.
  * @returns Precision score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -605,6 +663,9 @@ export function accuracy(
  * const yTrueMulti = tensor([0, 1, 2, 0, 1, 2]);
  * const yPredMulti = tensor([0, 2, 1, 0, 0, 1]);
  * const precMacro = precision(yTrueMulti, yPredMulti, 'macro');
+ *
+ * // Two labels other than 0/1: name the positive class
+ * precision(tensor(["spam", "ham", "spam"]), tensor(["spam", "spam", "ham"]), { posLabel: "spam" });
  *
  * // Options object: classes to score, zero-division value and sample weights
  * const perClass = precision(yTrueMulti, yPredMulti, {
@@ -666,15 +727,15 @@ export function precision(
  * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
  *   See {@link precision} for the meaning of each mode. An options object
- *   {@link AveragedMetricOptions} (`{ average, labels, zeroDivision, sampleWeight }`) is
+ *   {@link AveragedMetricOptions} (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is
  *   accepted as well.
  * @returns Recall score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -739,14 +800,14 @@ export function recall(
  * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
  *   An options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`) is also accepted.
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is also accepted.
  * @returns F1 score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -813,14 +874,14 @@ export function f1Score(
  * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise,
  *   the same rule as {@link f1Score}. An options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`) is accepted as well.
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is accepted as well.
  * @returns F-beta score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If beta or average is invalid, or 'binary' is used with labels
- *   other than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If beta or average is invalid, 'binary' is used with more than
+ *   two labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -2151,7 +2212,7 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
  *
  * **Formula**: jaccard = TP / (TP + FP + FN)
  *
- * Averaging works as for {@link f1Score}: 'binary' scores the positive class 1,
+ * Averaging works as for {@link f1Score}: 'binary' scores the positive class `posLabel` (default 1),
  * 'micro' pools the counts, 'macro' and 'weighted' average the per-class scores and
  * null returns one score per class. When `average` is omitted, 'binary' is used for at
  * most two distinct labels and 'weighted' otherwise.
@@ -2170,14 +2231,14 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
  * @param yPred - Predicted labels
  * @param average - Averaging strategy ('binary', 'micro', 'macro', 'weighted' or null), or an
  *   options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`)
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`)
  * @returns Jaccard score in range [0, 1], or one score per class with `average: null`
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts

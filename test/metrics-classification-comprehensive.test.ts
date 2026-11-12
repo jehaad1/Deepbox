@@ -710,20 +710,28 @@ describe("Classification Metrics tests", () => {
       expect(() => balancedAccuracyScore(short, long)).toThrow();
     });
 
-    it("should handle string labels with auto-detected weighted average", () => {
+    it("should score two string labels with the binary average given a posLabel", () => {
       const yTrue = tensor(["cat", "dog", "cat"]);
+      const yPred = tensor(["cat", "cat", "dog"]);
+      expect(typeof precision(yTrue, yPred, { posLabel: "cat" })).toBe("number");
+      expect(typeof recall(yTrue, yPred, { posLabel: "cat" })).toBe("number");
+      expect(typeof f1Score(yTrue, yPred, { posLabel: "cat" })).toBe("number");
+    });
+
+    it("should handle three string labels with auto-detected weighted average", () => {
+      const yTrue = tensor(["cat", "dog", "bird"]);
       const yPred = tensor(["cat", "cat", "dog"]);
       expect(typeof precision(yTrue, yPred)).toBe("number");
       expect(typeof recall(yTrue, yPred)).toBe("number");
       expect(typeof f1Score(yTrue, yPred)).toBe("number");
     });
 
-    it("should reject string labels for explicit binary average", () => {
+    it("should ask for posLabel when two string labels use the binary average", () => {
       const yTrue = tensor(["cat", "dog", "cat"]);
       const yPred = tensor(["cat", "cat", "dog"]);
-      expect(() => precision(yTrue, yPred, "binary")).toThrow(/string/i);
-      expect(() => recall(yTrue, yPred, "binary")).toThrow(/string/i);
-      expect(() => f1Score(yTrue, yPred, "binary")).toThrow(/string/i);
+      expect(() => precision(yTrue, yPred, "binary")).toThrow(/posLabel/);
+      expect(() => recall(yTrue, yPred, "binary")).toThrow(/posLabel/);
+      expect(() => f1Score(yTrue, yPred)).toThrow(/posLabel/);
     });
 
     it("should handle very large datasets efficiently", () => {
