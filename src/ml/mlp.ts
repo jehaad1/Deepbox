@@ -511,6 +511,11 @@ export class MLPClassifier implements Classifier {
     validateOptions(this.opts);
   }
 
+  /**
+   * Train the network.
+   *
+   * @throws {DataValidationError} If a label is not an integer in the int32 range, or `y` holds fewer than 2 classes
+   */
   fit(X: Tensor, y: Tensor): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
@@ -519,9 +524,10 @@ export class MLPClassifier implements Classifier {
     const XData = toFloat64View(X);
     const yData = toFloat64View(y);
     for (let i = 0; i < nSamples; i++) {
-      if (!Number.isInteger(yData[i])) {
+      const v = yData[i] as number;
+      if (!Number.isInteger(v) || v < -2147483648 || v > 2147483647) {
         throw new DataValidationError(
-          `MLPClassifier requires integer class labels; y[${i}] = ${yData[i]}`
+          `MLPClassifier requires integer class labels in the int32 range; y[${i}] = ${v}`
         );
       }
     }
