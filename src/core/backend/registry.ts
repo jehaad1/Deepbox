@@ -9,6 +9,7 @@
  * @see {@link https://deepbox.dev/docs/core-config | Config & backends}
  */
 
+import { getDevice, setDevice } from "../config/global";
 import { DeviceError, InvalidParameterError } from "../errors/index";
 import { DEVICES, type Device, isDevice } from "../types/device";
 import type { Backend } from "./Backend";
@@ -57,11 +58,12 @@ export function getBackend(device: Device): Backend {
  * If a backend was previously registered for the same device it is
  * replaced (the old backend is **not** automatically disposed). Register
  * the backend after `await backend.init()`: tensors can only be created on
- * a device whose backend reports `info().available === true`.
+ * a device whose backend reports `info().available === true`. The CPU backend
+ * is mandatory and cannot be replaced.
  *
  * @param device - Device the backend serves
  * @param backend - Backend implementation
- * @throws {InvalidParameterError} If `device` is not a known device or
+ * @throws {InvalidParameterError} If `device` is not a known device, is `"cpu"`, or
  *   `backend` does not implement the {@link Backend} interface
  *
  * @example
@@ -77,6 +79,13 @@ export function registerBackend(device: Device, backend: Backend): void {
   if (!isDevice(device)) {
     throw new InvalidParameterError(
       `Unknown device ${String(device)}. Known devices: ${DEVICES.join(", ")}`,
+      "device",
+      device
+    );
+  }
+  if (device === "cpu") {
+    throw new InvalidParameterError(
+      "The CPU backend is mandatory and cannot be replaced",
       "device",
       device
     );
@@ -149,7 +158,8 @@ export function isBackendAvailable(device: Device): boolean {
  * Remove a registered backend.
  *
  * The backend is **not** disposed. Call `backend.dispose()` yourself if it
- * holds resources. The CPU backend is mandatory and cannot be unregistered.
+ * holds resources. The CPU backend is mandatory and cannot be unregistered. When the
+ * default device (see `setDevice`) is the removed device, it is reset to `"cpu"`.
  *
  * @param device - Device whose backend should be removed
  * @returns `true` if a backend was removed, `false` if none was registered
@@ -159,7 +169,11 @@ export function unregisterBackend(device: Device): boolean {
   if (device === "cpu") {
     throw new DeviceError("The CPU backend is mandatory and cannot be unregistered");
   }
-  return backends.delete(device);
+  const removed = backends.delete(device);
+  if (removed && getDevice() === device) {
+    setDevice("cpu");
+  }
+  return removed;
 }
 
 /**
