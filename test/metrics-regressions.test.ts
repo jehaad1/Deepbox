@@ -73,7 +73,7 @@ describe("metrics regression contracts", () => {
     expect(() => precision(yTrue, yPred, "binary")).toThrow(/column vector|1D/i);
   });
 
-  it("rejects non-vector shapes for regression metrics", () => {
+  it("scores 2D regression targets per output and rejects other shapes", () => {
     const yTrue = tensor([
       [1, 2],
       [3, 4],
@@ -83,7 +83,14 @@ describe("metrics regression contracts", () => {
       [3, 4],
     ]);
 
-    expect(() => mse(yTrue, yPred)).toThrow(/column vector|1D/i);
-    expect(() => r2Score(yTrue, yPred)).toThrow(/column vector|1D/i);
+    // Two outputs of equal shape are scored per column since 1.5.1.
+    expect(mse(yTrue, yPred)).toBe(0);
+    expect(r2Score(yTrue, yPred)).toBe(1);
+    const cube = tensor([
+      [[1], [2]],
+      [[3], [4]],
+    ]);
+    expect(() => mse(cube, cube)).toThrow(/column vectors|2D/i);
+    expect(() => r2Score(cube, cube)).toThrow(/column vectors|2D/i);
   });
 });

@@ -69,6 +69,12 @@ export {
   pairwiseManhattan,
   reciprocalRank,
 } from "./pairwise";
+export type {
+  RegressionMetricOptions,
+  RegressionMultioutput,
+  VarianceMetricOptions,
+  VarianceMultioutput,
+} from "./regression";
 export {
   adjustedR2Score,
   explainedVarianceScore,
