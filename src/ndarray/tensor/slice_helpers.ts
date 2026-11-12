@@ -63,7 +63,8 @@ function assertSliceBound(value: number | undefined, name: "start" | "end"): voi
  *
  * @param range - A single index, or a `{ start, end, step }` range
  * @param dim - Size of the dimension being sliced
- * @throws {InvalidParameterError} If `step` is zero or any bound is not an integer
+ * @throws {InvalidParameterError} If `step` is zero, any bound is not an integer, or the
+ *   range object has a key other than `start`, `end` and `step` (for example `stop`)
  * @throws {IndexError} If a single-index range is out of bounds
  */
 export function normalizeRange(
@@ -75,6 +76,16 @@ export function normalizeRange(
     return { start: idx, end: idx + 1, step: 1 };
   }
 
+  for (const key in range) {
+    if (key !== "start" && key !== "end" && key !== "step") {
+      throw new InvalidParameterError(
+        `slice range has unknown key "${key}"; use start, end and step` +
+          (key === "stop" ? ' ("end" is the exclusive upper bound, not "stop")' : ""),
+        "range",
+        key
+      );
+    }
+  }
   assertSliceBound(range.start, "start");
   assertSliceBound(range.end, "end");
 

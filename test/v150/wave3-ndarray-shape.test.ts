@@ -481,7 +481,7 @@ describe("unique options", () => {
     expect(n.counts.toArray()).toEqual([1, 2]);
     expect(() => unique(tensor(5), { axis: 0 })).toThrow(InvalidParameterError);
     expect(() => unique(f64([[1]]), { axis: 2 })).toThrow(InvalidParameterError);
-    expect(() => unique(tensor(["a"]), { returnIndex: true })).toThrow(DTypeError);
+    expect(unique(tensor(["a"]), { returnIndex: true }).values.toArray()).toEqual(["a"]);
   });
 
   it("is exact for int64, keeps dtypes and handles empty and 0-d input", () => {

@@ -2547,6 +2547,13 @@ export function histogram(
       counts[idx] = (counts[idx] as number) + (weights ? (weights[i] as number) : 1);
     }
   } else {
+    if (!Array.isArray(bins)) {
+      throw new InvalidParameterError(
+        `bins must be a positive integer or a list of bin edges; got ${String(bins)}`,
+        "bins",
+        bins
+      );
+    }
     if (bins.length < 2) {
       throw new InvalidParameterError(
         "bins must contain at least 2 edges when given as a list",
