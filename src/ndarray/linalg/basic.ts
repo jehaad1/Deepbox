@@ -21,21 +21,27 @@ const INT64_MIN = -(1n << 63n);
 const INT64_MAX = (1n << 63n) - 1n;
 
 /**
- * Matrix multiplication of two 2-D tensors.
+ * Matrix product with `numpy.matmul` semantics.
  *
- * This is the strict 2-D variant: both operands must be 2-D. Use `dot` from
- * `deepbox/ndarray` for vectors and batched operands.
+ * - Both 2-D: standard matrix product (m, k) x (k, n) -> (m, n).
+ * - A 1-D operand is promoted to a row (left) or column (right) vector and the added axis is
+ *   removed from the result, so (k,) x (k, n) -> (n,), (m, k) x (k,) -> (m,) and
+ *   (k,) x (k,) -> a 0-d tensor.
+ * - 3-D and higher: the last two axes are the matrices and the leading axes are batch
+ *   dimensions, aligned from the right and broadcast (equal or 1), so
+ *   (b, m, k) x (k, n) -> (b, m, n) and (1, m, k) x (3, k, n) -> (3, m, n).
  *
  * Both operands must have the same dtype. The only mixed case allowed is
  * float32 with float64, which gives float64. Float products are accumulated in
  * float64, int32 results wrap around like NumPy, bool results are the logical
  * product, and int64 results throw if they leave the int64 range.
  *
- * @param a - Left matrix of shape (m, k)
- * @param b - Right matrix of shape (k, n)
- * @returns Product of shape (m, n)
+ * @param a - Left tensor, at least 1-D
+ * @param b - Right tensor, at least 1-D
+ * @returns Matrix product
  *
- * @throws {ShapeError} If an operand is not 2-D or the inner dimensions differ
+ * @throws {ShapeError} If an operand is 0-d, the inner dimensions differ, or the batch
+ * dimensions cannot be broadcast
  * @throws {DTypeError} If a dtype is `string` or the dtypes are incompatible
  * @throws {DataValidationError} If an int64 result overflows
  *
@@ -43,19 +49,19 @@ const INT64_MAX = (1n << 63n) - 1n;
  * ```ts
  * const c = matmul(tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]]));
  * // [[19, 22], [43, 50]]
+ *
+ * matmul(tensor([1, 2]), tensor([[1, 2], [3, 4]])); // [7, 10]
+ * matmul(ones([4, 2, 3]), ones([3, 5])).shape; // [4, 2, 5]
  * ```
  */
 export function matmul(a: Tensor, b: Tensor): Tensor {
   if (a.device !== "cpu" || b.device !== "cpu") {
-    const onDevice = dispatchMatmul(a, b);
+    const onDevice =
+      a.ndim === 2 && b.ndim === 2 ? dispatchMatmul(a, b) : dispatchDot(a, b, "matmul");
     if (onDevice) return onDevice;
   }
 
-  if (a.ndim !== 2 || b.ndim !== 2) {
-    throw new ShapeError("matmul requires 2D tensors");
-  }
-
-  if (a.shape[1] !== b.shape[0]) {
+  if (a.ndim === 2 && b.ndim === 2 && a.shape[1] !== b.shape[0]) {
     throw ShapeError.mismatch(a.shape, b.shape, "matmul");
   }
 
