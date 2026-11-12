@@ -689,6 +689,14 @@ export class Axes {
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   * import { Figure } from 'deepbox/plot';
+   *
+   * const fig = new Figure();
+   * const x = tensor([1, 2, 3, 4]);
+   * const y1 = tensor([20, 22, 21, 25]);
+   * const y2 = tensor([40, 45, 43, 50]);
+   *
    * const ax1 = fig.addAxes();
    * ax1.plot(x, y1, { color: 'blue', label: 'Temperature' });
    * ax1.setYLabel('Temperature (°C)');

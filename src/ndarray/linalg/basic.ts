@@ -47,11 +47,15 @@ const INT64_MAX = (1n << 63n) - 1n;
  *
  * @example
  * ```ts
- * const c = matmul(tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]]));
+ * import { ones, tensor } from 'deepbox/ndarray';
+ *
+ * const a = tensor([[1, 2], [3, 4]]);
+ * const b = tensor([[5, 6], [7, 8]]);
+ * const c = a.matmul(b);
  * // [[19, 22], [43, 50]]
  *
- * matmul(tensor([1, 2]), tensor([[1, 2], [3, 4]])); // [7, 10]
- * matmul(ones([4, 2, 3]), ones([3, 5])).shape; // [4, 2, 5]
+ * tensor([1, 2]).matmul(tensor([[1, 2], [3, 4]])); // [7, 10]
+ * ones([4, 2, 3]).matmul(ones([3, 5])).shape; // [4, 2, 5]
  * ```
  */
 export function matmul(a: Tensor, b: Tensor): Tensor {

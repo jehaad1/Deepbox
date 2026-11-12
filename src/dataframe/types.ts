@@ -104,6 +104,9 @@ export type AggregateFunction =
  *
  * @example
  * ```ts
+ * import { DataFrame } from 'deepbox/dataframe';
+ *
+ * const df = new DataFrame({ team: ['red', 'blue', 'red', 'blue'], score: [3, 5, 7, 1] });
  * df.groupBy("team").agg({ avgScore: ["score", "mean"], best: ["score", (v) => Math.max(...(v as number[]))] });
  * ```
  */

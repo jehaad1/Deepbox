@@ -56,16 +56,20 @@ type SGDState = {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss, type Module } from 'deepbox/nn';
  * import { SGD } from 'deepbox/optim';
- * import { Module } from 'deepbox/nn';
  *
- * const model: Module = ...;
+ * const model: Module = new Linear(2, 1);
  * const optimizer = new SGD(model.parameters(), {
  *   lr: 0.01,
  *   momentum: 0.9,
  *   weightDecay: 5e-4,
  *   nesterov: true
  * });
+ * const criterion = mseLoss;
+ * const numEpochs = 2;
+ * const dataLoader = [[tensor([[1, 2], [3, 4]]), tensor([[1], [2]])]];
  *
  * // Training loop
  * for (let epoch = 0; epoch < numEpochs; epoch++) {

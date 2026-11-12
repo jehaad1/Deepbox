@@ -17,9 +17,11 @@ import { allPlain, settle, toGradInput } from "./_shared";
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
  * import { Identity } from 'deepbox/nn';
  *
  * const identity = new Identity();
+ * const input = tensor([1, 2, 3]);
  * const output = identity.forward(input); // output === input
  * ```
  *

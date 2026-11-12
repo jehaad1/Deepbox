@@ -9,8 +9,16 @@ import { DeepboxError } from "./base";
  *
  * @example
  * ```ts
- * if (index < 0 || index >= length) {
- *   throw new IndexError(`Index ${index} is out of bounds for length ${length}`);
+ * import { IndexError } from 'deepbox/core';
+ *
+ * const index = 5;
+ * const length = 3;
+ * try {
+ *   if (index < 0 || index >= length) {
+ *     throw new IndexError(`Index ${index} is out of bounds for length ${length}`);
+ *   }
+ * } catch (error) {
+ *   console.log((error as Error).message); // Index 5 is out of bounds for length 3
  * }
  * ```
  */

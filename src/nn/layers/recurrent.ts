@@ -365,9 +365,11 @@ export class RNN extends Module {
  *
  * @example
  * ```ts
+ * import { randn } from 'deepbox/ndarray';
  * import { LSTM } from 'deepbox/nn';
  *
  * const lstm = new LSTM(4, 8);
+ * const x = randn([2, 5, 4]); // (batch, seqLen, inputSize)
  * const [output, [hN, cN]] = lstm.forwardWithState(x);
  * ```
  */
@@ -619,9 +621,11 @@ export class LSTM extends Module {
  *
  * @example
  * ```ts
+ * import { randn } from 'deepbox/ndarray';
  * import { GRU } from 'deepbox/nn';
  *
  * const gru = new GRU(4, 8);
+ * const x = randn([2, 5, 4]); // (batch, seqLen, inputSize)
  * const output = gru.forward(x);
  * ```
  */

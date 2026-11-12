@@ -2737,7 +2737,7 @@ export class GradTensor {
    *
    * const x = parameter([-1, 2, -3]);
    * const y = GradTensor.where(x.tensor.astype("bool"), x, x.neg());
-   * y.toArray(); // [1, 2, 3]
+   * y.toArray(); // [-1, 2, -3]: every nonzero element is truthy, so x is selected
    * ```
    */
   static where(
@@ -3112,7 +3112,7 @@ export class GradTensor {
    * @throws {DTypeError} If a tensor of another dtype than float32, float16 or bfloat16 is moved to a kernel device
    *
    * @example
-   * ```ts
+   * ```ts fragment
    * import { parameter } from 'deepbox/ndarray';
    *
    * const w = await parameter([1, 2, 3]).to("webgpu");

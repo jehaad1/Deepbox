@@ -170,7 +170,7 @@ function withTrailingSlash(url: string): string {
  * @throws {@link DataValidationError} If a checksum does not match or a label is outside 0-9.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchMNIST } from 'deepbox/datasets';
  *
  * const mnist = await fetchMNIST();
@@ -319,7 +319,7 @@ export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<Image
  * @throws {@link DataValidationError} If the checksum does not match.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchCIFAR10 } from 'deepbox/datasets';
  *
  * const cifar = await fetchCIFAR10();

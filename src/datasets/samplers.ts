@@ -43,8 +43,10 @@ export interface Sampler {
  *
  * @example
  * ```ts
+ * import { SequentialSampler } from 'deepbox/datasets';
+ *
  * const sampler = new SequentialSampler(10);
- * for (const idx of sampler) { ... } // 0, 1, 2, ..., 9
+ * console.log([...sampler]); // [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
  * ```
  */
 export class SequentialSampler implements Sampler {
@@ -84,8 +86,10 @@ export class SequentialSampler implements Sampler {
  *
  * @example
  * ```ts
- * const sampler = new SubsetRandomSampler([0, 2, 4, 6, 8]);
- * for (const idx of sampler) { ... } // random permutation of [0,2,4,6,8]
+ * import { SubsetRandomSampler } from 'deepbox/datasets';
+ *
+ * const sampler = new SubsetRandomSampler([0, 2, 4, 6, 8], { seed: 42 });
+ * console.log([...sampler]); // [4, 0, 8, 2, 6]
  * ```
  */
 export class SubsetRandomSampler implements Sampler {

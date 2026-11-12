@@ -206,7 +206,7 @@ function validateStrides(
  * @returns Array of stride values
  *
  * @example
- * ```ts
+ * ```ts fragment
  * computeStrides([2, 3, 4]); // [12, 4, 1]
  * // To access element [i, j, k]: offset + i*12 + j*4 + k*1
  * ```
@@ -2282,7 +2282,7 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    * @throws {DTypeError} If a tensor of another dtype is moved to a kernel device
    *
    * @example
-   * ```ts
+   * ```ts fragment
    * import { tensor } from 'deepbox/ndarray';
    *
    * const g = await tensor([1, 2, 3]).to('webgpu');

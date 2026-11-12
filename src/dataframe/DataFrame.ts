@@ -593,7 +593,10 @@ export class DataFrame {
    *
    * @example
    * ```ts
-   * const fig = df.plot.line({ x: 'date', y: 'price' });
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ x: [1, 2, 3], y: [2, 4, 8], price: [10, 12, 11] });
+   * const fig = df.plot.line({ x: 'x', y: 'price' });
    * const fig2 = df.plot.scatter({ x: 'x', y: 'y' });
    * ```
    */
@@ -611,6 +614,9 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ a: [1, 5, 3], b: [4, 2, 6] });
    * const html = df.style.highlightMax().toHTML();
    * ```
    */
@@ -3022,8 +3028,12 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ id: [1, 2, 3], name: ['a', 'b', 'c'] });
    * const bytes = df.toParquet();
    * const back = DataFrame.fromParquet(bytes);
+   * console.log(back.shape); // [3, 2]
    * ```
    */
   toParquet(options: ParquetWriteOptions = {}): Uint8Array {
@@ -4730,9 +4740,9 @@ export class DataFrame {
    * import { DataFrame } from 'deepbox/dataframe';
    *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5] });
-   * df.rolling(3).mean();                          // [null, null, 2, 3, 4]
-   * df.rolling(3, { minPeriods: 1 }).sum();        // [1, 3, 6, 9, 12]
-   * df.rolling(3, { center: true }).mean();        // [null, 2, 3, 4, null]
+   * df.rolling(3).mean();                          // column a: [null, null, 2, 3, 4]
+   * df.rolling(3, { minPeriods: 1 }).sum();        // column a: [1, 3, 6, 9, 12]
+   * df.rolling(3, { center: true }).mean();        // column a: [null, 2, 3, 4, null]
    * ```
    */
   rolling(window: number, on?: string | RollingOptions): Rolling {
@@ -5418,9 +5428,12 @@ export class DataFrame {
    *
    * @example
    * ```ts
-   * df.astype("age", "number");
-   * df.astype({ age: "number", name: "string" });
-   * df.astype("age", "number", { errors: "raise" });
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ age: ['25', '30', '35'], name: ['Alice', 'Bob', 'Carol'] });
+   * const a = df.astype("age", "number");
+   * const b = df.astype({ age: "number", name: "string" });
+   * const c = df.astype("age", "number", { errors: "raise" });
    * ```
    */
   astype(column: string, dtype: AstypeDtype, options?: AstypeOptions): DataFrame;
@@ -7144,6 +7157,13 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({
+   *   category: ['a', 'b', 'a', 'b'],
+   *   value: [1, 2, 3, 4],
+   *   count: [1, 1, 1, 1],
+   * });
    * const grouped = df.groupBy('category');
    * const result = grouped.agg({ value: 'sum', count: 'count' });
    * grouped.agg({ avgValue: ['value', 'mean'], spread: ['value', (v) => Math.max(...(v as number[])) - Math.min(...(v as number[]))] });

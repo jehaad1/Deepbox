@@ -258,6 +258,7 @@ export function validateArray(arr: unknown, name: string): asserts arr is unknow
  * ```ts
  * import { checkIsFitted } from 'deepbox/core';
  *
+ * const model = { coef_: [0.5, 1.5], intercept_: 0.1 };
  * checkIsFitted(model); // checks for any fitted attribute
  * checkIsFitted(model, ['coef_', 'intercept_']); // checks specific attrs
  * ```
@@ -324,7 +325,9 @@ export function check_is_fitted(
  * @example
  * ```ts
  * import { checkArray } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * const input = tensor([[1, 2], [3, 4]], { dtype: 'float32' });
  * const X = checkArray(input, { dtype: 'float32', ensureNdim: 2 });
  * ```
  *
@@ -403,7 +406,10 @@ export function check_array<T>(
  * @example
  * ```ts
  * import { checkXY } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * const X = tensor([[1, 2], [3, 4], [5, 6]]);
+ * const y = tensor([0, 1, 0]);
  * const [Xv, yv] = checkXY(X, y);
  * ```
  *
@@ -488,7 +494,10 @@ export function shapesEqual(a: readonly number[], b: readonly number[]): boolean
  * @example
  * ```ts
  * import { checkXY } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * const X = tensor([[1, 2], [3, 4], [5, 6]]);
+ * const y = tensor([0, 1, 0]);
  * const [Xv, yv] = checkXY(X, y);
  * ```
  */
@@ -511,7 +520,9 @@ export const checkXY = check_X_y;
  * @example
  * ```ts
  * import { checkArray } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
+ * const input = tensor([[1, 2], [3, 4]], { dtype: 'float32' });
  * const X = checkArray(input, { dtype: 'float32', ensureNdim: 2 });
  * ```
  */
@@ -536,6 +547,7 @@ export const checkArray = check_array;
  * ```ts
  * import { checkIsFitted } from 'deepbox/core';
  *
+ * const model = { coef_: [0.5, 1.5], intercept_: 0.1 };
  * checkIsFitted(model); // checks for any fitted attribute
  * checkIsFitted(model, ['coef_', 'intercept_']); // checks specific attrs
  * ```

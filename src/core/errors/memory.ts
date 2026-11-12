@@ -9,8 +9,16 @@ import { DeepboxError } from "./base";
  *
  * @example
  * ```ts
- * if (requestedBytes > MAX_MEMORY) {
- *   throw new MemoryError(`Cannot allocate ${requestedBytes} bytes`);
+ * import { MemoryError } from 'deepbox/core';
+ *
+ * const MAX_MEMORY = 1024;
+ * const requestedBytes = 4096;
+ * try {
+ *   if (requestedBytes > MAX_MEMORY) {
+ *     throw new MemoryError(`Cannot allocate ${requestedBytes} bytes`);
+ *   }
+ * } catch (error) {
+ *   console.log((error as Error).message); // Cannot allocate 4096 bytes
  * }
  * ```
  */

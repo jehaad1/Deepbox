@@ -297,8 +297,15 @@ function strongWolfe(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss } from 'deepbox/nn';
  * import { LBFGS } from 'deepbox/optim';
  *
+ * const model = new Linear(2, 1);
+ * const input = tensor([[1, 2], [3, 4]]);
+ * const target = tensor([[1], [2]]);
+ * const criterion = mseLoss;
+ * const numEpochs = 3;
  * const optimizer = new LBFGS(model.parameters(), { lr: 1 });
  *
  * for (let epoch = 0; epoch < numEpochs; epoch++) {
