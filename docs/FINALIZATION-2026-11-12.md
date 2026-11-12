@@ -156,3 +156,17 @@ Format: id, priority, area, evidence, status.
 | PP-7 | P3 | preprocess | `HashingVectorizer` uses FNV-1a, not MurmurHash3. | open |
 | TEST-1 | P2 | tests | `test/plot-png-zlib-mock.test.ts` timed out at the 5 s default on an unchanged tree under load. | fixed b9ac513 |
 | BUILD-1 | P3 | tooling | `benchmarks/tsconfig.json` had 143 type errors (no Node types) and was not checked. | fixed ce103a0 (`typecheck:bench` in `validate:all`) |
+| DOCS-1 | P1 | docs site | `deepbox.dev` 307-redirects to `www`, but canonical, og:url, sitemap and robots use the apex. Verified. | in progress (canonical moves to `www`) |
+| DOCS-2 | P1 | docs site | Example and project pages show a one-line README description in a "Console output" frame; 0 of 59 match real output. | in progress |
+| DOCS-3 | P1 | docs site | "How to run" fails for 6 pages that use top-level await without `"type": "module"`. | in progress |
+| DOCS-4 | P1 | JSDoc | Doc examples that throw: `partialcorr` (collinear data), `inv` (imports `matmul` from ndarray), random `choice` (imports `tensor` from random), `AlphaDropout` (`Sequential([...])`). | open (library JSDoc) |
+| DOCS-5 | P2 | JSDoc | 253 of 667 `@example` blocks do not run as pasted (195 have no import). | open (library JSDoc) |
+| DOCS-6 | P2 | docs site | og/twitter tags missing or site-default on subpages; 10000x5000 image declared 512x512; 5000x5000 favicon. | in progress |
+| DOCS-7 | P2 | docs site | No Content-Security-Policy; `/favicon.ico` 404; HTML sends `access-control-allow-origin: *`. | in progress |
+| DOCS-8 | P2 | docs site | Sitemap lists a redirect (`/docs`) and request-time `lastmod`; robots has `Host:`. | in progress |
+| DOCS-9 | P2 | docs site | Search dialog swallows "/" (reads `event.currentTarget`). | in progress |
+| DOCS-10 | P2 | JSDoc | British spellings in JSDoc (initialisation, neighbours, centres, materialised, recognised). | open (library JSDoc) |
+| DOCS-11 | P3 | JSDoc | En dashes in JSDoc names (Golub-Reinsch, Bartels-Stewart, BFGS, 0-9). | open (library JSDoc, prose check extended) |
+| DOCS-12 | P3 | docs site | Home lacks canonical; markdown in meta descriptions; duplicate charset; case-variant paths return 200. | in progress |
+| DOCS-13 | P3 | docs site | No `llms.txt`; TTF fonts preloaded. | in progress |
+| DOCS-14 | P3 | datasets | IMDB default URL refused from this network; figshare fine. | unverified (network) |
