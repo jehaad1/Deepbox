@@ -183,3 +183,4 @@ Format: id, priority, area, evidence, status.
 | ML-15 | P3 | ml | QDA `regParam` adds to the diagonal; sklearn uses `(1-reg)*S + reg*I`. LDA `shrinkage` differs from sklearn's lsqr estimator. | owner decision |
 | ML-16 | P2 | ml | `takeRows` in `model_selection.ts` rejects string tensors, so `crossValScore` cannot run a text Pipeline on raw strings. | fixed ecb7a0f |
 | PP-8 | P3 | preprocess | `Binarizer` returns float64 for float32 input (sklearn keeps float32). | fixed ec9f93f |
+| TEST-2 | P2 | tests | Clean-clone `validate:all` failed on a new wall-clock assertion (`ml-discriminant` 1000 x 400 fit under coverage). Twelve tests in total asserted elapsed time. | fixed 945d209 and the following commit (results checked instead; benchmarks track speed) |
