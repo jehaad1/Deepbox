@@ -378,19 +378,19 @@ describe("Series Edge Cases", () => {
     expect(empty.data).toEqual([]);
   });
 
-  it("should throw for sum() of empty Series", () => {
+  it("should not throw for sum() of an empty Series", () => {
     const empty = new Series([]);
-    expect(() => empty.sum()).toThrow(/Cannot get sum of empty Series/);
+    expect(empty.sum()).toBe(0);
   });
 
-  it("should throw for mean() of empty Series", () => {
+  it("should not throw for mean() of an empty Series", () => {
     const empty = new Series([]);
-    expect(() => empty.mean()).toThrow(/Cannot get mean of empty Series/);
+    expect(empty.mean()).toBeNaN();
   });
 
-  it("should throw for median() of empty Series", () => {
+  it("should not throw for median() of an empty Series", () => {
     const empty = new Series([]);
-    expect(() => empty.median()).toThrow(/Cannot get median of empty Series/);
+    expect(empty.median()).toBeNaN();
   });
 
   it("should return NaN for std() of single element", () => {

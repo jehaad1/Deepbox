@@ -18,11 +18,16 @@ import {
 /**
  * Collect the non-missing numbers of a Series. null, undefined and NaN are
  * skipped; any other type raises a DataValidationError naming the method.
+ * With `countBooleans`, true and false count as 1 and 0 (pandas sums booleans).
  */
-function collectNumeric(data: readonly unknown[], method: string): number[] {
+function collectNumeric(data: readonly unknown[], method: string, countBooleans = false): number[] {
   const out: number[] = [];
   for (const value of data) {
     if (value === null || value === undefined) continue;
+    if (countBooleans && typeof value === "boolean") {
+      out.push(value ? 1 : 0);
+      continue;
+    }
     if (typeof value !== "number") {
       throw new DataValidationError(`Series.${method}() only works on numeric data`);
     }
@@ -670,11 +675,12 @@ export class Series<T = unknown> {
    * Calculate the sum of all values.
    *
    * Skips null, undefined, and NaN values. Uses compensated summation, so the
-   * result does not drift on long or badly scaled inputs. A Series that holds
-   * only missing values sums to 0.
+   * result does not drift on long or badly scaled inputs. Booleans count as 1
+   * (true) and 0 (false), like pandas. An empty Series, or one that holds only
+   * missing values, sums to 0.
    *
    * @returns Sum of all numeric values.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @throws {DataValidationError} If the Series contains data that is neither numeric nor boolean
    *
    * @example
    * ```ts
@@ -683,20 +689,18 @@ export class Series<T = unknown> {
    * ```
    */
   sum(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get sum of empty Series");
-    }
-    return compensatedSum(collectNumeric(this._data, "sum"));
+    return compensatedSum(collectNumeric(this._data, "sum", true));
   }
 
   /**
    * Calculate the arithmetic mean (average) of all values.
    *
-   * Skips null, undefined, and NaN values. Returns NaN when no numeric value
-   * remains.
+   * Skips null, undefined, and NaN values. Booleans count as 1 and 0, so the
+   * mean of booleans is the share of true values. Returns NaN when no numeric
+   * value remains, which includes an empty Series (like pandas).
    *
    * @returns Mean of all numeric values.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @throws {DataValidationError} If the Series contains data that is neither numeric nor boolean
    *
    * @example
    * ```ts
@@ -705,10 +709,7 @@ export class Series<T = unknown> {
    * ```
    */
   mean(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get mean of empty Series");
-    }
-    const numericData = collectNumeric(this._data, "mean");
+    const numericData = collectNumeric(this._data, "mean", true);
     return numericData.length > 0 ? compensatedSum(numericData) / numericData.length : NaN;
   }
 
@@ -718,8 +719,8 @@ export class Series<T = unknown> {
    * Skips null, undefined, and NaN values.
    * For even-length Series, returns the average of the two middle values.
    *
-   * @returns Median value, or NaN when no numeric value remains.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @returns Median value, or NaN when no numeric value remains (including an empty Series).
+   * @throws {DataValidationError} If the Series contains non-numeric data
    *
    * @example
    * ```ts
@@ -728,10 +729,6 @@ export class Series<T = unknown> {
    * ```
    */
   median(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get median of empty Series");
-    }
-
     const sorted = Float64Array.from(collectNumeric(this._data, "median")).sort();
     if (sorted.length === 0) {
       return NaN;
@@ -758,8 +755,8 @@ export class Series<T = unknown> {
    * Uses the sample standard deviation (divides by n - ddof, default n - 1).
    *
    * @param ddof - Delta degrees of freedom (default: 1)
-   * @returns Standard deviation, or NaN when n <= ddof.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @returns Standard deviation, or NaN when n <= ddof (including an empty Series).
+   * @throws {DataValidationError} If the Series contains non-numeric data
    * @throws {InvalidParameterError} If ddof is not a non-negative integer
    *
    * @example
@@ -770,7 +767,7 @@ export class Series<T = unknown> {
    */
   std(ddof: number = 1): number {
     validateDdof(ddof);
-    return Math.sqrt(this.variance("std", "Cannot get std of empty Series", ddof));
+    return Math.sqrt(this.variance("std", ddof));
   }
 
   /**
@@ -780,8 +777,8 @@ export class Series<T = unknown> {
    * Uses the sample variance (divides by n - ddof, default n - 1).
    *
    * @param ddof - Delta degrees of freedom (default: 1)
-   * @returns Variance, or NaN when n <= ddof.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @returns Variance, or NaN when n <= ddof (including an empty Series).
+   * @throws {DataValidationError} If the Series contains non-numeric data
    * @throws {InvalidParameterError} If ddof is not a non-negative integer
    *
    * @example
@@ -792,13 +789,10 @@ export class Series<T = unknown> {
    */
   var(ddof: number = 1): number {
     validateDdof(ddof);
-    return this.variance("var", "Cannot get variance of empty Series", ddof);
+    return this.variance("var", ddof);
   }
 
-  private variance(method: string, emptyMessage: string, ddof: number): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError(emptyMessage);
-    }
+  private variance(method: string, ddof: number): number {
     const numericData = collectNumeric(this._data, method);
     if (numericData.length <= ddof) {
       return NaN;
@@ -812,8 +806,8 @@ export class Series<T = unknown> {
    *
    * Skips null, undefined, and NaN values.
    *
-   * @returns Minimum value, or NaN when no numeric value remains.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @returns Minimum value, or NaN when no numeric value remains (including an empty Series).
+   * @throws {DataValidationError} If the Series contains non-numeric data
    *
    * @example
    * ```ts
@@ -822,9 +816,6 @@ export class Series<T = unknown> {
    * ```
    */
   min(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get min of empty Series");
-    }
     const numericData = collectNumeric(this._data, "min");
     if (numericData.length === 0) return NaN;
     let minVal = Infinity;
@@ -839,8 +830,8 @@ export class Series<T = unknown> {
    *
    * Skips null, undefined, and NaN values.
    *
-   * @returns Maximum value, or NaN when no numeric value remains.
-   * @throws {DataValidationError} If Series is empty or contains non-numeric data
+   * @returns Maximum value, or NaN when no numeric value remains (including an empty Series).
+   * @throws {DataValidationError} If the Series contains non-numeric data
    *
    * @example
    * ```ts
@@ -849,9 +840,6 @@ export class Series<T = unknown> {
    * ```
    */
   max(): number {
-    if (this._data.length === 0) {
-      throw new DataValidationError("Cannot get max of empty Series");
-    }
     const numericData = collectNumeric(this._data, "max");
     if (numericData.length === 0) return NaN;
     let maxVal = -Infinity;

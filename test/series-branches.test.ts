@@ -33,9 +33,9 @@ describe("Series - Branch Coverage", () => {
     expect(() => bad.valueCounts()).toThrow(/only supports Series/);
 
     const empty = new Series<number>([]);
-    expect(() => empty.sum()).toThrow(/empty/);
-    expect(() => empty.mean()).toThrow(/empty/);
-    expect(() => empty.median()).toThrow(/empty/);
+    expect(empty.sum()).toBe(0);
+    expect(empty.mean()).toBeNaN();
+    expect(empty.median()).toBeNaN();
 
     const nonNumeric = new Series(["x", "y"]);
     expect(() => nonNumeric.sum()).toThrow(/numeric/);
