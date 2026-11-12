@@ -428,7 +428,8 @@ export class PolynomialFeatures implements Transformer {
  * Binarize data (set feature values to 0 or 1) according to a threshold.
  *
  * Values greater than the threshold map to 1, while values less than or
- * equal to the threshold (and NaN) map to 0. The output is always float64.
+ * equal to the threshold (and NaN) map to 0. The output is float32 for float32 input and
+ * float64 otherwise.
  *
  * @example
  * ```ts
@@ -489,7 +490,11 @@ export class Binarizer implements Transformer {
         nFeatures
       );
     }
-    const result = new Float64Array(nSamples * nFeatures);
+    const outDtype = X.dtype === "float32" ? "float32" : "float64";
+    const result =
+      outDtype === "float32"
+        ? new Float32Array(nSamples * nFeatures)
+        : new Float64Array(nSamples * nFeatures);
     const [s0, s1] = getStrides2D(X);
 
     const src = X.data as ArrayLike<number | bigint>;
@@ -506,7 +511,7 @@ export class Binarizer implements Transformer {
     return TensorClass.fromTypedArray({
       data: result,
       shape: [nSamples, nFeatures],
-      dtype: "float64",
+      dtype: outDtype,
       device: X.device,
     });
   }
