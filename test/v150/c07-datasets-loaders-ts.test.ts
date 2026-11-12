@@ -624,7 +624,7 @@ describe("transforms", () => {
       return { data, target };
     });
     expect(width).toBe(64);
-    expect(mapped.data.shape).toEqual([1797, 64]);
+    expect(mapped.data.shape).toEqual([1797, 8, 8]);
 
     expect(() => mapDataset(loadLinnerud(), (d, t) => ({ data: d, target: t }))).toThrow(
       ShapeError

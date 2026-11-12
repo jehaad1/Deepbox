@@ -11,6 +11,7 @@
 
 import { DataValidationError, DeepboxError, InvalidParameterError } from "../core/errors";
 import { type Tensor, tensor } from "../ndarray";
+import { buildFetchSignal, readResponseBytes } from "./_download";
 import { assertBoolean, defaultFloatDtype } from "./utils";
 
 /**
@@ -44,95 +45,10 @@ export type FetchCSVDatasetOptions = {
   readonly abortSignal?: AbortSignal;
 };
 
-const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 100 * 1024 * 1024; // 100 MB safety cap
-const MAX_TIMEOUT_MS = 2_147_483_647;
-
-/**
- * Build the signal passed to `fetch`: the caller's signal, a timeout, or both.
- * `cleanup` clears the timer and detaches the listener once the request is done.
- */
-function buildFetchSignal(opts: FetchCSVDatasetOptions): {
-  signal: AbortSignal | undefined;
-  cleanup: () => void;
-} {
-  const ms = opts.timeout === undefined ? DEFAULT_TIMEOUT_MS : opts.timeout;
-  const userSignal = opts.abortSignal;
-  if (ms <= 0) return { signal: userSignal, cleanup: () => {} };
-
-  const controller = new AbortController();
-  // Timers overflow above 2^31 - 1 ms and would fire immediately, so clamp the delay.
-  const timer = setTimeout(
-    () => controller.abort(new DOMException("Fetch timed out", "TimeoutError")),
-    Math.min(ms, MAX_TIMEOUT_MS)
-  );
-  let onAbort: (() => void) | undefined;
-  if (userSignal) {
-    if (userSignal.aborted) {
-      controller.abort(userSignal.reason);
-    } else {
-      onAbort = () => controller.abort(userSignal.reason);
-      userSignal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      // Clear the timer so it does not keep the event loop alive after a fast response.
-      clearTimeout(timer);
-      if (userSignal && onAbort) userSignal.removeEventListener("abort", onAbort);
-    },
-  };
-}
 
 async function streamResponseText(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength !== null) {
-    const parsed = Number(contentLength);
-    if (Number.isFinite(parsed) && parsed > maxBytes) {
-      throw new DeepboxError(
-        `Response content-length ${parsed} exceeds maxBytes limit ${maxBytes}. ` +
-          "Increase maxBytes or use a smaller dataset."
-      );
-    }
-  }
-
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > maxBytes) {
-      throw new DeepboxError(
-        `Response body ${buffer.byteLength} bytes exceeds maxBytes limit ${maxBytes}.`
-      );
-    }
-    return new TextDecoder().decode(buffer);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let totalBytes = 0;
-  const chunks: string[] = [];
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        totalBytes += value.byteLength;
-        if (totalBytes > maxBytes) {
-          await reader.cancel().catch(() => undefined);
-          throw new DeepboxError(
-            `Response body exceeds maxBytes limit ${maxBytes}. Streamed ${totalBytes} bytes so far.`
-          );
-        }
-        chunks.push(decoder.decode(value, { stream: true }));
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
+  return new TextDecoder().decode(await readResponseBytes(response, maxBytes));
 }
 
 function validateCSVOptions(options: {
@@ -218,7 +134,10 @@ export async function fetchCSVDataset(options: FetchCSVDatasetOptions): Promise<
   }
   validateCSVOptions(options);
 
-  const { signal, cleanup } = buildFetchSignal(options);
+  const { signal, cleanup } = buildFetchSignal({
+    timeout: options.timeout,
+    abortSignal: options.abortSignal,
+  });
 
   let text: string;
   try {

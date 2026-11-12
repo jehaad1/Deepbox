@@ -13,6 +13,14 @@
 import { DataValidationError, DeepboxError, InvalidParameterError } from "../core/errors";
 import { type Tensor, tensor } from "../ndarray";
 import { decompressGzip, extractTarFiles } from "./_archive";
+import {
+  DEFAULT_ARCHIVE_TIMEOUT_MS,
+  DEFAULT_MAX_DECOMPRESSED_BYTES,
+  DEFAULT_TIMEOUT_MS,
+  downloadBytes,
+  validateChecksum,
+  validateDownloadLimits,
+} from "./_download";
 import { assertBoolean, assertPositiveInt } from "./utils";
 
 /**
@@ -58,10 +66,23 @@ export type TextFetchOptions = {
    * mirror and 600 000 for an archive download, which is much larger.
    */
   readonly timeout?: number;
+  /**
+   * Largest archive download accepted, in bytes. A larger response is rejected before it is held
+   * in memory. Default: 512 MB. Applies to the archive, not to a `baseUrl` JSON mirror.
+   */
+  readonly maxBytes?: number;
+  /**
+   * Largest size, in bytes, the archive may expand to. Decompression stops with a
+   * {@link MemoryError} when it is exceeded. Default: 1 GB.
+   */
+  readonly maxDecompressedBytes?: number;
+  /**
+   * Expected SHA-256 digest (64 hexadecimal characters) of the downloaded archive, checked with
+   * `globalThis.crypto.subtle` before it is decompressed. No check runs when it is omitted.
+   */
+  readonly checksum?: string;
 };
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_ARCHIVE_TIMEOUT_MS = 600_000;
 /** The "bydate" archive of 20 Newsgroups that scikit-learn downloads. */
 const NEWSGROUPS_ARCHIVE_URL = "https://ndownloader.figshare.com/files/5975967";
 /** The Stanford large movie review archive. */
@@ -131,16 +152,8 @@ function validateTextOptions(options: TextFetchOptions): void {
   if (options.allowSyntheticFallback !== undefined) {
     assertBoolean("allowSyntheticFallback", options.allowSyntheticFallback);
   }
-  if (
-    options.timeout !== undefined &&
-    !(Number.isFinite(options.timeout) && options.timeout >= 0)
-  ) {
-    throw new InvalidParameterError(
-      "timeout must be a non-negative number of milliseconds",
-      "timeout",
-      options.timeout
-    );
-  }
+  validateDownloadLimits(options);
+  validateChecksum("checksum", options.checksum);
 }
 
 function joinUrl(base: string, file: string): string {
@@ -215,13 +228,23 @@ function timeoutSignal(timeoutMs: number): { signal?: AbortSignal } {
 /** Download a `.tar.gz` archive and return the unpacked tar entries. */
 async function fetchTarEntries(
   url: string,
-  timeoutMs: number
+  options: TextFetchOptions
 ): Promise<{ name: string; data: Uint8Array }[]> {
-  const resp = await fetch(url, timeoutSignal(timeoutMs));
-  if (!resp.ok) {
-    throw new DeepboxError(`HTTP ${resp.status} ${resp.statusText}`.trim());
-  }
-  const tar = await decompressGzip(new Uint8Array(await resp.arrayBuffer()));
+  const gz = await downloadBytes(
+    url,
+    url,
+    {
+      timeout: options.timeout,
+      defaultTimeout: DEFAULT_ARCHIVE_TIMEOUT_MS,
+      maxBytes: options.maxBytes,
+      checksum: options.checksum,
+    },
+    (status, statusText) => `HTTP ${status} ${statusText}`.trim()
+  );
+  const tar = await decompressGzip(
+    gz,
+    options.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES
+  );
   return extractTarFiles(tar);
 }
 
@@ -400,7 +423,8 @@ function takeFirst(json: TextJson, maxSamples: number | undefined): TextJson {
  * @param options - Configuration options
  * @returns TextDataset with newsgroup texts and `int32` labels
  * @throws {InvalidParameterError} If an option is invalid
- * @throws {DeepboxError} If the download fails or the response has the wrong layout, and
+ * @throws {DeepboxError} If the download fails, times out, exceeds `maxBytes` or
+ *   `maxDecompressedBytes`, fails the `checksum`, or the response has the wrong layout, and
  *   `allowSyntheticFallback` is not set
  *
  * @example
@@ -434,7 +458,7 @@ export async function fetch20Newsgroups(options: TextFetchOptions = {}): Promise
         classNames: [...(json.target_names as string[])],
       };
     } else {
-      const entries = await fetchTarEntries(url, options.timeout ?? DEFAULT_ARCHIVE_TIMEOUT_MS);
+      const entries = await fetchTarEntries(url, options);
       parsed = classBalancedFirst(parseNewsgroupsArchive(entries, subset), options.maxSamples);
     }
     return {
@@ -507,7 +531,8 @@ export async function fetch20Newsgroups(options: TextFetchOptions = {}): Promise
  * @param options - Configuration options
  * @returns TextDataset with review texts and `int32` labels
  * @throws {InvalidParameterError} If an option is invalid
- * @throws {DeepboxError} If the download fails or the response has the wrong layout, and
+ * @throws {DeepboxError} If the download fails, times out, exceeds `maxBytes` or
+ *   `maxDecompressedBytes`, fails the `checksum`, or the response has the wrong layout, and
  *   `allowSyntheticFallback` is not set
  *
  * @example
@@ -537,7 +562,7 @@ export async function fetchIMDB(options: TextFetchOptions = {}): Promise<TextDat
       );
       parsed = { data: json.data, target: json.target, classNames: [...IMDB_CLASSES] };
     } else {
-      const entries = await fetchTarEntries(url, options.timeout ?? DEFAULT_ARCHIVE_TIMEOUT_MS);
+      const entries = await fetchTarEntries(url, options);
       parsed = classBalancedFirst(parseImdbArchive(entries, subset), options.maxSamples);
     }
     return {
