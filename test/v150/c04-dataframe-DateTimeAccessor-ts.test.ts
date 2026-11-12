@@ -543,7 +543,6 @@ describe("str accessor (v1.5.0)", () => {
     expect(new Series(["abc"]).str.strip("").data).toEqual(["abc"]);
     expect(new Series(["😀a😀"]).str.strip("😀").data).toEqual(["a"]);
     const long = `b${"a".repeat(200000)}b`;
-    const start = Date.now();
     expect(new Series([long]).str.strip("a").data[0]).toBe(long);
   });
 
