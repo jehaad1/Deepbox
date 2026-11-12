@@ -3,7 +3,7 @@
  */
 
 import { DTypeError, ShapeError } from "../../core";
-import type { AnyTensor } from "../../ndarray";
+import { type AnyTensor, GradTensor, Tensor } from "../../ndarray";
 
 type NumericArray = Float32Array | Float64Array | Int32Array | Uint8Array;
 
@@ -129,4 +129,72 @@ function safeConvertToNumber(value: unknown): number {
     return Number(value);
   }
   throw new DTypeError(`Cannot convert ${typeof value} to number for plotting`);
+}
+
+/** A 2D grid of numbers: a tensor, or nested arrays or typed arrays. */
+export type GridInput = AnyTensor | ArrayLike<ArrayLike<number>>;
+
+/** A 1D list of numbers: a tensor, an array or a typed array. */
+export type VectorInput = AnyTensor | ArrayLike<number>;
+
+function isAnyTensor(value: unknown): value is AnyTensor {
+  return value instanceof Tensor || value instanceof GradTensor;
+}
+
+/**
+ * Copies a 1D tensor or array-like into a fresh Float64Array.
+ * @throws {ShapeError} If a tensor is not 1D.
+ * @throws {DTypeError} If a tensor holds strings.
+ * @internal
+ */
+export function toFloat64Vector(value: VectorInput): Float64Array {
+  return isAnyTensor(value) ? tensorToFloat64Vector1D(value) : Float64Array.from(value);
+}
+
+/**
+ * Copies the x, y and z grids of a 3D surface or wireframe into rectangular Float64Array rows,
+ * accepting 2D tensors, nested arrays or arrays of typed arrays.
+ * @param fn - Name of the calling plot function, used in error messages
+ * @throws {ShapeError} If a tensor is not 2D, a grid is empty or ragged, or the grids differ in shape.
+ * @throws {DTypeError} If a tensor holds strings.
+ * @internal
+ */
+export function toFloat64Grids(
+  fn: string,
+  xGrid: GridInput,
+  yGrid: GridInput,
+  zGrid: GridInput
+): [Float64Array[], Float64Array[], Float64Array[]] {
+  const rowsOf = (grid: GridInput): ArrayLike<ArrayLike<number>> => {
+    if (!isAnyTensor(grid)) return grid;
+    const { rows, cols, data } = tensorToFloat64Matrix2D(grid);
+    return Array.from({ length: rows }, (_, r) => data.subarray(r * cols, (r + 1) * cols));
+  };
+  const x = rowsOf(xGrid);
+  const y = rowsOf(yGrid);
+  const z = rowsOf(zGrid);
+  const rows = z.length;
+  if (rows === 0 || x.length !== rows || y.length !== rows) {
+    throw new ShapeError(
+      `${fn}: xGrid, yGrid and zGrid must have the same, non-zero number of rows; received ${x.length}, ${y.length}, ${z.length}`
+    );
+  }
+  const cols = z[0]?.length ?? 0;
+  if (cols === 0) {
+    throw new ShapeError(`${fn}: grids must have at least one column`);
+  }
+  const copy = (grid: ArrayLike<ArrayLike<number>>, name: string): Float64Array[] => {
+    const out: Float64Array[] = [];
+    for (let r = 0; r < rows; r++) {
+      const row = grid[r];
+      if (row === undefined || row.length !== cols) {
+        throw new ShapeError(
+          `${fn}: ${name} must be a rectangular ${rows} x ${cols} grid; row ${r} has length ${row?.length ?? 0}`
+        );
+      }
+      out.push(Float64Array.from(row));
+    }
+    return out;
+  };
+  return [copy(x, "xGrid"), copy(y, "yGrid"), copy(z, "zGrid")];
 }
