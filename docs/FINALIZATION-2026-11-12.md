@@ -125,19 +125,19 @@ Format: id, priority, area, evidence, status.
 | ND-16 | P3 | ndarray | `gcd`/`lcm` truncate non-integer floats silently. | fixed f618014 |
 | ND-17 | P3 | ndarray | `sort(x, undefined)` sorts last axis instead of flattening. | documented, already correct |
 | ND-18 | P3 | linalg | `trace` returns shape `[1]`; `cov` of 1-D returns `[1,1]`; one-observation `cov` throws. | one-observation cov fixed 96619bb; trace and 1-D cov shapes owner decision |
-| ML-1 | P1 | ml | `crossValScore`/`crossValidate`/`GridSearchCV`/`RandomizedSearchCV` accept only integer `cv`; the shipped splitters (`KFold`, `TimeSeriesSplit`, `GroupKFold`) cannot be used, so time-ordered data leaks. Verified. | open |
-| ML-2 | P1 | ml | `MLPClassifier` wraps labels outside int32 (3e9 becomes -1294967296). Verified. | open |
-| ML-3 | P2 | ml | 74 estimator constructors ignore unknown keys (`KMeans({n_clusters})`, `SVC({probability})`, `TSNE({maxIter})`). | open |
-| ML-4 | P2 | ml | `setParams(getParams())` throws for Voting, Stacking, CalibratedClassifierCV. | open |
-| ML-5 | P2 | ml | LDA/QDA use unbiased covariance; JSDoc claims sklearn parity; probabilities differ by 1e-2. | open |
-| ML-6 | P2 | ml | `Ridge` builds the p x p Gram matrix when p > n (p=3000: 10.9 s vs 0.6 s for svd). | open |
-| ML-7 | P2 | ml | LDA/QDA use Jacobi eigen (x400 features: 12.5 s). | open |
-| ML-8 | P2 | ml | 17 estimators silently ignore `sampleWeight`; `LinearSVR` has none. | open |
-| ML-9 | P2 | ml | `coef`/`intercept` types differ across linear models (Tensor, Float64Array, number, array). | owner decision (unify with deprecated aliases) |
-| ML-10 | P3 | ml | Defaults differ from sklearn (tree `maxDepth` 10, GMM `diag`, LinearSVC `hinge`, ...). Changing them is breaking. | owner decision; document in one table |
-| ML-11 | P3 | ml | `KDTree`/`BallTree` keep a reference to the caller's buffer. | open |
-| ML-12 | P3 | ml | Lasso/ElasticNet/Ridge/SGD/RANSAC/KernelRidge validate hyperparameters only in `fit`. | open |
-| ML-13 | P3 | ml | TSNE `nIter` vs `maxIter`; predict label dtype varies; `crossValScore` positional vs options. | open |
+| ML-1 | P1 | ml | `crossValScore`/`crossValidate`/`GridSearchCV`/`RandomizedSearchCV` accept only integer `cv`; the shipped splitters (`KFold`, `TimeSeriesSplit`, `GroupKFold`) cannot be used, so time-ordered data leaks. Verified. | fixed ee02721 |
+| ML-2 | P1 | ml | `MLPClassifier` wraps labels outside int32 (3e9 becomes -1294967296). Verified. | fixed 9605c40 |
+| ML-3 | P2 | ml | 74 estimator constructors ignore unknown keys (`KMeans({n_clusters})`, `SVC({probability})`, `TSNE({maxIter})`). | fixed 63dc6b1 (behavior change: unknown options throw) |
+| ML-4 | P2 | ml | `setParams(getParams())` throws for Voting, Stacking, CalibratedClassifierCV. | fixed 63dc6b1 |
+| ML-5 | P2 | ml | LDA/QDA use unbiased covariance; JSDoc claims sklearn parity; probabilities differ by 1e-2. | fixed 4baeccf (behavior change: LDA/QDA match sklearn) |
+| ML-6 | P2 | ml | `Ridge` builds the p x p Gram matrix when p > n (p=3000: 10.9 s vs 0.6 s for svd). | fixed af69d79 (p=3000: 17.2 s to 19 ms) |
+| ML-7 | P2 | ml | LDA/QDA use Jacobi eigen (x400 features: 12.5 s). | fixed e4393ea (LDA 1000x400: 18.5 s to 2.7 s) |
+| ML-8 | P2 | ml | 17 estimators silently ignore `sampleWeight`; `LinearSVR` has none. | fixed 9196678 for 15 estimators; NB variants, QuantileRegressor, RANSAC, Bagging, GaussianProcess still ignore weights |
+| ML-9 | P2 | ml | `coef`/`intercept` types differ across linear models (Tensor, Float64Array, number, array). | owner decision (getter types listed) |
+| ML-10 | P3 | ml | Defaults differ from sklearn (tree `maxDepth` 10, GMM `diag`, LinearSVC `hinge`, ...). Changing them is breaking. | documented de7d34e; changing defaults is owner decision |
+| ML-11 | P3 | ml | `KDTree`/`BallTree` keep a reference to the caller's buffer. | fixed 9a5d1e8 |
+| ML-12 | P3 | ml | Lasso/ElasticNet/Ridge/SGD/RANSAC/KernelRidge validate hyperparameters only in `fit`. | fixed ebe2963, 52aba8d |
+| ML-13 | P3 | ml | TSNE `nIter` vs `maxIter`; predict label dtype varies; `crossValScore` positional vs options. | fixed 63dc6b1 (label dtype unchanged) |
 | PP-1 | P1 | preprocess | Encoders and `KBinsDiscretizer` lack `getParams`/`setParams`/`clone`; Pipeline clone and CV fail. Verified. | open |
 | MT-1 | P1 | metrics | `classificationReport` accepts only binary 0/1 labels. Verified. | open |
 | MT-2 | P1 | metrics | No `posLabel`; `{-1,1}` and `{1,2}` labels throw by default. Verified. | open |
@@ -172,3 +172,5 @@ Format: id, priority, area, evidence, status.
 | DOCS-14 | P3 | datasets | IMDB default URL refused from this network; figshare fine. | unverified (network) |
 | DOCSCI-1 | P1 | docs CI | Every Deepbox-Docs CI run since 2026-10-09 failed: the Deepbox checkout inside the workspace made Biome see two root configurations. | fixed (Deepbox-Docs workflow); runs now stop with `startup_failure` and zero jobs on this private repository, which points at the account's Actions billing or minutes (owner action) |
 | BENCH-1 | P1 | bench site | `https://bench.deepbox.dev` serves a Let's Encrypt certificate that expired 2026-08-04 and no Vercel project has the alias, so the subdomain is broken for visitors. | owner decision (restore with the leaderboard, or remove the DNS record) |
+| ML-14 | P2 | ml | MultinomialNB, BernoulliNB, ComplementNB, CategoricalNB, QuantileRegressor, RANSAC, Bagging, GaussianProcess silently ignore a third `fit` argument from untyped code. | open |
+| ML-15 | P3 | ml | QDA `regParam` adds to the diagonal; sklearn uses `(1-reg)*S + reg*I`. LDA `shrinkage` differs from sklearn's lsqr estimator. | owner decision |
