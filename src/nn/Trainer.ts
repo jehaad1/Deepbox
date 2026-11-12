@@ -15,7 +15,7 @@
  * @see {@link https://deepbox.dev/docs/nn-module | Deepbox documentation}
  */
 
-import { InvalidParameterError, ShapeError } from "../core";
+import { InvalidParameterError, Logger, ShapeError } from "../core";
 import { type AnyTensor, GradTensor, mulScalar, noGrad, type Tensor, tensor } from "../ndarray";
 import { clip_grad_norm_ } from "./clip";
 import type { Module } from "./module/Module";
@@ -70,7 +70,11 @@ export type TrainerOptions = {
   readonly checkpoint?: ModelCheckpoint;
   /** Callbacks invoked after each epoch, including the one that triggers early stopping. */
   readonly callbacks?: readonly TrainerCallback[];
-  /** Whether to log epoch progress to the console. Default: false */
+  /**
+   * Whether to log epoch progress (default: false). Messages go through the core logger: they
+   * print to the console unless a handler was installed with `setLogHandler`, and carry the
+   * source `"Trainer"`.
+   */
   readonly verbose?: boolean;
   /**
    * Clip the global L2 norm of the gradients to this value before every
@@ -122,8 +126,10 @@ export type TrainerResult = {
  * `Tensor` or detached loss would train nothing, so it throws an `InvalidParameterError`.
  *
  * `fit()` can be called again to continue training: the history restarts at
- * epoch 1 and early-stopping state is reset. The model is left in the mode it
- * was last in (evaluation mode when validation data was given).
+ * epoch 1 and early-stopping state is reset. The model is put in training mode for each
+ * epoch (and in evaluation mode for validation), and returned to the mode it had before
+ * `fit()` was called when the run ends, also when it ends with an error. Call `model.eval()`
+ * yourself afterwards for inference.
  *
  * The loss value is read on the host after each step, so `Trainer` is meant for
  * CPU tensors. A loss that lives in device memory throws a `DeviceError`; train
@@ -163,7 +169,7 @@ export class Trainer {
   private readonly earlyStopping: EarlyStopping | undefined;
   private readonly checkpoint: ModelCheckpoint | undefined;
   private readonly callbacks: readonly TrainerCallback[];
-  private readonly verbose: boolean;
+  private readonly logger: Logger;
   private readonly maxGradNorm: number | undefined;
   private readonly accumulationSteps: number;
   private readonly restoreBest: ModelCheckpoint | undefined;
@@ -213,7 +219,7 @@ export class Trainer {
     this.epochs = options.epochs ?? 10;
     this.checkpoint = options.checkpoint;
     this.callbacks = options.callbacks ?? [];
-    this.verbose = options.verbose ?? false;
+    this.logger = new Logger(options.verbose === true ? 1 : 0, "Trainer");
     this.maxGradNorm = options.maxGradNorm;
     this.accumulationSteps = options.accumulationSteps ?? 1;
     this.restoreBest =
@@ -280,29 +286,33 @@ export class Trainer {
   ): TrainerResult {
     const run = this.beginRun();
 
-    for (let epoch = 1; epoch <= this.epochs; epoch++) {
-      this.model.train();
-      const train = new LossMeter();
-      for (const [x, y] of trainData) {
-        train.add(this.trainStep(x, y), batchWeight(x));
-      }
-      this.flushAccumulation();
-      const trainLoss = train.mean("trainData", epoch);
-
-      let valLoss: number | undefined;
-      if (valData) {
-        this.model.eval();
-        const val = new LossMeter();
-        for (const [x, y] of valData) {
-          val.add(this.evalStep(x, y), batchWeight(x));
+    try {
+      for (let epoch = 1; epoch <= this.epochs; epoch++) {
+        this.model.train();
+        const train = new LossMeter();
+        for (const [x, y] of trainData) {
+          train.add(this.trainStep(x, y), batchWeight(x));
         }
-        valLoss = val.mean("valData", epoch);
+        this.flushAccumulation();
+        const trainLoss = train.mean("trainData", epoch);
+
+        let valLoss: number | undefined;
+        if (valData) {
+          this.model.eval();
+          const val = new LossMeter();
+          for (const [x, y] of valData) {
+            val.add(this.evalStep(x, y), batchWeight(x));
+          }
+          valLoss = val.mean("valData", epoch);
+        }
+
+        if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
       }
 
-      if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
+      return this.finishRun(run);
+    } finally {
+      this.model.train(run.wasTraining);
     }
-
-    return this.finishRun(run);
   }
 
   /**
@@ -326,29 +336,33 @@ export class Trainer {
   ): Promise<TrainerResult> {
     const run = this.beginRun();
 
-    for (let epoch = 1; epoch <= this.epochs; epoch++) {
-      this.model.train();
-      const train = new LossMeter();
-      for await (const [x, y] of trainData) {
-        train.add(this.trainStep(x, y), batchWeight(x));
-      }
-      this.flushAccumulation();
-      const trainLoss = train.mean("trainData", epoch);
-
-      let valLoss: number | undefined;
-      if (valData) {
-        this.model.eval();
-        const val = new LossMeter();
-        for await (const [x, y] of valData) {
-          val.add(this.evalStep(x, y), batchWeight(x));
+    try {
+      for (let epoch = 1; epoch <= this.epochs; epoch++) {
+        this.model.train();
+        const train = new LossMeter();
+        for await (const [x, y] of trainData) {
+          train.add(this.trainStep(x, y), batchWeight(x));
         }
-        valLoss = val.mean("valData", epoch);
+        this.flushAccumulation();
+        const trainLoss = train.mean("trainData", epoch);
+
+        let valLoss: number | undefined;
+        if (valData) {
+          this.model.eval();
+          const val = new LossMeter();
+          for await (const [x, y] of valData) {
+            val.add(this.evalStep(x, y), batchWeight(x));
+          }
+          valLoss = val.mean("valData", epoch);
+        }
+
+        if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
       }
 
-      if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
+      return this.finishRun(run);
+    } finally {
+      this.model.train(run.wasTraining);
     }
-
-    return this.finishRun(run);
   }
 
   /** Reset per-run state: early stopping starts fresh on every fit. */
@@ -356,7 +370,7 @@ export class Trainer {
     this.earlyStopping?.reset();
     this.restoreBest?.reset();
     this.pending = 0;
-    return { history: [], stoppedEarly: false };
+    return { history: [], stoppedEarly: false, wasTraining: this.model.training };
   }
 
   /**
@@ -447,11 +461,9 @@ export class Trainer {
     const epochInfo: EpochInfo = { epoch, trainLoss, valLoss };
     run.history.push(epochInfo);
 
-    if (this.verbose) {
-      let msg = `Epoch ${epoch}/${this.epochs}, train_loss: ${trainLoss.toFixed(6)}`;
-      if (valLoss !== undefined) msg += `, val_loss: ${valLoss.toFixed(6)}`;
-      console.log(msg);
-    }
+    let msg = `Epoch ${epoch}/${this.epochs}, train_loss: ${trainLoss.toFixed(6)}`;
+    if (valLoss !== undefined) msg += `, val_loss: ${valLoss.toFixed(6)}`;
+    this.logger.info(msg);
 
     const monitored = valLoss ?? trainLoss;
     if (this.checkpoint) {
@@ -485,6 +497,8 @@ export class Trainer {
 type RunState = {
   readonly history: EpochInfo[];
   stoppedEarly: boolean;
+  /** Mode of the model when the run started, restored when it ends. */
+  readonly wasTraining: boolean;
 };
 
 /** Read the value of a single-element loss tensor. */
