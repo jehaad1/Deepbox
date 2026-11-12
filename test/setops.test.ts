@@ -113,10 +113,10 @@ describe("union1d", () => {
     expect(result.toArray()).toEqual([1, 2, 3]);
   });
 
-  it("throws on non-1D input", () => {
+  it("flattens N-D input like numpy", () => {
     const a = tensor([[1, 2]]);
     const b = tensor([3, 4]);
-    expect(() => union1d(a, b)).toThrow();
+    expect(union1d(a, b).toArray()).toEqual([1, 2, 3, 4]);
   });
 });
 
@@ -143,10 +143,10 @@ describe("intersect1d", () => {
     expect(result.toArray()).toEqual([2, 3]);
   });
 
-  it("throws on non-1D input", () => {
+  it("flattens N-D input like numpy", () => {
     const a = tensor([[1, 2]]);
-    const b = tensor([3, 4]);
-    expect(() => intersect1d(a, b)).toThrow();
+    const b = tensor([2, 4]);
+    expect(intersect1d(a, b).toArray()).toEqual([2]);
   });
 });
 
@@ -179,9 +179,9 @@ describe("setdiff1d", () => {
     expect(result.toArray()).toEqual([1, 3]);
   });
 
-  it("throws on non-1D input", () => {
+  it("flattens N-D input like numpy", () => {
     const a = tensor([[1, 2]]);
     const b = tensor([3]);
-    expect(() => setdiff1d(a, b)).toThrow();
+    expect(setdiff1d(a, b).toArray()).toEqual([1, 2]);
   });
 });

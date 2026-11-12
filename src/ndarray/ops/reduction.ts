@@ -204,8 +204,14 @@ function planReduction(
  * every axis listed), otherwise the normalized (non-negative, unique) axes in
  * the order given.
  */
-function resolveAxes(axis: AxisArg | undefined, ndim: number): number[] | null {
+function resolveAxes(
+  axis: AxisArg | undefined,
+  ndim: number,
+  allowScalarAxis = false
+): number[] | null {
   if (axis === undefined) return null;
+  // NumPy accepts axis 0 and -1 for a 0-d input in sum, prod, max, min, all and any.
+  if (allowScalarAxis && ndim === 0 && (axis === 0 || axis === -1)) return null;
   const axes = normalizeAxes(axis, ndim);
   return axes.length === ndim ? null : axes;
 }
@@ -401,7 +407,7 @@ function sumImpl(t: Tensor, axis: AxisArg | undefined, keepdims: boolean): Tenso
   }
 
   const outDtype = outDtypeForSum(t.dtype);
-  const axes = resolveAxes(axis, t.ndim);
+  const axes = resolveAxes(axis, t.ndim, true);
 
   if (axes === null) {
     if (t.data instanceof BigInt64Array) {
@@ -584,7 +590,7 @@ export function prod(t: Tensor, axis?: AxisArg, keepdims = false): Tensor {
 
   const dtype: NumericDType = t.dtype === "uint8" || t.dtype === "bool" ? "int32" : t.dtype;
   const integer = dtype === "int32";
-  const axes = resolveAxes(axis, t.ndim);
+  const axes = resolveAxes(axis, t.ndim, true);
 
   if (axes === null) {
     if (t.data instanceof BigInt64Array) {
@@ -825,7 +831,7 @@ function extremum(
   name: "min" | "max"
 ): Tensor {
   const dtype = t.dtype as NumericDType;
-  const axes = resolveAxes(axis, t.ndim);
+  const axes = resolveAxes(axis, t.ndim, true);
 
   if (axes === null) {
     if (t.size === 0) {
@@ -1307,7 +1313,7 @@ function diffOnce(input: Tensor, ax: number): Tensor {
 }
 
 function diffOnceImpl(input: Tensor, ax: number): Tensor {
-  const outDtype = outDtypeForCumulative(input.dtype);
+  const outDtype = input.dtype === "bool" ? "bool" : outDtypeForCumulative(input.dtype);
   const len = input.shape[ax] as number;
   const outShape = [...input.shape];
   outShape[ax] = Math.max(len - 1, 0);
@@ -1362,6 +1368,26 @@ function diffOnceImpl(input: Tensor, ax: number): Tensor {
   }
 
   const { data } = numberView(input, "diff");
+  if (input.dtype === "bool") {
+    // NumPy differences bool arrays with XOR and keeps the bool dtype.
+    const flags = new Uint8Array(outSize);
+    for (let j = 0; j < bases.length; j++) {
+      const outer = Math.floor(j / inner);
+      const outBase = outer * outLen * inner + (j - outer * inner);
+      const base = bases[j] as number;
+      for (let k = 0; k < outLen; k++) {
+        const prev = data[base + k * axisStride] !== 0;
+        const cur = data[base + (k + 1) * axisStride] !== 0;
+        flags[outBase + k * inner] = prev !== cur ? 1 : 0;
+      }
+    }
+    return Tensor.fromTypedArray({
+      data: flags,
+      shape: outShape,
+      dtype: "bool",
+      device: input.device,
+    });
+  }
   const out = newTyped(outDtype, outSize);
   const checkInt32 = outDtype === "int32";
   for (let j = 0; j < bases.length; j++) {
@@ -1392,8 +1418,8 @@ function diffOnceImpl(input: Tensor, ax: number): Tensor {
  *
  * The first difference is `out[i] = a[i + 1] - a[i]` along `axis`; higher
  * orders apply it repeatedly. The axis shrinks by `n` (down to length 0).
- * int64 stays int64 and int32, uint8 and bool give int32, both throwing on
- * overflow; float dtypes are kept.
+ * int64 stays int64 and int32 and uint8 give int32, both throwing on overflow; float dtypes
+ * are kept. A bool input is differenced with XOR and stays bool, as in NumPy.
  *
  * @param t - Input tensor
  * @param n - Number of times to difference; a non-negative integer (default 1)
@@ -1450,7 +1476,7 @@ function truthReduction(
   name: "any" | "all"
 ): Tensor {
   ensureNumericTensor(t, name);
-  const axes = resolveAxes(axis, t.ndim);
+  const axes = resolveAxes(axis, t.ndim, true);
   // `any` looks for a truthy value, `all` for a falsy one; both stop at the first hit.
   const stopWhenZero = !isAny;
 

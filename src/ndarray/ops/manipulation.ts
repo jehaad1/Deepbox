@@ -30,7 +30,7 @@ import {
 } from "../../core";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
-import { readNumericContiguous } from "./_internal";
+import { readNumbers, readNumericContiguous } from "./_internal";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -578,11 +578,12 @@ export function tile(t: Tensor, reps: number[]): Tensor {
  * **Complexity**: O(n * repeats) where n is input size
  *
  * @param t - Input tensor
- * @param repeats - Number of times to repeat each element, or one count per element
+ * @param repeatsArg - Number of times to repeat each element, or one count per element (a
+ *   number, a list or a 1-D integer tensor)
  * @param axis - Axis along which to repeat (default: flatten first)
  * @returns Tensor with repeated elements
  * @throws {InvalidParameterError} If a count is negative or not an integer, the array length
- *   does not match the axis length, or `axis` is out of range
+ *   does not match the axis length, a tensor of counts is not 1-D, or `axis` is out of range
  *
  * @example
  * ```ts
@@ -593,8 +594,27 @@ export function tile(t: Tensor, reps: number[]): Tensor {
  *
  * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox Tensor Operations}
  */
-export function repeat(t: Tensor, repeats: number | readonly number[], axis?: Axis): Tensor {
+export function repeat(
+  t: Tensor,
+  repeatsArg: number | readonly number[] | Tensor,
+  axis?: Axis
+): Tensor {
   assertHostTensors("repeat", [t]);
+  let repeats: number | readonly number[];
+  if (repeatsArg instanceof Tensor) {
+    if (repeatsArg.ndim > 1 || repeatsArg.dtype === "string") {
+      throw new InvalidParameterError(
+        `repeats must be a number, a list or a 1-D numeric tensor; received a ${repeatsArg.dtype} ` +
+          `tensor of shape [${repeatsArg.shape.join(", ")}]`,
+        "repeats",
+        repeatsArg.shape
+      );
+    }
+    const counts = readNumbers(repeatsArg, "repeat", false);
+    repeats = repeatsArg.ndim === 0 ? (counts[0] ?? 0) : Array.from(counts);
+  } else {
+    repeats = repeatsArg;
+  }
   const checkCount = (value: number | undefined, label: string): number => {
     if (value === undefined || !Number.isInteger(value) || value < 0) {
       throw new InvalidParameterError(

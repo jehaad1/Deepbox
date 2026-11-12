@@ -3316,28 +3316,52 @@ export function countNonzero(t: Tensor, axis?: Axis | readonly Axis[], keepdims 
 }
 
 /**
- * Rotate a 2-D tensor by 90 degrees counter-clockwise, `k` times.
+ * Rotate a tensor by 90 degrees in the plane of two axes, `k` times (NumPy `rot90`).
  *
- * @param t - Input 2-D tensor
- * @param k - Number of 90° rotations (default 1). Negative values rotate clockwise.
+ * The rotation goes from the first axis toward the second one. For a 2-D tensor and the
+ * default axes this is counter-clockwise.
+ *
+ * @param t - Input tensor with at least 2 dimensions
+ * @param k - Number of 90° rotations (default 1). Negative values rotate the other way.
+ * @param axes - The two axes that span the plane of rotation (default `[0, 1]`); negative
+ *   values count from the last axis
  * @returns Rotated copy of the tensor
- * @throws {ShapeError} If the input is not 2-D
- * @throws {InvalidParameterError} If `k` is not an integer
+ * @throws {ShapeError} If the input has fewer than 2 dimensions
+ * @throws {InvalidParameterError} If `k` is not an integer, or `axes` are not two different
+ *   axes of the tensor
+ *
+ * @example
+ * ```ts
+ * rot90(tensor([[1, 2], [3, 4]]));        // [[2, 4], [1, 3]]
+ * rot90(ones([2, 3, 4]), 1, [1, 2]).shape; // [2, 4, 3]
+ * ```
  */
-export function rot90(t: Tensor, k = 1): Tensor {
-  if (t.ndim !== 2) {
-    throw new ShapeError(`rot90 requires a 2-D tensor, got ${t.ndim}-D`);
+export function rot90(t: Tensor, k = 1, axes: readonly [number, number] = [0, 1]): Tensor {
+  if (t.ndim < 2) {
+    throw new ShapeError(`rot90 requires at least a 2-D tensor, got ${t.ndim}-D`);
   }
   if (!Number.isInteger(k)) {
     throw new InvalidParameterError(`rot90 k must be an integer; got ${k}`, "k", k);
   }
+  const first = normalizeAxis(axes[0], t.ndim);
+  const second = normalizeAxis(axes[1], t.ndim);
+  if (first === second) {
+    throw new InvalidParameterError(
+      `rot90 axes must be two different axes; got [${axes[0]}, ${axes[1]}]`,
+      "axes",
+      axes
+    );
+  }
+  const swapped = Array.from({ length: t.ndim }, (_, i) =>
+    i === first ? second : i === second ? first : i
+  );
   switch (((k % 4) + 4) % 4) {
     case 1:
-      return flip(transpose(t), [0]);
+      return transpose(flip(t, [second]), swapped);
     case 2:
-      return flip(t, [0, 1]);
+      return flip(t, [first, second]);
     case 3:
-      return flip(transpose(t), [1]);
+      return flip(transpose(t, swapped), [second]);
     default:
       return clone(t);
   }

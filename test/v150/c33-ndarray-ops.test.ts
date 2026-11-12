@@ -659,8 +659,8 @@ describe("set operations", () => {
     expect(union1d(strided, f64([2])).toArray()).toEqual([1, 2, 3]);
   });
 
-  it("report which argument is not 1-D", () => {
-    expect(() => union1d(f64([1]), f64([[1]]))).toThrow(/b has shape \[1, 1\]/);
+  it("flatten N-D arguments and reject strings mixed with numbers", () => {
+    expect(union1d(f64([1]), f64([[1]])).toArray()).toEqual([1]);
     expect(() => setdiff1d(tensor(["a"]), f64([1]))).toThrow(DTypeError);
   });
 });
