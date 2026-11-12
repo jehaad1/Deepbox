@@ -313,9 +313,9 @@ describe("Series - Extended Tests", () => {
         expect(s.sum()).toBe(10);
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.sum()).toThrow(/Cannot get sum of empty Series/);
+        expect(s.sum()).toBe(0);
       });
 
       it("should throw for non-numeric data", () => {
@@ -340,9 +340,9 @@ describe("Series - Extended Tests", () => {
         expect(s.mean()).toBe(2.5);
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.mean()).toThrow(/Cannot get mean of empty Series/);
+        expect(s.mean()).toBeNaN();
       });
 
       it("should throw for non-numeric data", () => {
@@ -367,9 +367,9 @@ describe("Series - Extended Tests", () => {
         expect(s.median()).toBe(2.5);
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.median()).toThrow(/Cannot get median of empty Series/);
+        expect(s.median()).toBeNaN();
       });
 
       it("should not mutate original data", () => {
@@ -396,9 +396,9 @@ describe("Series - Extended Tests", () => {
         expect(s.std()).toBeNaN();
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.std()).toThrow(/Cannot get std of empty Series/);
+        expect(s.std()).toBeNaN();
       });
 
       it("should use sample standard deviation", () => {
@@ -419,9 +419,9 @@ describe("Series - Extended Tests", () => {
         expect(s.var()).toBeNaN();
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.var()).toThrow(/Cannot get variance of empty Series/);
+        expect(s.var()).toBeNaN();
       });
     });
 
@@ -431,9 +431,9 @@ describe("Series - Extended Tests", () => {
         expect(s.min()).toBe(1);
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.min()).toThrow(/Cannot get min of empty Series/);
+        expect(s.min()).toBeNaN();
       });
 
       it("should handle negative numbers", () => {
@@ -453,9 +453,9 @@ describe("Series - Extended Tests", () => {
         expect(s.max()).toBe(9);
       });
 
-      it("should throw for empty Series", () => {
+      it("should not throw for an empty Series", () => {
         const s = new Series([]);
-        expect(() => s.max()).toThrow(/Cannot get max of empty Series/);
+        expect(s.max()).toBeNaN();
       });
 
       it("should handle negative numbers", () => {

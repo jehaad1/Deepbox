@@ -3,7 +3,7 @@ import { DataValidationError, IndexError, InvalidParameterError } from "../core/
 import { reshape, type Tensor, tensor } from "../ndarray/index";
 import { Generator } from "../random/Generator";
 import { __random, __randomBelow } from "../random/random";
-import { correlate, averageRanks as correlationRanks } from "./correlation";
+import { correlate, averageRanks as correlationRanks, pearsonFromSums } from "./correlation";
 import {
   type ParquetReadOptions,
   type ParquetWriteOptions,
@@ -22,6 +22,7 @@ import type {
   ConcatOptions,
   CorrelationMethod,
   CorrOptions,
+  CsvReadOptions,
   DataFrameData,
   DataFrameOptions,
   FillMethod,
@@ -37,9 +38,10 @@ import {
   cellText,
   checkFillLimit,
   checkFillMethod,
-  compareStrings,
+  compareValues,
   compensatedSum,
   createKey,
+  dedupeHeaders,
   isPlainObject,
   isRecord,
   isValidNumber,
@@ -118,6 +120,83 @@ const ensureUniqueLabels = (labels: readonly string[], labelName: string): void 
   }
 };
 
+/** Target types of `DataFrame.astype`. */
+type AstypeDtype = "number" | "string" | "boolean";
+
+/** Options of `DataFrame.astype`. */
+type AstypeOptions = { readonly errors?: "raise" | "coerce" };
+
+/** Decimal numbers accepted by `astype("number")`: no hex, octal or binary forms. */
+const DECIMAL_NUMBER = /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|Infinity)$/;
+
+/**
+ * Normalize a join key option (a column name or an array of names) to a list.
+ * Empty names, empty lists, duplicates and non-strings are rejected.
+ */
+const joinKeyList = (value: unknown, name: string): string[] => {
+  const list = Array.isArray(value) ? value : [value];
+  if (list.length === 0 || !isStringArray(list)) {
+    throw new InvalidParameterError(
+      `${name} must be a column name or a non-empty array of column names`,
+      name,
+      value
+    );
+  }
+  if (list.some((col) => col === "")) {
+    throw new InvalidParameterError(`${name} must not contain an empty column name`, name, value);
+  }
+  if (new Set(list).size !== list.length) {
+    throw new InvalidParameterError(`${name} must not repeat a column name`, name, value);
+  }
+  return list;
+};
+
+/** Cell texts read as missing (null) by default; see `CsvReadOptions.naValues`. */
+const DEFAULT_CSV_NA_VALUES: readonly string[] = [
+  "null",
+  "undefined",
+  "NA",
+  "N/A",
+  "n/a",
+  "NULL",
+  "None",
+  "#N/A",
+  "#N/A N/A",
+  "#NA",
+  "-1.#IND",
+  "-1.#QNAN",
+  "-NaN",
+  "-nan",
+  "1.#IND",
+  "1.#QNAN",
+  "<NA>",
+];
+
+/**
+ * Convert one CSV cell to a value: null for empty or missing-marker cells,
+ * NaN, finite numbers (and the words Infinity and -Infinity), booleans, and
+ * otherwise the original text. Integers beyond the safe range, numbers that
+ * overflow to Infinity, and unsigned-part leading-zero tokens such as 007 or
+ * -007 stay text.
+ */
+const parseCsvCell = (value: string | undefined, naValues: ReadonlySet<string>): unknown => {
+  const trimmed = value === undefined ? "" : value.trim();
+  if (trimmed === "" || naValues.has(trimmed)) return null;
+  if (trimmed === "NaN" || trimmed === "nan") return NaN;
+  if (trimmed === "true" || trimmed === "True" || trimmed === "TRUE") return true;
+  if (trimmed === "false" || trimmed === "False" || trimmed === "FALSE") return false;
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed)) return value;
+  const unsigned = trimmed.startsWith("-") || trimmed.startsWith("+") ? trimmed.slice(1) : trimmed;
+  // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
+  if (unsigned !== "0" && unsigned.startsWith("0") && !unsigned.startsWith("0.")) return value;
+  if (!Number.isFinite(parsed)) {
+    return unsigned === "Infinity" ? parsed : value;
+  }
+  if (!Number.isSafeInteger(parsed) && /^[+-]?\d+$/.test(trimmed)) return value;
+  return parsed;
+};
+
 /** True for null, undefined and NaN (the values treated as "missing"). */
 const isMissing = (value: unknown): boolean =>
   value === null || value === undefined || (typeof value === "number" && Number.isNaN(value));
@@ -142,9 +221,6 @@ const quantileSorted = (sorted: ArrayLike<number>, q: number): number => {
   const diff = b - a;
   return weight >= 0.5 ? b - diff * (1 - weight) : a + diff * weight;
 };
-
-/** Rounding can push a correlation a hair past +-1; keep it inside the valid range. */
-const clampCorrelation = (r: number): number => (r > 1 ? 1 : r < -1 ? -1 : r);
 
 /** Round half to even (IEEE "banker's" rounding), as NumPy and pandas do. */
 const roundHalfEven = (x: number): number => {
@@ -224,25 +300,6 @@ const drawRows = (
     }
   }
   return picked;
-};
-
-/**
- * Total order used by sort(): numbers and bigints numerically, strings by
- * UTF-16 code unit (locale independent, like pandas), dates by timestamp,
- * booleans false < true. Mixed types fall back to comparing their string forms.
- * Callers handle missing values first.
- */
-const compareValues = (a: unknown, b: unknown): number => {
-  if (
-    (typeof a === "number" || typeof a === "bigint") &&
-    (typeof b === "number" || typeof b === "bigint")
-  ) {
-    return a < b ? -1 : a > b ? 1 : 0;
-  }
-  if (typeof a === "string" && typeof b === "string") return compareStrings(a, b);
-  if (a instanceof Date && b instanceof Date) return compareNumbers(a.getTime(), b.getTime());
-  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
-  return compareStrings(String(a), String(b));
 };
 
 /** Sort order for labels in reshaped output: numbers ascending, otherwise by string form. */
@@ -795,7 +852,8 @@ export class DataFrame {
    * Filter rows based on a boolean predicate function.
    *
    * The row object passed to `predicate` is reused between calls to avoid one
-   * allocation per row, so copy it (`{ ...row }`) if you need to keep it.
+   * allocation per row, so copy it (`{ ...row }`) if you need to keep it. It has
+   * no prototype, so a column named `__proto__` or `toString` is an ordinary field.
    *
    * @param predicate - Function that returns true for rows to keep
    * @returns New DataFrame with filtered rows
@@ -821,10 +879,10 @@ export class DataFrame {
     // First pass: find matching row indices using a reusable row object
     const matchIndices: number[] = [];
     // biome-ignore lint/suspicious/noExplicitAny: DataFrame rows are dynamically typed
-    const row: Record<string, any> = {};
+    const row: Record<string, any> = Object.create(null);
     for (let i = 0; i < nRows; i++) {
       for (let c = 0; c < nCols; c++) {
-        row[this._columns[c] as string] = (colArrays[c] as unknown[])[i];
+        setField(row, this._columns[c] as string, (colArrays[c] as unknown[])[i]);
       }
       if (predicate(row)) {
         matchIndices.push(i);
@@ -941,7 +999,9 @@ export class DataFrame {
    * The sort is stable. Missing values (null, undefined, NaN) always go last,
    * for both sort directions. Numbers and bigints compare numerically, strings
    * by UTF-16 code unit (the same locale independent order as `Series.sort` and
-   * pandas, so "B" sorts before "a"), dates by timestamp.
+   * pandas, so "B" sorts before "a"), dates by timestamp. A column that mixes types is ordered
+   * by type first (numbers and bigints, strings, booleans, dates, then other values), so a
+   * descending sort is the exact reverse of an ascending one.
    *
    * @param by - Column name or array of column names to sort by
    * @param ascending - Sort in ascending order (default: true). Pass an array with
@@ -1082,7 +1142,9 @@ export class DataFrame {
    * unmatched right rows.
    *
    * @param other - DataFrame to join with
-   * @param on - Column name to join on (must exist in both DataFrames)
+   * @param on - Column name, or array of column names, to join on (must exist in
+   *   both DataFrames). With several names a row matches when every key column
+   *   is equal; rows with a null or undefined part never match.
    * @param how - Type of join operation
    *   - 'inner': Only rows with matching keys in both DataFrames
    *   - 'left': All rows from left, matched rows from right (nulls for non-matches)
@@ -1090,7 +1152,8 @@ export class DataFrame {
    *   - 'outer': All rows from both DataFrames (nulls for non-matches)
    * @returns New DataFrame with joined data
    *
-   * @throws {InvalidParameterError} If join column doesn't exist in either DataFrame
+   * @throws {InvalidParameterError} If `on` is an empty string or empty array, or a join
+   *   column doesn't exist in either DataFrame
    *
    * @example
    * ```ts
@@ -1116,7 +1179,7 @@ export class DataFrame {
    */
   join(
     other: DataFrame,
-    on: string,
+    on: string | readonly string[],
     how: "inner" | "left" | "right" | "outer" = "inner"
   ): DataFrame {
     if (!JOIN_KINDS.includes(how)) {
@@ -1126,15 +1189,26 @@ export class DataFrame {
         how
       );
     }
-    // Validate join column exists in both DataFrames
-    if (!this._data.has(on)) {
-      throw new InvalidParameterError(`Join column '${on}' not found in left DataFrame`, "on", on);
-    }
-    if (!other._data.has(on)) {
-      throw new InvalidParameterError(`Join column '${on}' not found in right DataFrame`, "on", on);
+    const keys = joinKeyList(on, "on");
+    // Validate join columns exist in both DataFrames
+    for (const key of keys) {
+      if (!this._data.has(key)) {
+        throw new InvalidParameterError(
+          `Join column '${key}' not found in left DataFrame`,
+          "on",
+          key
+        );
+      }
+      if (!other._data.has(key)) {
+        throw new InvalidParameterError(
+          `Join column '${key}' not found in right DataFrame`,
+          "on",
+          key
+        );
+      }
     }
 
-    return this.hashJoin(other, on, on, how, ["_left", "_right"]);
+    return this.hashJoin(other, keys, keys, how, ["_left", "_right"]);
   }
 
   /**
@@ -1149,21 +1223,43 @@ export class DataFrame {
    */
   private hashJoin(
     other: DataFrame,
-    leftOn: string,
-    rightOn: string,
+    leftOn: readonly string[],
+    rightOn: readonly string[],
     how: "inner" | "left" | "right" | "outer",
     suffixes: readonly [string, string]
   ): DataFrame {
-    const leftKeys = this._data.get(leftOn) ?? [];
-    const rightKeys = other._data.get(rightOn) ?? [];
-    const sameKey = leftOn === rightOn;
+    const leftKeyCols = leftOn.map((col) => this._data.get(col) ?? []);
+    const rightKeyCols = rightOn.map((col) => other._data.get(col) ?? []);
+    const nLeft = this._index.length;
+    const nRight = other._index.length;
+    // Key columns with the same name on both sides are emitted once, unsuffixed.
+    const sharedKeys = new Map<string, readonly unknown[]>();
+    for (let k = 0; k < leftOn.length; k++) {
+      if (leftOn[k] === rightOn[k]) {
+        sharedKeys.set(leftOn[k] as string, rightKeyCols[k] as readonly unknown[]);
+      }
+    }
 
-    const buildHash = (keys: readonly unknown[]): Map<string, number[]> => {
+    // Hash key of row i, or undefined when any key part is null/undefined (never matches).
+    const keyAt = (cols: readonly (readonly unknown[])[], i: number): string | undefined => {
+      if (cols.length === 1) {
+        const val = (cols[0] as readonly unknown[])[i];
+        return val === null || val === undefined ? undefined : createKey(val);
+      }
+      const parts: unknown[] = new Array(cols.length);
+      for (let c = 0; c < cols.length; c++) {
+        const val = (cols[c] as readonly unknown[])[i];
+        if (val === null || val === undefined) return undefined;
+        parts[c] = val;
+      }
+      return createKey(parts);
+    };
+
+    const buildHash = (cols: readonly (readonly unknown[])[], n: number): Map<string, number[]> => {
       const hash = new Map<string, number[]>();
-      for (let i = 0; i < keys.length; i++) {
-        const val = keys[i];
-        if (val === null || val === undefined) continue;
-        const key = createKey(val);
+      for (let i = 0; i < n; i++) {
+        const key = keyAt(cols, i);
+        if (key === undefined) continue;
         const bucket = hash.get(key);
         if (bucket === undefined) hash.set(key, [i]);
         else bucket.push(i);
@@ -1176,11 +1272,10 @@ export class DataFrame {
     const rightRows: number[] = [];
 
     if (how === "right") {
-      const leftHash = buildHash(leftKeys);
-      for (let r = 0; r < rightKeys.length; r++) {
-        const val = rightKeys[r];
-        const matches =
-          val === null || val === undefined ? undefined : leftHash.get(createKey(val));
+      const leftHash = buildHash(leftKeyCols, nLeft);
+      for (let r = 0; r < nRight; r++) {
+        const key = keyAt(rightKeyCols, r);
+        const matches = key === undefined ? undefined : leftHash.get(key);
         if (matches === undefined) {
           leftRows.push(-1);
           rightRows.push(r);
@@ -1192,12 +1287,11 @@ export class DataFrame {
         }
       }
     } else {
-      const rightHash = buildHash(rightKeys);
-      const matchedRight = how === "outer" ? new Uint8Array(rightKeys.length) : null;
-      for (let l = 0; l < leftKeys.length; l++) {
-        const val = leftKeys[l];
-        const matches =
-          val === null || val === undefined ? undefined : rightHash.get(createKey(val));
+      const rightHash = buildHash(rightKeyCols, nRight);
+      const matchedRight = how === "outer" ? new Uint8Array(nRight) : null;
+      for (let l = 0; l < nLeft; l++) {
+        const key = keyAt(leftKeyCols, l);
+        const matches = key === undefined ? undefined : rightHash.get(key);
         if (matches === undefined) {
           if (how === "left" || how === "outer") {
             leftRows.push(l);
@@ -1212,7 +1306,7 @@ export class DataFrame {
         }
       }
       if (matchedRight) {
-        for (let r = 0; r < rightKeys.length; r++) {
+        for (let r = 0; r < nRight; r++) {
           if (matchedRight[r] === 0) {
             leftRows.push(-1);
             rightRows.push(r);
@@ -1223,7 +1317,7 @@ export class DataFrame {
 
     // Output column names. A column present on both sides gets a suffix on each
     // side (the shared join key itself is emitted once, unsuffixed).
-    const rightSource = other._columns.filter((col) => !(sameKey && col === rightOn));
+    const rightSource = other._columns.filter((col) => !sharedKeys.has(col));
     const leftColumnSet = new Set(this._columns);
     const overlapping = new Set(rightSource.filter((col) => leftColumnSet.has(col)));
     const usedNames = new Set<string>();
@@ -1247,7 +1341,7 @@ export class DataFrame {
       const col = this._columns[j] as string;
       const src = this._data.get(col) ?? [];
       // Unmatched right rows take the join key from the right frame.
-      const fallback = sameKey && col === leftOn ? rightKeys : null;
+      const fallback = sharedKeys.get(col) ?? null;
       const out = new Array<unknown>(nOut);
       for (let k = 0; k < nOut; k++) {
         const l = leftRows[k] as number;
@@ -1282,16 +1376,17 @@ export class DataFrame {
    *
    * @param other - DataFrame to merge with
    * @param options - Merge configuration
-   *   - on: Column name to join on (must exist in both DataFrames)
-   *   - leftOn: Column name in left DataFrame
-   *   - rightOn: Column name in right DataFrame
+   *   - on: Column name, or array of column names, to join on (must exist in both
+   *     DataFrames). With several names a row matches when every key column is equal.
+   *   - leftOn: Column name (or array of names) in left DataFrame
+   *   - rightOn: Column name (or array of names) in right DataFrame, as many as `leftOn`
    *   - left_on, right_on: Deprecated spellings of `leftOn` and `rightOn`. `leftOn` and
    *     `rightOn` win when both spellings are given.
    *   - how: Join type ('inner', 'left', 'right', 'outer')
    *   - suffixes: Suffix for duplicate column names ['_x', '_y']
    * @returns New DataFrame with merged data
    *
-   * @throws {InvalidParameterError} If merge columns don't exist or conflicting options provided
+   * @throws {InvalidParameterError} If merge columns are empty, don't exist or conflicting options provided
    *
    * @example
    * ```ts
@@ -1317,13 +1412,13 @@ export class DataFrame {
   merge(
     other: DataFrame,
     options: {
-      readonly on?: string;
-      readonly leftOn?: string;
-      readonly rightOn?: string;
+      readonly on?: string | readonly string[];
+      readonly leftOn?: string | readonly string[];
+      readonly rightOn?: string | readonly string[];
       /** @deprecated Prefer `leftOn`. */
-      readonly left_on?: string;
+      readonly left_on?: string | readonly string[];
       /** @deprecated Prefer `rightOn`. */
-      readonly right_on?: string;
+      readonly right_on?: string | readonly string[];
       readonly how?: "inner" | "left" | "right" | "outer";
       readonly suffixes?: readonly [string, string];
     } = {}
@@ -1356,31 +1451,29 @@ export class DataFrame {
     // Determine join columns. The camelCase keys win over the deprecated snake_case ones.
     const leftOnOption = options.leftOn ?? options.left_on;
     const rightOnOption = options.rightOn ?? options.right_on;
-    let leftOn: string;
-    let rightOn: string;
+    let leftOn: string[];
+    let rightOn: string[];
 
-    if (options.on) {
-      if (typeof options.on !== "string") {
-        throw new InvalidParameterError("on must be a string", "on", options.on);
-      }
-      // Same column name in both DataFrames
-      if (leftOnOption || rightOnOption) {
+    if (options.on !== undefined) {
+      // Same column names in both DataFrames
+      if (leftOnOption !== undefined || rightOnOption !== undefined) {
         throw new InvalidParameterError(
           'Cannot specify both "on" and "left_on"/"right_on" (or "leftOn"/"rightOn")'
         );
       }
-      leftOn = options.on;
-      rightOn = options.on;
-    } else if (leftOnOption && rightOnOption) {
-      if (typeof leftOnOption !== "string") {
-        throw new InvalidParameterError("leftOn must be a string", "leftOn", leftOnOption);
-      }
-      if (typeof rightOnOption !== "string") {
-        throw new InvalidParameterError("rightOn must be a string", "rightOn", rightOnOption);
-      }
+      leftOn = joinKeyList(options.on, "on");
+      rightOn = leftOn;
+    } else if (leftOnOption !== undefined && rightOnOption !== undefined) {
       // Different column names
-      leftOn = leftOnOption;
-      rightOn = rightOnOption;
+      leftOn = joinKeyList(leftOnOption, "leftOn");
+      rightOn = joinKeyList(rightOnOption, "rightOn");
+      if (leftOn.length !== rightOn.length) {
+        throw new InvalidParameterError(
+          `leftOn and rightOn must name the same number of columns (${leftOn.length} vs ${rightOn.length})`,
+          "rightOn",
+          rightOnOption
+        );
+      }
     } else {
       throw new InvalidParameterError(
         'Must specify either "on" or both "left_on" and "right_on" (or "leftOn" and "rightOn")'
@@ -1388,19 +1481,23 @@ export class DataFrame {
     }
 
     // Validate columns exist
-    if (!this._data.has(leftOn)) {
-      throw new InvalidParameterError(
-        `Column '${leftOn}' not found in left DataFrame`,
-        "leftOn",
-        leftOn
-      );
+    for (const col of leftOn) {
+      if (!this._data.has(col)) {
+        throw new InvalidParameterError(
+          `Column '${col}' not found in left DataFrame`,
+          "leftOn",
+          col
+        );
+      }
     }
-    if (!other._data.has(rightOn)) {
-      throw new InvalidParameterError(
-        `Column '${rightOn}' not found in right DataFrame`,
-        "rightOn",
-        rightOn
-      );
+    for (const col of rightOn) {
+      if (!other._data.has(col)) {
+        throw new InvalidParameterError(
+          `Column '${col}' not found in right DataFrame`,
+          "rightOn",
+          col
+        );
+      }
     }
 
     return this.hashJoin(other, leftOn, rightOn, how, suffixes);
@@ -1421,7 +1518,10 @@ export class DataFrame {
    * become null), or only the shared labels with `join: "inner"`. `ignoreIndex: true` names the
    * resulting columns "0", "1", ... instead.
    *
-   * @param other - DataFrame to concatenate
+   * An array of DataFrames is concatenated one after another, left to right, so
+   * `a.concat([b, c])` is `a.concat(b).concat(c)`; an empty array gives a copy of `this`.
+   *
+   * @param other - DataFrame, or array of DataFrames, to concatenate
    * @param axis - Axis to concatenate along, or the options object.
    *               - 0 or "rows" or "index": Stack vertically (append rows)
    *               - 1 or "columns": Stack horizontally (append columns)
@@ -1429,6 +1529,7 @@ export class DataFrame {
    * @returns Concatenated DataFrame
    * @throws {DataValidationError} If the columns differ and no `join` is given, or labels collide
    *   with `ignoreIndex: false`
+   * @throws {InvalidParameterError} If `other` is neither a DataFrame nor an array of DataFrames
    *
    * @example
    * ```ts
@@ -1439,7 +1540,23 @@ export class DataFrame {
    * df1.concat(df2, { join: "inner" });                 // only column a
    * ```
    */
-  concat(other: DataFrame, axis: Axis | ConcatOptions = 0, options: ConcatOptions = {}): DataFrame {
+  concat(
+    other: DataFrame | readonly DataFrame[],
+    axis: Axis | ConcatOptions = 0,
+    options: ConcatOptions = {}
+  ): DataFrame {
+    if (Array.isArray(other)) {
+      let result: DataFrame = this;
+      for (const item of other) result = result.concat(item, axis, options);
+      return result === this ? this.copy() : result;
+    }
+    if (!(other instanceof DataFrame)) {
+      throw new InvalidParameterError(
+        "concat expects a DataFrame or an array of DataFrames",
+        "other",
+        other
+      );
+    }
     const opts: ConcatOptions = typeof axis === "object" ? { ...axis, ...options } : options;
     const ax = normalizeAxis(typeof axis === "object" ? 0 : axis, 2);
     const join = opts.join;
@@ -1982,13 +2099,11 @@ export class DataFrame {
       allValid && kind === "spearman" ? columns.map((col) => correlationRanks(col)) : columns;
     const pairKind: CorrelationMethod = allValid && kind === "spearman" ? "pearson" : kind;
     const centered: Float64Array[] = [];
-    const norms: number[] = [];
+    const squares: number[] = [];
     if (allValid && pairKind === "pearson" && nRows >= need) {
       for (const col of ranked) {
         const shifted = new Float64Array(nRows);
-        let mean = 0;
-        for (let i = 0; i < nRows; i++) mean += col[i] as number;
-        mean /= nRows;
+        const mean = compensatedSum(col) / nRows;
         let ss = 0;
         for (let i = 0; i < nRows; i++) {
           const d = (col[i] as number) - mean;
@@ -1996,7 +2111,7 @@ export class DataFrame {
           ss += d * d;
         }
         centered.push(shifted);
-        norms.push(Math.sqrt(ss));
+        squares.push(ss);
       }
     }
 
@@ -2027,14 +2142,14 @@ export class DataFrame {
         if (allValid) {
           if (nRows >= need) {
             if (pairKind === "pearson") {
-              const normA = norms[a] as number;
-              const normB = norms[b] as number;
-              if (normA !== 0 && normB !== 0) {
+              const ssA = squares[a] as number;
+              const ssB = squares[b] as number;
+              if (ssA !== 0 && ssB !== 0) {
                 const ca = centered[a] as Float64Array;
                 const cb = centered[b] as Float64Array;
                 let dot = 0;
                 for (let i = 0; i < nRows; i++) dot += (ca[i] as number) * (cb[i] as number);
-                r = clampCorrelation(dot / (normA * normB));
+                r = pearsonFromSums(dot, ssA, ssB);
               }
             } else {
               r = correlate(pairKind, ranked[a] as Float64Array, ranked[b] as Float64Array);
@@ -2329,10 +2444,20 @@ export class DataFrame {
    * Parse a CSV string into a DataFrame, inferring cell types and handling quoted fields.
    *
    * Cell types are inferred per cell: numbers (including `Infinity` and `NaN`),
-   * `true`/`false`, and strings. Empty cells and the words `null` and `undefined`
-   * become null. Strings with a leading zero such as `007` stay strings. Header
-   * cells that are empty are named `Unnamed: <position>`. Quoted fields may
-   * contain delimiters, line breaks and doubled quote characters.
+   * booleans (`true`, `True`, `TRUE` and the `false` spellings), and strings.
+   * Empty cells and the `naValues` markers (by default `null`, `undefined`,
+   * `NA`, `N/A`, `NULL`, `None` and the other pandas missing markers) become
+   * null. Text that cannot be a plain JavaScript number stays a string: tokens
+   * with a leading zero after the optional sign such as `007` or `-007`,
+   * numbers that overflow to infinity such as `1e400`, and all-digit integers
+   * beyond 2^53 - 1 (kept as their original digits instead of being silently
+   * rounded; pandas would keep an int64). Header cells that are empty are named
+   * `Unnamed: <position>` and repeated names get `.1`, `.2` suffixes like pandas.
+   * Rows shorter than the header are padded with null; longer rows throw. A
+   * quote character opens a quoted field only at the start of a field, so a
+   * quote inside an unquoted field such as `pipe 12" steel` is kept literally.
+   * Quoted fields may contain delimiters, line breaks and doubled quote
+   * characters.
    *
    * Time complexity: O(n) where n is number of characters.
    *
@@ -2343,18 +2468,11 @@ export class DataFrame {
    * @param options.hasHeader - Whether the first row holds column names (default: true).
    *   Without a header the columns are named col0, col1, ...
    * @param options.skipRows - Number of leading non-blank rows to skip (default: 0)
+   * @param options.naValues - Cell texts read as null, replacing the default list
    * @throws {InvalidParameterError} If an option is invalid
    * @throws {DataValidationError} If the CSV is malformed
    */
-  static fromCsvString(
-    csvString: string,
-    options: {
-      readonly delimiter?: string;
-      readonly quoteChar?: string;
-      readonly hasHeader?: boolean;
-      readonly skipRows?: number;
-    } = {}
-  ): DataFrame {
+  static fromCsvString(csvString: string, options: CsvReadOptions = {}): DataFrame {
     const delimiter = options.delimiter ?? ",";
     const quoteChar = options.quoteChar ?? '"';
     const hasHeader = options.hasHeader ?? true;
@@ -2367,6 +2485,15 @@ export class DataFrame {
         skipRows
       );
     }
+    const naValues = options.naValues ?? DEFAULT_CSV_NA_VALUES;
+    if (!Array.isArray(naValues) || naValues.some((v) => typeof v !== "string")) {
+      throw new InvalidParameterError(
+        "naValues must be an array of strings",
+        "naValues",
+        options.naValues
+      );
+    }
+    const naSet: ReadonlySet<string> = new Set(naValues.map((v) => v.trim()));
 
     // Strip a leading UTF-8 BOM (common in Excel-exported CSVs); otherwise the
     // first column name becomes "﻿<name>" and lookups fail.
@@ -2378,6 +2505,8 @@ export class DataFrame {
     let fields: string[] = [];
     let currentField = "";
     let inQuotes = false;
+    // True before the first character of a field; only there can a quote open quoting.
+    let atFieldStart = true;
     // True once the current row contained a quote character, so a row made of a
     // single quoted empty field ("") is data, not a blank line.
     let rowHadQuote = false;
@@ -2393,20 +2522,22 @@ export class DataFrame {
       const char = csvString[i];
       const nextChar = csvString[i + 1];
 
-      if (char === quoteChar) {
+      if (char === quoteChar && (inQuotes || atFieldStart)) {
         rowHadQuote = true;
+        atFieldStart = false;
         if (inQuotes && nextChar === quoteChar) {
           // Escaped quote
           currentField += quoteChar;
           i++;
         } else {
-          // Toggle quote state
+          // Open or close the quoted section
           inQuotes = !inQuotes;
         }
       } else if (char === delimiter && !inQuotes) {
         // Field separator
         fields.push(currentField);
         currentField = "";
+        atFieldStart = true;
       } else if ((char === "\n" || char === "\r") && !inQuotes) {
         // End of row (but not if inside quotes)
         if (char === "\r" && nextChar === "\n") {
@@ -2425,9 +2556,11 @@ export class DataFrame {
         }
         fields = [];
         rowHadQuote = false;
+        atFieldStart = true;
       } else {
-        // Regular character (including newlines inside quotes)
+        // Regular character (including newlines inside quotes and quotes inside unquoted fields)
         currentField += char;
+        atFieldStart = false;
       }
     }
 
@@ -2453,8 +2586,7 @@ export class DataFrame {
     if (hasHeader) {
       const firstRow = rows[0];
       if (!firstRow) throw new DataValidationError("CSV has no header row");
-      columns = firstRow.map((name, i) => (name === "" ? `Unnamed: ${i}` : name));
-      ensureUniqueLabels(columns, "column name");
+      columns = dedupeHeaders(firstRow.map((name, i) => (name === "" ? `Unnamed: ${i}` : name)));
       dataRows = rows.slice(1);
     } else {
       const numCols = rows[0]?.length ?? 0;
@@ -2464,7 +2596,7 @@ export class DataFrame {
 
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i];
-      if (row && row.length !== columns.length) {
+      if (row && row.length > columns.length) {
         throw new DataValidationError(
           `Row ${i + (hasHeader ? 2 : 1)} has ${row.length} fields, expected ${columns.length}`
         );
@@ -2475,28 +2607,8 @@ export class DataFrame {
     for (let colIdx = 0; colIdx < columns.length; colIdx++) {
       const colName = columns[colIdx] as string;
       const colData: unknown[] = [];
-
-      for (const row of dataRows) {
-        const value = row[colIdx];
-        const trimmed = value === undefined ? "" : value.trim();
-        if (trimmed === "" || trimmed === "null" || trimmed === "undefined") {
-          // Empty or whitespace-only cells are missing (null), NOT numeric 0.
-          colData.push(null);
-        } else if (trimmed === "NaN" || trimmed === "nan") {
-          colData.push(NaN);
-        } else if (
-          !Number.isNaN(Number(trimmed)) &&
-          // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
-          (trimmed === "0" || !trimmed.startsWith("0") || trimmed.startsWith("0."))
-        ) {
-          colData.push(Number(trimmed));
-        } else if (trimmed === "true" || trimmed === "false") {
-          colData.push(trimmed === "true");
-        } else {
-          colData.push(value);
-        }
-      }
-
+      // Empty or whitespace-only cells are missing (null), NOT numeric 0; short rows read as null.
+      for (const row of dataRows) colData.push(parseCsvCell(row[colIdx], naSet));
       data[colName] = colData;
     }
 
@@ -2507,15 +2619,7 @@ export class DataFrame {
    * Read CSV file - environment-aware (Node.js fs or browser fetch).
    * Time complexity: O(n) for file read + O(m) for parsing.
    */
-  static async readCsv(
-    path: string,
-    options: {
-      readonly delimiter?: string;
-      readonly quoteChar?: string;
-      readonly hasHeader?: boolean;
-      readonly skipRows?: number;
-    } = {}
-  ): Promise<DataFrame> {
+  static async readCsv(path: string, options: CsvReadOptions = {}): Promise<DataFrame> {
     let csvString: string;
 
     if (typeof process !== "undefined" && process.versions?.node) {
@@ -3457,8 +3561,9 @@ export class DataFrame {
    *
    * Without `replace`, rows are distinct and `n` may not exceed the number of rows. With
    * `weights`, each draw picks among the remaining rows in proportion to their weights. With
-   * `replace: true` a row can appear several times; because row labels must stay unique, the
-   * result is then labelled 0..k-1.
+   * `replace: true` a row can appear several times; because row labels must stay unique (a
+   * DataFrame cannot hold duplicate labels), the original labels are not kept and the result is
+   * labelled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
    *
    * @param n - Number of rows, or an options object (see {@link SampleOptions})
    * @param randomState - Integer seed (positional form only)
@@ -3728,19 +3833,23 @@ export class DataFrame {
    * Calculate the difference between consecutive rows.
    * Time complexity: O(n × m).
    *
-   * @param periods - Number of periods to shift (default: 1)
+   * @param periods - Number of rows to look back (default: 1). A negative value
+   *   subtracts a following row instead, like pandas: `diff(-1)` is
+   *   `current - next`.
    * @returns New DataFrame with differences
+   * @throws {InvalidParameterError} If periods is not an integer
    *
    * @example
    * ```ts
    * const df = new DataFrame({ a: [1, 3, 6, 10] });
    * df.diff();  // [[null], [2], [3], [4]]
    * df.diff(2);  // [[null], [null], [5], [7]]
+   * df.diff(-1);  // [[-2], [-3], [-4], [null]]
    * ```
    */
   diff(periods: number = 1): DataFrame {
-    if (!Number.isFinite(periods) || !Number.isInteger(periods) || periods < 0) {
-      throw new InvalidParameterError("periods must be a non-negative integer", "periods", periods);
+    if (!Number.isFinite(periods) || !Number.isInteger(periods)) {
+      throw new InvalidParameterError("periods must be an integer", "periods", periods);
     }
     const newData: DataFrameData = newColumnMap();
 
@@ -3751,17 +3860,12 @@ export class DataFrame {
       const diffData: unknown[] = [];
 
       for (let i = 0; i < colData.length; i++) {
-        if (i < periods) {
-          diffData.push(null);
+        const current = colData[i];
+        const previous = i - periods >= 0 ? colData[i - periods] : undefined;
+        if (typeof current === "number" && typeof previous === "number") {
+          diffData.push(current - previous);
         } else {
-          const current = colData[i];
-          const previous = colData[i - periods];
-
-          if (typeof current === "number" && typeof previous === "number") {
-            diffData.push(current - previous);
-          } else {
-            diffData.push(null);
-          }
+          diffData.push(null);
         }
       }
 
@@ -3779,8 +3883,13 @@ export class DataFrame {
    * Calculate percentage change between consecutive rows.
    * Time complexity: O(n × m).
    *
-   * @param periods - Number of periods to shift (default: 1)
+   * A zero previous value gives `Infinity` or `-Infinity` for a non-zero
+   * change and `NaN` for 0/0, like pandas. A negative `periods` compares with a
+   * following row instead: `pctChange(-1)` is `(current - next) / next`.
+   *
+   * @param periods - Number of rows to look back (default: 1)
    * @returns New DataFrame with percentage changes
+   * @throws {InvalidParameterError} If periods is not an integer
    *
    * @example
    * ```ts
@@ -3789,8 +3898,8 @@ export class DataFrame {
    * ```
    */
   pctChange(periods: number = 1): DataFrame {
-    if (!Number.isFinite(periods) || !Number.isInteger(periods) || periods < 0) {
-      throw new InvalidParameterError("periods must be a non-negative integer", "periods", periods);
+    if (!Number.isFinite(periods) || !Number.isInteger(periods)) {
+      throw new InvalidParameterError("periods must be an integer", "periods", periods);
     }
     const newData: DataFrameData = newColumnMap();
 
@@ -3801,17 +3910,12 @@ export class DataFrame {
       const pctData: unknown[] = [];
 
       for (let i = 0; i < colData.length; i++) {
-        if (i < periods) {
-          pctData.push(null);
+        const current = colData[i];
+        const previous = i - periods >= 0 ? colData[i - periods] : undefined;
+        if (typeof current === "number" && typeof previous === "number") {
+          pctData.push((current - previous) / previous);
         } else {
-          const current = colData[i];
-          const previous = colData[i - periods];
-
-          if (typeof current === "number" && typeof previous === "number" && previous !== 0) {
-            pctData.push((current - previous) / previous);
-          } else {
-            pctData.push(null);
-          }
+          pctData.push(null);
         }
       }
 
@@ -5067,7 +5171,8 @@ export class DataFrame {
    * Add or modify columns functionally.
    *
    * Each value can be an array (one entry per row), a function that receives a
-   * row object and the row position and returns the cell value, or a scalar that
+   * row object (without a prototype, so any column name is an ordinary field) and
+   * the row position and returns the cell value, or a scalar that
    * is repeated for every row. Functions see the columns of the original
    * DataFrame, not columns assigned earlier in the same call.
    *
@@ -5099,9 +5204,9 @@ export class DataFrame {
       if (typeof valueOrFn === "function") {
         const arr: unknown[] = new Array(nRows);
         for (let i = 0; i < nRows; i++) {
-          const row: Record<string, unknown> = {};
+          const row: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
           for (let c = 0; c < this._columns.length; c++) {
-            row[this._columns[c] as string] = (sources[c] as unknown[])[i];
+            setField(row, this._columns[c] as string, (sources[c] as unknown[])[i]);
           }
           arr[i] = valueOrFn(row, i);
         }
@@ -5193,32 +5298,47 @@ export class DataFrame {
    * Cast columns to a target type.
    *
    * Missing values (null, undefined, NaN) stay missing: they become NaN for
-   * `"number"` and null for `"string"` and `"boolean"`. Strings convert to
-   * numbers like `Number()` does, except that empty or blank strings give NaN.
-   * The strings `"true"` and `"false"` (any case) convert to booleans.
+   * `"number"` and null for `"string"` and `"boolean"`.
+   *
+   * Strings convert to numbers only when they are decimal numbers (optional sign, digits with an
+   * optional fraction and exponent, `Infinity` or `-Infinity`), after trimming white space; hex,
+   * octal and binary forms such as `"0x10"` are not numbers. Empty or blank strings give NaN.
+   * The strings `"true"`, `"false"`, `"1"`, `"0"`, `"yes"` and `"no"` (any case, trimmed) convert
+   * to booleans; other values convert by truthiness.
+   *
+   * `errors` decides what happens to a non-missing string that cannot be converted: with
+   * `"coerce"` (the default) it becomes NaN for numbers and null for booleans, with `"raise"` a
+   * `DataValidationError` names the column and the value.
    *
    * @param column - Column to cast, or an object mapping column names to types
    * @param dtype - Target type when `column` is a name
+   * @param options - `{ errors: "raise" | "coerce" }` (default `"coerce"`); passed as the second
+   *   argument when `column` is an object
    * @returns New DataFrame
    * @throws {IndexError} If a column does not exist
-   * @throws {InvalidParameterError} If the target type is unknown
+   * @throws {InvalidParameterError} If the target type or `errors` is unknown
+   * @throws {DataValidationError} With `errors: "raise"`, if a value cannot be converted
    *
    * @example
    * ```ts
    * df.astype("age", "number");
    * df.astype({ age: "number", name: "string" });
+   * df.astype("age", "number", { errors: "raise" });
    * ```
    */
-  astype(column: string, dtype: "number" | "string" | "boolean"): DataFrame;
-  astype(dtypes: Record<string, "number" | "string" | "boolean">): DataFrame;
+  astype(column: string, dtype: AstypeDtype, options?: AstypeOptions): DataFrame;
+  astype(dtypes: Record<string, AstypeDtype>, options?: AstypeOptions): DataFrame;
   astype(
-    columnOrMap: string | Record<string, "number" | "string" | "boolean">,
-    dtype?: "number" | "string" | "boolean"
+    columnOrMap: string | Record<string, AstypeDtype>,
+    dtypeOrOptions?: AstypeDtype | AstypeOptions,
+    maybeOptions?: AstypeOptions
   ): DataFrame {
-    const plan: [string, "number" | "string" | "boolean"][] =
-      typeof columnOrMap === "string"
-        ? [[columnOrMap, dtype as "number" | "string" | "boolean"]]
-        : Object.entries(columnOrMap);
+    const single = typeof columnOrMap === "string";
+    const dtype = single ? (dtypeOrOptions as AstypeDtype) : undefined;
+    const options = (single ? maybeOptions : (dtypeOrOptions as AstypeOptions | undefined)) ?? {};
+    const plan: [string, AstypeDtype][] = single
+      ? [[columnOrMap, dtype as AstypeDtype]]
+      : Object.entries(columnOrMap);
 
     for (const [col, target] of plan) {
       if (!this._data.has(col)) throw new IndexError(`Column '${col}' not found`);
@@ -5230,23 +5350,42 @@ export class DataFrame {
         );
       }
     }
+    const errors = options.errors ?? "coerce";
+    if (errors !== "raise" && errors !== "coerce") {
+      throw new InvalidParameterError('errors must be "raise" or "coerce"', "errors", errors);
+    }
+    const unconvertible = (col: string, value: unknown, target: string): DataValidationError =>
+      new DataValidationError(
+        `astype: cannot convert ${JSON.stringify(value)} in column '${col}' to ${target}`
+      );
 
-    const toNumber = (v: unknown): number => {
+    const toNumber = (col: string, v: unknown): number => {
       if (isMissing(v)) return NaN;
       if (typeof v === "number") return v;
-      if (typeof v === "string") return v.trim() === "" ? NaN : Number(v);
+      if (typeof v === "string") {
+        const t = v.trim();
+        if (t === "") return NaN;
+        if (DECIMAL_NUMBER.test(t)) return Number(t);
+        if (errors === "raise") throw unconvertible(col, v, "number");
+        return NaN;
+      }
       if (typeof v === "boolean") return v ? 1 : 0;
       if (typeof v === "bigint") return Number(v);
       if (v instanceof Date) return v.getTime();
-      return Number(v);
+      const n = Number(v);
+      if (Number.isNaN(n) && errors === "raise") throw unconvertible(col, v, "number");
+      return n;
     };
     const toText = (v: unknown): string | null => (isMissing(v) ? null : String(v));
-    const toBool = (v: unknown): boolean | null => {
+    const toBool = (col: string, v: unknown): boolean | null => {
       if (isMissing(v)) return null;
       if (typeof v === "string") {
         const t = v.trim().toLowerCase();
-        if (t === "true") return true;
-        if (t === "false") return false;
+        if (t === "") return null;
+        if (t === "true" || t === "1" || t === "yes") return true;
+        if (t === "false" || t === "0" || t === "no") return false;
+        if (errors === "raise") throw unconvertible(col, v, "boolean");
+        return null;
       }
       return Boolean(v);
     };
@@ -5256,9 +5395,9 @@ export class DataFrame {
     for (const col of this._columns) {
       const colData = this._data.get(col) ?? [];
       const target = targets.get(col);
-      if (target === "number") data[col] = colData.map(toNumber);
+      if (target === "number") data[col] = colData.map((v) => toNumber(col, v));
       else if (target === "string") data[col] = colData.map(toText);
-      else if (target === "boolean") data[col] = colData.map(toBool);
+      else if (target === "boolean") data[col] = colData.map((v) => toBool(col, v));
       else data[col] = [...colData];
     }
     return new DataFrame(data, {
@@ -5342,8 +5481,8 @@ export class DataFrame {
    *
    * Groups are listed by descending count; equal counts keep the order of first appearance.
    * Unlike pandas, missing values are counted as their own group by default (Deepbox 1.0
-   * behavior); pass `{ dropna: true }` to leave out every row that has a missing value in one of
-   * the counted columns. Pass `{ normalize: true }` for relative frequencies: the count column
+   * behavior; null, undefined and NaN count as one missing value); pass `{ dropna: true }` to
+   * leave out every row that has a missing value in one of the counted columns. Pass `{ normalize: true }` for relative frequencies: the count column
    * is then called `proportion`. `sort: false` keeps the order of first appearance and
    * `ascending: true` lists the rarest combinations first.
    *
@@ -5395,7 +5534,8 @@ export class DataFrame {
       const vals = arrays.map((arr) => arr[i]);
       if (dropna && vals.some(isMissing)) continue;
       counted++;
-      const key = createKey(vals);
+      // null, undefined and NaN count as the same missing value within a column.
+      const key = createKey(vals.map((v) => (isMissing(v) ? Number.NaN : v)));
       const group = groups.get(key);
       if (group === undefined) groups.set(key, { values: vals, count: 1 });
       else group.count++;
@@ -6508,6 +6648,24 @@ export class Expanding {
       };
     });
   }
+
+  /** Expanding median (the observations so far are kept sorted by binary insertion). */
+  median(): DataFrame {
+    return this.stream(() => {
+      const sorted: number[] = [];
+      return (v) => {
+        let lo = 0;
+        let hi = sorted.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if ((sorted[mid] as number) < v) lo = mid + 1;
+          else hi = mid;
+        }
+        sorted.splice(lo, 0, v);
+        return quantileSorted(sorted, 0.5);
+      };
+    });
+  }
 }
 
 /**
@@ -6974,12 +7132,15 @@ export class DataFrameGroupBy {
   }
 
   /**
-   * Helper to identify numeric columns (excluding grouping columns).
+   * Helper to identify numeric columns (excluding grouping columns). An empty DataFrame keeps all of them.
    * @private
    */
   private getNumericColumns(): string[] {
     const groupByCols = Array.isArray(this.by) ? this.by : [this.by];
     const otherCols = this.df.columns.filter((c) => !groupByCols.includes(c));
+    // Without rows there is no cell to inspect, so every column stays (pandas keeps the
+    // value columns of an empty frame).
+    if (this.df.shape[0] === 0) return otherCols;
     return otherCols.filter((col) => {
       // efficient check: look for at least one valid number
       return this.df.getColumnData(col).some(isOrderedNumber);
@@ -7101,21 +7262,63 @@ export class DataFrameGroupBy {
   }
 
   /**
-   * First value of every non-grouping column in each group (missing values included).
+   * First or last value of every non-grouping column in each group. With `skipna` the
+   * first present value counts, and a group without any gives null.
    *
-   * @returns DataFrame with one row per group
+   * @private
    */
-  first(): DataFrame {
-    return this.aggAll("first");
+  private edgeValues(which: "first" | "last", options: { readonly skipna?: boolean }): DataFrame {
+    const skipna = options.skipna ?? false;
+    if (typeof skipna !== "boolean") {
+      throw new InvalidParameterError("skipna must be a boolean", "skipna", skipna);
+    }
+    if (!skipna) return this.aggAll(which);
+    const groupByCols = Array.isArray(this.by) ? this.by : [this.by];
+    const otherCols = this.df.columns.filter((c) => !groupByCols.includes(c));
+    const outputColumns = [...groupByCols, ...otherCols];
+    const resultData: DataFrameData = newColumnMap();
+    for (const col of outputColumns) resultData[col] = [];
+    const plan: GroupPlanEntry[] = otherCols.map((col) => ({
+      outCol: col,
+      data: this.df.getColumnData(col),
+      run: (data, indices) => {
+        for (let k = 0; k < indices.length; k++) {
+          const value = data[indices[which === "first" ? k : indices.length - 1 - k] as number];
+          if (!isMissing(value)) return value;
+        }
+        return null;
+      },
+    }));
+    return this.runPlan(plan, outputColumns, resultData);
   }
 
   /**
-   * Last value of every non-grouping column in each group (missing values included).
+   * First value of every non-grouping column in each group.
    *
+   * Missing values are included by default (a group whose first row is missing gives the
+   * missing value). pandas skips them; pass `{ skipna: true }` for that, which returns the
+   * first present value of each group and null when a group has none.
+   *
+   * @param options - `skipna`: skip null, undefined and NaN (default: false)
    * @returns DataFrame with one row per group
+   * @throws {InvalidParameterError} If `skipna` is not a boolean
    */
-  last(): DataFrame {
-    return this.aggAll("last");
+  first(options: { readonly skipna?: boolean } = {}): DataFrame {
+    return this.edgeValues("first", options);
+  }
+
+  /**
+   * Last value of every non-grouping column in each group.
+   *
+   * Missing values are included by default. Pass `{ skipna: true }` to return the last
+   * present value of each group instead, like pandas; a group without one gives null.
+   *
+   * @param options - `skipna`: skip null, undefined and NaN (default: false)
+   * @returns DataFrame with one row per group
+   * @throws {InvalidParameterError} If `skipna` is not a boolean
+   */
+  last(options: { readonly skipna?: boolean } = {}): DataFrame {
+    return this.edgeValues("last", options);
   }
 
   /**
@@ -7629,8 +7832,7 @@ export class Rolling {
         d1 += diff1 * diff1;
         d2 += diff2 * diff2;
       }
-      result[i] =
-        d1 === 0 || d2 === 0 ? NaN : clampCorrelation(num / (Math.sqrt(d1) * Math.sqrt(d2)));
+      result[i] = d1 === 0 || d2 === 0 ? NaN : pearsonFromSums(num, d1, d2);
     }
 
     return new DataFrame({ [label]: result }, { index: this.df.index, copy: false });

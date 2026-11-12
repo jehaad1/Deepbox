@@ -588,13 +588,20 @@ export class DateTimeAccessor {
   }
 
   /**
-   * Convert each date to an ISO 8601 string in UTC, such as
-   * `"2024-01-01T12:00:00.000Z"`. Unlike the component getters, this
-   * is not local time: the trailing `Z` makes the string an exact instant that
-   * `toDatetime` parses back to the same Date.
+   * Convert each date to an ISO 8601 string of its local wall-clock fields,
+   * like pandas' `Timestamp.isoformat()`: `"2024-01-01T12:00:00"` for whole
+   * seconds and `"2024-01-01T12:00:00.500000"` (six digits) when there is a
+   * fraction. There is no `Z` or offset, so the text reads the same fields as
+   * `hour()` and `minute()` and `toDatetime` parses it back to the same Date.
+   * Use {@link DateTimeAccessor.timestamp} for an exact instant.
    */
   isoformat(): Series<string | null> {
-    return this.map((d) => d.toISOString());
+    return this.map((d) => {
+      const date = `${String(d.getFullYear()).padStart(4, "0")}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+      const ms = d.getMilliseconds();
+      return `${date}T${time}${ms === 0 ? "" : `.${String(ms * 1000).padStart(6, "0")}`}`;
+    });
   }
 
   /**

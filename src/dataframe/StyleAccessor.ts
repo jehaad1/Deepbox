@@ -349,26 +349,30 @@ export class StyleAccessor {
    * Only bold, italic and the named text colors red, green, yellow, blue,
    * magenta, cyan, black, white and gray are used; other styles, including
    * background colors, are ignored. Unlike {@link StyleAccessor.toHTML}, no row
-   * header column is printed.
+   * header column is printed. Control characters in cell text and column names (including
+   * escape sequences and line breaks) are shown as visible escapes such as `\x1b` and `\n`,
+   * so the data cannot inject terminal commands or break the table, and East Asian wide
+   * characters count as two columns when cells are padded.
    */
   toANSI(): string {
     const data = this.getData();
     const columnData: unknown[][] = data.columns.map((c) => data.getColumn(c));
+    const names = data.columns.map(escapeControls);
 
     // Compute column widths
-    const widths: number[] = data.columns.map((c) => c.length);
+    const widths: number[] = names.map(displayWidth);
     for (let c = 0; c < data.columns.length; c++) {
       const colName = data.columns[c] as string;
       for (let r = 0; r < data.nRows; r++) {
-        const display = this.display(colName, columnData[c]?.[r]);
-        if (display.length > (widths[c] ?? 0)) widths[c] = display.length;
+        const width = displayWidth(escapeControls(this.display(colName, columnData[c]?.[r])));
+        if (width > (widths[c] ?? 0)) widths[c] = width;
       }
     }
 
     const lines: string[] = [];
 
     // Header
-    const headerParts = data.columns.map((col, i) => col.padEnd(widths[i] ?? 0));
+    const headerParts = names.map((col, i) => padToWidth(col, widths[i] ?? 0));
     lines.push(headerParts.join("  "));
     lines.push(widths.map((w) => "-".repeat(w)).join("  "));
 
@@ -378,7 +382,7 @@ export class StyleAccessor {
       for (let c = 0; c < data.columns.length; c++) {
         const value = columnData[c]?.[r];
         const colName = data.columns[c] as string;
-        const padded = this.display(colName, value).padEnd(widths[c] ?? 0);
+        const padded = padToWidth(escapeControls(this.display(colName, value)), widths[c] ?? 0);
 
         // Apply ANSI styles
         let styled = padded;
@@ -409,6 +413,49 @@ const ANSI_COLORS: Readonly<Record<string, number>> = {
   white: 37,
   gray: 90,
 };
+
+/** Replace control characters with visible escapes (`\n`, `\t`, `\x1b`, ...). */
+function escapeControls(s: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are matched on purpose
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, (ch) => {
+    if (ch === "\n") return "\\n";
+    if (ch === "\r") return "\\r";
+    if (ch === "\t") return "\\t";
+    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`;
+  });
+}
+
+/** Whether a code point occupies two terminal columns (East Asian wide and fullwidth, emoji). */
+function isWide(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0x303e) ||
+    (cp >= 0x3041 && cp <= 0x33ff) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) ||
+    (cp >= 0x4e00 && cp <= 0x9fff) ||
+    (cp >= 0xa000 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1f64f) ||
+    (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+  );
+}
+
+/** Number of terminal columns a string takes: 2 per wide character, 1 per other code point. */
+function displayWidth(s: string): number {
+  let width = 0;
+  for (const ch of s) width += isWide(ch.codePointAt(0) as number) ? 2 : 1;
+  return width;
+}
+
+/** Pad with spaces on the right up to `width` terminal columns. */
+function padToWidth(s: string, width: number): string {
+  return s + " ".repeat(Math.max(0, width - displayWidth(s)));
+}
 
 function escapeHTML(s: string): string {
   return s

@@ -24,6 +24,7 @@
  */
 
 import { DataValidationError, InvalidParameterError } from "../../core";
+import { dedupeHeaders } from "../utils";
 
 // ─── Mini ZIP Utilities (zero-dependency) ────────────────────────────────────
 
@@ -186,6 +187,10 @@ function createZip(entries: ZipEntry[]): Uint8Array {
 
 /** Default cap on a single decompressed zip entry (guards against zip bombs). */
 const DEFAULT_MAX_ENTRY_BYTES = 256 * 1024 * 1024;
+/** Default cap on the cells of a sheet read by {@link readXlsx}. */
+const DEFAULT_MAX_CELLS = 10_000_000;
+/** Shared placeholder for rows without values; never mutated. */
+const EMPTY_ROW: Map<number, XlsxCell> = new Map();
 
 /**
  * Inflate a raw-deflate stream using Node's zlib (accessed via
@@ -435,14 +440,86 @@ const MAX_ROWS = 1048576;
 /** Excel's cap on the characters in one cell. */
 const MAX_CELL_CHARS = 32767;
 
+/** Whether `ch` can follow an element name inside a start tag. */
+function endsTagName(ch: string | undefined): boolean {
+  return ch === ">" || ch === "/" || ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+/** One XML element found by {@link nextElement}. */
+type XmlElement = {
+  /** The text between the tag name and `>` (without a trailing `/`). */
+  readonly attrs: string;
+  /** The text between the start and end tags; `undefined` for self-closing or start-only reads. */
+  readonly body: string | undefined;
+  /** Index of the `<` that opens the element. */
+  readonly start: number;
+  /** Index just past the element. */
+  readonly end: number;
+};
+
+/**
+ * Find the next `<name ...>` element at or after `from` with plain `indexOf`
+ * scans, so the cost is linear in the input however malformed it is (the lazy
+ * `[\s\S]*?` regular expressions this replaces rescanned to the end of the
+ * input for every unterminated tag). With `container` set, a start tag that is
+ * not self-closing must be closed by `</name>`, otherwise a
+ * `DataValidationError` is thrown.
+ */
+function nextElement(
+  xml: string,
+  name: string,
+  from: number,
+  container: boolean
+): XmlElement | undefined {
+  const open = `<${name}`;
+  let at = xml.indexOf(open, from);
+  while (at >= 0 && !endsTagName(xml[at + open.length])) at = xml.indexOf(open, at + open.length);
+  if (at < 0) return undefined;
+  const gt = xml.indexOf(">", at + open.length);
+  if (gt < 0) {
+    throw new DataValidationError(`readXlsx: the <${name}> start tag is not terminated`);
+  }
+  const selfClosing = xml[gt - 1] === "/" && gt - 1 >= at + open.length;
+  const attrs = xml.slice(at + open.length, selfClosing ? gt - 1 : gt);
+  if (selfClosing || !container) return { attrs, body: undefined, start: at, end: gt + 1 };
+  const close = xml.indexOf(`</${name}>`, gt + 1);
+  if (close < 0) {
+    throw new DataValidationError(`readXlsx: the <${name}> element is not closed by </${name}>`);
+  }
+  return { attrs, body: xml.slice(gt + 1, close), start: at, end: close + name.length + 3 };
+}
+
 /** Read the attributes of an XML start tag body (the text between the tag name and `>`). */
 function parseAttributes(attrs: string): Record<string, string> {
   const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  const re = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-  let m = re.exec(attrs);
-  while (m) {
-    out[m[1]!] = m[2] ?? m[3] ?? "";
-    m = re.exec(attrs);
+  const n = attrs.length;
+  const isNameChar = (c: number): boolean =>
+    (c >= 48 && c <= 58) ||
+    (c >= 65 && c <= 90) ||
+    c === 95 ||
+    (c >= 97 && c <= 122) ||
+    c === 45 ||
+    c === 46;
+  const isSpace = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 13;
+  let i = 0;
+  while (i < n) {
+    if (!isNameChar(attrs.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    const nameStart = i;
+    while (i < n && isNameChar(attrs.charCodeAt(i))) i++;
+    const key = attrs.slice(nameStart, i);
+    while (i < n && isSpace(attrs.charCodeAt(i))) i++;
+    if (attrs[i] !== "=") continue;
+    i++;
+    while (i < n && isSpace(attrs.charCodeAt(i))) i++;
+    const quote = attrs[i];
+    if (quote !== '"' && quote !== "'") continue;
+    const close = attrs.indexOf(quote, i + 1);
+    if (close < 0) break;
+    out[key] = attrs.slice(i + 1, close);
+    i = close + 1;
   }
   return out;
 }
@@ -453,13 +530,23 @@ function parseAttributes(attrs: string): Record<string, string> {
  * guides (`<rPh>`) are not part of the cell text.
  */
 function stringItemText(body: string): string {
-  const source = body.includes("<rPh") ? body.replace(/<rPh\b[\s\S]*?<\/rPh>/g, "") : body;
+  let source = body;
+  if (source.includes("<rPh")) {
+    let stripped = "";
+    let pos = 0;
+    let ph = nextElement(source, "rPh", pos, true);
+    while (ph) {
+      stripped += source.slice(pos, ph.start);
+      pos = ph.end;
+      ph = nextElement(source, "rPh", pos, true);
+    }
+    source = stripped + source.slice(pos);
+  }
   let text = "";
-  const re = /<t\b[^>]*?(?:\/>|>([\s\S]*?)<\/t>)/g;
-  let m = re.exec(source);
-  while (m) {
-    if (m[1] !== undefined) text += m[1];
-    m = re.exec(source);
+  let t = nextElement(source, "t", 0, true);
+  while (t) {
+    if (t.body !== undefined) text += t.body;
+    t = nextElement(source, "t", t.end, true);
   }
   return decodeText(text);
 }
@@ -489,6 +576,12 @@ export type XlsxReadOptions = {
    * decompression bombs in untrusted files). Default: 256 MiB.
    */
   readonly maxEntryBytes?: number;
+  /**
+   * Maximum number of cells (rows times columns of the used range) the result
+   * may hold. A hostile sheet with a single cell in column XFD on every row
+   * would otherwise expand into millions of null cells. Default: 10,000,000.
+   */
+  readonly maxCells?: number;
 };
 
 /** Resolve a workbook-relationship target to a zip entry name. */
@@ -527,31 +620,29 @@ function resolveSheetXml(zip: ZipArchive, sheet?: string | number): Uint8Array |
 
   const workbookXml = decodeUTF8(workbook);
   const sheets: { name: string; rid: string }[] = [];
-  const sheetTagRe = /<sheet\b([^>]*?)\/?>/g;
-  let m = sheetTagRe.exec(workbookXml);
+  let m = nextElement(workbookXml, "sheet", 0, false);
   while (m) {
-    const attrs = parseAttributes(m[1]!);
+    const attrs = parseAttributes(m.attrs);
     const name = attrs["name"];
     const ridKey = Object.keys(attrs).find((k) => k === "id" || k.endsWith(":id"));
     const rid = ridKey === undefined ? undefined : attrs[ridKey];
     if (name !== undefined && rid !== undefined) {
       sheets.push({ name: decodeText(name), rid });
     }
-    m = sheetTagRe.exec(workbookXml);
+    m = nextElement(workbookXml, "sheet", m.end, false);
   }
 
   const relsXml = zip.read("xl/_rels/workbook.xml.rels");
   const ridToTarget = new Map<string, string>();
   if (relsXml) {
     const text = decodeUTF8(relsXml);
-    const relRe = /<Relationship\b([^>]*?)\/?>/g;
-    let rm = relRe.exec(text);
+    let rm = nextElement(text, "Relationship", 0, false);
     while (rm) {
-      const attrs = parseAttributes(rm[1]!);
+      const attrs = parseAttributes(rm.attrs);
       const id = attrs["Id"];
       const target = attrs["Target"];
       if (id !== undefined && target !== undefined) ridToTarget.set(id, unescapeXml(target));
-      rm = relRe.exec(text);
+      rm = nextElement(text, "Relationship", rm.end, false);
     }
   }
 
@@ -598,8 +689,6 @@ function lastRowOfRange(ref: string): number {
 }
 
 const NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-const VALUE_RE = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/;
-const INLINE_RE = /<is>([\s\S]*?)<\/is>/;
 
 function parseCellValue(
   type: string | undefined,
@@ -609,11 +698,11 @@ function parseCellValue(
   if (body === undefined) return null;
 
   if (type === "inlineStr") {
-    const inline = INLINE_RE.exec(body);
-    return inline ? stringItemText(inline[1]!) : null;
+    const inline = nextElement(body, "is", 0, true)?.body;
+    return inline === undefined ? null : stringItemText(inline);
   }
 
-  const raw = VALUE_RE.exec(body)?.[1];
+  const raw = nextElement(body, "v", 0, true)?.body;
   if (raw === undefined) return null;
 
   switch (type) {
@@ -639,28 +728,6 @@ function parseCellValue(
       return NUMBER_RE.test(trimmed) ? Number(trimmed) : decodeText(raw);
     }
   }
-}
-
-/** Make header names unique the way pandas does: `a`, `a.1`, `a.2`. */
-function dedupeHeaders(names: string[]): string[] {
-  const used = new Set(names);
-  const seen = new Map<string, number>();
-  const first = new Set<string>();
-  return names.map((name) => {
-    if (!first.has(name)) {
-      first.add(name);
-      return name;
-    }
-    let k = seen.get(name) ?? 0;
-    let candidate: string;
-    do {
-      k++;
-      candidate = `${name}.${k}`;
-    } while (used.has(candidate));
-    seen.set(name, k);
-    used.add(candidate);
-    return candidate;
-  });
 }
 
 /** Set `obj[key]` without letting a `"__proto__"` column rewrite the prototype. */
@@ -695,8 +762,8 @@ function setOwn(obj: Record<string, XlsxCell>, key: string, value: XlsxCell): vo
  * @param buffer - The raw .xlsx file as a Uint8Array
  * @param options - Read options
  * @returns Parsed spreadsheet data
- * @throws {DataValidationError} If the buffer is not a valid .xlsx file or the sheet does not exist
- * @throws {InvalidParameterError} If `maxEntryBytes` is not a positive number
+ * @throws {DataValidationError} If the buffer is not a valid .xlsx file, the sheet does not exist, an XML element is not closed, or the used range exceeds `maxCells`
+ * @throws {InvalidParameterError} If `maxEntryBytes` or `maxCells` is not a positive number
  */
 export function readXlsx(buffer: Uint8Array, options: XlsxReadOptions = {}): XlsxReadResult {
   if (!(buffer instanceof Uint8Array)) {
@@ -711,6 +778,14 @@ export function readXlsx(buffer: Uint8Array, options: XlsxReadOptions = {}): Xls
       options.maxEntryBytes
     );
   }
+  const maxCells = options.maxCells ?? DEFAULT_MAX_CELLS;
+  if (!(maxCells > 0) || !Number.isFinite(maxCells)) {
+    throw new InvalidParameterError(
+      "readXlsx: maxCells must be a positive number",
+      "maxCells",
+      options.maxCells
+    );
+  }
   const zip = new ZipArchive(buffer, maxEntryBytes);
 
   // Extract shared strings (self-closing <si/> items still occupy an index).
@@ -718,11 +793,10 @@ export function readXlsx(buffer: Uint8Array, options: XlsxReadOptions = {}): Xls
   const ssBytes = zip.read("xl/sharedStrings.xml");
   if (ssBytes) {
     const ssXml = decodeUTF8(ssBytes);
-    const siRe = /<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g;
-    let m = siRe.exec(ssXml);
-    while (m) {
-      sharedStrings.push(m[1] === undefined ? "" : stringItemText(m[1]));
-      m = siRe.exec(ssXml);
+    let si = nextElement(ssXml, "si", 0, true);
+    while (si) {
+      sharedStrings.push(si.body === undefined ? "" : stringItemText(si.body));
+      si = nextElement(ssXml, "si", si.end, true);
     }
   }
 
@@ -733,33 +807,32 @@ export function readXlsx(buffer: Uint8Array, options: XlsxReadOptions = {}): Xls
   }
   const sheetXml = decodeUTF8(sheetBytes);
 
-  // Extract rows by their sheet position (empty rows are not stored in the file).
-  const rowMap = new Map<number, XlsxCell[]>();
+  // Extract rows by their sheet position (empty rows are not stored in the file). Cells are
+  // kept sparse per row so one far-right cell does not pad every row.
+  const rowMap = new Map<number, Map<number, XlsxCell>>();
   // Rows that carry cell or row formatting (Excel keeps those for blank styled rows).
   const formattedRows = new Set<number>();
-  const rowRe = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
   let rowCounter = -1;
-  let rm = rowRe.exec(sheetXml);
+  let rm = nextElement(sheetXml, "row", 0, true);
   while (rm) {
-    const rowAttrs = parseAttributes(rm[1]!);
+    const rowAttrs = parseAttributes(rm.attrs);
     const rowNum = rowAttrs["r"] !== undefined ? parseInt(rowAttrs["r"], 10) - 1 : rowCounter + 1;
     if (!(rowNum >= 0) || rowNum >= MAX_ROWS) {
       throw new DataValidationError(`readXlsx: invalid row reference "${rowAttrs["r"] ?? ""}"`);
     }
     rowCounter = rowNum;
 
-    const cells: XlsxCell[] = rowMap.get(rowNum) ?? [];
-    const rowXml = rm[2];
+    let cells = rowMap.get(rowNum) ?? EMPTY_ROW;
+    const rowXml = rm.body;
     const bare =
       (rowXml === undefined || rowXml.trim() === "") &&
       Object.keys(rowAttrs).every((k) => k === "r" || k === "spans");
     if (!bare) formattedRows.add(rowNum);
     if (rowXml !== undefined) {
-      const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
       let colCounter = -1;
-      let cm = cellRe.exec(rowXml);
+      let cm = nextElement(rowXml, "c", 0, true);
       while (cm) {
-        const attrs = parseAttributes(cm[1]!);
+        const attrs = parseAttributes(cm.attrs);
         let colIdx = attrs["r"] !== undefined ? parseColumnRef(attrs["r"]) : -1;
         if (colIdx < 0) colIdx = colCounter + 1;
         if (colIdx >= MAX_COLUMNS) {
@@ -767,69 +840,76 @@ export function readXlsx(buffer: Uint8Array, options: XlsxReadOptions = {}): Xls
         }
         colCounter = colIdx;
 
-        const value = parseCellValue(attrs["t"], cm[2], sharedStrings);
+        const value = parseCellValue(attrs["t"], cm.body, sharedStrings);
         if (value !== null) {
-          while (cells.length <= colIdx) cells.push(null);
-          cells[colIdx] = value;
+          if (cells === EMPTY_ROW) cells = new Map();
+          cells.set(colIdx, value);
         }
-        cm = cellRe.exec(rowXml);
+        cm = nextElement(rowXml, "c", cm.end, true);
       }
     }
     rowMap.set(rowNum, cells);
-    rm = rowRe.exec(sheetXml);
+    rm = nextElement(sheetXml, "row", rm.end, true);
   }
 
   // Rows that hold at least one value delimit the used range.
-  const dimension = /<dimension\b[^>]*?\bref\s*=\s*"([^"]*)"/.exec(sheetXml)?.[1];
+  const dimensionTag = nextElement(sheetXml, "dimension", 0, false);
+  const dimension = dimensionTag ? parseAttributes(dimensionTag.attrs)["ref"] : undefined;
   const dimensionLastRow = dimension ? lastRowOfRange(dimension) : -1;
-  const filled = [...rowMap.entries()]
-    .filter(([, cells]) => cells.some((v) => v !== null))
-    .sort((a, b) => a[0] - b[0]);
-  const firstFilled = filled[0];
-  const lastFilled = filled[filled.length - 1];
-  if (!firstFilled || !lastFilled) {
+  let firstFilled = -1;
+  let lastFilled = -1;
+  let maxCols = 0;
+  for (const [r, cells] of rowMap) {
+    if (cells.size === 0) continue;
+    if (firstFilled < 0 || r < firstFilled) firstFilled = r;
+    if (r > lastFilled) lastFilled = r;
+    for (const c of cells.keys()) if (c + 1 > maxCols) maxCols = c + 1;
+  }
+  if (firstFilled < 0) {
     return { columns: [], data: [] };
   }
 
   // Blank rows after the last value are kept only when they are plain empty <row> elements
   // inside the declared dimension (writeXlsx writes all-null rows that way, so they survive a
   // round trip). Formatted leftovers, which Excel and other tools leave behind, are dropped.
-  let lastRow = lastFilled[0];
+  let lastRow = lastFilled;
   for (const r of rowMap.keys()) {
     if (r > lastRow && r <= dimensionLastRow && !formattedRows.has(r)) lastRow = r;
   }
 
-  const grid: XlsxCell[][] = [];
-  let maxCols = 0;
-  for (let r = firstFilled[0]; r <= lastRow; r++) {
-    const cells = rowMap.get(r) ?? [];
-    grid.push(cells);
-    if (cells.length > maxCols) maxCols = cells.length;
+  const gridRows = lastRow - firstFilled + 1;
+  if (gridRows * maxCols > maxCells) {
+    throw new DataValidationError(
+      `readXlsx: the sheet spans ${gridRows} rows by ${maxCols} columns, more than the limit of ` +
+        `${maxCells} cells; raise maxCells if the file is trusted`
+    );
   }
 
   // Extract headers and data
   let columns: string[];
-  let dataRows: XlsxCell[][];
+  let firstDataRow: number;
 
   if (header) {
     const names: string[] = [];
-    const headerCells = grid[0] ?? [];
+    const headerCells = rowMap.get(firstFilled);
     for (let i = 0; i < maxCols; i++) {
-      const h = headerCells[i];
+      const h = headerCells?.get(i);
       names.push(h === null || h === undefined || h === "" ? `Column${i}` : String(h));
     }
     columns = dedupeHeaders(names);
-    dataRows = grid.slice(1);
+    firstDataRow = firstFilled + 1;
   } else {
     columns = Array.from({ length: maxCols }, (_, i) => `Column${i}`);
-    dataRows = grid;
+    firstDataRow = firstFilled;
   }
 
-  const data: Record<string, string | number | boolean | null>[] = new Array(dataRows.length);
-  for (let r = 0; r < dataRows.length; r++) {
-    const row = dataRows[r]!;
+  const data: Record<string, string | number | boolean | null>[] = new Array(
+    lastRow - firstDataRow + 1
+  );
+  for (let r = 0; r < data.length; r++) {
+    const cells = rowMap.get(firstDataRow + r);
     const obj: Record<string, XlsxCell> = {};
-    for (let c = 0; c < columns.length; c++) setOwn(obj, columns[c]!, row[c] ?? null);
+    for (let c = 0; c < columns.length; c++) setOwn(obj, columns[c]!, cells?.get(c) ?? null);
     data[r] = obj;
   }
 

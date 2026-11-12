@@ -1316,7 +1316,7 @@ describe("wave3 dataframe: valueCounts options", () => {
     const s = new Series([1, null, 1, Number.NaN]);
     expect(s.valueCounts().data).toEqual([2]);
     expect(s.valueCounts(true).data).toEqual([2]);
-    expect(s.valueCounts(false).data.length).toBe(3);
+    expect(s.valueCounts(false).data).toEqual([2, 2]);
     expect(s.valueCounts().name).toBe("counts");
   });
 
