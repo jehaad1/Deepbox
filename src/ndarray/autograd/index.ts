@@ -3618,18 +3618,19 @@ export function variance(input: GradTensor, axis?: Axis, correction = 1): GradTe
 /**
  * Inverted dropout: during training each element is zeroed with probability
  * `p` and the survivors are scaled by `1 / (1 - p)`, so the expected value is
- * unchanged. Returns `input` itself when `training` is false or `p` is 0.
+ * unchanged. Returns `input` itself when `training` is false or `p` is 0. With
+ * `p` = 1 every element is dropped and the result is all zeros (PyTorch).
  * Integer and bool inputs are converted to float32 first, because the scale is
  * not an integer in general.
  *
  * @param input - Input tensor.
- * @param p - Drop probability in `[0, 1)` (default 0.5).
+ * @param p - Drop probability in `[0, 1]` (default 0.5).
  * @param training - Apply dropout only when true (default true).
- * @throws {InvalidParameterError} If `p` is outside `[0, 1)`.
+ * @throws {InvalidParameterError} If `p` is outside `[0, 1]`.
  */
 export function dropout(input: GradTensor, p = 0.5, training = true): GradTensor {
-  if (!Number.isFinite(p) || p < 0 || p >= 1) {
-    throw new InvalidParameterError("p must be in [0, 1)", "p", p);
+  if (!Number.isFinite(p) || p < 0 || p > 1) {
+    throw new InvalidParameterError("p must be in [0, 1]", "p", p);
   }
   if (!training || p === 0) return input;
 
@@ -3637,8 +3638,11 @@ export function dropout(input: GradTensor, p = 0.5, training = true): GradTensor
   // cannot hold (the scale would be truncated), so those inputs become float32.
   const source = isFloatDType(input.dtype) ? input : input.astype("float32");
   const dtype = ensureNumericDType(source.dtype, "dropout");
-  const scale = 1 / (1 - p);
-  const mask = dropoutMask(source.shape, p, scale, dtype, source.device);
+  // With p = 1 every element is dropped and the scale would be infinite: multiply by zeros.
+  const mask =
+    p === 1
+      ? TensorClass.zeros(source.shape, { dtype, device: source.device })
+      : dropoutMask(source.shape, p, 1 / (1 - p), dtype, source.device);
   const maskGrad = GradTensor.fromTensor(mask, { requiresGrad: false });
   return source.mul(maskGrad);
 }

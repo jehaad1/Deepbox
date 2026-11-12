@@ -446,7 +446,8 @@ describe("matmul backward", () => {
 describe("dropout validation", () => {
   it("validates p in every mode", () => {
     const x = f32([1, 2, 3]);
-    expect(() => dropoutGrad(x, 1)).toThrow(InvalidParameterError);
+    expect(dropoutGrad(x, 1).tensor.toArray()).toEqual([0, 0, 0]);
+    expect(() => dropoutGrad(x, 1.01)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, -0.1)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, 1.5, false)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, Number.NaN)).toThrow(InvalidParameterError);

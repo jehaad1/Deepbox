@@ -281,7 +281,6 @@ export {
   zeros_like,
   zerosLike,
 } from "./ops/index";
-export { dropoutMask } from "./ops/random";
 export type { CSRMatrixInit } from "./sparse";
 
 export { CSRMatrix } from "./sparse";

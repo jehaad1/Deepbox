@@ -28,7 +28,6 @@ import {
   diff,
   div,
   dot,
-  dropoutMask,
   elu,
   empty,
   equal,
@@ -114,6 +113,7 @@ import {
   variance,
   zeros,
 } from "../src/ndarray";
+import { dropoutMask } from "../src/ndarray/ops/random";
 
 describe("consumer API: ndarray", () => {
   describe("tensor creation", () => {
