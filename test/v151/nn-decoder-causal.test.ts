@@ -2,7 +2,7 @@
 // and no tgtMask the self-attention is unmasked, as torch.nn.TransformerDecoderLayer called
 // without tgt_mask. Reference: torch 2.15, float64, dropout 0, eval mode, batch_first.
 import { describe, expect, it } from "vitest";
-import { type Tensor, tensor } from "../../src/ndarray";
+import { type AnyTensor, GradTensor, tensor } from "../../src/ndarray";
 import { FullTransformer, TransformerDecoder, TransformerDecoderLayer } from "../../src/nn";
 
 const REF = JSON.parse(
@@ -34,7 +34,8 @@ function makeLayer(causal?: boolean): TransformerDecoderLayer {
 const tgt = tensor(REF.tgt, { dtype: "float64" }).reshape([2, 3, 4]);
 const mem = tensor(REF.mem, { dtype: "float64" }).reshape([2, 5, 4]);
 
-function values(t: Tensor): number[] {
+function values(input: AnyTensor): number[] {
+  const t = GradTensor.isGradTensor(input) ? input.tensor : input;
   return Array.from(t.reshape([t.size]).data as ArrayLike<number>, Number);
 }
 

@@ -66,6 +66,7 @@ describe("NN-23: unbatched (C, H, W) input", () => {
       requiresGrad: true,
     });
     const y = layer.forward(x);
+    if (!GradTensor.isGradTensor(y)) throw new Error("expected a GradTensor");
     expect([...y.shape]).toEqual(c.yShape);
     expectClose(values(y.tensor), c.y);
     y.backward(tensor(c.wgt, { dtype: "float64" }).reshape(c.yShape));

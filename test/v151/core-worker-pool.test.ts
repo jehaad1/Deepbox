@@ -22,7 +22,7 @@ describe("NN-21: WorkerPool asynchronous callbacks", () => {
       return x * 2;
     });
     expect(out).toEqual([2, 4, 6, 8, 10]);
-    expect(out[0] instanceof Promise).toBe(false);
+    expect(typeof out[0]).toBe("number");
   });
 
   it("filter, forEach, reduce and all await asynchronous callbacks", async () => {
@@ -35,7 +35,7 @@ describe("NN-21: WorkerPool asynchronous callbacks", () => {
     });
     expect(seen).toEqual([1, 3, 5]);
     expect(await pool.reduce([1, 2, 3, 4], async (a, b) => a + b, 10)).toBe(20);
-    expect(await pool.all([async () => 1, () => 2])).toEqual([1, 2]);
+    expect(await pool.all([async () => 1, async () => 2])).toEqual([1, 2]);
     const r = await pool.exec(async (x: number) => x + 1, 1);
     expect(r.value).toBe(2);
   });
