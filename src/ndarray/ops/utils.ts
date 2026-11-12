@@ -51,6 +51,7 @@ import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
 import {
   readAsNumber,
+  readBigInts,
   readElement,
   readNumbers,
   requireNumericData,
@@ -2310,7 +2311,8 @@ export function unique(t: Tensor, returnCountsOrOptions?: boolean | UniqueOption
  *
  * NaN sorts after every other value (NumPy convention), so searching for NaN
  * returns the length of the array unless the array itself ends in NaNs. The
- * array is not checked for being sorted. The indices are returned as int32.
+ * array is not checked for being sorted. The indices are returned as int32. When both inputs
+ * are int64 the comparison is exact, also beyond 2^53.
  *
  * @param sortedArr - 1-D sorted tensor
  * @param values - Values to insert (any shape)
@@ -2338,12 +2340,40 @@ export function searchsorted(
     );
   }
 
-  const arr = readNumbers(sortedArr, "searchsorted", false);
-  const vals = readNumbers(values, "searchsorted", false);
   const arrLen = sortedArr.size;
   const n = values.size;
   const outData = new Int32Array(n);
   const left = side === "left";
+
+  if (sortedArr.dtype === "int64" && values.dtype === "int64") {
+    // Compare the BigInt storage directly: doubles cannot tell apart int64 values above 2^53.
+    const bigArr = readBigInts(sortedArr);
+    const bigVals = readBigInts(values);
+    for (let i = 0; i < n; i++) {
+      const v = bigVals[i] as bigint;
+      let lo = 0;
+      let hi = arrLen;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const m = bigArr[mid] as bigint;
+        if (left ? m < v : m <= v) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      outData[i] = lo;
+    }
+    return Tensor.fromTypedArray({
+      data: outData,
+      shape: [...values.shape],
+      dtype: "int32",
+      device: sortedArr.device,
+    });
+  }
+
+  const arr = readNumbers(sortedArr, "searchsorted", false);
+  const vals = readNumbers(values, "searchsorted", false);
 
   for (let i = 0; i < n; i++) {
     const v = vals[i] as number;
