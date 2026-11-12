@@ -167,14 +167,13 @@ The PR template in [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEM
 - Features: use the [feature request template](https://github.com/jehaad1/Deepbox/issues/new?template=feature_request.yml)
 - Questions: use the [question template](https://github.com/jehaad1/Deepbox/issues/new?template=question.yml)
 
-## Coordinated release (Deepbox + DeepboxDocs + DeepboxBench)
+## Coordinated release (Deepbox + DeepboxDocs)
 
-When cutting a version across the three products:
+When cutting a version across the library and its docs site:
 
-1. Bump `version` in each repo’s `package.json` and any public version strings (for example `DeepboxDocs/public/LLMs.txt` and docs navigation meta if you version them).
-2. Update [CHANGELOG.md](CHANGELOG.md) in Deepbox.
-3. Run `npm run build` in Deepbox, then `npm run validate:all` in **Deepbox**, **DeepboxDocs**, and **DeepboxBench** (docs and bench CI expect a built Deepbox `dist/` for snippet checks).
-4. Publish the npm package from Deepbox; deploy the docs and benchmark sites per your hosting setup.
+1. Bump `version` in each repo’s `package.json` and update [CHANGELOG.md](CHANGELOG.md) in Deepbox.
+2. Run `npm run build` in Deepbox, then `npm run validate:all` in **Deepbox** and **DeepboxDocs** (the docs checks read the built Deepbox `dist/` for snippet checks).
+3. Publish the npm package from Deepbox, then push DeepboxDocs so the site deploys.
 
 ## Security
 

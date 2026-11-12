@@ -7,18 +7,12 @@
 [![CI](https://github.com/jehaad1/Deepbox/actions/workflows/ci.yml/badge.svg)](https://github.com/jehaad1/Deepbox/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/deepbox)](https://www.npmjs.com/package/deepbox)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-<!--
-[![Bench](https://img.shields.io/badge/Bench-Leaderboard-amber)](https://bench.deepbox.dev)
--->
 
 Deepbox is a TypeScript library for tensors, linear algebra, tabular data, machine learning, neural networks, statistics, datasets and plotting. It has no runtime dependencies and ships ESM and CommonJS builds with type declarations. The API follows NumPy, pandas, scikit-learn and PyTorch, so code written against those libraries translates directly.
 
 > Docs: [deepbox.dev/docs](https://deepbox.dev/docs)
 > Examples: [deepbox.dev/examples](https://deepbox.dev/examples)
 > Projects: [deepbox.dev/projects](https://deepbox.dev/projects)
-<!--
-> Benchmarks: [bench.deepbox.dev](https://bench.deepbox.dev)
--->
 
 ## Installation
 
