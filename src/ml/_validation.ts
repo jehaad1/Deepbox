@@ -6,7 +6,7 @@
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { DataValidationError, DTypeError, ShapeError } from "../core";
+import { DataValidationError, DTypeError, InvalidParameterError, ShapeError } from "../core";
 import type { Tensor } from "../ndarray";
 import { isDenseLayout } from "../ndarray/tensor/strides";
 
@@ -239,4 +239,24 @@ export function validatePredictInputs(
   }
 
   assertAllFinite(X, "X");
+}
+
+/**
+ * Throw if a caller passes `sampleWeight` to an estimator whose scikit-learn counterpart has no
+ * sample weights. Silently ignoring the weights would return an unweighted fit.
+ *
+ * @param owner - Estimator name used in the message
+ * @param sampleWeight - The extra `fit` argument
+ * @throws {InvalidParameterError} If `sampleWeight` is given
+ *
+ * @internal
+ */
+export function assertNoSampleWeight(owner: string, sampleWeight: unknown): void {
+  if (sampleWeight !== undefined && sampleWeight !== null) {
+    throw new InvalidParameterError(
+      `${owner} does not support sampleWeight`,
+      "sampleWeight",
+      sampleWeight
+    );
+  }
 }

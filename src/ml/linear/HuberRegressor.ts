@@ -12,9 +12,10 @@
 import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { lstsq } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertKnownOptions, optionKeys } from "../_internal";
+import { assertKnownOptions, optionKeys, scaleRowsBySqrtWeight } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 /** Constructor options of {@link HuberRegressor}. */
@@ -106,15 +107,20 @@ function resolveOptions(options: HuberRegressorOptions): ResolvedOptions {
  * Value of the scale `sigma` that minimizes the concomitant Huber objective for fixed
  * absolute residuals.
  *
- * With `f(sigma) = n sigma + sum_{|r| <= eps sigma} r^2 / sigma + sum_{|r| > eps sigma} (2 eps |r| - eps^2 sigma)`
- * the derivative `n - sum_in r^2 / sigma^2 - eps^2 n_out` is non-decreasing, negative as
- * sigma -> 0 and non-negative at `sqrt(sum r^2 / n)`, so bisection finds the root.
+ * With sample weights `w` and `W = sum w`,
+ * `f(sigma) = W sigma + sum_{|r| <= eps sigma} w r^2 / sigma + sum_{|r| > eps sigma} w (2 eps |r| - eps^2 sigma)`
+ * the derivative `W - sum_in w r^2 / sigma^2 - eps^2 W_out` is non-decreasing, negative as
+ * sigma -> 0 and non-negative at `sqrt(sum w r^2 / W)`, so bisection finds the root.
  */
-function solveScale(absResid: Float64Array, epsilon: number): number {
+function solveScale(absResid: Float64Array, epsilon: number, weight: Float64Array): number {
   const n = absResid.length;
   let ss = 0;
-  for (let i = 0; i < n; i++) ss += (absResid[i] as number) ** 2;
-  let hi = Math.sqrt(ss / n);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    ss += (weight[i] as number) * (absResid[i] as number) ** 2;
+    total += weight[i] as number;
+  }
+  let hi = Math.sqrt(ss / total);
   if (!(hi > MIN_SCALE)) return MIN_SCALE;
   let lo = 0;
   const eps2 = epsilon * epsilon;
@@ -122,13 +128,13 @@ function solveScale(absResid: Float64Array, epsilon: number): number {
     const mid = 0.5 * (lo + hi);
     const bound = epsilon * mid;
     let inSS = 0;
-    let nOut = 0;
+    let wOut = 0;
     for (let i = 0; i < n; i++) {
       const r = absResid[i] as number;
-      if (r <= bound) inSS += r * r;
-      else nOut++;
+      if (r <= bound) inSS += (weight[i] as number) * r * r;
+      else wOut += weight[i] as number;
     }
-    const g = n - inSS / (mid * mid) - eps2 * nOut;
+    const g = total - inSS / (mid * mid) - eps2 * wOut;
     if (g < 0) lo = mid;
     else hi = mid;
   }
@@ -193,14 +199,18 @@ export class HuberRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the objective is `sum_i w_i [sigma + H(r_i / sigma) sigma] + alpha ||w||^2`, as in scikit-learn
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const p = X.shape[1] ?? 0;
+    const sw =
+      readSampleWeight(sampleWeightArg as Tensor | undefined, n) ?? new Float64Array(n).fill(1);
     const { epsilon, alpha, maxIter, tol, fitIntercept } = this.opts;
     const q = fitIntercept ? p + 1 : p;
 
@@ -253,17 +263,17 @@ export class HuberRegressor implements Regressor {
       return a;
     };
 
-    // Start from ordinary least squares.
+    // Start from (weighted) ordinary least squares.
+    const A0 = Float64Array.from(A);
+    const y0 = yv.slice();
+    scaleRowsBySqrtWeight(A0, y0, n, q, sw);
     let theta = Float64Array.from(
       toFloat64View(
-        lstsq(
-          tensor(A, { dtype: "float64" }).reshape([n, q]),
-          tensor(yv.slice(), { dtype: "float64" })
-        ).x
+        lstsq(tensor(A0, { dtype: "float64" }).reshape([n, q]), tensor(y0, { dtype: "float64" })).x
       )
     );
     let resid = residuals(theta);
-    let scale = solveScale(absOf(resid), epsilon);
+    let scale = solveScale(absOf(resid), epsilon, sw);
 
     // Rows: n weighted samples plus one penalty row per penalized coefficient.
     const nPen = alpha > 0 ? p : 0;
@@ -278,9 +288,9 @@ export class HuberRegressor implements Regressor {
       for (let i = 0; i < n; i++) {
         const r = Math.abs(resid[i] as number);
         // Weight 1 inside the quadratic zone, eps * sigma / |r| outside (majorizer of |r|).
-        const sw = r <= bound ? 1 : Math.sqrt(bound / r);
-        for (let j = 0; j < q; j++) B[i * q + j] = sw * (A[i * q + j] as number);
-        rhs[i] = sw * (yv[i] as number);
+        const rowWeight = Math.sqrt((sw[i] as number) * (r <= bound ? 1 : bound / r));
+        for (let j = 0; j < q; j++) B[i * q + j] = rowWeight * (A[i * q + j] as number);
+        rhs[i] = rowWeight * (yv[i] as number);
       }
       const penSqrt = Math.sqrt(alpha * scale);
       for (let j = 0; j < nPen; j++) B[(n + j) * q + j] = penSqrt;
@@ -294,7 +304,7 @@ export class HuberRegressor implements Regressor {
         )
       );
       const nextResid = residuals(next);
-      const nextScale = solveScale(absOf(nextResid), epsilon);
+      const nextScale = solveScale(absOf(nextResid), epsilon, sw);
 
       let step = Math.abs(nextScale - scale);
       for (let i = 0; i < n; i++) {

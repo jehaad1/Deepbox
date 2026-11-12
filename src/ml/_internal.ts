@@ -197,6 +197,53 @@ export function assertReadOnlyParam(
 }
 
 /**
+ * Weighted column means of `x` (row-major `m x n`) and of `y`; plain means when `w` is undefined.
+ *
+ * @internal
+ */
+export function weightedMeans(
+  x: Float64Array,
+  y: Float64Array,
+  m: number,
+  n: number,
+  w: Float64Array | undefined
+): { xMean: Float64Array; yMean: number } {
+  const xMean = new Float64Array(n);
+  let yMean = 0;
+  let total = 0;
+  for (let i = 0; i < m; i++) {
+    const wi = w === undefined ? 1 : (w[i] as number);
+    total += wi;
+    yMean += wi * (y[i] as number);
+    const base = i * n;
+    for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + wi * (x[base + j] as number);
+  }
+  for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / total;
+  return { xMean, yMean: yMean / total };
+}
+
+/**
+ * Multiply row `i` of `x` (row-major `m x n`) and `y[i]` by `sqrt(w[i])`, in place. Least squares on
+ * the scaled rows minimizes the `w`-weighted squared error of the original rows.
+ *
+ * @internal
+ */
+export function scaleRowsBySqrtWeight(
+  x: Float64Array,
+  y: Float64Array,
+  m: number,
+  n: number,
+  w: Float64Array
+): void {
+  for (let i = 0; i < m; i++) {
+    const r = Math.sqrt(w[i] as number);
+    y[i] = (y[i] as number) * r;
+    const base = i * n;
+    for (let j = 0; j < n; j++) x[base + j] = (x[base + j] as number) * r;
+  }
+}
+
+/**
  * Value of rank `k` (0-based) in `a`. Partially reorders `a` in place.
  * Average O(n); `a` must not contain NaN.
  *

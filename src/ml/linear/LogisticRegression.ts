@@ -19,6 +19,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Classifier } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 
 type Penalty = "l1" | "l2" | "none";
 type Solver = "lbfgs" | "liblinear" | "saga";
@@ -645,14 +646,16 @@ export class LogisticRegression implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); they multiply the `classWeight` of the sample, and the loss is `C * sum(w_i * loss_i)` as in scikit-learn
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If X and y have different number of samples, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or a weight is negative or not finite
    * @throws {DataValidationError} If X or y are empty, or all sample weights are zero
    * @throws {InvalidParameterError} If `multiClass='multinomial'` is combined with `solver='liblinear'` and there are more than two classes
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     // Validate inputs (dimensions, empty data, NaN/Inf)
     validateFitInputs(X, y);
 
@@ -687,6 +690,7 @@ export class LogisticRegression implements Classifier {
     }
 
     const cw = this.options.classWeight;
+    const userWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, m);
     /**
      * Sample weights from `classWeight` for a problem whose samples fall into
      * `groups` (class indices, or 0/1 for a one-vs-rest problem). 'balanced'
@@ -698,7 +702,7 @@ export class LogisticRegression implements Classifier {
       nGroups: number,
       labels: readonly number[]
     ): { sw: Float64Array | undefined; swSum: number } => {
-      if (cw === undefined) return { sw: undefined, swSum: m };
+      if (cw === undefined && userWeight === undefined) return { sw: undefined, swSum: m };
       const counts = new Float64Array(nGroups);
       for (let i = 0; i < m; i++) {
         const g = groups[i] as number;
@@ -707,19 +711,25 @@ export class LogisticRegression implements Classifier {
       const perGroup = new Float64Array(nGroups);
       for (let g = 0; g < nGroups; g++) {
         perGroup[g] =
-          cw === "balanced"
-            ? m / (nGroups * (counts[g] as number))
-            : (cw[labels[g] as number] ?? 1);
+          cw === undefined
+            ? 1
+            : cw === "balanced"
+              ? m / (nGroups * (counts[g] as number))
+              : (cw[labels[g] as number] ?? 1);
       }
       const sw = new Float64Array(m);
       let swSum = 0;
       for (let i = 0; i < m; i++) {
-        const wi = perGroup[groups[i] as number] as number;
+        const wi =
+          (perGroup[groups[i] as number] as number) *
+          (userWeight === undefined ? 1 : (userWeight[i] as number));
         sw[i] = wi;
         swSum += wi;
       }
       if (!(swSum > 0)) {
-        throw new DataValidationError("classWeight gives every training sample a weight of zero");
+        throw new DataValidationError(
+          "classWeight and sampleWeight give every training sample a weight of zero"
+        );
       }
       return { sw, swSum };
     };

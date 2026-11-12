@@ -8,6 +8,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Classifier } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 
 // ---------------------------------------------------------------------------
 // Helpers shared by the Naive Bayes classifiers in this directory.
@@ -360,29 +361,49 @@ export class GaussianNB implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target class labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); means, variances and class priors are weighted
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If X and y have different number of samples, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or a weight is negative or not finite, or a class has a total weight of zero
    * @throws {DataValidationError} If a smoothed variance is zero (constant feature with `varSmoothing=0`, or all features constant)
    * @throws {InvalidParameterError} If `priors` does not have one entry per class
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
 
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
     const xv = toFloat64View(X);
-    const { classes, labelIndex, counts } = nbEncodeLabels(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
+    const { classes, labelIndex } = nbEncodeLabels(y);
     const nClasses = classes.length;
+    const weightOf = (i: number): number =>
+      sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+    // Total weight of every class (the sample counts when unweighted).
+    const counts = new Float64Array(nClasses);
+    let totalWeight = 0;
+    for (let i = 0; i < nSamples; i++) {
+      counts[labelIndex[i] as number] = (counts[labelIndex[i] as number] as number) + weightOf(i);
+      totalWeight += weightOf(i);
+    }
+    for (let c = 0; c < nClasses; c++) {
+      if (!((counts[c] as number) > 0)) {
+        throw new DataValidationError(
+          `Class ${classes[c]} has a total sample weight of zero; remove it or give it a positive weight`
+        );
+      }
+    }
 
     // Per-class means (first pass).
     const theta = new Float64Array(nClasses * nFeatures);
     for (let i = 0; i < nSamples; i++) {
       const base = (labelIndex[i] as number) * nFeatures;
       const row = i * nFeatures;
+      const wi = weightOf(i);
       for (let j = 0; j < nFeatures; j++) {
-        theta[base + j] = (theta[base + j] as number) + (xv[row + j] as number);
+        theta[base + j] = (theta[base + j] as number) + wi * (xv[row + j] as number);
       }
     }
     for (let c = 0; c < nClasses; c++) {
@@ -399,7 +420,7 @@ export class GaussianNB implements Classifier {
       const row = i * nFeatures;
       for (let j = 0; j < nFeatures; j++) {
         const d = (xv[row + j] as number) - (theta[base + j] as number);
-        variance[base + j] = (variance[base + j] as number) + d * d;
+        variance[base + j] = (variance[base + j] as number) + weightOf(i) * d * d;
       }
     }
     for (let c = 0; c < nClasses; c++) {
@@ -433,7 +454,7 @@ export class GaussianNB implements Classifier {
       }
     }
 
-    const classLogPrior = nbClassLogPrior(counts, nSamples, true, this.priors, "priors");
+    const classLogPrior = nbClassLogPrior(counts, totalWeight, true, this.priors, "priors");
 
     this.classes_ = classes;
     this.classLogPrior_ = classLogPrior;

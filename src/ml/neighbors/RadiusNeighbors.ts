@@ -10,7 +10,12 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
-import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
+import {
+  assertNoSampleWeight,
+  toFloat64View,
+  validateFitInputs,
+  validatePredictInputs,
+} from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
   assertSameSampleCount,
@@ -147,11 +152,14 @@ export class RadiusNeighborsClassifier implements Classifier {
    *
    * @param X - Training samples of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: RadiusNeighborsClassifier has no sample weights, so passing one throws
    * @returns this
    * @throws {ShapeError} If X is not 2D, y is not 1D or their sample counts differ
    * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("RadiusNeighborsClassifier", sampleWeight);
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const labels = toFloat64View(y);
@@ -423,11 +431,14 @@ export class RadiusNeighborsRegressor implements Regressor {
    *
    * @param X - Training samples of shape (n_samples, n_features)
    * @param y - Targets of shape (n_samples,)
+   * @param sampleWeight - Not supported: RadiusNeighborsRegressor has no sample weights, so passing one throws
    * @returns this
    * @throws {ShapeError} If X is not 2D, y is not 1D or their sample counts differ
    * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("RadiusNeighborsRegressor", sampleWeight);
     validateFitInputs(X, y);
     this.xTrain_ = Float64Array.from(toFloat64View(X));
     this.yTrain_ = Float64Array.from(toFloat64View(y));

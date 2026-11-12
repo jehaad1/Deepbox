@@ -5,9 +5,10 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { svd } from "../../linalg/decomposition/svd";
 import { type Tensor, tensor } from "../../ndarray";
-import { assertKnownOptions, optionKeys } from "../_internal";
+import { assertKnownOptions, optionKeys, scaleRowsBySqrtWeight, weightedMeans } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 type RidgeSolver = "auto" | "svd" | "cholesky" | "lsqr" | "sag";
@@ -392,14 +393,18 @@ export class Ridge implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the fit minimizes `sum_i w_i (y_i - x_i w - b)^2 + alpha |w|^2` and centers on the weighted means
    * @returns this - The fitted estimator for method chaining
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {DataValidationError} If X or y are empty
    * @throws {InvalidParameterError} If alpha < 0 or another option is invalid
+   * @throws {ShapeError} If `sampleWeight` is not 1D with one entry per sample
+   * @throws {DataValidationError} If a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     // Validate inputs (dimensions, empty data, NaN/Inf)
     validateFitInputs(X, y);
 
@@ -447,17 +452,10 @@ export class Ridge implements Regressor {
 
     // Center X and y. The intercept is not penalized, so centering reduces the
     // problem to a penalized fit through the origin.
-    const xMean = new Float64Array(n);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, m);
+    let xMean: Float64Array = new Float64Array(n);
     let yMean = 0;
-    if (fitIntercept) {
-      for (let i = 0; i < m; i++) {
-        const base = i * n;
-        for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xRaw[base + j] as number);
-        yMean += yRaw[i] as number;
-      }
-      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
-      yMean /= m;
-    }
+    if (fitIntercept) ({ xMean, yMean } = weightedMeans(xRaw, yRaw, m, n, sampleWeight));
 
     const Xc = new Float64Array(m * n);
     const yc = new Float64Array(m);
@@ -468,6 +466,9 @@ export class Ridge implements Regressor {
       }
       yc[i] = (yRaw[i] as number) - yMean;
     }
+
+    // Ridge on rows scaled by sqrt(weight) is the weighted ridge fit.
+    if (sampleWeight !== undefined) scaleRowsBySqrtWeight(Xc, yc, m, n, sampleWeight);
 
     let xScale: Float64Array | undefined;
     if (normalize) {

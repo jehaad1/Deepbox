@@ -10,6 +10,7 @@ import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
+  assertNoSampleWeight,
   toFloat64View,
   validateFitInputs,
   validatePredictInputs,
@@ -354,13 +355,16 @@ export class KNeighborsClassifier extends KNeighborsBase implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: KNeighborsClassifier has no sample weights, so passing one throws
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {InvalidParameterError} If nNeighbors > n_samples
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("KNeighborsClassifier", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     if (this.nNeighbors > nSamples) {
@@ -556,13 +560,16 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Not supported: KNeighborsRegressor has no sample weights, so passing one throws
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {InvalidParameterError} If nNeighbors > n_samples
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("KNeighborsRegressor", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     if (this.nNeighbors > nSamples) {

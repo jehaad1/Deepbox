@@ -10,6 +10,7 @@ import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import {
   applyCoordinateDescentParam,
   fitCoordinateDescent,
@@ -161,15 +162,18 @@ export class Lasso implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); rescaled to sum to n_samples, as scikit-learn does
    * @returns this - The fitted estimator for method chaining
    * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If X and y have different number of samples, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or a weight is negative, not finite, or all weights are zero
    * @throws {DataValidationError} If X or y are empty
    * @throws {InvalidParameterError} If alpha < 0 or another hyper-parameter is out of range
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, X.shape[0] ?? 0);
 
     const alpha = this.options.alpha ?? 1.0;
     const maxIter = this.options.maxIter ?? 1000;
@@ -195,6 +199,7 @@ export class Lasso implements Regressor {
       randomState: this.options.randomState,
       warmCoef,
       modelName: "Lasso",
+      sampleWeight,
     });
 
     this.nFeaturesIn_ = n;

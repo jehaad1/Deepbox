@@ -11,9 +11,10 @@
 import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow } from "../../random/random";
-import { assertKnownOptions, optionKeys } from "../_internal";
+import { assertKnownOptions, optionKeys, weightedMeans } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { createTreeRng } from "../tree/DecisionTree";
 import { r2ScoreOf } from "./LinearRegression";
 
@@ -56,6 +57,11 @@ export type CoordinateDescentConfig = {
   readonly warmCoef: Float64Array | undefined;
   /** Model name used in warning messages. */
   readonly modelName: string;
+  /**
+   * Per-sample weights. They are rescaled to sum to the sample count, the data is centered on the
+   * weighted means and the rows are scaled by the square root of the weights, as scikit-learn does.
+   */
+  readonly sampleWeight?: Float64Array | undefined;
 };
 
 /** Result of {@link fitCoordinateDescent}. @internal */
@@ -239,17 +245,24 @@ export function fitCoordinateDescent(
   const yRaw = toFloat64View(y);
   const { fitIntercept, normalize, positive, maxIter, tol } = config;
 
-  // Means (two-pass for accuracy on data with a large offset).
-  const xMean = new Float64Array(n);
+  // Weights are rescaled to sum to m; every row is later multiplied by sqrt(weight).
+  let rowScale: Float64Array | undefined;
+  if (config.sampleWeight !== undefined) {
+    let total = 0;
+    for (let i = 0; i < m; i++) total += config.sampleWeight[i] as number;
+    rowScale = new Float64Array(m);
+    for (let i = 0; i < m; i++) {
+      rowScale[i] = Math.sqrt(((config.sampleWeight[i] as number) * m) / total);
+    }
+  }
+
+  // Means (weighted when sample weights are given).
+  let xMean: Float64Array = new Float64Array(n);
   let yMean = 0;
   if (fitIntercept) {
-    for (let i = 0; i < m; i++) {
-      const base = i * n;
-      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xRaw[base + j] as number);
-      yMean += yRaw[i] as number;
-    }
-    for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
-    yMean /= m;
+    const normalized =
+      rowScale === undefined ? undefined : Float64Array.from(rowScale, (r) => r * r);
+    ({ xMean, yMean } = weightedMeans(xRaw, yRaw, m, n, normalized));
   }
 
   // Column-major copy of the centered (and optionally scaled) design matrix so that every
@@ -261,7 +274,8 @@ export function fitCoordinateDescent(
     const off = j * m;
     let sumSq = 0;
     for (let i = 0; i < m; i++) {
-      const v = (xRaw[i * n + j] as number) - mu;
+      const v =
+        ((xRaw[i * n + j] as number) - mu) * (rowScale === undefined ? 1 : (rowScale[i] as number));
       xc[off + i] = v;
       sumSq += v * v;
     }
@@ -276,7 +290,9 @@ export function fitCoordinateDescent(
     }
   }
   const yc = new Float64Array(m);
-  for (let i = 0; i < m; i++) yc[i] = (yRaw[i] as number) - yMean;
+  for (let i = 0; i < m; i++) {
+    yc[i] = ((yRaw[i] as number) - yMean) * (rowScale === undefined ? 1 : (rowScale[i] as number));
+  }
 
   const normCols = new Float64Array(n);
   for (let j = 0; j < n; j++) {
@@ -538,13 +554,16 @@ export class ElasticNet implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); rescaled to sum to n_samples, as scikit-learn does
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative, not finite, or all weights are zero
    * @throws {InvalidParameterError} If a hyper-parameter is out of range
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, X.shape[0] ?? 0);
 
     const alpha = this.options.alpha ?? 1.0;
     const l1Ratio = this.options.l1Ratio ?? 0.5;
@@ -571,6 +590,7 @@ export class ElasticNet implements Regressor {
       randomState: this.options.randomState,
       warmCoef,
       modelName: "ElasticNet",
+      sampleWeight,
     });
 
     this.nFeaturesIn_ = n;

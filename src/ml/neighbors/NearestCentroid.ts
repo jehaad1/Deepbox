@@ -17,7 +17,12 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
-import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
+import {
+  assertNoSampleWeight,
+  toFloat64View,
+  validateFitInputs,
+  validatePredictInputs,
+} from "../_validation";
 import type { Classifier } from "../base";
 
 type CentroidMetric = "euclidean" | "manhattan";
@@ -144,6 +149,7 @@ export class NearestCentroid implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: NearestCentroid has no sample weights, so passing one throws
    * @returns this
    * @throws {ShapeError} If X is not 2D, y is not 1D or their sample counts differ
    * @throws {DataValidationError} If X or y contain NaN/Inf
@@ -151,8 +157,10 @@ export class NearestCentroid implements Classifier {
    *   of classes or whose sum is zero
    * @throws {DataValidationError} If `shrinkThreshold` is set and there are not more samples
    *   than classes
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("NearestCentroid", sampleWeight);
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const nF = X.shape[1] ?? 0;

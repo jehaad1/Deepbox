@@ -21,6 +21,7 @@ import { type Tensor, tensor } from "../ndarray";
 import { assertKnownOptions, optionKeys, symmetricEigenDescending } from "./_internal";
 import {
   assertContiguous,
+  assertNoSampleWeight,
   toFloat64View,
   validateFitInputs,
   validatePredictInputs,
@@ -324,11 +325,14 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: LinearDiscriminantAnalysis has no sample weights, so passing one throws
    * @returns this
    * @throws {DataValidationError} If there are fewer than 2 classes or not more samples than classes
    * @throws {InvalidParameterError} If nComponents or priors are inconsistent with the data
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("LinearDiscriminantAnalysis", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const f = X.shape[1] ?? 0;
@@ -879,12 +883,15 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: QuadraticDiscriminantAnalysis has no sample weights, so passing one throws
    * @returns this
    * @throws {DataValidationError} If there are fewer than 2 classes, or a class has a single
    *   sample while `regParam` is 0
    * @throws {InvalidParameterError} If priors are inconsistent with the data
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("QuadraticDiscriminantAnalysis", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const f = X.shape[1] ?? 0;
