@@ -958,20 +958,60 @@ export class TfidfVectorizer {
 // HashingVectorizer
 // ---------------------------------------------------------------------------
 
+const UTF8_ENCODER = new TextEncoder();
+let utf8Scratch = new Uint8Array(256);
+
 /**
- * FNV-1a 32-bit hash function.
+ * MurmurHash3 (x86, 32 bit, seed 0) of the UTF-8 bytes of `str`, as a signed 32-bit integer.
  *
- * Deterministic, fast, and provides reasonable distribution for feature hashing.
- * It hashes the UTF-16 code units of the token, so bucket assignments differ from
- * scikit-learn's MurmurHash3 over UTF-8.
+ * This is the hash that scikit-learn's `HashingVectorizer` and `FeatureHasher` use
+ * (`murmurhash3_bytes_s32`), so a token lands in the same column as in scikit-learn.
  */
-function fnv1a(str: string): number {
-  let hash = 0x811c9dc5; // FNV offset basis
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193); // FNV prime
+function murmurHash3(str: string): number {
+  const maxBytes = str.length * 3;
+  if (utf8Scratch.length < maxBytes) {
+    utf8Scratch = new Uint8Array(Math.max(maxBytes, utf8Scratch.length * 2));
   }
-  return hash >>> 0; // ensure unsigned
+  const bytes = utf8Scratch;
+  const length = UTF8_ENCODER.encodeInto(str, bytes).written;
+
+  let h = 0;
+  const nBlocks = length >> 2;
+  for (let i = 0; i < nBlocks; i++) {
+    const j = i << 2;
+    let k =
+      (bytes[j] as number) |
+      ((bytes[j + 1] as number) << 8) |
+      ((bytes[j + 2] as number) << 16) |
+      ((bytes[j + 3] as number) << 24);
+    k = Math.imul(k, 0xcc9e2d51);
+    k = (k << 15) | (k >>> 17);
+    k = Math.imul(k, 0x1b873593);
+    h ^= k;
+    h = (h << 13) | (h >>> 19);
+    h = (Math.imul(h, 5) + 0xe6546b64) | 0;
+  }
+
+  const tail = nBlocks << 2;
+  const remaining = length & 3;
+  if (remaining > 0) {
+    let k = 0;
+    if (remaining === 3) k ^= (bytes[tail + 2] as number) << 16;
+    if (remaining >= 2) k ^= (bytes[tail + 1] as number) << 8;
+    k ^= bytes[tail] as number;
+    k = Math.imul(k, 0xcc9e2d51);
+    k = (k << 15) | (k >>> 17);
+    k = Math.imul(k, 0x1b873593);
+    h ^= k;
+  }
+
+  h ^= length;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h | 0;
 }
 
 type ResolvedHashingOptions = ResolvedTextOptions & {
@@ -1003,6 +1043,10 @@ function resolveHashingOptions(raw: OptionBag): ResolvedHashingOptions {
  * Unlike CountVectorizer and TfidfVectorizer, HashingVectorizer does not need
  * to build a vocabulary, making it suitable for large-scale or streaming data.
  * Features are token hashes mapped to a fixed number of buckets.
+ *
+ * The hash is MurmurHash3 (32 bit, seed 0) of the UTF-8 bytes of each token. The column is
+ * `abs(hash) % nFeatures` and the sign is the sign of the hash, as in scikit-learn, so the
+ * output equals scikit-learn's `HashingVectorizer` for the same options and tokens.
  *
  * Trade-offs:
  * - No need to fit (stateless transform)
@@ -1057,7 +1101,6 @@ export class HashingVectorizer {
     const nF = this.opts.nFeatures;
     const data = allocateDense(nDocs, nF, "HashingVectorizer.transformText");
     const { binary, alternateSign, norm } = this.opts;
-    const hiMod = 2147483648 % nF;
 
     // Generation-stamped touch tracking: `touchStamp[idx] === i` marks column
     // `idx` as written by doc `i`, so normalization sweeps only the (few)
@@ -1072,18 +1115,18 @@ export class HashingVectorizer {
       const rowStart = i * nF;
       if (touchStamp) touched.length = 0;
       for (const token of tokens) {
-        const hash = fnv1a(token);
-        // Modulo in the SMI domain: `%` on uint32 values >= 2^31 takes
-        // V8's slow float64 path.
-        const idx =
-          hash < 2147483648 ? (hash | 0) % nF : ((((hash - 2147483648) | 0) % nF) + hiMod) % nF;
+        // Column abs(hash) % nFeatures and the sign of the hash, as in scikit-learn. The modulo
+        // stays in the small-integer domain: abs(hash) is below 2^31 except for the single
+        // value -2^31.
+        const hash = murmurHash3(token);
+        const magnitude = hash < 0 ? -hash : hash;
+        const idx = magnitude < 2147483648 ? (magnitude | 0) % nF : 2147483648 % nF;
         const pos = rowStart + idx;
 
         if (binary) {
           data[pos] = 1;
         } else if (alternateSign) {
-          const sign = (hash & 0x80000000) !== 0 ? -1 : 1;
-          data[pos] = (data[pos] as number) + sign;
+          data[pos] = (data[pos] as number) + (hash < 0 ? -1 : 1);
         } else {
           data[pos] = (data[pos] as number) + 1;
         }
