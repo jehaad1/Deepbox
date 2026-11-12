@@ -11,7 +11,7 @@ describe("linalg norms branches 4", () => {
       [1, NaN],
       [2, 3],
     ]);
-    expect(() => cond(bad, "fro")).toThrow(/non-finite/i);
+    expect(cond(bad, "fro")).toBeNaN();
   });
 
   it("returns Infinity for empty matrices and a very large value for singular ones", () => {

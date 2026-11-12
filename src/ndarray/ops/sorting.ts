@@ -5,6 +5,7 @@
 import { type Axis, DTypeError, dtypeToTypedArrayCtor, normalizeAxis } from "../../core";
 import { computeStrides, Tensor } from "../tensor/Tensor";
 import { RADIX_SORT_THRESHOLD, radixArgsortF64, radixSortF64 } from "./radix";
+import { decodeStrings, encodeStrings } from "./string_codes";
 
 /** Largest lane length for which `(key << 21) | index` is exact in a double. */
 const PACK_MAX_LANE = 2097152;
@@ -115,10 +116,12 @@ function writeIndexLane(
  * Complexity is O(L log L) per lane of length L, with a linear-time radix sort
  * for long float lanes.
  *
- * @param t - Input tensor (any numeric dtype, including int64)
- * @param axis - Axis to sort along (default: -1, the last axis)
+ * String tensors are ordered by Unicode code point, as in NumPy.
+ *
+ * @param t - Input tensor (any numeric dtype, including int64, or string)
+ * @param axis - Axis to sort along (default: -1, the last axis; an explicit `undefined`
+ *   also means -1)
  * @param descending - Sort from largest to smallest (default: false)
- * @throws {DTypeError} If the tensor has string dtype
  * @throws {InvalidParameterError} If `axis` is out of range
  *
  * @example
@@ -131,7 +134,8 @@ function writeIndexLane(
  */
 export function sort(t: Tensor, axis: Axis | undefined = -1, descending = false): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("sort is not implemented for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(sort(codes[0] as Tensor, axis, descending), table);
   }
 
   const ax = normalizeAxis(axis ?? -1, Math.max(t.ndim, 1));
@@ -201,10 +205,12 @@ export function sort(t: Tensor, axis: Axis | undefined = -1, descending = false)
  * than every other value, so they are last for ascending and first for
  * descending order. The result has dtype `int32` and the same shape as `t`.
  *
- * @param t - Input tensor (any numeric dtype, including int64)
- * @param axis - Axis to sort along (default: -1, the last axis)
+ * String tensors are ordered by Unicode code point, as in NumPy.
+ *
+ * @param t - Input tensor (any numeric dtype, including int64, or string)
+ * @param axis - Axis to sort along (default: -1, the last axis; an explicit `undefined`
+ *   also means -1)
  * @param descending - Order from largest to smallest (default: false)
- * @throws {DTypeError} If the tensor has string dtype
  * @throws {InvalidParameterError} If `axis` is out of range
  *
  * @example
@@ -217,7 +223,7 @@ export function sort(t: Tensor, axis: Axis | undefined = -1, descending = false)
  */
 export function argsort(t: Tensor, axis: Axis | undefined = -1, descending = false): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("argsort is not implemented for string dtype");
+    return argsort(encodeStrings([t]).codes[0] as Tensor, axis, descending);
   }
 
   const ax = normalizeAxis(axis ?? -1, Math.max(t.ndim, 1));

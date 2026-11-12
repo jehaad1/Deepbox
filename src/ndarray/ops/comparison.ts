@@ -34,6 +34,7 @@ import {
   getBroadcastShape,
   isScalar,
 } from "./broadcast";
+import { encodeStrings } from "./string_codes";
 
 type CompareOp = "eq" | "neq" | "gt" | "ge" | "lt" | "le";
 
@@ -165,6 +166,11 @@ function sameShape(a: Tensor, b: Tensor): boolean {
 }
 
 function runComparison(a: Tensor, b: Tensor, op: CompareOp): Tensor {
+  if (a.dtype === "string" && b.dtype === "string" && (op === "eq" || op === "neq")) {
+    // Equal strings share one rank, so comparing ranks compares the strings.
+    const { codes } = encodeStrings([a, b]);
+    return runComparison(codes[0] as Tensor, codes[1] as Tensor, op);
+  }
   if (a.dtype === "string" || b.dtype === "string") {
     throw new DTypeError(`${op} for string dtype is not implemented`);
   }
@@ -265,12 +271,12 @@ function runComparison(a: Tensor, b: Tensor, op: CompareOp): Tensor {
  * Element-wise equality.
  *
  * NaN is not equal to anything, including itself. int64 tensors compare
- * exactly against any numeric dtype.
+ * exactly against any numeric dtype. Two string tensors compare element by element.
  *
  * @param a - First input tensor
  * @param b - Second input tensor
  * @returns `bool` tensor with the broadcast shape
- * @throws {DTypeError} For `string` tensors
+ * @throws {DTypeError} If only one of the tensors has `string` dtype
  * @throws {ShapeError} If the shapes do not broadcast
  */
 export function equal(a: Tensor, b: Tensor): Tensor {
@@ -282,12 +288,13 @@ export function equal(a: Tensor, b: Tensor): Tensor {
  *
  * Returns a boolean tensor where each element is true (1) if the
  * corresponding elements in a and b are not equal, false (0) otherwise.
- * NaN is unequal to everything, including itself.
+ * NaN is unequal to everything, including itself. Two string tensors compare
+ * element by element.
  *
  * @param a - First input tensor
  * @param b - Second input tensor
  * @returns `bool` tensor with the broadcast shape
- * @throws {DTypeError} For `string` tensors
+ * @throws {DTypeError} If only one of the tensors has `string` dtype
  * @throws {ShapeError} If the shapes do not broadcast
  */
 export function notEqual(a: Tensor, b: Tensor): Tensor {
@@ -368,6 +375,17 @@ function scalarIsClose(
   return Math.abs(ax - bx) <= atol + rtol * Math.abs(bx);
 }
 
+/**
+ * Closeness of two int64 values. The difference is computed exactly in BigInt and only that
+ * difference is converted to a double, so values above 2^53 that differ by 1 are not close
+ * when both tolerances are 0.
+ */
+function bigintIsClose(ax: bigint, bx: bigint, rtol: number, atol: number): boolean {
+  const diff = ax > bx ? ax - bx : bx - ax;
+  const mag = bx < 0n ? -bx : bx;
+  return Number(diff) <= atol + rtol * Number(mag);
+}
+
 function validateTolerances(rtol: number, atol: number, fn: string): void {
   if (typeof rtol !== "number" || !(rtol >= 0)) {
     throw new InvalidParameterError(
@@ -392,7 +410,9 @@ function validateTolerances(rtol: number, atol: number, fn: string): void {
  *
  * The formula is not symmetric: `rtol` scales with `b`. NaN is never close
  * (unless `equalNan` is true and both are NaN), and an infinity is only close
- * to the same infinity. int64 values are compared after conversion to double.
+ * to the same infinity. When both inputs are int64 the difference is computed exactly, so
+ * values beyond 2^53 are distinguished; an int64 input mixed with another dtype is compared
+ * after conversion to double.
  *
  * Useful for floating-point comparisons where exact equality is unreliable.
  *
@@ -433,6 +453,13 @@ export function isclose(
 
   const aData = requireNumericData(a.data, "isclose");
   const bData = requireNumericData(b.data, "isclose");
+
+  if (aData instanceof BigInt64Array && bData instanceof BigInt64Array) {
+    broadcastApply(a, b, result, (offA, offB, offOut) => {
+      out[offOut] = bigintIsClose(aData[offA] as bigint, bData[offB] as bigint, rtol, atol) ? 1 : 0;
+    });
+    return result;
+  }
 
   if (isBigIntArray(aData) || isBigIntArray(bData)) {
     broadcastApply(a, b, result, (offA, offB, offOut) => {
@@ -502,15 +529,16 @@ export function allclose(
     return true;
   }
 
+  const closeAt =
+    aData instanceof BigInt64Array && bData instanceof BigInt64Array
+      ? (offA: number, offB: number): boolean =>
+          bigintIsClose(aData[offA] as bigint, bData[offB] as bigint, rtol, atol)
+      : (offA: number, offB: number): boolean =>
+          scalarIsClose(readAsNumber(aData, offA), readAsNumber(bData, offB), rtol, atol, equalNan);
+
   // Scalar case
   if (outShape.length === 0) {
-    return scalarIsClose(
-      readAsNumber(aData, a.offset),
-      readAsNumber(bData, b.offset),
-      rtol,
-      atol,
-      equalNan
-    );
+    return closeAt(a.offset, b.offset);
   }
 
   // Setup broadcast strides
@@ -538,9 +566,7 @@ export function allclose(
   let offB = b.offset;
 
   for (;;) {
-    if (
-      !scalarIsClose(readAsNumber(aData, offA), readAsNumber(bData, offB), rtol, atol, equalNan)
-    ) {
+    if (!closeAt(offA, offB)) {
       return false;
     }
 

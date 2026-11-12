@@ -18,8 +18,9 @@ import { Tensor } from "../src/ndarray/tensor/Tensor";
 describe("ndarray comparison error branches", () => {
   it("throws for string dtype comparisons", () => {
     const s = tensor(["a", "b"]);
-    expect(() => equal(s, s)).toThrow(/string dtype/i);
-    expect(() => notEqual(s, s)).toThrow(/string dtype/i);
+    expect(equal(s, s).toArray()).toEqual([1, 1]);
+    expect(notEqual(s, s).toArray()).toEqual([0, 0]);
+    expect(() => equal(s, tensor([1, 2]))).toThrow(/string dtype/i);
     expect(() => greater(s, s)).toThrow(/string dtype/i);
     expect(() => greaterEqual(s, s)).toThrow(/string dtype/i);
     expect(() => less(s, s)).toThrow(/string dtype/i);

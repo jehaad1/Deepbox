@@ -118,11 +118,21 @@ describe("pow", () => {
   });
 
   it("promotes integer tensors for fractional exponents instead of truncating", () => {
-    const x = parameter(tensor([0, 1, 4], { dtype: "int32" }));
+    const x = GradTensor.create({
+      tensor: tensor([0, 1, 4], { dtype: "int32" }),
+      requiresGrad: true,
+      prev: [],
+      backward: () => {},
+    });
     const y = x.sqrt();
     expect(y.dtype).toBe("float64");
     expectClose(nums(y), [0, 1, 2]);
-    const z = parameter(tensor([2, 3], { dtype: "int32" })).pow(2);
+    const z = GradTensor.create({
+      tensor: tensor([2, 3], { dtype: "int32" }),
+      requiresGrad: true,
+      prev: [],
+      backward: () => {},
+    }).pow(2);
     expect(z.dtype).toBe("int32");
     expect(nums(z)).toEqual([4, 9]);
   });
@@ -270,7 +280,12 @@ describe("gather backward", () => {
 
   it("does not record the (non-differentiable) indices as a graph parent", () => {
     const a = GradTensor.fromTensor(tensor([1, 2, 3], { dtype: "float64" }));
-    const idx = parameter(tensor([0, 2], { dtype: "int32" }));
+    const idx = GradTensor.create({
+      tensor: tensor([0, 2], { dtype: "int32" }),
+      requiresGrad: true,
+      prev: [],
+      backward: () => {},
+    });
     const out = a.gather(idx, 0);
     expect(out.requiresGrad).toBe(false);
   });
@@ -446,7 +461,8 @@ describe("matmul backward", () => {
 describe("dropout validation", () => {
   it("validates p in every mode", () => {
     const x = f32([1, 2, 3]);
-    expect(() => dropoutGrad(x, 1)).toThrow(InvalidParameterError);
+    expect(dropoutGrad(x, 1).tensor.toArray()).toEqual([0, 0, 0]);
+    expect(() => dropoutGrad(x, 1.01)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, -0.1)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, 1.5, false)).toThrow(InvalidParameterError);
     expect(() => dropoutGrad(x, Number.NaN)).toThrow(InvalidParameterError);

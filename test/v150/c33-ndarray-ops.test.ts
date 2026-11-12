@@ -611,8 +611,9 @@ describe("gcd / lcm", () => {
     expect(() => lcm(max64, two)).toThrow(/int64/);
   });
 
-  it("truncate float inputs toward zero", () => {
-    expect(gcd(tensor([12.9, -15.5]), tensor([8.2, 10])).toArray()).toEqual([4, 5]);
+  it("accept whole-number floats and reject fractions", () => {
+    expect(gcd(tensor([12, -15], { dtype: "float64" }), tensor([8, 10])).toArray()).toEqual([4, 5]);
+    expect(() => gcd(tensor([12.9]), tensor([8]))).toThrow(DTypeError);
   });
 });
 
@@ -659,8 +660,8 @@ describe("set operations", () => {
     expect(union1d(strided, f64([2])).toArray()).toEqual([1, 2, 3]);
   });
 
-  it("report which argument is not 1-D", () => {
-    expect(() => union1d(f64([1]), f64([[1]]))).toThrow(/b has shape \[1, 1\]/);
+  it("flatten N-D arguments and reject strings mixed with numbers", () => {
+    expect(union1d(f64([1]), f64([[1]])).toArray()).toEqual([1]);
     expect(() => setdiff1d(tensor(["a"]), f64([1]))).toThrow(DTypeError);
   });
 });

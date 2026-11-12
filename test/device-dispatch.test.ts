@@ -1253,7 +1253,7 @@ describe("dispatchMatmul (internal 2-D path)", () => {
       [3, 4],
     ]);
     expect(() => matmul(a, cpuM)).toThrow(/same device/);
-    expect(() => matmul(a, tensor([1, 2], dev))).toThrow(/2D/);
+    expect(() => matmul(a, tensor([1, 2, 3], dev))).toThrow(/not aligned/);
     expect(() => matmul(a, zeros([3, 2], dev))).toThrow();
   });
 });

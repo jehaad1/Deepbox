@@ -355,7 +355,7 @@ describe("c37 astype conversions", () => {
       9007199254740993n,
       -7n,
     ]);
-    expect(tensor(["3.9"]).astype("int64").toArray()).toEqual([3n]);
+    expect(() => tensor(["3.9"]).astype("int64")).toThrow(DTypeError);
     expect(() => tensor(["abc"]).astype("int64")).toThrow(DTypeError);
     expect(() => tensor(["9223372036854775808"]).astype("int64")).toThrow(DTypeError);
   });

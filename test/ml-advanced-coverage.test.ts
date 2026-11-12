@@ -62,9 +62,9 @@ describe("Advanced Coverage Fixes", () => {
 
   describe("Linear Algebra Basic", () => {
     it("matmul should validate dimensions", () => {
-      const A = tensor([[1, 2]]);
-      const B = tensor([1, 2]); // 1D
-      expect(() => matmul(A, B)).toThrow(/matmul requires 2D tensors/);
+      const A = tensor(2);
+      const B = tensor([1, 2]);
+      expect(() => matmul(A, B)).toThrow(/does not accept 0-d tensors/);
     });
 
     it("matmul should validate inner dimensions", () => {

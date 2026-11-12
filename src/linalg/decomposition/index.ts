@@ -3,7 +3,15 @@
  */
 
 export { type CholeskyOptions, cholesky } from "./cholesky";
-export { type EigOptions, eig, eigh, eigvals, eigvalsh } from "./eig";
+export {
+  type ComplexEig,
+  type ComplexEigvals,
+  type EigOptions,
+  eig,
+  eigh,
+  eigvals,
+  eigvalsh,
+} from "./eig";
 export { hessenberg } from "./hessenberg";
 export { lu } from "./lu";
 export { polar } from "./polar";

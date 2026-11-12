@@ -3,17 +3,19 @@
  *
  * - gcd: Element-wise greatest common divisor
  * - lcm: Element-wise least common multiple
- * - union1d: Sorted unique union of two 1D tensors
- * - intersect1d: Sorted unique intersection of two 1D tensors
- * - setdiff1d: Sorted set difference of two 1D tensors
+ * - union1d: Sorted unique union of two tensors
+ * - intersect1d: Sorted unique intersection of two tensors
+ * - setdiff1d: Sorted set difference of two tensors
  *
  * @module ndarray/ops/setops
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox documentation}
  */
 
-import { DataValidationError, DTypeError, InvalidParameterError } from "../../core";
-import { Tensor } from "../tensor/Tensor";
+import { DataValidationError, DTypeError } from "../../core";
+import { isContiguous, offsetFromFlatIndex } from "../tensor/strides";
+import { computeStrides, Tensor } from "../tensor/Tensor";
 import { broadcastApply, getBroadcastShape } from "./broadcast";
+import { decodeStrings, encodeStrings } from "./string_codes";
 
 // ---- Internal helpers ----
 
@@ -59,12 +61,15 @@ function absBig(x: bigint): bigint {
   return x < 0n ? -x : x;
 }
 
-/** Truncate a value toward zero, rejecting NaN and the infinities. */
+/** Absolute value of an integer-valued number, rejecting NaN, the infinities and fractions. */
 function toIntegerValue(x: number, name: string): number {
   if (!Number.isFinite(x)) {
     throw new DataValidationError(`${name} requires finite values; received ${String(x)}`);
   }
-  return Math.abs(Math.trunc(x));
+  if (!Number.isInteger(x)) {
+    throw new DTypeError(`${name} requires integer values; received ${String(x)}`);
+  }
+  return Math.abs(x);
 }
 
 function toBigIntValue(x: number | bigint, name: string): bigint {
@@ -75,7 +80,7 @@ function toBigIntValue(x: number | bigint, name: string): bigint {
 /**
  * Apply an integer binary function with NumPy broadcasting.
  *
- * Inputs are cast to integers (floats are truncated toward zero). If either
+ * Inputs must hold integer values (a fraction throws a DTypeError). If either
  * input is int64 the work is done in BigInt and the result is int64;
  * otherwise the result is int32. Results that do not fit the output dtype
  * throw instead of wrapping.
@@ -144,15 +149,15 @@ function integerBinary(
 /**
  * Element-wise greatest common divisor.
  *
- * Both inputs are cast to integers (floats are truncated toward zero) and the
- * result is always non-negative, with `gcd(0, 0) = 0`. Inputs broadcast
+ * Both inputs must hold integer values (a float dtype is fine when every value is a whole
+ * number) and the result is always non-negative, with `gcd(0, 0) = 0`. Inputs broadcast
  * against each other under NumPy rules. If either input is int64 the result is
  * int64, otherwise int32.
  *
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of GCD values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has string or complex dtype, or a float value is not a whole number
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *
@@ -170,7 +175,8 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
 /**
  * Element-wise least common multiple.
  *
- * Both inputs are cast to integers (floats are truncated toward zero) and the
+ * Both inputs must hold integer values (a float dtype is fine when every value is a whole
+ * number) and the
  * result is always non-negative, with `lcm(x, 0) = 0`. Inputs broadcast
  * against each other under NumPy rules. If either input is int64 the result is
  * int64, otherwise int32.
@@ -178,7 +184,7 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of LCM values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has string or complex dtype, or a float value is not a whole number
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *
@@ -208,16 +214,6 @@ function isNaNValue(v: number | bigint): boolean {
   return typeof v === "number" && Number.isNaN(v);
 }
 
-function require1D(t: Tensor, name: string, which: "a" | "b"): void {
-  if (t.ndim !== 1) {
-    throw new InvalidParameterError(
-      `${name} requires 1D tensor; ${which} has shape [${t.shape.join(", ")}]`,
-      which,
-      t.shape
-    );
-  }
-}
-
 /**
  * Read both operands of a set operation. When either is int64 and the other
  * holds exact integers, both are read as BigInt so values above 2^53 are not
@@ -226,8 +222,6 @@ function require1D(t: Tensor, name: string, which: "a" | "b"): void {
 function readOperands(a: Tensor, b: Tensor, name: string): [SetValues, SetValues] {
   assertNumeric(a, name);
   assertNumeric(b, name);
-  require1D(a, name, "a");
-  require1D(b, name, "b");
   const exact =
     (a.dtype === "int64" || b.dtype === "int64") &&
     isIntegerDType(a.dtype) &&
@@ -235,17 +229,21 @@ function readOperands(a: Tensor, b: Tensor, name: string): [SetValues, SetValues
   return [read1D(a, exact), read1D(b, exact)];
 }
 
+/** Elements of a tensor of any rank in row-major order, as BigInt or doubles. */
 function read1D(t: Tensor, exact: boolean): SetValues {
-  const n = t.shape[0] ?? 0;
-  const stride = t.strides[0] ?? 1;
+  const n = t.size;
   const data = t.data as ArrayLike<number | bigint>;
+  const logicalStrides = computeStrides(t.shape);
+  const dense = isContiguous(t.shape, t.strides);
+  const at = (i: number): number =>
+    dense ? t.offset + i : offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset);
   if (exact) {
     const out = new BigInt64Array(n);
-    for (let i = 0; i < n; i++) out[i] = BigInt(data[t.offset + i * stride] as number | bigint);
+    for (let i = 0; i < n; i++) out[i] = BigInt(data[at(i)] as number | bigint);
     return out;
   }
   const out = new Float64Array(n);
-  for (let i = 0; i < n; i++) out[i] = Number(data[t.offset + i * stride]);
+  for (let i = 0; i < n; i++) out[i] = Number(data[at(i)]);
   return out;
 }
 
@@ -270,17 +268,29 @@ function toSortedTensor(values: Iterable<number | bigint>, exact: boolean, a: Te
 }
 
 /**
- * Compute the sorted, unique union of two 1D tensors.
+ * Run a set operation on two string tensors through their shared ranks. The numeric result is
+ * a sorted list of ranks, which maps back to strings in code point order.
+ */
+function stringSetOperation(
+  a: Tensor,
+  b: Tensor,
+  operation: (ra: Tensor, rb: Tensor) => Tensor
+): Tensor {
+  const { codes, table } = encodeStrings([a, b]);
+  return decodeStrings(operation(codes[0] as Tensor, codes[1] as Tensor), table);
+}
+
+/**
+ * Compute the sorted, unique union of two tensors.
  *
  * NaN values collapse into a single NaN that sorts last, as in NumPy. The
  * result is float64, or int64 when one input is int64 and the other holds
  * integers.
  *
- * @param a - First 1D tensor
- * @param b - Second 1D tensor
+ * @param a - First tensor (flattened if it has more than one dimension)
+ * @param b - Second tensor (flattened if it has more than one dimension)
  * @returns Sorted 1D tensor containing the unique union of elements
- * @throws {DTypeError} If an input has string or complex dtype
- * @throws {InvalidParameterError} If an input is not 1D
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  *
  * @example
  * ```ts
@@ -288,6 +298,9 @@ function toSortedTensor(values: Iterable<number | bigint>, exact: boolean, a: Te
  * ```
  */
 export function union1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, union1d);
+  }
   const [va, vb] = readOperands(a, b, "union1d");
   const exact = va instanceof BigInt64Array;
   const combined = new Set<number | bigint>(va);
@@ -296,17 +309,16 @@ export function union1d(a: Tensor, b: Tensor): Tensor {
 }
 
 /**
- * Compute the sorted, unique intersection of two 1D tensors.
+ * Compute the sorted, unique intersection of two tensors.
  *
  * NaN never matches another NaN (as in NumPy), so NaN is not part of the
  * result. The result is float64, or int64 when one input is int64 and the
  * other holds integers.
  *
- * @param a - First 1D tensor
- * @param b - Second 1D tensor
+ * @param a - First tensor (flattened if it has more than one dimension)
+ * @param b - Second tensor (flattened if it has more than one dimension)
  * @returns Sorted 1D tensor containing the unique intersection of elements
- * @throws {DTypeError} If an input has string or complex dtype
- * @throws {InvalidParameterError} If an input is not 1D
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  *
  * @example
  * ```ts
@@ -314,6 +326,9 @@ export function union1d(a: Tensor, b: Tensor): Tensor {
  * ```
  */
 export function intersect1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, intersect1d);
+  }
   const [va, vb] = readOperands(a, b, "intersect1d");
   const exact = va instanceof BigInt64Array;
   const inB = new Set<number | bigint>(vb);
@@ -325,17 +340,16 @@ export function intersect1d(a: Tensor, b: Tensor): Tensor {
 }
 
 /**
- * Compute the sorted set difference of two 1D tensors.
+ * Compute the sorted set difference of two tensors.
  *
  * Returns the unique elements of `a` that are not in `b`. NaN never matches
  * another NaN (as in NumPy), so a NaN in `a` is always kept. The result is
  * float64, or int64 when one input is int64 and the other holds integers.
  *
- * @param a - First 1D tensor
- * @param b - Second 1D tensor
+ * @param a - First tensor (flattened if it has more than one dimension)
+ * @param b - Second tensor (flattened if it has more than one dimension)
  * @returns Sorted 1D tensor of unique elements in `a` not in `b`
- * @throws {DTypeError} If an input has string or complex dtype
- * @throws {InvalidParameterError} If an input is not 1D
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  *
  * @example
  * ```ts
@@ -343,6 +357,9 @@ export function intersect1d(a: Tensor, b: Tensor): Tensor {
  * ```
  */
 export function setdiff1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, setdiff1d);
+  }
   const [va, vb] = readOperands(a, b, "setdiff1d");
   const exact = va instanceof BigInt64Array;
   const inB = new Set<number | bigint>(vb);

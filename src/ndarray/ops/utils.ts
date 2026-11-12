@@ -51,6 +51,7 @@ import { isContiguous } from "../tensor/strides";
 import { computeStrides, Tensor } from "../tensor/Tensor";
 import {
   readAsNumber,
+  readBigInts,
   readElement,
   readNumbers,
   requireNumericData,
@@ -58,6 +59,7 @@ import {
 } from "./_internal";
 import { dispatchTernary } from "./device_dispatch";
 import { RADIX_SORT_THRESHOLD, radixArgsortF64 } from "./radix";
+import { decodeStrings, encodeStrings } from "./string_codes";
 
 // ─── Internal type-safe helpers ─────────────────────────────────────────────
 
@@ -476,7 +478,7 @@ function broadcastStrides(
  *
  * All three tensors must be broadcastable to a common shape. The condition is
  * evaluated as boolean: 0 is false, every other value (including NaN) is true.
- * `x` and `y` must have the same dtype.
+ * `x` and `y` must have the same dtype; both may be string tensors.
  *
  * **Complexity**: O(n) where n is the number of elements in the output
  *
@@ -484,7 +486,7 @@ function broadcastStrides(
  * @param x - Values where condition is true
  * @param y - Values where condition is false
  * @returns Tensor with selected elements
- * @throws {DTypeError} If any input has string dtype, or `x` and `y` differ in dtype
+ * @throws {DTypeError} If `condition` has string dtype, or `x` and `y` differ in dtype
  * @throws {ShapeError} If the shapes cannot be broadcast together
  *
  * @example
@@ -499,8 +501,14 @@ export function where(condition: Tensor, x: Tensor, y: Tensor): Tensor {
   if (condition.dtype === "string") {
     throw new DTypeError("where condition must be a numeric tensor, not string");
   }
+  if (x.dtype === "string" && y.dtype === "string") {
+    const { codes, table } = encodeStrings([x, y]);
+    return decodeStrings(where(condition, codes[0] as Tensor, codes[1] as Tensor), table);
+  }
   if (x.dtype === "string" || y.dtype === "string") {
-    throw new DTypeError("where does not support string dtype for x or y");
+    throw new DTypeError(
+      `where requires x and y to have the same dtype; got ${x.dtype} and ${y.dtype}`
+    );
   }
   if (x.dtype !== y.dtype) {
     throw new DTypeError(
@@ -1065,7 +1073,8 @@ export function tril(t: Tensor, k = 0): Tensor {
  */
 export function flip(t: Tensor, axes?: Axis | readonly Axis[]): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("flip is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(flip(codes[0] as Tensor, axes), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
   const ndim = t.ndim;
@@ -1199,7 +1208,8 @@ export function roll(
   axis?: Axis | readonly Axis[]
 ): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("roll is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(roll(codes[0] as Tensor, shift, axis), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
   const shifts: readonly number[] = typeof shift === "number" ? [shift] : shift;
@@ -1796,7 +1806,8 @@ function nanReduce(
   axis: Axis | readonly Axis[] | undefined,
   keepdims: boolean,
   opName: string,
-  kernel: NanKernel
+  kernel: NanKernel,
+  requireElements = false
 ): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError(`${opName} is not defined for string dtype`);
@@ -1804,6 +1815,9 @@ function nanReduce(
   const vals = readNumbers(t, opName, false);
   const ndim = t.ndim;
   const redAxes = resolveAxes(axis, ndim, opName).sort((a, b) => a - b);
+  if (requireElements && redAxes.some((ax) => t.shape[ax] === 0)) {
+    throw new InvalidParameterError(`${opName}() requires at least one element`, "t");
+  }
   const isReduced = new Uint8Array(ndim);
   for (const ax of redAxes) isReduced[ax] = 1;
   const keptAxes: number[] = [];
@@ -1950,33 +1964,35 @@ function nanExtreme(vals: ArrayLike<number>, n: number, isMax: boolean): number 
 }
 
 /**
- * Minimum of elements, ignoring NaN. A slice without non-NaN values (including
- * an empty slice) gives NaN. The result is always float64.
+ * Minimum of elements, ignoring NaN. A slice whose values are all NaN gives NaN
+ * (NumPy also warns). Reducing over an empty axis throws, like NumPy and like
+ * {@link min}, because an empty slice has no minimum. The result is always float64.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes to reduce (default: all)
  * @param keepdims - Keep reduced axes as size-1 dimensions
  * @returns float64 tensor of minima
  * @throws {DTypeError} If `t` has string dtype
- * @throws {InvalidParameterError} If an axis is out of range or repeated
+ * @throws {InvalidParameterError} If an axis is out of range or repeated, or a reduced axis is empty
  */
 export function nanmin(t: Tensor, axis?: Axis | readonly Axis[], keepdims = false): Tensor {
-  return nanReduce(t, axis, keepdims, "nanmin", (vals, n) => nanExtreme(vals, n, false));
+  return nanReduce(t, axis, keepdims, "nanmin", (vals, n) => nanExtreme(vals, n, false), true);
 }
 
 /**
- * Maximum of elements, ignoring NaN. A slice without non-NaN values (including
- * an empty slice) gives NaN. The result is always float64.
+ * Maximum of elements, ignoring NaN. A slice whose values are all NaN gives NaN
+ * (NumPy also warns). Reducing over an empty axis throws, like NumPy and like
+ * {@link max}, because an empty slice has no maximum. The result is always float64.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes to reduce (default: all)
  * @param keepdims - Keep reduced axes as size-1 dimensions
  * @returns float64 tensor of maxima
  * @throws {DTypeError} If `t` has string dtype
- * @throws {InvalidParameterError} If an axis is out of range or repeated
+ * @throws {InvalidParameterError} If an axis is out of range or repeated, or a reduced axis is empty
  */
 export function nanmax(t: Tensor, axis?: Axis | readonly Axis[], keepdims = false): Tensor {
-  return nanReduce(t, axis, keepdims, "nanmax", (vals, n) => nanExtreme(vals, n, true));
+  return nanReduce(t, axis, keepdims, "nanmax", (vals, n) => nanExtreme(vals, n, true), true);
 }
 
 // ─── unique ─────────────────────────────────────────────────────────────────
@@ -2190,8 +2206,8 @@ function uniqueAlongAxis(
  *
  * @param t - Input tensor
  * @param returnCountsOrOptions - `true` to also return float64 counts, or an options object
- * @returns Object with `values` and the requested extra tensors
- * @throws {DTypeError} If `t` has string dtype
+ * @returns Object with `values` and the requested extra tensors. A string tensor gives string
+ *   `values` in code point order
  * @throws {InvalidParameterError} If `axis` is out of range for `t`
  *
  * @example
@@ -2209,7 +2225,12 @@ export function unique(t: Tensor, returnCounts?: boolean): { values: Tensor; cou
 export function unique<const O extends UniqueOptions>(t: Tensor, options: O): UniqueOutput<O>;
 export function unique(t: Tensor, returnCountsOrOptions?: boolean | UniqueOptions): UniqueResult {
   if (t.dtype === "string") {
-    throw new DTypeError("unique is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    const r =
+      typeof returnCountsOrOptions === "object" && returnCountsOrOptions !== null
+        ? unique(codes[0] as Tensor, returnCountsOrOptions)
+        : unique(codes[0] as Tensor, returnCountsOrOptions === true);
+    return { ...r, values: decodeStrings(r.values, table) };
   }
   const dtype = ensureNonStringDType(t.dtype);
   const options: UniqueOptions =
@@ -2310,7 +2331,8 @@ export function unique(t: Tensor, returnCountsOrOptions?: boolean | UniqueOption
  *
  * NaN sorts after every other value (NumPy convention), so searching for NaN
  * returns the length of the array unless the array itself ends in NaNs. The
- * array is not checked for being sorted. The indices are returned as int32.
+ * array is not checked for being sorted. The indices are returned as int32. When both inputs
+ * are int64 the comparison is exact, also beyond 2^53.
  *
  * @param sortedArr - 1-D sorted tensor
  * @param values - Values to insert (any shape)
@@ -2338,12 +2360,40 @@ export function searchsorted(
     );
   }
 
-  const arr = readNumbers(sortedArr, "searchsorted", false);
-  const vals = readNumbers(values, "searchsorted", false);
   const arrLen = sortedArr.size;
   const n = values.size;
   const outData = new Int32Array(n);
   const left = side === "left";
+
+  if (sortedArr.dtype === "int64" && values.dtype === "int64") {
+    // Compare the BigInt storage directly: doubles cannot tell apart int64 values above 2^53.
+    const bigArr = readBigInts(sortedArr);
+    const bigVals = readBigInts(values);
+    for (let i = 0; i < n; i++) {
+      const v = bigVals[i] as bigint;
+      let lo = 0;
+      let hi = arrLen;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const m = bigArr[mid] as bigint;
+        if (left ? m < v : m <= v) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      outData[i] = lo;
+    }
+    return Tensor.fromTypedArray({
+      data: outData,
+      shape: [...values.shape],
+      dtype: "int32",
+      device: sortedArr.device,
+    });
+  }
+
+  const arr = readNumbers(sortedArr, "searchsorted", false);
+  const vals = readNumbers(values, "searchsorted", false);
 
   for (let i = 0; i < n; i++) {
     const v = vals[i] as number;
@@ -2503,6 +2553,13 @@ export function histogram(
       counts[idx] = (counts[idx] as number) + (weights ? (weights[i] as number) : 1);
     }
   } else {
+    if (!Array.isArray(bins)) {
+      throw new InvalidParameterError(
+        `bins must be a positive integer or a list of bin edges; got ${String(bins)}`,
+        "bins",
+        bins
+      );
+    }
     if (bins.length < 2) {
       throw new InvalidParameterError(
         "bins must contain at least 2 edges when given as a list",
@@ -2665,11 +2722,12 @@ export function bincount(t: Tensor, minlength = 0, weights?: Tensor): Tensor {
  * ```
  */
 export function booleanIndex(t: Tensor, mask: Tensor): Tensor {
-  if (t.dtype === "string") {
-    throw new DTypeError("booleanIndex is not defined for string dtype");
-  }
   if (mask.dtype === "string") {
     throw new DTypeError("booleanIndex mask must be numeric");
+  }
+  if (t.dtype === "string") {
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(booleanIndex(codes[0] as Tensor, mask), table);
   }
   if (t.size !== mask.size) {
     throw new ShapeError(`Tensor size ${t.size} does not match mask size ${mask.size}`);
@@ -2720,14 +2778,15 @@ export function booleanIndex(t: Tensor, mask: Tensor): Tensor {
  * @throws {DTypeError} If `indices` has bool dtype
  */
 export function fancyIndex(t: Tensor, indices: Tensor, axis: Axis = 0): Tensor {
-  if (t.dtype === "string") {
-    throw new DTypeError("fancyIndex is not defined for string dtype");
-  }
   if (indices.dtype === "string") {
     throw new DTypeError("fancyIndex indices must be numeric");
   }
   if (indices.dtype === "bool") {
     throw new DTypeError("fancyIndex indices must be integers; use booleanIndex for boolean masks");
+  }
+  if (t.dtype === "string") {
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(fancyIndex(codes[0] as Tensor, indices, axis), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
 
@@ -3257,28 +3316,52 @@ export function countNonzero(t: Tensor, axis?: Axis | readonly Axis[], keepdims 
 }
 
 /**
- * Rotate a 2-D tensor by 90 degrees counter-clockwise, `k` times.
+ * Rotate a tensor by 90 degrees in the plane of two axes, `k` times (NumPy `rot90`).
  *
- * @param t - Input 2-D tensor
- * @param k - Number of 90° rotations (default 1). Negative values rotate clockwise.
+ * The rotation goes from the first axis toward the second one. For a 2-D tensor and the
+ * default axes this is counter-clockwise.
+ *
+ * @param t - Input tensor with at least 2 dimensions
+ * @param k - Number of 90° rotations (default 1). Negative values rotate the other way.
+ * @param axes - The two axes that span the plane of rotation (default `[0, 1]`); negative
+ *   values count from the last axis
  * @returns Rotated copy of the tensor
- * @throws {ShapeError} If the input is not 2-D
- * @throws {InvalidParameterError} If `k` is not an integer
+ * @throws {ShapeError} If the input has fewer than 2 dimensions
+ * @throws {InvalidParameterError} If `k` is not an integer, or `axes` are not two different
+ *   axes of the tensor
+ *
+ * @example
+ * ```ts
+ * rot90(tensor([[1, 2], [3, 4]]));        // [[2, 4], [1, 3]]
+ * rot90(ones([2, 3, 4]), 1, [1, 2]).shape; // [2, 4, 3]
+ * ```
  */
-export function rot90(t: Tensor, k = 1): Tensor {
-  if (t.ndim !== 2) {
-    throw new ShapeError(`rot90 requires a 2-D tensor, got ${t.ndim}-D`);
+export function rot90(t: Tensor, k = 1, axes: readonly [number, number] = [0, 1]): Tensor {
+  if (t.ndim < 2) {
+    throw new ShapeError(`rot90 requires at least a 2-D tensor, got ${t.ndim}-D`);
   }
   if (!Number.isInteger(k)) {
     throw new InvalidParameterError(`rot90 k must be an integer; got ${k}`, "k", k);
   }
+  const first = normalizeAxis(axes[0], t.ndim);
+  const second = normalizeAxis(axes[1], t.ndim);
+  if (first === second) {
+    throw new InvalidParameterError(
+      `rot90 axes must be two different axes; got [${axes[0]}, ${axes[1]}]`,
+      "axes",
+      axes
+    );
+  }
+  const swapped = Array.from({ length: t.ndim }, (_, i) =>
+    i === first ? second : i === second ? first : i
+  );
   switch (((k % 4) + 4) % 4) {
     case 1:
-      return flip(transpose(t), [0]);
+      return transpose(flip(t, [second]), swapped);
     case 2:
-      return flip(t, [0, 1]);
+      return flip(t, [first, second]);
     case 3:
-      return flip(transpose(t), [1]);
+      return flip(transpose(t, swapped), [second]);
     default:
       return clone(t);
   }

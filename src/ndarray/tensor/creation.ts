@@ -13,7 +13,14 @@ import {
 import { __fillNormal, __normalRandom } from "../../random/random";
 
 import { roundToBFloat16, roundToFloat16 } from "./float16";
-import { dtypeToTypedArrayCtor, Tensor, toInt64 } from "./Tensor";
+import {
+  assertFitsNarrowInt,
+  dtypeToTypedArrayCtor,
+  type NarrowIntDType,
+  narrowIntRange,
+  Tensor,
+  toInt64,
+} from "./Tensor";
 
 /**
  * Recursive type for nested number arrays.
@@ -288,6 +295,10 @@ function coerceNumberToTypedArrayValue(dtype: DType, value: number): number | bi
     case "bool":
       // Nonzero (NaN included) is true, matching NumPy and Tensor.astype.
       return value !== 0 ? 1 : 0;
+    case "int32":
+    case "uint8":
+      assertFitsNarrowInt(value, dtype, `${dtype} tensor value`);
+      return value;
     default:
       return value;
   }
@@ -345,7 +356,8 @@ function isTypedArrayCompatibleWithDType(data: TypedArray, dtype: DType): boolea
  * where the values are rounded into a new array). Without `opts.dtype` the
  * dtype is inferred: booleans give `bool`, strings give `string`, and numbers
  * use the configured default dtype (`float32` unless changed with `setConfig`).
- * An integer dtype truncates fractional values; `bool` maps nonzero (NaN
+ * An integer dtype truncates fractional values and throws a `DTypeError` for NaN,
+ * Infinity and values outside the dtype range; `bool` maps nonzero (NaN
  * included) to true.
  *
  * The default `float32` rounds decimal input to single precision, so
@@ -447,12 +459,16 @@ export function tensor(
   if (!(typed instanceof BigInt64Array) && numericDtype !== "int64" && numericDtype !== "bool") {
     let idx = 0;
     const round = halfRounder(numericDtype);
+    const narrow = narrowIntRange(numericDtype);
     const flattenDirect = (arr: unknown): void => {
       if (Array.isArray(arr)) {
         for (let i = 0; i < arr.length; i++) {
           flattenDirect(arr[i]);
         }
       } else if (typeof arr === "number") {
+        if (narrow !== null && !(arr > narrow[0] - 1 && arr < narrow[1] + 1)) {
+          assertFitsNarrowInt(arr, numericDtype as NarrowIntDType, "tensor");
+        }
         typed[idx++] = round ? round(arr) : arr;
       } else if (typeof arr === "boolean") {
         typed[idx++] = arr ? 1 : 0;
@@ -595,8 +611,9 @@ export function empty(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
  *
  * Numeric dtypes take a number (or a boolean, stored as 1/0); `string`
  * takes a string. The value is converted like `tensor()` does: integer dtypes
- * truncate toward zero, `bool` maps nonzero to true, float16 / bfloat16 round
- * to half precision, and int64 requires a finite integer.
+ * truncate toward zero and throw for NaN, Infinity or out-of-range values, `bool` maps
+ * nonzero to true, float16 / bfloat16 round to half precision, and int64 requires a
+ * finite integer.
  *
  * @param shape - Shape of the tensor
  * @param value - Fill value
@@ -791,10 +808,13 @@ export function linspace(
  * In linear space, the sequence starts at base^start and ends with base^stop.
  * Integer dtypes truncate the values toward zero.
  *
+ * The parameter order is `(start, stop, num, base, endpoint, opts)`. NumPy orders them
+ * `(start, stop, num, endpoint, base)`, so `base` comes before `endpoint` here.
+ *
  * @param start - base^start is the starting value
  * @param stop - base^stop is the final value
  * @param num - Number of samples to generate (default: 50)
- * @param base - The base of the log space (default: 10)
+ * @param base - The base of the log space, a finite number above 0 (default: 10)
  * @param endpoint - If true, stop is the last sample (default: true)
  * @param opts - Tensor options
  * @returns Tensor of shape (num,)
@@ -807,7 +827,8 @@ export function linspace(
  * // [1, 10, 100, 1000]
  * ```
  *
- * @throws {InvalidParameterError} If `num` is not a non-negative integer
+ * @throws {InvalidParameterError} If `num` is not a non-negative integer, or `base` is not a
+ *   finite number above 0
  *
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
@@ -819,6 +840,13 @@ export function logspace(
   endpoint = true,
   opts: TensorCreateOptions = {}
 ): Tensor {
+  if (typeof base !== "number" || !Number.isFinite(base) || base <= 0) {
+    throw new InvalidParameterError(
+      `logspace: base must be a finite number above 0 (the order is start, stop, num, base, endpoint); received ${String(base)}`,
+      "base",
+      base
+    );
+  }
   const exponent = linspaceValues(start, stop, num, endpoint);
 
   const config = getConfig();
@@ -933,8 +961,11 @@ export function geomspace(
  *
  * Returns a 2D tensor with ones on the diagonal and zeros elsewhere.
  *
+ * Call as `eye(n)`, `eye(n, opts)` or `eye(n, m, k, opts)`.
+ *
  * @param n - Number of rows
- * @param m - Number of columns (default: n, making it square)
+ * @param m - Number of columns (default: n, making it square), or the tensor options for a
+ *   square matrix
  * @param k - Index of the diagonal (default: 0, main diagonal; positive is above)
  * @param opts - Tensor options
  * @returns Tensor of shape (n, m)
@@ -958,7 +989,16 @@ export function geomspace(
  *
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
-export function eye(n: number, m?: number, k = 0, opts: TensorCreateOptions = {}): Tensor {
+export function eye(n: number, opts?: TensorCreateOptions): Tensor;
+export function eye(n: number, m?: number, k?: number, opts?: TensorCreateOptions): Tensor;
+export function eye(
+  n: number,
+  mOrOpts?: number | TensorCreateOptions,
+  k = 0,
+  optsArg: TensorCreateOptions = {}
+): Tensor {
+  const m = typeof mOrOpts === "object" ? undefined : mOrOpts;
+  const opts = typeof mOrOpts === "object" ? mOrOpts : optsArg;
   if (!Number.isInteger(k)) {
     throw new InvalidParameterError(`k must be an integer; received ${String(k)}`, "k", k);
   }

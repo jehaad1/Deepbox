@@ -142,16 +142,18 @@ export function asMatrix2D(t: Tensor): Matrix2D {
  *
  * @param t - Input 2D tensor
  * @param context - Optional name of the calling function, used in error messages
+ * @param allowNonFinite - Copy NaN and infinite values instead of throwing (default: false)
  * @returns Object containing dimensions and dense data array
  * @throws {ShapeError} If tensor is not 2D
  * @throws {DTypeError} If tensor has string or complex dtype
- * @throws {DataValidationError} If tensor contains non-finite values
+ * @throws {DataValidationError} If tensor contains non-finite values and `allowNonFinite` is false
  *
  * @internal
  */
 export function toDenseMatrix2D(
   t: Tensor,
-  context?: string
+  context?: string,
+  allowNonFinite = false
 ): {
   readonly rows: number;
   readonly cols: number;
@@ -167,7 +169,7 @@ export function toDenseMatrix2D(
     const end = start + rows * cols;
     for (let i = 0, j = start; j < end; i++, j++) {
       const val = Number(m.tensor.data[j]);
-      if (!Number.isFinite(val)) {
+      if (!allowNonFinite && !Number.isFinite(val)) {
         throw new DataValidationError(nonFiniteMessage(context));
       }
       out[i] = val;
@@ -179,7 +181,7 @@ export function toDenseMatrix2D(
     const base = m.offset + i * m.strideRow;
     for (let j = 0; j < cols; j++) {
       const val = Number(m.tensor.data[base + j * m.strideCol]);
-      if (!Number.isFinite(val)) {
+      if (!allowNonFinite && !Number.isFinite(val)) {
         throw new DataValidationError(nonFiniteMessage(context));
       }
       out[i * cols + j] = val;
@@ -588,18 +590,20 @@ export function getStride(t: Tensor, axis: number, context: string): number {
   return stride;
 }
 
+/** Result of {@link classifyNonFinite}: `"nan"` if any element is NaN, else `"infinity"` if any is infinite. */
+export type NonFiniteKind = "finite" | "nan" | "infinity";
+
 /**
- * Validates that a tensor contains only finite numeric values.
- * Iterates using shape/strides, so views are checked correctly.
+ * Reports whether a real numeric tensor holds NaN or infinite values. Iterates using
+ * shape/strides, so views are checked correctly. NaN takes precedence over infinity.
  *
  * @param t - Input tensor
  * @param context - Context string for error messages
  * @throws {DTypeError} If the tensor has string or complex dtype
- * @throws {DataValidationError} If any element is NaN or infinite
  *
  * @internal
  */
-export function assertFiniteTensor(t: Tensor, context: string): void {
+export function classifyNonFinite(t: Tensor, context: string): NonFiniteKind {
   if (t.dtype === "string") {
     throw new DTypeError(`${context} does not support string dtype`);
   }
@@ -607,15 +611,14 @@ export function assertFiniteTensor(t: Tensor, context: string): void {
     throw new DTypeError(`${context} does not support complex dtype`);
   }
 
-  if (t.size === 0) return;
+  if (t.size === 0) return "finite";
 
+  let sawInfinity = false;
   const ndim = t.ndim;
   if (ndim === 0) {
     const val = Number(t.data[t.offset]);
-    if (!Number.isFinite(val)) {
-      throw new DataValidationError(`${context} contains non-finite values`);
-    }
-    return;
+    if (Number.isNaN(val)) return "nan";
+    return Number.isFinite(val) ? "finite" : "infinity";
   }
 
   const shape = t.shape;
@@ -639,10 +642,11 @@ export function assertFiniteTensor(t: Tensor, context: string): void {
       for (let i = t.offset; i < end; i++) {
         const val = data[i] as number;
         if (!Number.isFinite(val)) {
-          throw new DataValidationError(`${context} contains non-finite values`);
+          if (Number.isNaN(val)) return "nan";
+          sawInfinity = true;
         }
       }
-      return;
+      return sawInfinity ? "infinity" : "finite";
     }
   }
 
@@ -652,7 +656,8 @@ export function assertFiniteTensor(t: Tensor, context: string): void {
   for (let count = 0; count < t.size; count++) {
     const val = Number(data[offset]);
     if (!Number.isFinite(val)) {
-      throw new DataValidationError(`${context} contains non-finite values`);
+      if (Number.isNaN(val)) return "nan";
+      sawInfinity = true;
     }
 
     for (let d = ndim - 1; d >= 0; d--) {
@@ -671,5 +676,23 @@ export function assertFiniteTensor(t: Tensor, context: string): void {
       offset -= nextIdx * stride;
       idx[d] = 0;
     }
+  }
+  return sawInfinity ? "infinity" : "finite";
+}
+
+/**
+ * Validates that a tensor contains only finite numeric values.
+ * Iterates using shape/strides, so views are checked correctly.
+ *
+ * @param t - Input tensor
+ * @param context - Context string for error messages
+ * @throws {DTypeError} If the tensor has string or complex dtype
+ * @throws {DataValidationError} If any element is NaN or infinite
+ *
+ * @internal
+ */
+export function assertFiniteTensor(t: Tensor, context: string): void {
+  if (classifyNonFinite(t, context) !== "finite") {
+    throw new DataValidationError(`${context} contains non-finite values`);
   }
 }

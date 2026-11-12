@@ -33,7 +33,7 @@ import type {
 import { getHostAccelerator, requireKernelBackend } from "../../core/backend/registry";
 import type { Axis } from "../../core/types/common";
 import { normalizeAxes } from "../../core/utils/axis";
-import { planMatmul } from "../linalg/matmul_plan";
+import { type MatmulOp, planMatmul } from "../linalg/matmul_plan";
 import { isContiguous } from "../tensor/strides";
 import { computeStrides, DeviceBufferOwner, Tensor } from "../tensor/Tensor";
 import { getBroadcastShape, isScalar } from "./broadcast";
@@ -249,7 +249,8 @@ export function dispatchMatmul(a: Tensor, b: Tensor): Tensor | null {
 }
 
 /**
- * Route NumPy-style `dot` when either operand is a device tensor.
+ * Route NumPy-style `dot` (and, with `op` set to `"matmul"`, N-D `matmul`) when either operand
+ * is a device tensor.
  *
  * Shapes follow `numpy.matmul`: 1-D operands are promoted to a row or column
  * vector, and batch dimensions are right-aligned and broadcast (size-1 and
@@ -260,18 +261,18 @@ export function dispatchMatmul(a: Tensor, b: Tensor): Tensor | null {
  *
  * @returns The device result, or `null` for host tensors
  */
-export function dispatchDot(a: Tensor, b: Tensor): Tensor | null {
+export function dispatchDot(a: Tensor, b: Tensor, op: MatmulOp = "dot"): Tensor | null {
   if (!a.isDeviceTensor && !b.isDeviceTensor) return null;
   // Shape rules and error messages are shared with the CPU implementation.
-  const plan = planMatmul(a, b, "dot");
-  if (a.device !== b.device) mixedDeviceError("dot", a, b);
+  const plan = planMatmul(a, b, op);
+  if (a.device !== b.device) mixedDeviceError(op, a, b);
   const { batchShape, m, k, n } = plan;
 
-  const backend = requireKernelBackend(a.device, "dot");
+  const backend = requireKernelBackend(a.device, op);
   const aOwner = a.__bufferOwner;
   const bOwner = b.__bufferOwner;
   if (!aOwner || !bOwner) {
-    throw new DeviceError("dot: internal error: device tensor without a device buffer");
+    throw new DeviceError(`${op}: internal error: device tensor without a device buffer`);
   }
 
   let out: DeviceBuffer;

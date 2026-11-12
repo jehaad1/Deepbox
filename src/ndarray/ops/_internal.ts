@@ -145,6 +145,28 @@ export function readNumbers(t: Tensor, opName: string, exact = true): NumericTyp
 }
 
 /**
+ * Read the logical elements of an int64 tensor as a zero-based `BigInt64Array` in row-major
+ * order, without converting through doubles. The result may alias the tensor's buffer, so
+ * callers must not write to it.
+ *
+ * @throws {DTypeError} If the tensor is not int64
+ */
+export function readBigInts(t: Tensor): BigInt64Array {
+  const data = t.data;
+  if (!(data instanceof BigInt64Array)) {
+    throw new DTypeError(`expected an int64 tensor; received ${t.dtype}`);
+  }
+  const size = t.size;
+  if (isContiguous(t.shape, t.strides)) return data.subarray(t.offset, t.offset + size);
+  const out = new BigInt64Array(size);
+  const logicalStrides = computeStrides(t.shape);
+  for (let i = 0; i < size; i++) {
+    out[i] = getBigIntElement(data, offsetFromFlatIndex(i, logicalStrides, t.strides, t.offset));
+  }
+  return out;
+}
+
+/**
  * Read an element from a TypedArray as a `number`, converting BigInt
  * values via `bigintToNumberSafe`.
  */

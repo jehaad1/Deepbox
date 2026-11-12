@@ -118,7 +118,7 @@ describe("fft: accuracy", () => {
 
 describe("fft: dtype", () => {
   it("integer and bool inputs produce float64 (NumPy gives complex128)", () => {
-    const x = [2147483, 1, 3, 4];
+    const x = [200, 1, 3, 4];
     for (const dtype of ["int32", "int64", "uint8", "bool"] as const) {
       const t = tensor(dtype === "bool" ? [1, 0, 1, 1] : x, { dtype });
       expect(fft(t).real.dtype).toBe("float64");

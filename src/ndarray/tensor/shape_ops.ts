@@ -242,6 +242,42 @@ export function unsqueeze(t: Tensor, axis: number): Tensor {
 }
 
 /**
- * Alias for {@link unsqueeze} (NumPy name).
+ * Insert new axes of size 1 (NumPy `expand_dims`).
+ *
+ * With one axis this is {@link unsqueeze}. With a list, every axis is a position in the
+ * result, which has `t.ndim + axis.length` dimensions, and each position gets a size-1
+ * dimension. Negative axes count from the end of the result. The result is a view.
+ *
+ * @param t - Input tensor
+ * @param axis - Position of the new axis, or a list of positions in the result
+ * @returns View with the new axes
+ * @throws {InvalidParameterError} If an axis is not an integer, is out of bounds for the
+ *   result, or is listed twice
+ *
+ * @example
+ * ```ts
+ * expandDims(zeros([2, 3]), 0).shape;       // [1, 2, 3]
+ * expandDims(zeros([2, 3]), [0, 3]).shape;  // [1, 2, 3, 1]
+ * ```
  */
-export const expandDims = unsqueeze;
+export function expandDims(t: Tensor, axis: number | readonly number[]): Tensor {
+  if (typeof axis === "number") return unsqueeze(t, axis);
+  const outNdim = t.ndim + axis.length;
+  const normalized = axis.map((a) => {
+    if (!Number.isInteger(a) || a < -outNdim || a >= outNdim) {
+      throw new InvalidParameterError(
+        `axis ${a} is out of bounds for result with ${outNdim} dimensions`,
+        "axis",
+        axis
+      );
+    }
+    return a < 0 ? a + outNdim : a;
+  });
+  if (new Set(normalized).size !== normalized.length) {
+    throw new InvalidParameterError(`axis contains a repeated axis: [${axis}]`, "axis", axis);
+  }
+  // Inserting in increasing order puts every size-1 axis at its final position.
+  let out = t;
+  for (const a of normalized.sort((x, y) => x - y)) out = unsqueeze(out, a);
+  return out;
+}

@@ -121,7 +121,7 @@ describe("linalg dense conversion", () => {
     expect(() => solve(good, badVec)).toThrow(/solve\(\)/);
     expect(() => solveTriangular(good, badVec)).toThrow(/solveTriangular\(\)/);
     expect(() => svd(bad)).toThrow(/svd\(\)/);
-    expect(() => det(bad)).toThrow(/det\(\)/);
+    expect(det(bad)).toBeNaN();
     expect(() => slogdet(bad)).toThrow(/slogdet\(\)/);
     expect(() => lu(bad)).toThrow(/lu\(\)/);
     expect(() => qr(bad)).toThrow(/qr\(\)/);

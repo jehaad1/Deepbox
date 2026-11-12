@@ -1,4 +1,4 @@
-import { DataValidationError, InvalidParameterError, ShapeError } from "../../core";
+import { DataValidationError, InvalidParameterError, MemoryError, ShapeError } from "../../core";
 import { CSRMatrix as NdarrayCSRMatrix, type Tensor } from "../../ndarray";
 import {
   fromDenseVector1D,
@@ -157,6 +157,12 @@ function assertVectorRhs(csr: CSRMatrix, b: Tensor, fn: string): void {
 }
 
 /**
+ * Largest number of elements of the dense workspace of {@link sparseSolve}: 2^26, which is
+ * n = 8192 and 512 MiB of float64.
+ */
+const SPARSE_SOLVE_MAX_DENSE_ELEMENTS = 2 ** 26;
+
+/**
  * Solve a sparse linear system A x = b by LU factorization with partial pivoting.
  *
  * The CSR matrix is expanded into a dense n x n workspace and factored with
@@ -165,6 +171,10 @@ function assertVectorRhs(csr: CSRMatrix, b: Tensor, fn: string): void {
  * O(N²) and time is O(N³) in the worst case: it is not a sparse direct solver
  * with fill-reducing ordering. For symmetric positive-definite systems with a
  * small bandwidth, {@link sparseCholeskySolve} stores only the envelope.
+ *
+ * The workspace is limited to 2^26 elements (N = 8192, 512 MiB of float64); a larger system
+ * throws a {@link MemoryError} before anything is allocated. Use {@link sparseCholeskySolve}
+ * for large symmetric positive-definite systems.
  *
  * **Time Complexity**: O(N²) to scan for pivots plus the cost of the non-zero
  * updates (O(N * bandwidth²) for banded matrices), O(N³) for dense ones
@@ -187,6 +197,7 @@ function assertVectorRhs(csr: CSRMatrix, b: Tensor, fn: string): void {
  * @throws {ShapeError} If b is not a vector of length N, or rowPointers does not have N + 1 entries
  * @throws {DataValidationError} If the CSR structure is invalid (index out of range, decreasing
  *   rowPointers, non-finite values), or the matrix is singular
+ * @throws {MemoryError} If N * N exceeds 2^26 (use {@link sparseCholeskySolve})
  *
  * @see {@link https://deepbox.dev/docs/linalg-solvers | Deepbox Linear Algebra}
  */
@@ -198,6 +209,14 @@ export function sparseSolve(input: SparseMatrixInput, b: Tensor): Tensor {
   const n = csr.n;
   if (n === 0) {
     return fromDenseVector1D(new Float64Array(0));
+  }
+  if (n * n > SPARSE_SOLVE_MAX_DENSE_ELEMENTS) {
+    throw new MemoryError(
+      `sparseSolve(): a ${n} x ${n} system needs a dense workspace of ${(n * n).toLocaleString("en-US")} ` +
+        `elements, above the limit of ${SPARSE_SOLVE_MAX_DENSE_ELEMENTS.toLocaleString("en-US")}. ` +
+        "Use sparseCholeskySolve() for large symmetric positive-definite systems.",
+      { requestedBytes: n * n * 8, availableBytes: SPARSE_SOLVE_MAX_DENSE_ELEMENTS * 8 }
+    );
   }
 
   const x = toDenseVector1D(b, "sparseSolve()");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parameter, tensor } from "../src/ndarray";
+import { GradTensor, parameter, tensor } from "../src/ndarray";
 import { Adam } from "../src/optim/optimizers/adam";
 import { AdamW } from "../src/optim/optimizers/adamw";
 import { SGD } from "../src/optim/optimizers/sgd";
@@ -325,7 +325,12 @@ describe("Optimizer state dict serialization", () => {
 describe("optim/_internal edge cases", () => {
   it("assertHasGradFloat throws on non-float param", () => {
     // int32 parameter should throw DTypeError
-    const p = parameter(tensor([1, 2], { dtype: "int32" }));
+    const p = GradTensor.create({
+      tensor: tensor([1, 2], { dtype: "int32" }),
+      requiresGrad: true,
+      prev: [],
+      backward: () => {},
+    });
     p.setGrad(tensor([0.1, 0.2], { dtype: "float64" }));
     const opt = new SGD([p], { lr: 0.01 });
     expect(() => opt.step()).toThrow();

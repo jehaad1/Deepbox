@@ -245,6 +245,56 @@ function contiguousWindow(t: Tensor, functionName: string): { start: number; len
   return { start: t.offset, length };
 }
 
+/** Options of {@link shuffle}, {@link permutation} and {@link choice} for N-D tensors. */
+export type SliceSamplingOptions = {
+  /**
+   * Axis whose slices are shuffled or sampled as a whole (numpy `axis` argument; negative
+   * values count from the last axis). When omitted, the tensor is treated as flattened.
+   */
+  readonly axis?: number;
+};
+
+/**
+ * Splits the shape of `t` around `axis` into the number of leading blocks, the length of the
+ * axis and the number of elements in one slice of the trailing dimensions.
+ */
+function resolveSliceAxis(
+  t: Tensor,
+  axis: number,
+  functionName: string
+): { axis: number; outer: number; length: number; inner: number } {
+  if (!Number.isInteger(axis) || axis < -t.ndim || axis >= t.ndim) {
+    throw new InvalidParameterError(
+      `${functionName}: axis must be an integer in [${-t.ndim}, ${t.ndim - 1}] for a ${t.ndim}-D tensor`,
+      "axis",
+      axis
+    );
+  }
+  const normalized = axis < 0 ? axis + t.ndim : axis;
+  let outer = 1;
+  for (let i = 0; i < normalized; i++) outer *= t.shape[i] as number;
+  let inner = 1;
+  for (let i = normalized + 1; i < t.ndim; i++) inner *= t.shape[i] as number;
+  return { axis: normalized, outer, length: t.shape[normalized] as number, inner };
+}
+
+/** Swaps the runs `data[a .. a + run)` and `data[b .. b + run)` element by element. */
+function swapRuns(data: TypedArray, a: number, b: number, run: number): void {
+  if (data instanceof BigInt64Array) {
+    for (let k = 0; k < run; k++) {
+      const tmp = data[a + k] as bigint;
+      data[a + k] = data[b + k] as bigint;
+      data[b + k] = tmp;
+    }
+    return;
+  }
+  for (let k = 0; k < run; k++) {
+    const tmp = data[a + k] as number;
+    data[a + k] = data[b + k] as number;
+    data[b + k] = tmp;
+  }
+}
+
 /**
  * Read the elements of a 1D or 2D numeric tensor as float64, honoring its
  * offset and strides (so sliced and transposed views work).
@@ -1563,6 +1613,7 @@ function sampleFromCdf(cdf: Float64Array): number {
  * @param size - Number of samples or output shape
  * @param replace - Whether to sample with replacement (default: true)
  * @param p - Optional probability weights for weighted sampling
+ * @param options - `axis`: sample whole slices along this axis (numpy `axis` argument)
  *
  * @throws {InvalidParameterError} When population size is invalid (not finite, not integer, or < 0)
  * @throws {InvalidParameterError} When size > population and replace is false
@@ -1571,8 +1622,11 @@ function sampleFromCdf(cdf: Float64Array): number {
  *
  * @remarks
  * - Input tensor must be contiguous (no striding); a contiguous view with an offset is fine.
- * - A multi-dimensional tensor is sampled over its flattened elements, and the result is 1D
- *   (or `size`-shaped); it is not sampled by rows.
+ * - **Warning:** by default a multi-dimensional tensor is sampled over its flattened elements,
+ *   and the result is 1D (or `size`-shaped); it is not sampled by rows. Pass `{ axis: 0 }` to
+ *   sample rows (slices along an axis): the population is `a.shape[axis]`, `p` has that length
+ *   and the result has shape `a.shape[:axis] + size + a.shape[axis + 1:]`, as in
+ *   `numpy.random.Generator.choice`. `axis` is ignored when `a` is a number.
  * - `p` may be any 1D tensor (strided views included); it is normalized by its sum.
  * - Without replacement and without `p`, memory use is proportional to `size`, not to a large
  *   integer population `a`.
@@ -1592,6 +1646,10 @@ function sampleFromCdf(cdf: Float64Array): number {
  *
  * // Without replacement
  * const unique = choice(x, 3, false);  // All different elements
+ *
+ * // Sample whole rows of a matrix
+ * const m = tensor([[1, 2], [3, 4], [5, 6]]);
+ * const rows = choice(m, 2, false, undefined, { axis: 0 });  // shape [2, 2]
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
@@ -1600,7 +1658,8 @@ export function choice(
   a: Tensor | number,
   size?: number | Shape,
   replace = true,
-  p?: Tensor
+  p?: Tensor,
+  options: SliceSamplingOptions = {}
 ): Tensor {
   if (typeof a === "number") {
     assertSafeInteger(a, "a");
@@ -1627,7 +1686,9 @@ export function choice(
   // Note: we currently require contiguous storage, because `choice` is defined over
   // the flattened order. Using arbitrary strides would require computing a flat
   // index mapping.
-  const n = aa ? aa.size : (a as number);
+  const slices =
+    aa && options.axis !== undefined ? resolveSliceAxis(aa, options.axis, "choice()") : null;
+  const n = slices ? slices.length : aa ? aa.size : (a as number);
   if (!Number.isInteger(n) || n < 0) {
     throw new InvalidParameterError("Invalid tensor size", "n", n);
   }
@@ -1637,7 +1698,7 @@ export function choice(
 
   // Check the layout before any random numbers are drawn so a rejected call
   // does not advance the seeded stream.
-  if (aa && n > 0) contiguousWindow(aa, "choice()");
+  if (aa && aa.size > 0) contiguousWindow(aa, "choice()");
 
   let outputSize: number;
   if (typeof size === "number") {
@@ -1758,6 +1819,35 @@ export function choice(
     throw new DTypeError("choice() does not support string tensors");
   }
 
+  if (slices) {
+    const sampleShape: Shape = typeof size === "number" ? [size] : size ? [...size] : [1];
+    const sliceShape: Shape = [
+      ...aa.shape.slice(0, slices.axis),
+      ...sampleShape,
+      ...aa.shape.slice(slices.axis + 1),
+    ];
+    const sliceOut = allocateNumericBuffer(aa.dtype, shapeToSize(sliceShape));
+    const src = aa.data;
+    if (!isTypedArray(src)) {
+      throw new DTypeError("choice() does not support string tensors");
+    }
+    for (let o = 0; o < slices.outer; o++) {
+      for (let i = 0; i < outputSize; i++) {
+        const from = aa.offset + (o * slices.length + (indices[i] as number)) * slices.inner;
+        const to = (o * outputSize + i) * slices.inner;
+        for (let k = 0; k < slices.inner; k++) {
+          writeNumericValue(sliceOut, to + k, src[from + k] as number | bigint);
+        }
+      }
+    }
+    return TensorClass.fromTypedArray({
+      data: sliceOut,
+      shape: sliceShape,
+      dtype: aa.dtype,
+      device: aa.device,
+    });
+  }
+
   // Allocate output buffer in the same dtype/device.
   const out = allocateNumericBuffer(aa.dtype, outputSize);
   for (let i = 0; i < outputSize; i++) {
@@ -1781,8 +1871,10 @@ export function choice(
  * Randomly shuffle array in-place.
  *
  * @param x - Input tensor (**MODIFIED IN-PLACE**)
+ * @param options - `axis`: shuffle whole slices along this axis (numpy `axis` argument)
  *
  * @throws {InvalidParameterError} When tensor is not contiguous (offset !== 0 or non-standard strides)
+ * @throws {InvalidParameterError} When `axis` is not an integer within the tensor's dimensions
  * @throws {DTypeError} When input tensor has string dtype
  *
  * @remarks
@@ -1790,7 +1882,9 @@ export function choice(
  * - Uses Fisher-Yates shuffle algorithm (O(n) time, optimal).
  * - Input tensor must be contiguous (no striding); a contiguous view into a larger
  *   buffer is shuffled without touching the elements outside the view.
- * - A multi-dimensional tensor is shuffled over its flattened elements, not its rows.
+ * - **Warning:** by default a multi-dimensional tensor is shuffled over its flattened elements,
+ *   not its rows, so the rows of a matrix are mixed. Pass `{ axis: 0 }` to shuffle whole rows
+ *   (slices along an axis) as `numpy.random.Generator.shuffle` does.
  * - All elements are preserved, only their order changes.
  * - Deterministic when seed is set via {@link setSeed}.
  * - If you need a shuffled copy without mutation, use {@link permutation} instead.
@@ -1802,14 +1896,19 @@ export function choice(
  * const x = tensor([1, 2, 3, 4, 5]);
  * shuffle(x);  // x is now shuffled IN-PLACE
  * console.log(x);  // e.g., [3, 1, 5, 2, 4]
+ *
+ * // Shuffle the rows of a matrix, keeping each row intact
+ * const m = tensor([[1, 2], [3, 4], [5, 6]]);
+ * shuffle(m, { axis: 0 });
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
-export function shuffle(x: Tensor): void {
+export function shuffle(x: Tensor, options: SliceSamplingOptions = {}): void {
   if (x.dtype === "string") {
     throw new DTypeError("shuffle() does not support string tensors");
   }
+  const slices = options.axis !== undefined ? resolveSliceAxis(x, options.axis, "shuffle()") : null;
   // Only a contiguous tensor can be shuffled in place: swapping storage slots
   // must map onto the logical flattened order.
   const { start, length: n } = contiguousWindow(x, "shuffle()");
@@ -1822,6 +1921,18 @@ export function shuffle(x: Tensor): void {
   // Fisher–Yates shuffle over exactly this tensor's elements (a view must not
   // disturb the rest of its underlying buffer). All swap targets are drawn in
   // one batched pass so the per-element RNG cost is a table lookup.
+  if (slices && x.ndim > 1) {
+    // Whole slices along the axis trade places, so every leading block gets the same order.
+    const order = fisherYatesTargets(slices.length);
+    for (let i = slices.length - 1; i > 0; i--) {
+      const j = order[i] as number;
+      for (let o = 0; o < slices.outer; o++) {
+        const base = start + o * slices.length * slices.inner;
+        swapRuns(data, base + i * slices.inner, base + j * slices.inner, slices.inner);
+      }
+    }
+    return;
+  }
   const js = fisherYatesTargets(n);
 
   // Split into two branches to maintain type safety without assertions.
@@ -1854,15 +1965,19 @@ export function shuffle(x: Tensor): void {
  * Return random permutation of array.
  *
  * @param x - Input tensor or integer
+ * @param options - `axis`: permute whole slices along this axis (numpy `axis` argument);
+ *   ignored when `x` is a number
  *
  * @throws {DTypeError} When input tensor has string dtype
  * @throws {InvalidParameterError} When x is a negative or non-integer number, or a non-contiguous tensor
+ * @throws {InvalidParameterError} When `axis` is not an integer within the tensor's dimensions
  *
  * @remarks
  * - Returns a NEW tensor (does NOT modify input).
  * - If x is an integer, returns permutation of arange(x).
- * - If x is a tensor, returns a shuffled copy with the same shape (shuffled over its flattened
- *   elements, not its rows).
+ * - If x is a tensor, returns a shuffled copy with the same shape. **Warning:** by default the
+ *   copy is shuffled over its flattened elements, not its rows. Pass `{ axis: 0 }` to permute
+ *   whole rows (slices along an axis) as `numpy.random.Generator.permutation` does.
  * - Tensor inputs must be contiguous (no striding); a contiguous view is copied on its own.
  * - Uses Fisher-Yates shuffle algorithm internally.
  * - Deterministic when seed is set via {@link setSeed}.
@@ -1879,11 +1994,14 @@ export function shuffle(x: Tensor): void {
  * const original = tensor([1, 2, 3, 4, 5]);
  * const shuffled = permutation(original);
  * // original is unchanged
+ *
+ * // Permute the rows of a matrix, keeping each row intact
+ * const rows = permutation(tensor([[1, 2], [3, 4], [5, 6]]), { axis: 0 });
  * ```
  *
  * @see {@link https://deepbox.dev/docs/random-distributions | Deepbox Distributions}
  */
-export function permutation(x: Tensor | number): Tensor {
+export function permutation(x: Tensor | number, options: SliceSamplingOptions = {}): Tensor {
   if (typeof x === "number") {
     assertSafeInteger(x, "x");
     const n = x;
@@ -1929,7 +2047,7 @@ export function permutation(x: Tensor | number): Tensor {
     dtype: x.dtype,
     device: x.device,
   });
-  shuffle(copy);
+  shuffle(copy, options);
   return copy;
 }
 

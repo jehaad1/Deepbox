@@ -440,14 +440,20 @@ describe("cov", () => {
 
   it("treats a 0-d tensor as a single observation", () => {
     expect(flat(cov(tensor(5), 0))).toEqual([0]);
-    expect(() => cov(tensor(5))).toThrow(InvalidParameterError);
+    // numpy.cov(5.0) -> nan (with a RuntimeWarning)
+    expect(flat(cov(tensor(5)))).toEqual([Number.NaN]);
   });
 
-  it("throws instead of returning zeros when ddof leaves no degrees of freedom", () => {
-    expect(() => cov(tensor([1]))).toThrow(
-      /ddof=1 must be smaller than the number of observations \(1\)/
-    );
-    expect(() => cov(tensor([1, 2]), 2)).toThrow(InvalidParameterError);
+  it("returns NaN or Infinity, as numpy does, when ddof leaves no degrees of freedom", () => {
+    // numpy.cov([1.]) -> nan; numpy.cov([1., 2.], ddof=2) -> inf
+    expect(flat(cov(tensor([1])))).toEqual([Number.NaN]);
+    expect(flat(cov(tensor([1, 2]), 2))).toEqual([Number.POSITIVE_INFINITY]);
+    expect(flat(cov(tensor([[1], [2]], { dtype: "float64" })))).toEqual([
+      Number.NaN,
+      Number.NaN,
+      Number.NaN,
+      Number.NaN,
+    ]);
     expect(() => cov(tensor([]))).toThrow(InvalidParameterError);
   });
 

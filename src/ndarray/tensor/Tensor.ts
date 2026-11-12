@@ -345,6 +345,94 @@ export function toInt64(value: number, context: string): bigint {
   return BigInt(t);
 }
 
+/** Narrow integer dtypes that store through a typed array and wrap silently. */
+export type NarrowIntDType = "int32" | "uint8";
+
+const NARROW_INT_RANGE: Readonly<Record<NarrowIntDType, readonly [number, number]>> = {
+  int32: [-2147483648, 2147483647],
+  uint8: [0, 255],
+};
+
+/**
+ * Inclusive value range of `int32` and `uint8`, or `null` for every other dtype.
+ *
+ * @internal
+ */
+export function narrowIntRange(dtype: DType): readonly [number, number] | null {
+  return dtype === "int32" || dtype === "uint8" ? NARROW_INT_RANGE[dtype] : null;
+}
+
+/**
+ * Throws a {@link DTypeError} unless truncating `value` toward zero gives a number inside the
+ * range of `dtype`. NaN and the infinities are rejected, as for int64. A typed array store
+ * would otherwise wrap the value or turn it into 0 without a message.
+ *
+ * @internal
+ */
+export function assertFitsNarrowInt(value: number, dtype: NarrowIntDType, context: string): void {
+  const [lo, hi] = NARROW_INT_RANGE[dtype];
+  if (value > lo - 1 && value < hi + 1) return;
+  if (!Number.isFinite(value)) {
+    throw new DTypeError(`${context}: cannot convert non-finite value ${value} to ${dtype}`);
+  }
+  throw new DTypeError(`${context}: value ${value} is outside the ${dtype} range [${lo}, ${hi}]`);
+}
+
+/**
+ * Throws unless every element of a non-BigInt numeric source fits an int32 or uint8 target.
+ * Sources whose whole range fits (bool, uint8) skip the scan.
+ */
+function assertNarrowIntSource(
+  src: Exclude<TypedArray, BigInt64Array>,
+  sourceDtype: DType,
+  target: DType,
+  size: number,
+  readOffset: (i: number) => number
+): void {
+  const range = narrowIntRange(target);
+  if (range === null || sourceDtype === "bool" || sourceDtype === "uint8") return;
+  const narrow = target as NarrowIntDType;
+  const lowest = range[0] - 1;
+  const highest = range[1] + 1;
+  for (let i = 0; i < size; i++) {
+    const v = src[readOffset(i)] as number;
+    if (!(v > lowest && v < highest)) assertFitsNarrowInt(v, narrow, "astype");
+  }
+}
+
+const DECIMAL_INTEGER = /^\s*[+-]?\d+\s*$/;
+
+/**
+ * Parse the text of a decimal integer (optional sign, surrounding whitespace allowed) exactly.
+ * Hexadecimal, fractions, exponents and the empty string are rejected.
+ *
+ * @internal
+ */
+export function parseDecimalInteger(text: string, dtype: DType, context: string): bigint {
+  if (!DECIMAL_INTEGER.test(text)) {
+    throw new DTypeError(
+      `${context}: cannot convert string ${JSON.stringify(text)} to ${dtype}; ` +
+        "only decimal integers are accepted"
+    );
+  }
+  return BigInt(text.trim());
+}
+
+/**
+ * Convert the text of a boolean: `"true"` or `"false"` in any letter case, or `"1"` or `"0"`.
+ *
+ * @internal
+ */
+export function parseBoolString(text: string, context: string): 0 | 1 {
+  const t = text.trim().toLowerCase();
+  if (t === "true" || t === "1") return 1;
+  if (t === "false" || t === "0") return 0;
+  throw new DTypeError(
+    `${context}: cannot convert string ${JSON.stringify(text)} to bool; ` +
+      'expected "true", "false", "1" or "0"'
+  );
+}
+
 /** Copy a readonly axis list into the mutable form the reduction ops take. */
 function axisArg(axis: Axis | readonly Axis[] | undefined): Axis | Axis[] | undefined {
   return axis === undefined || !Array.isArray(axis) ? (axis as Axis | undefined) : [...axis];
@@ -2357,23 +2445,28 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    * Return a new tensor with the data converted to the given dtype.
    *
    * Mirrors NumPy's `ndarray.astype` (and `GradTensor.astype`):
-   * - numeric -> numeric: value-preserving cast (float -> int truncates via
-   *   the typed-array store; -> bool maps every nonzero value, NaN included,
-   *   to 1)
+   * - numeric -> numeric: value-preserving cast (float -> int truncates toward
+   *   zero; -> bool maps every nonzero value, NaN included, to 1)
+   * - numeric -> int32 / uint8 / int64 throws on NaN, Infinity and values outside the target
+   *   range (NumPy would wrap them)
    * - numeric -> float16 / bfloat16 rounds to the nearest representable
    *   half-precision value (ties to even, overflow to Infinity)
    * - numeric -> int64 truncates toward zero and throws on NaN/Infinity
-   * - string -> numeric parses with `Number()` (unparseable -> NaN); string ->
-   *   int64 parses integer literals exactly and throws on anything else
+   * - string -> float parses with `Number()` (unparseable -> NaN); string ->
+   *   int32 / uint8 / int64 parses decimal integers exactly and throws on anything else
+   *   (hexadecimal, fractions, empty text); string -> bool accepts `"true"` and
+   *   `"false"` in any letter case and `"1"` and `"0"`, and throws on anything else
    * - numeric -> string uses the shortest text that round-trips the value
    *   within its dtype (a float32 `0.1` becomes `"0.1"`)
    *
-   * Returns `this` unchanged when the dtype already matches. Tensors that
+   * Returns the same instance (`this`, not a copy) when the dtype already matches, so a
+   * write to the result is visible through the original. Tensors that
    * live in device memory must be moved to the CPU first (`await t.cpu()`).
    *
    * @throws {DeviceError} If the tensor lives in device memory
    * @throws {DTypeError} If the target is a complex dtype, or a value cannot
-   *   be represented (non-finite -> int64)
+   *   be represented (NaN, Infinity or out of range -> an integer dtype, or text that does
+   *   not parse)
    *
    * @example
    * ```ts
@@ -2453,21 +2546,13 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
       } else if (Array.isArray(src)) {
         for (let i = 0; i < this.size; i++) {
           const text = src[readOffset(i)] ?? "";
-          if (/^\s*[+-]?\d+\s*$/.test(text)) {
-            const exact = BigInt(text.trim());
-            if (exact !== BigInt.asIntN(64, exact)) {
-              throw new DTypeError(
-                `astype: string ${JSON.stringify(text)} is outside the int64 range`
-              );
-            }
-            out[i] = exact;
-            continue;
+          const exact = parseDecimalInteger(text, "int64", "astype");
+          if (exact !== BigInt.asIntN(64, exact)) {
+            throw new DTypeError(
+              `astype: string ${JSON.stringify(text)} is outside the int64 range`
+            );
           }
-          const v = Number(text);
-          if (!Number.isFinite(v)) {
-            throw new DTypeError(`astype: cannot convert string ${JSON.stringify(text)} to int64`);
-          }
-          out[i] = toInt64(v, "astype");
+          out[i] = exact;
         }
       } else {
         for (let i = 0; i < this.size; i++) {
@@ -2475,19 +2560,38 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
         }
       }
     } else if (src instanceof BigInt64Array) {
+      const range = narrowIntRange(dtype);
+      const lo = range === null ? 0n : BigInt(range[0]);
+      const hi = range === null ? 0n : BigInt(range[1]);
       for (let i = 0; i < this.size; i++) {
         const v = getBigIntElement(src, readOffset(i));
+        if (range !== null && (v < lo || v > hi)) {
+          throw new DTypeError(
+            `astype: value ${v} is outside the ${dtype} range [${range[0]}, ${range[1]}]`
+          );
+        }
         out[i] = toBool ? (v !== 0n ? 1 : 0) : Number(v);
       }
     } else if (Array.isArray(src)) {
+      const narrow = narrowIntRange(dtype) === null ? null : (dtype as NarrowIntDType);
       for (let i = 0; i < this.size; i++) {
-        const v = Number(src[readOffset(i)]);
-        out[i] = toBool ? (v !== 0 && !Number.isNaN(v) ? 1 : 0) : v;
+        const text = src[readOffset(i)] ?? "";
+        if (toBool) {
+          out[i] = parseBoolString(text, "astype");
+        } else if (narrow !== null) {
+          const exact = parseDecimalInteger(text, narrow, "astype");
+          assertFitsNarrowInt(Number(exact), narrow, "astype");
+          out[i] = Number(exact);
+        } else {
+          out[i] = Number(text);
+        }
       }
     } else if (contiguous && !toBool) {
+      assertNarrowIntSource(src, this.dtype, dtype, this.size, readOffset);
       // Native element-wise conversion (same rules as per-element assignment).
       out.set(src.subarray(this.offset, this.offset + this.size));
     } else {
+      assertNarrowIntSource(src, this.dtype, dtype, this.size, readOffset);
       for (let i = 0; i < this.size; i++) {
         const v = src[readOffset(i)] as number;
         out[i] = toBool ? (v !== 0 ? 1 : 0) : v;

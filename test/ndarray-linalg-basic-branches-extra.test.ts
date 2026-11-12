@@ -9,7 +9,8 @@ describe("ndarray linalg basic extra branches", () => {
     const out = matmul(a, b);
     expect(out.toArray()).toEqual([[11n]]);
 
-    expect(() => matmul(tensor([1, 2]), tensor([1, 2]))).toThrow(/2D/);
+    expect(matmul(tensor([1, 2]), tensor([1, 2])).item()).toBe(5);
+    expect(() => matmul(tensor([1, 2]), tensor([1, 2, 3]))).toThrow(/not aligned/);
     expect(() => matmul(tensor([[1, 2]]), tensor([[1, 2]]))).toThrow(/matmul/);
   });
 

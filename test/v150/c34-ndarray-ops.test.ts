@@ -221,10 +221,10 @@ describe("sort and argsort on views and edge shapes", () => {
     expect(sort(t, 0, true).toArray()).toEqual([4, 3, 2, 1]);
   });
 
-  it("rejects string tensors and bad axes", () => {
+  it("sorts string tensors and rejects bad axes", () => {
     const s = tensor(["b", "a"]);
-    expect(() => sort(s)).toThrow(DTypeError);
-    expect(() => argsort(s)).toThrow(DTypeError);
+    expect(sort(s).toArray()).toEqual(["a", "b"]);
+    expect(argsort(s).toArray()).toEqual([1, 0]);
     expect(() => sort(m, 2)).toThrow(InvalidParameterError);
     expect(() => argsort(m, -3)).toThrow(InvalidParameterError);
   });
