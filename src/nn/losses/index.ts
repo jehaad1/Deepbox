@@ -10,6 +10,7 @@ import {
   add,
   clip,
   customOp,
+  div,
   GradTensor,
   log,
   mean,
@@ -55,6 +56,28 @@ export interface NllLossOptions {
   readonly weight?: Tensor | readonly number[];
   /** Class index to skip: such samples add no loss and are not counted by `"mean"`. */
   readonly ignoreIndex?: number;
+}
+
+/** Options for {@link gaussianNLLLoss}. */
+export interface GaussianNLLLossOptions {
+  /** Include the constant `0.5 * log(2 * pi)` term (default: false). */
+  readonly full?: boolean;
+  /** Variances below this value are clamped to it (default: 1e-6). */
+  readonly eps?: number;
+  /** `"mean"` (default), `"sum"`, or `"none"` for the element-wise loss. */
+  readonly reduction?: LossReduction;
+}
+
+/** Options for {@link poissonNLLLoss}. */
+export interface PoissonNLLLossOptions {
+  /** Treat `input` as `log(rate)` (default: true) or as the rate itself. */
+  readonly logInput?: boolean;
+  /** Add the Stirling approximation term for targets above 1 (default: false). */
+  readonly full?: boolean;
+  /** Small value added inside the logarithm when `logInput` is false (default: 1e-8). */
+  readonly eps?: number;
+  /** `"mean"` (default), `"sum"`, or `"none"` for the element-wise loss. */
+  readonly reduction?: LossReduction;
 }
 
 /** Options for {@link ctcLoss}. */
@@ -140,6 +163,17 @@ function reduceGradLoss(loss: GradTensor, reduction: LossReduction): GradTensor 
   if (reduction === "none") return loss;
   if (reduction === "sum") return loss.sum();
   return loss.mean();
+}
+
+/** True when any operand is a GradTensor, so the loss must be built from autograd ops. */
+function anyGrad(...operands: readonly AnyTensor[]): boolean {
+  return operands.some((operand) => GradTensor.isGradTensor(operand));
+}
+
+/** Wrap `t` as a GradTensor (a constant when it is a plain tensor) cast to the float `dtype`. */
+function gradOperand(t: AnyTensor, dtype: "float32" | "float64"): GradTensor {
+  const g = GradTensor.isGradTensor(t) ? t : GradTensor.fromTensor(t, { requiresGrad: false });
+  return asDtype(g, dtype);
 }
 
 /**
@@ -806,6 +840,7 @@ export function smoothL1Loss(
  * ```
  *
  * The cosine is `dot(x1, x2) / sqrt((|x1|^2 + 1e-12) * (|x2|^2 + 1e-12))`, as in PyTorch.
+ * Passing a GradTensor as `x1` or `x2` returns a GradTensor that supports `.backward()`.
  *
  * @param x1 - First input, shape (N, D) or (D,)
  * @param x2 - Second input, same shape as `x1`
@@ -821,37 +856,60 @@ export function cosineEmbeddingLoss(
   x1: Tensor,
   x2: Tensor,
   y: Tensor,
+  margin?: number,
+  reduction?: LossReduction
+): Tensor;
+export function cosineEmbeddingLoss(
+  x1: GradTensor,
+  x2: AnyTensor,
+  y: Tensor,
+  margin?: number,
+  reduction?: LossReduction
+): GradTensor;
+export function cosineEmbeddingLoss(
+  x1: AnyTensor,
+  x2: GradTensor,
+  y: Tensor,
+  margin?: number,
+  reduction?: LossReduction
+): GradTensor;
+export function cosineEmbeddingLoss(
+  x1: AnyTensor,
+  x2: AnyTensor,
+  y: Tensor,
+  margin?: number,
+  reduction?: LossReduction
+): AnyTensor;
+export function cosineEmbeddingLoss(
+  x1: AnyTensor,
+  x2: AnyTensor,
+  y: Tensor,
   margin = 0,
   reduction: LossReduction = "mean"
-): Tensor {
+): AnyTensor {
   validateReduction(reduction, "cosineEmbeddingLoss");
-  ensureNumeric(x1, "cosineEmbeddingLoss");
-  ensureNumeric(x2, "cosineEmbeddingLoss");
+  const x1t = toTensor(x1);
+  const x2t = toTensor(x2);
+  ensureNumeric(x1t, "cosineEmbeddingLoss");
+  ensureNumeric(x2t, "cosineEmbeddingLoss");
   ensureNumeric(y, "cosineEmbeddingLoss");
 
-  if (x1.ndim < 1 || x1.ndim > 2) {
-    throw new ShapeError(`cosineEmbeddingLoss expects 1D or 2D inputs; got ${x1.ndim}D`);
+  if (x1t.ndim < 1 || x1t.ndim > 2) {
+    throw new ShapeError(`cosineEmbeddingLoss expects 1D or 2D inputs; got ${x1t.ndim}D`);
   }
-  ensureSameShape(x1, x2, "cosineEmbeddingLoss (x1 vs x2)");
+  ensureSameShape(x1t, x2t, "cosineEmbeddingLoss (x1 vs x2)");
 
   // For 2D inputs: (N, D), compute cosine similarity per row
   // For 1D inputs: (D,), compute single cosine similarity
-  const batchSize = x1.ndim === 2 ? (x1.shape[0] ?? 1) : 1;
-  const dim = x1.ndim === 2 ? (x1.shape[1] ?? 1) : (x1.shape[0] ?? 1);
+  const batchSize = x1t.ndim === 2 ? (x1t.shape[0] ?? 1) : 1;
+  const dim = x1t.ndim === 2 ? (x1t.shape[1] ?? 1) : (x1t.shape[0] ?? 1);
   if (y.size !== batchSize) {
     throw new ShapeError(
       `cosineEmbeddingLoss expects ${batchSize} label(s) (one per row of x1); got ${y.size}`
     );
   }
 
-  const a = numbersOf(x1, "cosineEmbeddingLoss");
-  const b = numbersOf(x2, "cosineEmbeddingLoss");
   const labels = numbersOf(y, "cosineEmbeddingLoss");
-  const EPS = 1e-12;
-
-  const dtype = lossDtypeOf(x1);
-  const lossData = newLossBuffer(dtype, batchSize);
-
   for (let r = 0; r < batchSize; r++) {
     const label = labels[r] ?? Number.NaN;
     if (label !== 1 && label !== -1) {
@@ -861,6 +919,39 @@ export function cosineEmbeddingLoss(
         label
       );
     }
+  }
+  const EPS = 1e-12;
+  const dtype = lossDtypeOf(x1t);
+
+  if (anyGrad(x1, x2)) {
+    // cos = dot / sqrt((|x1|^2 + eps) * (|x2|^2 + eps)); positive pairs use 1 - cos, negative
+    // pairs use relu(cos - margin). Constant 0/1 masks pick the branch of each row.
+    const a = gradOperand(x1, dtype).reshape([batchSize, dim]);
+    const b = gradOperand(x2, dtype).reshape([batchSize, dim]);
+    const dot = a.mul(b).sum(1);
+    const norm1 = a.mul(a).sum(1).add(EPS);
+    const norm2 = b.mul(b).sum(1).add(EPS);
+    const cos = dot.div(norm1.mul(norm2).sqrt());
+    const positive = newLossBuffer(dtype, batchSize);
+    const negative = newLossBuffer(dtype, batchSize);
+    for (let r = 0; r < batchSize; r++) {
+      if (labels[r] === 1) positive[r] = 1;
+      else negative[r] = 1;
+    }
+    const mask = (data: Float32Array | Float64Array): GradTensor =>
+      GradTensor.fromTensor(
+        Tensor.fromTypedArray({ data, shape: [batchSize], dtype, device: x1t.device })
+      );
+    const positiveLoss = mask(positive).mul(GradTensor.scalar(1, { dtype }).sub(cos));
+    const negativeLoss = mask(negative).mul(cos.sub(margin).relu());
+    return reduceGradLoss(positiveLoss.add(negativeLoss), reduction);
+  }
+
+  const a = numbersOf(x1t, "cosineEmbeddingLoss");
+  const b = numbersOf(x2t, "cosineEmbeddingLoss");
+  const lossData = newLossBuffer(dtype, batchSize);
+
+  for (let r = 0; r < batchSize; r++) {
     let dot = 0;
     let norm1 = 0;
     let norm2 = 0;
@@ -872,11 +963,11 @@ export function cosineEmbeddingLoss(
       norm2 += v2 * v2;
     }
     const cosSim = dot / Math.sqrt((norm1 + EPS) * (norm2 + EPS));
-    lossData[r] = label === 1 ? 1 - cosSim : Math.max(0, cosSim - margin);
+    lossData[r] = labels[r] === 1 ? 1 - cosSim : Math.max(0, cosSim - margin);
   }
 
   return reduceLoss(
-    Tensor.fromTypedArray({ data: lossData, shape: [batchSize], dtype, device: x1.device }),
+    Tensor.fromTypedArray({ data: lossData, shape: [batchSize], dtype, device: x1t.device }),
     reduction
   );
 }
@@ -1127,7 +1218,9 @@ export function tripletMarginLoss(
  *
  * `variance` may have the same shape as `input`, the shape of `input` with the last
  * dimension removed, or the shape of `input` with the last dimension set to 1 (one
- * variance shared by all outputs of a sample). Variances below `eps` are clamped to `eps`.
+ * variance shared by all outputs of a sample). Variances below `eps` are clamped to `eps`;
+ * as in PyTorch the clamp does not block the gradient. Passing a GradTensor as `input`,
+ * `target` or `variance` returns a GradTensor that supports `.backward()`.
  *
  * @param input - Predicted means
  * @param target - Target values
@@ -1146,18 +1239,41 @@ export function gaussianNLLLoss(
   input: Tensor,
   target: Tensor,
   variance: Tensor,
-  options: {
-    full?: boolean;
-    eps?: number;
-    reduction?: LossReduction;
-  } = {}
-): Tensor {
+  options?: GaussianNLLLossOptions
+): Tensor;
+export function gaussianNLLLoss(
+  input: GradTensor,
+  target: AnyTensor,
+  variance: AnyTensor,
+  options?: GaussianNLLLossOptions
+): GradTensor;
+export function gaussianNLLLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  variance: GradTensor,
+  options?: GaussianNLLLossOptions
+): GradTensor;
+export function gaussianNLLLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  variance: AnyTensor,
+  options?: GaussianNLLLossOptions
+): AnyTensor;
+export function gaussianNLLLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  variance: AnyTensor,
+  options: GaussianNLLLossOptions = {}
+): AnyTensor {
   const { full = false, eps = 1e-6, reduction = "mean" } = options;
   validateReduction(reduction, "gaussianNLLLoss");
-  ensureNumeric(input, "gaussianNLLLoss");
-  ensureNumeric(target, "gaussianNLLLoss");
-  ensureNumeric(variance, "gaussianNLLLoss");
-  ensureSameShape(input, target, "gaussianNLLLoss (input vs target)");
+  const inputT = toTensor(input);
+  const targetT = toTensor(target);
+  const varianceT = toTensor(variance);
+  ensureNumeric(inputT, "gaussianNLLLoss");
+  ensureNumeric(targetT, "gaussianNLLLoss");
+  ensureNumeric(varianceT, "gaussianNLLLoss");
+  ensureSameShape(inputT, targetT, "gaussianNLLLoss (input vs target)");
 
   if (!Number.isFinite(eps) || eps < 0) {
     throw new InvalidParameterError(`eps must be non-negative; got ${eps}`, "eps", eps);
@@ -1165,36 +1281,61 @@ export function gaussianNLLLoss(
 
   // How variance entries map onto input elements: one per element, one per row
   // (variance without the last dimension), or one per row with a trailing 1.
-  const lastDim = input.shape[input.ndim - 1] ?? 1;
-  const leading = input.shape.slice(0, -1);
+  const lastDim = inputT.shape[inputT.ndim - 1] ?? 1;
+  const leading = inputT.shape.slice(0, -1);
   let varStep: "element" | "row";
-  if (shapesEqual(variance.shape, input.shape)) {
+  if (shapesEqual(varianceT.shape, inputT.shape)) {
     varStep = "element";
   } else if (
-    input.ndim >= 1 &&
-    (shapesEqual(variance.shape, leading) || shapesEqual(variance.shape, [...leading, 1]))
+    inputT.ndim >= 1 &&
+    (shapesEqual(varianceT.shape, leading) || shapesEqual(varianceT.shape, [...leading, 1]))
   ) {
     varStep = "row";
   } else {
     throw new ShapeError(
-      `Shape mismatch in gaussianNLLLoss (input vs variance): [${input.shape}] vs [${variance.shape}]`
+      `Shape mismatch in gaussianNLLLoss (input vs variance): [${inputT.shape}] vs [${varianceT.shape}]`
     );
   }
 
-  const mu = numbersOf(input, "gaussianNLLLoss");
-  const tg = numbersOf(target, "gaussianNLLLoss");
-  const vr = numbersOf(variance, "gaussianNLLLoss");
+  const vr = numbersOf(varianceT, "gaussianNLLLoss");
   for (let i = 0; i < vr.length; i++) {
     if ((vr[i] ?? 0) < 0) {
       throw new InvalidParameterError("variance must be non-negative", "variance", vr[i]);
     }
   }
 
-  const dtype = lossDtypeOf(input);
-  const lossData = newLossBuffer(dtype, input.size);
+  const dtype = lossDtypeOf(inputT);
   const LOG2PI = Math.log(2 * Math.PI);
 
-  for (let i = 0; i < input.size; i++) {
+  if (anyGrad(input, target, variance)) {
+    // As in PyTorch, variances below eps are replaced by eps without blocking the gradient:
+    // the clamp is added as a constant offset, so the derivative is taken at the clamped value.
+    const offset = newLossBuffer(dtype, varianceT.size);
+    for (let i = 0; i < varianceT.size; i++) {
+      const v = vr[i] ?? 0;
+      offset[i] = v < eps ? eps - v : 0;
+    }
+    const offsetT = Tensor.fromTypedArray({
+      data: offset,
+      shape: varianceT.shape.slice(),
+      dtype,
+      device: varianceT.device,
+    });
+    let v = gradOperand(variance, dtype).add(offsetT);
+    if (varStep === "row" && !shapesEqual(varianceT.shape, [...leading, 1])) {
+      v = v.reshape([...leading, 1]);
+    }
+    const diff = gradOperand(input, dtype).sub(gradOperand(target, dtype));
+    let loss = v.log().add(diff.square().div(v)).mul(GradTensor.scalar(0.5, { dtype }));
+    if (full) loss = loss.add(0.5 * LOG2PI);
+    return reduceGradLoss(loss, reduction);
+  }
+
+  const mu = numbersOf(inputT, "gaussianNLLLoss");
+  const tg = numbersOf(targetT, "gaussianNLLLoss");
+  const lossData = newLossBuffer(dtype, inputT.size);
+
+  for (let i = 0; i < inputT.size; i++) {
     let v = vr[varStep === "element" ? i : Math.floor(i / lastDim)] ?? 0;
     // Clamp variance to eps
     if (v < eps) v = eps;
@@ -1208,7 +1349,7 @@ export function gaussianNLLLoss(
   }
 
   return reduceLoss(
-    Tensor.fromTypedArray({ data: lossData, shape: input.shape, dtype, device: input.device }),
+    Tensor.fromTypedArray({ data: lossData, shape: inputT.shape, dtype, device: inputT.device }),
     reduction
   );
 }
@@ -1229,6 +1370,8 @@ export function gaussianNLLLoss(
  * - Count data modeling (Poisson regression)
  * - Event rate prediction
  *
+ * Passing a GradTensor as `input` or `target` returns a GradTensor that supports `.backward()`.
+ *
  * @param input - Log of expected rate (or rate itself if logInput=false)
  * @param target - Target counts (non-negative)
  * @param options - Configuration options
@@ -1243,26 +1386,65 @@ export function gaussianNLLLoss(
 export function poissonNLLLoss(
   input: Tensor,
   target: Tensor,
-  options: {
-    logInput?: boolean;
-    full?: boolean;
-    eps?: number;
-    reduction?: LossReduction;
-  } = {}
-): Tensor {
+  options?: PoissonNLLLossOptions
+): Tensor;
+export function poissonNLLLoss(
+  input: GradTensor,
+  target: AnyTensor,
+  options?: PoissonNLLLossOptions
+): GradTensor;
+export function poissonNLLLoss(
+  input: AnyTensor,
+  target: GradTensor,
+  options?: PoissonNLLLossOptions
+): GradTensor;
+export function poissonNLLLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  options?: PoissonNLLLossOptions
+): AnyTensor;
+export function poissonNLLLoss(
+  input: AnyTensor,
+  target: AnyTensor,
+  options: PoissonNLLLossOptions = {}
+): AnyTensor {
   const { logInput = true, full = false, eps = 1e-8, reduction = "mean" } = options;
   validateReduction(reduction, "poissonNLLLoss");
-  ensureNumeric(input, "poissonNLLLoss");
-  ensureNumeric(target, "poissonNLLLoss");
-  ensureSameShape(input, target, "poissonNLLLoss");
+  const inputT = toTensor(input);
+  const targetT = toTensor(target);
+  ensureNumeric(inputT, "poissonNLLLoss");
+  ensureNumeric(targetT, "poissonNLLLoss");
+  ensureSameShape(inputT, targetT, "poissonNLLLoss");
+  const dtype = lossDtypeOf(inputT);
 
-  const inp = numbersOf(input, "poissonNLLLoss");
-  const tg = numbersOf(target, "poissonNLLLoss");
+  if (anyGrad(input, target)) {
+    const x = gradOperand(input, dtype);
+    const t = gradOperand(target, dtype);
+    let loss = logInput ? x.exp().sub(t.mul(x)) : x.sub(t.mul(x.add(eps).log()));
+    if (full) {
+      // Stirling term t * log(t) - t + 0.5 * log(2 * pi * t), kept only where t > 1. The
+      // operand is raised to 1 elsewhere so that neither value nor gradient hits log(0).
+      const safe = t.maximum(1);
+      const stirling = safe
+        .mul(safe.log())
+        .sub(safe)
+        .add(
+          safe
+            .mul(2 * Math.PI)
+            .log()
+            .mul(GradTensor.scalar(0.5, { dtype }))
+        );
+      const keep = GradTensor.fromTensor(t.gt(1).astype(dtype));
+      loss = loss.add(stirling.mul(keep));
+    }
+    return reduceGradLoss(loss, reduction);
+  }
 
-  const dtype = lossDtypeOf(input);
-  const lossData = newLossBuffer(dtype, input.size);
+  const inp = numbersOf(inputT, "poissonNLLLoss");
+  const tg = numbersOf(targetT, "poissonNLLLoss");
+  const lossData = newLossBuffer(dtype, inputT.size);
 
-  for (let i = 0; i < input.size; i++) {
+  for (let i = 0; i < inputT.size; i++) {
     const x = inp[i] ?? 0;
     const tgt = tg[i] ?? 0;
 
@@ -1279,7 +1461,7 @@ export function poissonNLLLoss(
   }
 
   return reduceLoss(
-    Tensor.fromTypedArray({ data: lossData, shape: input.shape, dtype, device: input.device }),
+    Tensor.fromTypedArray({ data: lossData, shape: inputT.shape, dtype, device: inputT.device }),
     reduction
   );
 }
@@ -1292,6 +1474,93 @@ function logSumExp(a: number, b: number): number {
   if (b === -Infinity) return a;
   const maxVal = Math.max(a, b);
   return maxVal + Math.log(Math.exp(a - maxVal) + Math.exp(b - maxVal));
+}
+
+/** One CTC sample: its number of input frames and its label sequence with interleaved blanks. */
+type CtcSample = {
+  readonly inputLength: number;
+  readonly extended: Int32Array;
+};
+
+/**
+ * CTC negative log-likelihood of one sample from log-probabilities laid out as (T, N, C).
+ * With `grad` given, the exact derivative of the loss with respect to this sample's
+ * log-probabilities is added to it (same layout), using the forward (alpha) and backward
+ * (beta) recursions in log-space. An infeasible sample has an infinite loss and no gradient.
+ */
+function ctcSampleLoss(
+  lp: ArrayLike<number>,
+  N: number,
+  C: number,
+  b: number,
+  sample: CtcSample,
+  grad: Float64Array | null
+): number {
+  const { inputLength, extended } = sample;
+  const S = extended.length;
+  const labelCount = (S - 1) / 2;
+  if (inputLength === 0) return labelCount === 0 ? 0 : Infinity;
+  if (inputLength < labelCount) return Infinity;
+
+  const emit = (t: number, s: number): number =>
+    lp[(t * N + b) * C + (extended[s] ?? 0)] ?? -Infinity;
+  const blank = extended[0] ?? 0;
+  const canSkipBack = (s: number): boolean =>
+    s > 1 && extended[s] !== blank && extended[s] !== extended[s - 2];
+
+  const alpha = new Float64Array(inputLength * S).fill(-Infinity);
+  alpha[0] = emit(0, 0);
+  if (S > 1) alpha[1] = emit(0, 1);
+  for (let t = 1; t < inputLength; t++) {
+    for (let s = 0; s < S; s++) {
+      let acc = alpha[(t - 1) * S + s] ?? -Infinity;
+      if (s > 0) acc = logSumExp(acc, alpha[(t - 1) * S + s - 1] ?? -Infinity);
+      if (canSkipBack(s)) acc = logSumExp(acc, alpha[(t - 1) * S + s - 2] ?? -Infinity);
+      alpha[t * S + s] = acc + emit(t, s);
+    }
+  }
+  const last = (inputLength - 1) * S;
+  const logLikelihood = logSumExp(
+    alpha[last + S - 1] ?? -Infinity,
+    S > 1 ? (alpha[last + S - 2] ?? -Infinity) : -Infinity
+  );
+  const nll = -logLikelihood;
+  if (grad === null || !Number.isFinite(nll)) return nll;
+
+  const beta = new Float64Array(inputLength * S).fill(-Infinity);
+  beta[last + S - 1] = emit(inputLength - 1, S - 1);
+  if (S > 1) beta[last + S - 2] = emit(inputLength - 1, S - 2);
+  for (let t = inputLength - 2; t >= 0; t--) {
+    for (let s = 0; s < S; s++) {
+      let acc = beta[(t + 1) * S + s] ?? -Infinity;
+      if (s < S - 1) acc = logSumExp(acc, beta[(t + 1) * S + s + 1] ?? -Infinity);
+      if (s < S - 2 && canSkipBack(s + 2)) {
+        acc = logSumExp(acc, beta[(t + 1) * S + s + 2] ?? -Infinity);
+      }
+      beta[t * S + s] = acc + emit(t, s);
+    }
+  }
+
+  // d(-log p) / d lp[t, c] = -exp(log(sum over s with label c of alpha * beta) - lp[t, c] + nll)
+  const through = new Float64Array(C);
+  for (let t = 0; t < inputLength; t++) {
+    through.fill(-Infinity);
+    for (let s = 0; s < S; s++) {
+      const c = extended[s] ?? 0;
+      through[c] = logSumExp(
+        through[c] ?? -Infinity,
+        (alpha[t * S + s] ?? 0) + (beta[t * S + s] ?? 0)
+      );
+    }
+    for (let c = 0; c < C; c++) {
+      const joint = through[c] ?? -Infinity;
+      const logProb = lp[(t * N + b) * C + c] ?? -Infinity;
+      if (joint === -Infinity || logProb === -Infinity) continue;
+      const index = (t * N + b) * C + c;
+      grad[index] = (grad[index] ?? 0) - Math.exp(joint - logProb + nll);
+    }
+  }
+  return nll;
 }
 
 /**
@@ -1325,6 +1594,13 @@ function readLengths(t: Tensor, name: string, context: string): number[] {
  * `zeroInfinity` is set. Target length 0 is allowed (the loss is then the
  * negative log-probability of emitting only blanks).
  *
+ * Passing a GradTensor as `logProbs` returns a GradTensor that supports `.backward()`. The
+ * gradient is the exact derivative of the loss with respect to the log-probabilities, computed
+ * with the forward-backward recursions in log-space. PyTorch adds `exp(logProbs)` to its
+ * gradient with respect to the log-probabilities themselves, a term that cancels when they come
+ * from a log-softmax; the gradients with respect to the logits are identical. An infeasible
+ * sample (infinite loss, or zero with `zeroInfinity`) has a zero gradient.
+ *
  * @param logProbs - Log-probabilities of shape (T, N, C) where T = input
  *   length (time steps), N = batch size, C = number of classes (including blank)
  * @param targets - Either the concatenated target sequences (1D, length at least the sum of
@@ -1345,8 +1621,30 @@ export function ctcLoss(
   targets: Tensor,
   inputLengths: Tensor,
   targetLengths: Tensor,
+  options?: CtcLossOptions
+): Tensor;
+export function ctcLoss(
+  logProbs: GradTensor,
+  targets: Tensor,
+  inputLengths: Tensor,
+  targetLengths: Tensor,
+  options?: CtcLossOptions
+): GradTensor;
+export function ctcLoss(
+  logProbs: AnyTensor,
+  targets: Tensor,
+  inputLengths: Tensor,
+  targetLengths: Tensor,
+  options?: CtcLossOptions
+): AnyTensor;
+export function ctcLoss(
+  logProbsArg: AnyTensor,
+  targets: Tensor,
+  inputLengths: Tensor,
+  targetLengths: Tensor,
   options: CtcLossOptions = {}
-): Tensor {
+): AnyTensor {
+  const logProbs = toTensor(logProbsArg);
   const { blank = 0, reduction = "mean", zeroInfinity = false } = options;
   validateReduction(reduction, "ctcLoss");
   ensureNumeric(logProbs, "ctcLoss");
@@ -1421,8 +1719,7 @@ export function ctcLoss(
   }
 
   const dtype = lossDtypeOf(logProbs);
-  const lossData = newLossBuffer(dtype, N);
-  const NEG_INF = -Infinity;
+  const samples: CtcSample[] = [];
 
   let targetOffset = 0;
   for (let b = 0; b < N; b++) {
@@ -1462,69 +1759,77 @@ export function ctcLoss(
 
     // Extended label sequence with interleaved blanks:
     // [blank, l0, blank, l1, blank, ..., l_{L-1}, blank]
-    const S = 2 * tgtLen + 1;
-    const extLabels = new Int32Array(S);
-    for (let s = 0; s < S; s++) {
-      extLabels[s] = s % 2 === 0 ? blank : (labels[(s - 1) / 2] ?? 0);
+    const extended = new Int32Array(2 * tgtLen + 1);
+    for (let s = 0; s < extended.length; s++) {
+      extended[s] = s % 2 === 0 ? blank : (labels[(s - 1) / 2] ?? 0);
     }
-
-    let lossValue: number;
-    if (inpLen === 0) {
-      // No frames: the empty target has probability 1, anything else 0.
-      lossValue = tgtLen === 0 ? 0 : Infinity;
-    } else if (inpLen < tgtLen) {
-      lossValue = Infinity;
-    } else {
-      // Forward algorithm in log-space
-      let prev = new Float64Array(S).fill(NEG_INF);
-      let curr = new Float64Array(S);
-      const at = (t: number, label: number): number => lp[(t * N + b) * C + label] ?? NEG_INF;
-
-      // Initialization at t=0: can start at s=0 (blank) or s=1 (first label)
-      prev[0] = at(0, extLabels[0] ?? blank);
-      if (S > 1) {
-        prev[1] = at(0, extLabels[1] ?? blank);
-      }
-
-      for (let t = 1; t < inpLen; t++) {
-        for (let s = 0; s < S; s++) {
-          let logAlpha = prev[s] ?? NEG_INF;
-
-          if (s > 0) {
-            logAlpha = logSumExp(logAlpha, prev[s - 1] ?? NEG_INF);
-          }
-
-          if (s > 1) {
-            const currLabel = extLabels[s] ?? blank;
-            if (currLabel !== blank && currLabel !== extLabels[s - 2]) {
-              logAlpha = logSumExp(logAlpha, prev[s - 2] ?? NEG_INF);
-            }
-          }
-
-          curr[s] = logAlpha + at(t, extLabels[s] ?? blank);
-        }
-        [prev, curr] = [curr, prev];
-      }
-
-      // Total log-probability
-      lossValue = -logSumExp(prev[S - 1] ?? NEG_INF, S > 1 ? (prev[S - 2] ?? NEG_INF) : NEG_INF);
-    }
-
-    if (zeroInfinity && lossValue === Infinity) {
-      lossValue = 0;
-    }
-    // PyTorch's "mean" normalizes by the target length before averaging over the batch.
-    lossData[b] = reduction === "mean" ? lossValue / Math.max(tgtLen, 1) : lossValue;
+    samples.push({ inputLength: inpLen, extended });
   }
 
-  const ctcLossT = Tensor.fromTypedArray({
-    data: lossData,
+  const rawLosses = newLossBuffer(dtype, N);
+  const feasible = new Uint8Array(N);
+  for (const [b, sample] of samples.entries()) {
+    const loss = ctcSampleLoss(lp, N, C, b, sample, null);
+    feasible[b] = Number.isFinite(loss) ? 1 : 0;
+    rawLosses[b] = zeroInfinity && loss === Infinity ? 0 : loss;
+  }
+  const rawTensor = Tensor.fromTypedArray({
+    data: rawLosses,
+    shape: [N],
+    dtype,
+    device: logProbs.device,
+  });
+  // PyTorch's "mean" divides each sample by its target length (at least 1) before averaging.
+  const lengthDivisors = newLossBuffer(dtype, N);
+  for (let b = 0; b < N; b++) lengthDivisors[b] = Math.max(tgtLens[b] ?? 0, 1);
+  const divisors = Tensor.fromTypedArray({
+    data: lengthDivisors,
     shape: [N],
     dtype,
     device: logProbs.device,
   });
 
-  return reduceLoss(ctcLossT, reduction);
+  if (GradTensor.isGradTensor(logProbsArg)) {
+    let cachedGrad: Float64Array | null = null;
+    const gradient = (): Float64Array => {
+      if (cachedGrad !== null) return cachedGrad;
+      const out = new Float64Array(logProbs.size);
+      for (const [b, sample] of samples.entries()) {
+        // An infeasible sample (infinite loss) has no gradient.
+        if (feasible[b] === 1) ctcSampleLoss(lp, N, C, b, sample, out);
+      }
+      cachedGrad = out;
+      return out;
+    };
+    const perSample = customOp(rawTensor, [
+      [
+        logProbsArg,
+        (go: Tensor): Tensor => {
+          const upstream = numbersOf(go, "ctcLoss");
+          const base = gradient();
+          const result = newLossBuffer(dtype, base.length);
+          for (let t = 0; t < T; t++) {
+            for (let b = 0; b < N; b++) {
+              const scale = upstream[b] ?? 0;
+              const row = (t * N + b) * C;
+              for (let c = 0; c < C; c++) result[row + c] = scale * (base[row + c] ?? 0);
+            }
+          }
+          return Tensor.fromTypedArray({
+            data: result,
+            shape: logProbs.shape.slice(),
+            dtype,
+            device: logProbs.device,
+          });
+        },
+      ],
+    ]);
+    if (reduction === "mean") return perSample.div(divisors).mean();
+    return reduceGradLoss(perSample, reduction);
+  }
+
+  if (reduction === "mean") return reduceLoss(div(rawTensor, divisors), reduction);
+  return reduceLoss(rawTensor, reduction);
 }
 
 /**
