@@ -42,6 +42,9 @@ function validateDdof(ddof: number): void {
   }
 }
 
+/** Group key shared by every missing value in valueCounts; createKey never produces it. */
+const MISSING_KEY = "missing";
+
 /** True for null, undefined, NaN and invalid Dates, which sort after every other value. */
 function isMissing(value: unknown): boolean {
   return (
@@ -490,8 +493,8 @@ export class Series<T = unknown> {
    * keep the order of their first appearance.
    *
    * Like pandas, null, undefined and NaN are left out unless `dropna` is false.
-   * When they are kept, they appear in the index as the labels `"null"`,
-   * `"undefined"` and `NaN`.
+   * When they are kept, they are counted as one missing value and appear once in
+   * the index, labeled after the first missing value seen (`"null"`, `"undefined"` or `NaN`).
    *
    * With `normalize: true` the data are relative frequencies (they sum to 1 over the values that
    * are counted) and the Series is named `proportion`. `sort: false` keeps the order of first
@@ -537,9 +540,11 @@ export class Series<T = unknown> {
     let counted = 0;
 
     for (const v of this._data) {
-      if (skipMissing && isMissing(v)) continue;
+      const missing = isMissing(v);
+      if (skipMissing && missing) continue;
       counted++;
-      const key = createKey(v);
+      // null, undefined and NaN are one missing key; the first one seen names it.
+      const key = missing ? MISSING_KEY : createKey(v);
       counts.set(key, (counts.get(key) ?? 0) + 1);
       if (!keyToValue.has(key)) {
         keyToValue.set(key, v);

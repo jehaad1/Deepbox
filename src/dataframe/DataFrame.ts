@@ -5454,7 +5454,7 @@ export class DataFrame {
    *
    * Groups are listed by descending count; equal counts keep the order of first appearance.
    * Unlike pandas, missing values are counted as their own group by default (Deepbox 1.0
-   * behavior); pass `{ dropna: true }` to leave out every row that has a missing value in one of
+   * behavior; null, undefined and NaN count as one missing value); pass `{ dropna: true }` to leave out every row that has a missing value in one of
    * the counted columns. Pass `{ normalize: true }` for relative frequencies: the count column
    * is then called `proportion`. `sort: false` keeps the order of first appearance and
    * `ascending: true` lists the rarest combinations first.
@@ -5507,7 +5507,8 @@ export class DataFrame {
       const vals = arrays.map((arr) => arr[i]);
       if (dropna && vals.some(isMissing)) continue;
       counted++;
-      const key = createKey(vals);
+      // null, undefined and NaN count as the same missing value within a column.
+      const key = createKey(vals.map((v) => (isMissing(v) ? Number.NaN : v)));
       const group = groups.get(key);
       if (group === undefined) groups.set(key, { values: vals, count: 1 });
       else group.count++;
