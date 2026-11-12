@@ -100,3 +100,36 @@ describe("merge and join validate the key option (DF-12)", () => {
     );
   });
 });
+
+describe("concat accepts a DataFrame or an array of DataFrames (DOC-3)", () => {
+  const a = () => new DataFrame({ x: [1, 2], y: ["a", "b"] });
+  const b = () => new DataFrame({ x: [3], y: ["c"] });
+  const c = () => new DataFrame({ x: [4, 5], y: ["d", "e"] });
+
+  it("stacks the rows of every frame in the array", () => {
+    const out = a().concat([b(), c()]);
+    expect(rows(out)).toEqual({ x: [1, 2, 3, 4, 5], y: ["a", "b", "c", "d", "e"] });
+    expect(out.index).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("matches the single-frame form for a one-element array", () => {
+    expect(rows(a().concat([b()]))).toEqual(rows(a().concat(b())));
+  });
+
+  it("passes axis and options on to every step", () => {
+    const out = a().concat([new DataFrame({ z: [9, 8] })], 1);
+    expect(out.columns).toEqual(["x", "y", "z"]);
+    const wide = a().concat([new DataFrame({ x: [3], q: [1] })], { join: "outer" });
+    expect(wide.columns).toEqual(["x", "y", "q"]);
+  });
+
+  it("an empty array returns an equal DataFrame", () => {
+    expect(rows(a().concat([]))).toEqual(rows(a()));
+  });
+
+  it("throws InvalidParameterError for anything else", () => {
+    for (const bad of [null, undefined, 5, "x", {}, [1], [b(), null]]) {
+      expect(() => a().concat(bad as unknown as DataFrame)).toThrow(InvalidParameterError);
+    }
+  });
+});

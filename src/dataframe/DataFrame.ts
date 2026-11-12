@@ -1529,7 +1529,10 @@ export class DataFrame {
    * become null), or only the shared labels with `join: "inner"`. `ignoreIndex: true` names the
    * resulting columns "0", "1", ... instead.
    *
-   * @param other - DataFrame to concatenate
+   * An array of DataFrames is concatenated one after another, left to right, so
+   * `a.concat([b, c])` is `a.concat(b).concat(c)`; an empty array gives a copy of `this`.
+   *
+   * @param other - DataFrame, or array of DataFrames, to concatenate
    * @param axis - Axis to concatenate along, or the options object.
    *               - 0 or "rows" or "index": Stack vertically (append rows)
    *               - 1 or "columns": Stack horizontally (append columns)
@@ -1537,6 +1540,7 @@ export class DataFrame {
    * @returns Concatenated DataFrame
    * @throws {DataValidationError} If the columns differ and no `join` is given, or labels collide
    *   with `ignoreIndex: false`
+   * @throws {InvalidParameterError} If `other` is neither a DataFrame nor an array of DataFrames
    *
    * @example
    * ```ts
@@ -1547,7 +1551,23 @@ export class DataFrame {
    * df1.concat(df2, { join: "inner" });                 // only column a
    * ```
    */
-  concat(other: DataFrame, axis: Axis | ConcatOptions = 0, options: ConcatOptions = {}): DataFrame {
+  concat(
+    other: DataFrame | readonly DataFrame[],
+    axis: Axis | ConcatOptions = 0,
+    options: ConcatOptions = {}
+  ): DataFrame {
+    if (Array.isArray(other)) {
+      let result: DataFrame = this;
+      for (const item of other) result = result.concat(item, axis, options);
+      return result === this ? this.copy() : result;
+    }
+    if (!(other instanceof DataFrame)) {
+      throw new InvalidParameterError(
+        "concat expects a DataFrame or an array of DataFrames",
+        "other",
+        other
+      );
+    }
     const opts: ConcatOptions = typeof axis === "object" ? { ...axis, ...options } : options;
     const ax = normalizeAxis(typeof axis === "object" ? 0 : axis, 2);
     const join = opts.join;
