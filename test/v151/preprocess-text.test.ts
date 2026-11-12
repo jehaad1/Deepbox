@@ -10,9 +10,8 @@ import { CountVectorizer, HashingVectorizer, TfidfVectorizer } from "../../src/p
 describe("CountVectorizer ngramRange", () => {
   it("does not loop over n-gram sizes larger than the document", () => {
     const cv = new CountVectorizer({ ngramRange: [1, 2 ** 40] });
-    const start = performance.now();
+    // Before the fix this looped 2^40 times per document; the test timeout catches a regression.
     cv.fitText(["aa bb cc", "bb cc dd"]);
-    expect(performance.now() - start).toBeLessThan(500);
     expect(cv.vocabulary.get("aa bb cc")).toBeDefined();
     expect(cv.vocabulary.get("bb cc dd")).toBeDefined();
     expect(cv.vocabulary.size).toBe(4 + 3 + 2);

@@ -58,9 +58,12 @@ describe("NN-21: WorkerPool asynchronous callbacks", () => {
 describe("NN-21: WorkerPool taskTimeout", () => {
   it("rejects an asynchronous task that outlives taskTimeout", async () => {
     const pool = new WorkerPool({ taskTimeout: 20 });
-    const t0 = Date.now();
-    await expect(pool.map([1], () => sleep(500))).rejects.toThrow(TaskTimeoutError);
-    expect(Date.now() - t0).toBeLessThan(400);
+    let taskFinished = false;
+    await expect(pool.map([1], () => sleep(500).then(() => (taskFinished = true)))).rejects.toThrow(
+      TaskTimeoutError
+    );
+    // The pool rejected before the task itself finished.
+    expect(taskFinished).toBe(false);
     await expect(pool.exec(() => sleep(500), 0)).rejects.toThrow(/taskTimeout/);
     await expect(pool.all([() => sleep(500)])).rejects.toThrow(TaskTimeoutError);
     expect(pool.status().activeWorkers).toBe(0);

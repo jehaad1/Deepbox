@@ -107,10 +107,10 @@ describe("ML-6: Ridge with more features than samples", () => {
       expect(Math.abs((ca[j] ?? 0) - (cb[j] ?? 0))).toBeLessThan(1e-6);
   });
 
-  it("fits n = 100, p = 3000 in about a second (the primal system took 17 s)", () => {
+  it("fits n = 100, p = 3000 through the n x n dual system", () => {
+    // The primal p x p system took 17 s here; benchmarks track the speed.
     const big = makeWide(100, 3000);
-    const start = performance.now();
-    new Ridge().fit(big.X, big.y);
-    expect(performance.now() - start).toBeLessThan(5000);
-  }, 60000);
+    const model = new Ridge().fit(big.X, big.y);
+    expect(model.coef.shape).toEqual([3000]);
+  });
 });
