@@ -187,3 +187,20 @@ Format: id, priority, area, evidence, status.
 | PERF-1 | P1 | dataframe | CSV reading was about 2x slower than 1.5.0 after the pandas-compatible parser (regex per float cell, string slice, set lookup per cell). Measured in separate processes, alternated. | fixed ecc10a0 (cell parser on par with 1.5.0 in an interleaved measurement) |
 | PERF-2 | P2 | metrics | `jaccardScore` on 10,000 labels 1.37x the 1.5.0 time (labels copied twice, Set of every label). | improved 939da5d to 1.19x; the remainder is the new posLabel validation |
 | PERF-3 | P2 | benchmarks | The full benchmark comparison of 1.5.0 against this tree ran while other projects kept the load average near 70 (iOS simulator, PerchyStudio engine). Per-case swings of 3x in both directions were noise: the geometric mean ratio was 0.96, and targeted separate-process reruns cleared LinearSVR, KNN, rolling, makeMoons and solve. README and `benchmarks/RESULTS.md` keep the last quiet-machine numbers until `npm run bench:all` is rerun on a quiet machine before the release. | release checklist |
+
+## Release, 2026-11-12
+
+- `deepbox@1.6.0` published to npm by `jehaad1` (dist-tag `latest`, 701 files, 3.1 MB, shasum `4404aafb425498221f4eae6780d6be55825003e6`, identical to the rehearsal tarball). Installed from the registry in a fresh project: ESM, CommonJS and the unknown-option check work.
+- `main` and tag `v1.6.0` pushed to `jehaad1/Deepbox`; GitHub Release `v1.6.0` created from the CHANGELOG section.
+- DeepboxDocs pushed and deployed: `www.deepbox.dev` shows v1.6.0, the 1.6.0 release notes, Node.js 22.12, and all 123 sitemap URLs return 200.
+- deepbox-bench-private: prompt pack regenerated from the 1.6.0 docs (local commit; the bench repos have no remote).
+- Final clean-clone `validate:all`: every gate passed; 3 of 14,582 tests timed out under a load average near 900 and pass when run alone (two timeouts were then raised or removed in 18a0cbe).
+
+## Owner actions
+
+- GitHub Actions is disabled for the account ("account is locked due to a billing issue"), so CI and the release workflow did not run for this release. Resolve billing, then re-run CI on `main`.
+- Publishing from the workflow needs an `NPM_TOKEN` secret or npm trusted publishing; 1.6.0 was published from this machine, so it has no provenance attestation.
+- `bench.deepbox.dev`: expired certificate, no Vercel alias (BENCH-1). Restore together with the leaderboard after re-running models under the 2.0.0 engine, or remove the DNS record.
+- Rerun `npm run bench:all` on a quiet machine and commit the regenerated README and `benchmarks/RESULTS.md` (PERF-3).
+- Decide the breaking changes listed as owner decisions above (DF-6, DF-22, NN-6, ND-2 default, ND-10, ND-18, ML-9, ML-10, ML-15, PKG-9, PP-5).
+- SEC-3: five published commits on `main` carry agent co-author trailers from earlier sessions; removing them requires rewriting published history.
