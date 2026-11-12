@@ -52,38 +52,38 @@ Format: id, priority, area, evidence, status.
 | SEC-5 | P3 | deps | `allowScripts` covers `webgpu` only; `npm ci` warns about `esbuild`. | fixed ce103a0 |
 | DOC-1 | P2 | docs | Same as BASE-2; also `validate:fix` omits `prose:check`. | fixed 6b9f026, ce103a0 |
 | DOC-2 | P2 | repo | Five dead old-layout benchmark files (`benchmarks/0{2,3,5,6}-*/deepset.ts`, `benchmarks/07-scalability/deepbox.ts`) referenced nowhere. | fixed 6b9f026 |
-| DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | open |
+| DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | fixed da0e738 |
 | DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | open |
 | DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | open |
 | DOC-6 | P3 | JSDoc | `src/ndarray/ops/radix.ts:21` links to a 404 docs page. | open |
-| DOC-7 | P3 | dataframe | `DataFrame.corr` returns `0.9999999999999998` for perfect correlation; pandas returns exactly 1. | open |
-| DF-1 | P0 | dataframe io | `readXlsx`: one far-right cell per row allocates 16384-wide rows; 46 KB file uses 1.2 GB RSS (verified), 233 KB file crashes the process with heap OOM. `src/dataframe/io/xlsx.ts:765`. | open |
-| DF-2 | P0 | dataframe io | `readXlsx`: unterminated `<row>` tags make lazy regexes quadratic (1.2 MB file, 43 s) and return 0 rows with no error. `xlsx.ts:740,758,721`. Verified at 289 KB, 2.1 s, 0 rows. | open |
-| DF-3 | P1 | dataframe io | `fromCsvString`: a quote inside an unquoted field toggles quote mode; `12" steel` throws, `say "hi" there` loses its quotes. Verified. `DataFrame.ts:2396`. | open |
-| DF-4 | P1 | dataframe io | CSV integers beyond 2^53 silently rounded. Verified. `DataFrame.ts:2481`. | open |
-| DF-5 | P1 | dataframe dt | `dt.isoformat()` returns UTC with `Z` while other accessors use local wall-clock fields. `DateTimeAccessor.ts:597`. | open |
-| DF-6 | P2 | dataframe dt | Naive datetimes stored in local time: DST gap shifts 02:30 to 03:30, `date_range` skips an hour. | open |
-| DF-7 | P2 | dataframe | `pctChange` returns null on a zero previous value (pandas: inf). | open |
-| DF-8 | P2 | dataframe | `Expanding` lacks `median` (Rolling has it). | open |
-| DF-9 | P2 | dataframe | `filter`/`assign(fn)` rows built on `{}`: a `__proto__` column is unreachable. | open |
-| DF-10 | P2 | dataframe | `groupBy` on an empty frame drops value columns. | open |
-| DF-11 | P2 | dataframe io | CSV sign plus leading zero inconsistent (`007` text, `-007` number); `1e400` becomes Infinity. | open |
-| DF-12 | P2 | dataframe | `merge`/`join` accept one key column only; `on: ""` gives a misleading error. | open |
-| DF-13 | P2 | dataframe | `Series([]).sum()` throws; boolean `sum` throws (pandas: 0, count of true). | open |
+| DOC-7 | P3 | dataframe | `DataFrame.corr` returns `0.9999999999999998` for perfect correlation; pandas returns exactly 1. | fixed ae00f04 |
+| DF-1 | P0 | dataframe io | `readXlsx`: one far-right cell per row allocates 16384-wide rows; 46 KB file uses 1.2 GB RSS (verified), 233 KB file crashes the process with heap OOM. `src/dataframe/io/xlsx.ts:765`. | fixed 99aa89a |
+| DF-2 | P0 | dataframe io | `readXlsx`: unterminated `<row>` tags make lazy regexes quadratic (1.2 MB file, 43 s) and return 0 rows with no error. `xlsx.ts:740,758,721`. Verified at 289 KB, 2.1 s, 0 rows. | fixed 99aa89a |
+| DF-3 | P1 | dataframe io | `fromCsvString`: a quote inside an unquoted field toggles quote mode; `12" steel` throws, `say "hi" there` loses its quotes. Verified. `DataFrame.ts:2396`. | fixed 712d8e7 |
+| DF-4 | P1 | dataframe io | CSV integers beyond 2^53 silently rounded. Verified. `DataFrame.ts:2481`. | fixed 712d8e7 |
+| DF-5 | P1 | dataframe dt | `dt.isoformat()` returns UTC with `Z` while other accessors use local wall-clock fields. `DateTimeAccessor.ts:597`. | fixed d40d610 (behavior change) |
+| DF-6 | P2 | dataframe dt | Naive datetimes stored in local time: DST gap shifts 02:30 to 03:30, `date_range` skips an hour. | owner decision: switch naive datetimes to UTC fields (breaking) |
+| DF-7 | P2 | dataframe | `pctChange` returns null on a zero previous value (pandas: inf). | fixed 03d7397 |
+| DF-8 | P2 | dataframe | `Expanding` lacks `median` (Rolling has it). | fixed 3aa2964 |
+| DF-9 | P2 | dataframe | `filter`/`assign(fn)` rows built on `{}`: a `__proto__` column is unreachable. | fixed 8368df3 |
+| DF-10 | P2 | dataframe | `groupBy` on an empty frame drops value columns. | fixed 53561c2 |
+| DF-11 | P2 | dataframe io | CSV sign plus leading zero inconsistent (`007` text, `-007` number); `1e400` becomes Infinity. | fixed 712d8e7 |
+| DF-12 | P2 | dataframe | `merge`/`join` accept one key column only; `on: ""` gives a misleading error. | fixed 8cf476a |
+| DF-13 | P2 | dataframe | `Series([]).sum()` throws; boolean `sum` throws (pandas: 0, count of true). | fixed 8e51b4b (behavior change) |
 | DF-14 | P2 | datasets | `mapDataset` flattens N-D data and drops `images`. | fixed 8f656fa |
 | DF-15 | P2 | datasets | Archive loaders: no timeout, download size cap, inflate cap, checksum or cache. | fixed 0874c84 |
 | DF-16 | P2 | datasets | `fetchMNIST` does not validate labels. | fixed 0874c84 |
 | DF-17 | P2 | datasets | `makeClassification` draws labels i.i.d., not balanced as documented by sklearn parity. | fixed e867cf8 (behavior change) |
-| DF-18 | P2 | dataframe io | CSV reader: no `NA`/`N/A`/`TRUE` handling, duplicate headers throw (xlsx dedupes), short rows throw. | open |
+| DF-18 | P2 | dataframe io | CSV reader: no `NA`/`N/A`/`TRUE` handling, duplicate headers throw (xlsx dedupes), short rows throw. | fixed 712d8e7 (behavior change: NA markers become null) |
 | PL-1 | P2 | plot | `Axes.surface/wireframe/scatter3d` given Tensors draw nothing silently. | fixed c969759 |
-| DF-19 | P3 | dataframe | `diff`/`pctChange` reject negative periods. | open |
-| DF-20 | P3 | dataframe | `valueCounts({dropna:false})` counts NaN and null separately. | open |
-| DF-21 | P3 | dataframe | Mixed-type sort gives an inconsistent order instead of an error. | open |
-| DF-22 | P3 | dataframe | groupBy `first`/`last` return missing values (pandas skips them). | open |
-| DF-23 | P3 | dataframe | `astype("number")` coerces silently (`"0x10"` to 16); `astype("boolean")` maps `"no"` to true. | open |
-| DF-24 | P3 | dataframe | `StyleAccessor.toANSI` passes control characters; CJK width wrong. | open |
-| DF-25 | P3 | dataframe | `Categorical` not integrated with DataFrame/Series. | open |
-| DF-26 | P3 | dataframe | `sample({replace:true})` resets row labels. | open |
+| DF-19 | P3 | dataframe | `diff`/`pctChange` reject negative periods. | fixed 03d7397 |
+| DF-20 | P3 | dataframe | `valueCounts({dropna:false})` counts NaN and null separately. | fixed b58f5fa |
+| DF-21 | P3 | dataframe | Mixed-type sort gives an inconsistent order instead of an error. | fixed 0bd6121 |
+| DF-22 | P3 | dataframe | groupBy `first`/`last` return missing values (pandas skips them). | option added 996c2d0; default flip is owner decision |
+| DF-23 | P3 | dataframe | `astype("number")` coerces silently (`"0x10"` to 16); `astype("boolean")` maps `"no"` to true. | fixed c6fbdc2 (behavior change) |
+| DF-24 | P3 | dataframe | `StyleAccessor.toANSI` passes control characters; CJK width wrong. | fixed 131f567 |
+| DF-25 | P3 | dataframe | `Categorical` not integrated with DataFrame/Series. | deferred: needs its own design (construction, astype, groupBy, sort) |
+| DF-26 | P3 | dataframe | `sample({replace:true})` resets row labels. | documented 96dd247 |
 | NN-1 | P1 | nn | `Trainer` with a loss that is a plain Tensor trains nothing and reports a constant loss. Verified. `Trainer.ts:379`. | open |
 | NN-2 | P1 | nn | `gaussianNLLLoss`, `poissonNLLLoss`, `cosineEmbeddingLoss`, `ctcLoss` return non-differentiable Tensors for GradTensor inputs. Verified. | open |
 | NN-3 | P1 | nn | `crossEntropyLoss`/`nllLoss` have no default `ignoreIndex` (torch: -100); padded batches throw. Verified. | open |
