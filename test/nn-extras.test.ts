@@ -85,7 +85,7 @@ describe("Dropout2d", () => {
 
   it("throws on invalid p", () => {
     expect(() => new Dropout2d(-0.1)).toThrow();
-    expect(() => new Dropout2d(1.0)).toThrow();
+    expect(() => new Dropout2d(1.5)).toThrow();
   });
 
   it("toString returns descriptive string", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnyTensor, Tensor } from "../src/ndarray";
-import { GradTensor, tensor } from "../src/ndarray";
+import { GradTensor, parameter, tensor } from "../src/ndarray";
 import { Linear, Module, mseLoss, Trainer } from "../src/nn";
 
 class TinyModel extends Module {
@@ -65,7 +65,7 @@ describe("Trainer", () => {
     const optimizer = { step() {}, zeroGrad() {} };
 
     // Loss function that returns constant loss and never improves
-    const lossFn = (_output: AnyTensor, _target: Tensor) => tensor([5.0]);
+    const lossFn = (_output: AnyTensor, _target: Tensor) => parameter([5.0]);
 
     const trainData: Array<readonly [Tensor, Tensor]> = [[tensor([[1, 2]]), tensor([3])]];
 
@@ -83,7 +83,7 @@ describe("Trainer", () => {
   it("invokes callbacks after each epoch", () => {
     const model = new TinyModel();
     const optimizer = { step() {}, zeroGrad() {} };
-    const lossFn = (_output: AnyTensor, _target: Tensor) => tensor([1.0]);
+    const lossFn = (_output: AnyTensor, _target: Tensor) => parameter([1.0]);
 
     const trainData: Array<readonly [Tensor, Tensor]> = [[tensor([[1, 2]]), tensor([3])]];
 
@@ -100,7 +100,7 @@ describe("Trainer", () => {
   it("validates epochs parameter", () => {
     const model = new TinyModel();
     const optimizer = { step() {}, zeroGrad() {} };
-    const lossFn = (_output: AnyTensor, _target: Tensor) => tensor([1.0]);
+    const lossFn = (_output: AnyTensor, _target: Tensor) => parameter([1.0]);
 
     expect(() => new Trainer(model, optimizer, lossFn, { epochs: 0 })).toThrow(/epochs/);
   });

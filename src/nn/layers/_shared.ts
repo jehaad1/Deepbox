@@ -101,3 +101,20 @@ export function uniformTensor(
     device: options.device ?? getConfig().defaultDevice,
   });
 }
+
+/**
+ * `input * 0` as a float tensor: integer and bool inputs become float32, like dropout does. The
+ * result is zero everywhere (a non-finite input gives NaN, as in PyTorch) and has a zero gradient.
+ */
+export function zeroed(input: GradTensor): GradTensor {
+  const dtype = input.dtype;
+  const source =
+    dtype === "float16" || dtype === "bfloat16" || dtype === "float32" || dtype === "float64"
+      ? input
+      : input.astype("float32");
+  const sourceDtype = source.dtype;
+  if (sourceDtype === "string") {
+    throw new InvalidParameterError("dropout does not support string dtype", "input", sourceDtype);
+  }
+  return source.mul(GradTensor.scalar(0, { dtype: sourceDtype }));
+}

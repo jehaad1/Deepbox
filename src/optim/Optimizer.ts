@@ -190,6 +190,15 @@ function isParamGroupArray<Options extends Record<string, unknown>>(
   return "params" in first;
 }
 
+function emptyParameterListError(): InvalidParameterError {
+  return new InvalidParameterError(
+    "optimizer got an empty parameter list: pass at least one parameter or parameter group " +
+      "(a model without trainable layers has nothing to optimize)",
+    "params",
+    []
+  );
+}
+
 /**
  * Abstract base class for all optimizers.
  *
@@ -278,9 +287,10 @@ export abstract class Optimizer<
    *
    * @param params - Either an iterable of parameters or an array of parameter groups
    * @param defaults - Default hyperparameters applied to all groups
-   * @throws {InvalidParameterError} If `params` holds something other than GradTensor
-   *   parameters, a group option has the wrong type or is NaN, or a parameter appears
-   *   in more than one group. A parameter repeated inside one group is kept once.
+   * @throws {InvalidParameterError} If `params` is empty (no parameter and no group), holds
+   *   something other than GradTensor parameters, a group option has the wrong type or is NaN,
+   *   or a parameter appears in more than one group. A parameter repeated inside one group is
+   *   kept once. A group with an empty `params` list is accepted next to other groups.
    */
   constructor(
     params: Iterable<GradTensor> | ReadonlyArray<ParamGroup<Options>>,
@@ -294,11 +304,14 @@ export abstract class Optimizer<
 
     if (!isParamGroupArray<Options>(params)) {
       // Plain iterable of parameters: one group with the default options.
+      const collected = collectParams(params, "params", seen);
+      if (collected.length === 0) throw emptyParameterListError();
       this.paramGroups.push({
-        params: collectParams(params, "params", seen),
+        params: collected,
         options: mergeGroupOptions<Options>(defaults, {}),
       });
     } else {
+      if (params.length === 0) throw emptyParameterListError();
       params.forEach((group, index) => {
         if (!isRecord(group) || !("params" in group)) {
           throw new InvalidParameterError(

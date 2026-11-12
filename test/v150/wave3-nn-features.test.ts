@@ -1052,7 +1052,7 @@ describe("Trainer accumulationSteps and restoreBestWeights", () => {
     expect(moved).toBeCloseTo(0.1 * 1e-3, 9);
   });
 
-  it("works with fitAsync and with a plain-tensor loss", async () => {
+  it("works with fitAsync and rejects a plain-tensor loss", async () => {
     const model = makeModel();
     const trainer = new Trainer(model, new SGD(model.parameters(), { lr: 0.1 }), lossFn, {
       epochs: 1,
@@ -1067,8 +1067,8 @@ describe("Trainer accumulationSteps and restoreBestWeights", () => {
       epochs: 1,
       accumulationSteps: 2,
     });
-    noLoss.fit(makeData(4));
-    expect(optimizer.steps).toBe(2);
+    expect(() => noLoss.fit(makeData(4))).toThrow(InvalidParameterError);
+    expect(optimizer.steps).toBe(0);
   });
 
   it("rejects an invalid accumulationSteps", () => {
@@ -1159,7 +1159,7 @@ describe("Trainer accumulationSteps and restoreBestWeights", () => {
 
     it("keeps the weights when every loss is NaN and works with fitAsync", async () => {
       const model = setup(1);
-      const nanLoss = (): AnyTensor => tensor([Number.NaN]);
+      const nanLoss = (): AnyTensor => parameter([Number.NaN]);
       const trainer = new Trainer(model, scheduled(model, [4, 5]), nanLoss, {
         epochs: 2,
         restoreBestWeights: true,

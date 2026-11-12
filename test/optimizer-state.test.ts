@@ -20,9 +20,9 @@ describe("deepbox/optim - state serialization", () => {
   });
 
   it("should load empty optimizer state without errors", () => {
-    const optimizer = new SGD([], { lr: 0.1 });
+    const optimizer = new SGD([{ params: [] }], { lr: 0.1 });
     const state = optimizer.stateDict();
-    const optimizer2 = new SGD([], { lr: 0.1 });
+    const optimizer2 = new SGD([{ params: [] }], { lr: 0.1 });
     expect(() => optimizer2.loadStateDict(state)).not.toThrow();
     expect(optimizer2.stateDict()).toEqual(state);
   });

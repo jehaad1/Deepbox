@@ -22,9 +22,11 @@ import { computeStrides, Tensor as TensorClass } from "../../ndarray/tensor/Tens
 import { Module } from "../module/Module";
 import { allPlain, settle, toGradInput } from "./_shared";
 
-type Padding4 = readonly [number, number, number, number];
+/** Padding amounts `[left, right, top, bottom]`. @internal */
+export type Padding4 = readonly [number, number, number, number];
 
-type PadMode = "constant" | "reflect" | "replicate";
+/** How the padded cells are filled. @internal */
+export type PadMode = "constant" | "reflect" | "replicate" | "circular";
 
 function normalizePadding(padding: number | Padding4): Padding4 {
   const values: number[] =
@@ -48,8 +50,9 @@ function normalizePadding(padding: number | Padding4): Padding4 {
  * For every output position along one spatial axis, the input position it
  * reads from, or -1 when the position is a constant fill.
  *
- * Reflection requires each pad to be smaller than the axis size, which the
- * caller checks beforehand, so a single mirror step always lands in range.
+ * Reflection requires each pad to be smaller than the axis size and circular
+ * padding at most the axis size, which the caller checks beforehand, so a single
+ * mirror or wrap step always lands in range.
  */
 function buildIndexMap(mode: PadMode, outLen: number, before: number, size: number): Int32Array {
   const map = new Int32Array(outLen);
@@ -61,6 +64,8 @@ function buildIndexMap(mode: PadMode, outLen: number, before: number, size: numb
       map[o] = -1;
     } else if (mode === "replicate") {
       map[o] = i < 0 ? 0 : size - 1;
+    } else if (mode === "circular") {
+      map[o] = i < 0 ? i + size : i - size;
     } else {
       map[o] = i < 0 ? -i : 2 * (size - 1) - i;
     }
@@ -74,7 +79,7 @@ function buildIndexMap(mode: PadMode, outLen: number, before: number, size: numb
  * the backward scatter-adds each output gradient back to its source input
  * cell, so constant cells contribute no gradient.
  */
-function pad2dForward(
+export function pad2dForward(
   inputGrad: GradTensor,
   padding: Padding4,
   mode: PadMode,
@@ -123,6 +128,13 @@ function pad2dForward(
     if (padLeft >= W || padRight >= W) {
       throw new ShapeError(
         `${layerName} padding (${padLeft}, ${padRight}) must be less than input width (${W})`
+      );
+    }
+  } else if (mode === "circular") {
+    if (Math.max(padTop, padBottom) > H || Math.max(padLeft, padRight) > W) {
+      throw new ShapeError(
+        `${layerName} padding [${padLeft}, ${padRight}, ${padTop}, ${padBottom}] must not exceed the ` +
+          `input size (${H}x${W}); a circular pad wraps around once at most`
       );
     }
   } else if (mode === "replicate" && (H === 0 || W === 0)) {

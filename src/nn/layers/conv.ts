@@ -28,6 +28,7 @@ import {
   toGradInput,
   uniformTensor,
 } from "./_shared";
+import { pad2dForward } from "./padding";
 
 /** One output window along a single spatial axis: the input range `[lo, hi)`, clipped to the input. */
 interface PoolAxis {
@@ -514,6 +515,20 @@ function requireNumeric(t: GradTensor, layer: string): GradTensor {
 /** Padding option of the convolution layers: an amount, or `"same"` / `"valid"`. */
 type ConvPadding<T> = T | "same" | "valid";
 
+/** How {@link Conv2d} fills the padded border (PyTorch's `padding_mode`). */
+export type Conv2dPaddingMode = "zeros" | "reflect" | "replicate" | "circular";
+
+/**
+ * Run a layer that works on `(N, C, H, W)` input. An unbatched `(C, H, W)` input gets a batch
+ * axis of size 1 that is removed from the result again, as PyTorch does (gradients flow through
+ * the reshapes).
+ */
+function withBatchAxis(input: GradTensor, run: (batched: GradTensor) => GradTensor): GradTensor {
+  if (input.ndim !== 3) return run(input);
+  const out = run(input.reshape([1, ...input.shape]));
+  return out.reshape(out.shape.slice(1));
+}
+
 /** Check that `groups` is a positive integer dividing both channel counts. */
 function checkGroups(inChannels: number, outChannels: number, groups: number): number {
   checkInteger("groups", groups, 1);
@@ -965,6 +980,7 @@ export class Conv2d extends Module {
   private readonly paddingLabel: string;
   private readonly useBias: boolean;
   private readonly layerDtype: LayerDType;
+  private readonly paddingMode: Conv2dPaddingMode;
 
   private weight_?: GradTensor;
   private bias_?: GradTensor;
@@ -979,9 +995,12 @@ export class Conv2d extends Module {
    * @param options.dilation - Spacing between kernel taps, one integer or `[dH, dW]` (default 1)
    * @param options.groups - Number of channel groups (default 1); must divide `inChannels` and
    *   `outChannels`
+   * @param options.paddingMode - How the padded border is filled: `"zeros"` (default),
+   *   `"reflect"`, `"replicate"` or `"circular"`, as in PyTorch. With `"reflect"` each pad must be
+   *   smaller than the input size, with `"circular"` at most the input size
    * @param options.bias - Add a learnable bias (default true)
    * @param options.dtype - Dtype of the parameters (default: the global default dtype)
-   * @throws {InvalidParameterError} If a size, stride, dilation, groups or padding is not valid
+   * @throws {InvalidParameterError} If a size, stride, dilation, groups, padding or paddingMode is not valid
    */
   constructor(
     inChannels: number,
@@ -992,6 +1011,7 @@ export class Conv2d extends Module {
       readonly padding?: ConvPadding<number | [number, number]>;
       readonly dilation?: number | [number, number];
       readonly groups?: number;
+      readonly paddingMode?: Conv2dPaddingMode;
       readonly bias?: boolean;
       readonly dtype?: LayerDType;
     } = {}
@@ -1021,6 +1041,20 @@ export class Conv2d extends Module {
     );
     const groups = checkGroups(inChannels, outChannels, options.groups ?? 1);
 
+    const paddingMode: string = options.paddingMode ?? "zeros";
+    if (
+      paddingMode !== "zeros" &&
+      paddingMode !== "reflect" &&
+      paddingMode !== "replicate" &&
+      paddingMode !== "circular"
+    ) {
+      throw new InvalidParameterError(
+        `paddingMode must be 'zeros', 'reflect', 'replicate' or 'circular'; got ${paddingMode}`,
+        "paddingMode",
+        paddingMode
+      );
+    }
+
     const padOption = options.padding ?? 0;
     const resolved = resolveConvPadding(
       "Conv2d",
@@ -1043,6 +1077,7 @@ export class Conv2d extends Module {
     this.stride = strideArr;
     this.dilation = dilationArr;
     this.groups = groups;
+    this.paddingMode = paddingMode;
     this.padBefore = [resolved.before[0] ?? 0, resolved.before[1] ?? 0];
     this.padAfter = [resolved.after[0] ?? 0, resolved.after[1] ?? 0];
     this.paddingLabel =
@@ -1071,9 +1106,11 @@ export class Conv2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, inChannels, height, width)`
-   * @returns Output of shape `(batch, outChannels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D, its channel count does not match, or the
+   * @param x - Input of shape `(batch, inChannels, height, width)`, or `(inChannels, height, width)`
+   *   for a single sample
+   * @returns Output of shape `(batch, outChannels, outH, outW)` (without the batch axis for a
+   *   single sample)
+   * @throws {ShapeError} If the input is not 3-D or 4-D, its channel count does not match, or the
    *   (dilated) kernel does not fit the padded input
    * @throws {DTypeError} If the input has string dtype
    */
@@ -1085,13 +1122,15 @@ export class Conv2d extends Module {
   }
 
   private run(x: AnyTensor): GradTensor {
-    const input = toGradInput(x);
+    return withBatchAxis(toGradInput(x), (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "Conv2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `Conv2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `Conv2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1109,6 +1148,12 @@ export class Conv2d extends Module {
     // The layer computes in its parameter dtype: the input is cast to it.
     const dtype = storedWeight.dtype;
 
+    // Non-zero padding modes fill the border first; the convolution then needs no padding.
+    const fillMode =
+      this.paddingMode === "zeros" || !this.hasPadding() ? undefined : this.paddingMode;
+    const before: [number, number] = fillMode === undefined ? this.padBefore : [0, 0];
+    const after: [number, number] = fillMode === undefined ? this.padAfter : [0, 0];
+
     const [kH, kW] = this.kernelSize;
     const [sH, sW] = this.stride;
     const [dH, dW] = this.dilation;
@@ -1118,19 +1163,33 @@ export class Conv2d extends Module {
     const outW = convOutSize(inW, kW, sW, dW, this.padBefore[1], this.padAfter[1]);
     checkOutputSizes("Conv2d", [outH, outW]);
 
+    const source =
+      fillMode === undefined
+        ? input
+        : pad2dForward(
+            input,
+            [this.padBefore[1], this.padAfter[1], this.padBefore[0], this.padAfter[0]],
+            fillMode,
+            "Conv2d"
+          );
+
     return conv2dForward(
-      asDtype(input, dtype),
+      asDtype(source, dtype),
       storedWeight,
       this.useBias ? this.bias_ : undefined,
       {
         kernel: this.kernelSize,
         stride: this.stride,
         dilation: this.dilation,
-        before: this.padBefore,
-        after: this.padAfter,
+        before,
+        after,
         groups: this.groups,
       }
     );
+  }
+
+  private hasPadding(): boolean {
+    return [...this.padBefore, ...this.padAfter].some((p) => p > 0);
   }
 
   /** Learnable kernel of shape `(outChannels, inChannels / groups, kH, kW)`. */
@@ -1151,7 +1210,8 @@ export class Conv2d extends Module {
       (this.dilation[0] === 1 && this.dilation[1] === 1
         ? ""
         : `, dilation=${JSON.stringify(this.dilation)}`) +
-      (this.groups === 1 ? "" : `, groups=${this.groups}`);
+      (this.groups === 1 ? "" : `, groups=${this.groups}`) +
+      (this.paddingMode === "zeros" ? "" : `, padding_mode=${this.paddingMode}`);
     return `Conv2d(${this.inChannels}, ${this.outChannels}, kernel_size=${JSON.stringify(this.kernelSize)}, stride=${JSON.stringify(this.stride)}, padding=${this.paddingLabel}${extra}, bias=${this.useBias})`;
   }
 }
@@ -1227,9 +1287,10 @@ export class MaxPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D or the kernel does not fit
+   * @throws {ShapeError} If the input is not 3-D or 4-D or the kernel does not fit
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -1241,12 +1302,15 @@ export class MaxPool2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "MaxPool2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `MaxPool2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `MaxPool2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1359,9 +1423,10 @@ export class AvgPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D or the kernel does not fit
+   * @throws {ShapeError} If the input is not 3-D or 4-D or the kernel does not fit
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -1373,12 +1438,15 @@ export class AvgPool2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "AvgPool2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `AvgPool2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `AvgPool2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1453,10 +1521,12 @@ export class AvgPool2d extends Module {
  * outW = (inW - 1) * strideW - 2 * padW + kernelW + outputPadW
  * ```
  *
- * Weights have shape `(inChannels, outChannels, kH, kW)`. `outputPadding` must be
+ * Weights have shape `(inChannels, outChannels / groups, kH, kW)`. `groups` splits the channels
+ * into independent groups, each mapping `inChannels / groups` inputs to `outChannels / groups`
+ * outputs. `outputPadding` must be
  * smaller than the stride; it only resolves the output-size ambiguity of strided
  * convolutions and adds no values of its own. As in PyTorch, weights and bias are drawn
- * from `U(-1/sqrt(fanIn), 1/sqrt(fanIn))` with `fanIn = outChannels * kH * kW`.
+ * from `U(-1/sqrt(fanIn), 1/sqrt(fanIn))` with `fanIn = outChannels / groups * kH * kW`.
  *
  * The layer computes in its parameter dtype and casts the input to it. A `GradTensor` input
  * gives a `GradTensor`; a plain `Tensor` input gives a `GradTensor` while the weights
@@ -1483,6 +1553,7 @@ export class ConvTranspose2d extends Module {
   private readonly stride: [number, number];
   private readonly padding: [number, number];
   private readonly outputPadding: [number, number];
+  private readonly groups: number;
   private readonly useBias: boolean;
 
   private weight_: GradTensor;
@@ -1495,9 +1566,12 @@ export class ConvTranspose2d extends Module {
    * @param options.stride - Step of the equivalent forward convolution (default 1)
    * @param options.padding - Amount that is removed from each side of the output (default 0)
    * @param options.outputPadding - Extra size added to one side of the output (default 0)
+   * @param options.groups - Number of channel groups (default 1); must divide `inChannels` and
+   *   `outChannels`
    * @param options.bias - Add a learnable bias (default true)
    * @param options.dtype - Dtype of the parameters (default: the global default dtype)
-   * @throws {InvalidParameterError} If a parameter is invalid or `outputPadding >= stride`
+   * @throws {InvalidParameterError} If a parameter is invalid, `groups` does not divide the channel
+   *   counts, or `outputPadding >= stride`
    */
   constructor(
     inChannels: number,
@@ -1507,6 +1581,7 @@ export class ConvTranspose2d extends Module {
       readonly stride?: number | [number, number];
       readonly padding?: number | [number, number];
       readonly outputPadding?: number | [number, number];
+      readonly groups?: number;
       readonly bias?: boolean;
       readonly dtype?: LayerDType;
     } = {}
@@ -1542,17 +1617,19 @@ export class ConvTranspose2d extends Module {
     );
     checkOutputPadding(this.outputPadding, this.stride, options.outputPadding ?? 0);
 
+    this.groups = checkGroups(inChannels, outChannels, options.groups ?? 1);
     this.inChannels = inChannels;
     this.outChannels = outChannels;
     this.useBias = options.bias ?? true;
 
-    // Weight shape: (inChannels, outChannels, kH, kW)
+    // Weight shape: (inChannels, outChannels / groups, kH, kW)
     const [kH, kW] = this.kernelSize;
     // PyTorch default: weight and bias ~ U(-1/sqrt(fanIn), 1/sqrt(fanIn)), where fanIn is
-    // computed from the weight shape (inChannels, outChannels, kH, kW).
-    const bound = 1 / Math.sqrt(outChannels * kH * kW);
+    // computed from the weight shape (inChannels, outChannels / groups, kH, kW).
+    const outPerGroup = outChannels / this.groups;
+    const bound = 1 / Math.sqrt(outPerGroup * kH * kW);
     const opts = { dtype: resolveLayerDtype(options.dtype) };
-    this.weight_ = parameter(uniformTensor([inChannels, outChannels, kH, kW], bound, opts));
+    this.weight_ = parameter(uniformTensor([inChannels, outPerGroup, kH, kW], bound, opts));
     this.registerParameter("weight", this.weight_);
 
     if (this.useBias) {
@@ -1577,10 +1654,13 @@ export class ConvTranspose2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = asDtype(requireNumeric(toGradInput(x), "ConvTranspose2d"), this.weight_.dtype);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `ConvTranspose2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `ConvTranspose2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1613,6 +1693,8 @@ export class ConvTranspose2d extends Module {
     const biasFlat = biasTensor ? denseFloat64(biasTensor) : null;
 
     const outC = this.outChannels;
+    const inPerGroup = inC / this.groups;
+    const outPerGroup = outC / this.groups;
     const inPlane = inH * inW;
     const outPlane = outH * outW;
     const kArea = kH * kW;
@@ -1623,8 +1705,10 @@ export class ConvTranspose2d extends Module {
     for (let b = 0; b < batch; b++) {
       for (let ic = 0; ic < inC; ic++) {
         const inBase = (b * inC + ic) * inPlane;
-        for (let oc = 0; oc < outC; oc++) {
-          const wBase = (ic * outC + oc) * kArea;
+        const firstOut = Math.floor(ic / inPerGroup) * outPerGroup;
+        for (let ocl = 0; ocl < outPerGroup; ocl++) {
+          const oc = firstOut + ocl;
+          const wBase = (ic * outPerGroup + ocl) * kArea;
           const oBase = (b * outC + oc) * outPlane;
           for (let ih = 0; ih < inH; ih++) {
             for (let kh = 0; kh < kH; kh++) {
@@ -1677,9 +1761,10 @@ export class ConvTranspose2d extends Module {
                 const kwLo = Math.max(0, -owBase);
                 const kwHi = Math.min(kW, outW - owBase);
                 let s = 0;
-                for (let oc = 0; oc < outC; oc++) {
-                  const wBase = (ic * outC + oc) * kArea;
-                  const oBase = (b * outC + oc) * outPlane;
+                const firstOut = Math.floor(ic / inPerGroup) * outPerGroup;
+                for (let ocl = 0; ocl < outPerGroup; ocl++) {
+                  const wBase = (ic * outPerGroup + ocl) * kArea;
+                  const oBase = (b * outC + firstOut + ocl) * outPlane;
                   for (let kh = 0; kh < kH; kh++) {
                     const oh = ih * sH - pH + kh;
                     if (oh < 0 || oh >= outH) continue;
@@ -1703,13 +1788,14 @@ export class ConvTranspose2d extends Module {
       this.weight_,
       (g: Tensor): Tensor => {
         const go = denseFloat64(g);
-        const gw = new Float64Array(inC * outC * kArea);
+        const gw = new Float64Array(inC * outPerGroup * kArea);
         for (let b = 0; b < batch; b++) {
           for (let ic = 0; ic < inC; ic++) {
             const inBase = (b * inC + ic) * inPlane;
-            for (let oc = 0; oc < outC; oc++) {
-              const wBase = (ic * outC + oc) * kArea;
-              const oBase = (b * outC + oc) * outPlane;
+            const firstOut = Math.floor(ic / inPerGroup) * outPerGroup;
+            for (let ocl = 0; ocl < outPerGroup; ocl++) {
+              const wBase = (ic * outPerGroup + ocl) * kArea;
+              const oBase = (b * outC + firstOut + ocl) * outPlane;
               for (let ih = 0; ih < inH; ih++) {
                 for (let kh = 0; kh < kH; kh++) {
                   const oh = ih * sH - pH + kh;
@@ -1730,7 +1816,10 @@ export class ConvTranspose2d extends Module {
             }
           }
         }
-        return gradLike(floatTensor(gw, [inC, outC, kH, kW], device, "float64"), weightTensor);
+        return gradLike(
+          floatTensor(gw, [inC, outPerGroup, kH, kW], device, "float64"),
+          weightTensor
+        );
       },
     ]);
 
@@ -1756,7 +1845,7 @@ export class ConvTranspose2d extends Module {
     return customOp(outTensor, grads);
   }
 
-  /** Learnable kernel of shape `(inChannels, outChannels, kH, kW)`. */
+  /** Learnable kernel of shape `(inChannels, outChannels / groups, kH, kW)`. */
   get weight(): GradTensor {
     return this.weight_;
   }
@@ -1767,7 +1856,7 @@ export class ConvTranspose2d extends Module {
   }
 
   override toString(): string {
-    return `ConvTranspose2d(${this.inChannels}, ${this.outChannels}, kernel_size=${JSON.stringify(this.kernelSize)}, stride=${JSON.stringify(this.stride)}, padding=${JSON.stringify(this.padding)}, output_padding=${JSON.stringify(this.outputPadding)})`;
+    return `ConvTranspose2d(${this.inChannels}, ${this.outChannels}, kernel_size=${JSON.stringify(this.kernelSize)}, stride=${JSON.stringify(this.stride)}, padding=${JSON.stringify(this.padding)}, output_padding=${JSON.stringify(this.outputPadding)}${this.groups === 1 ? "" : `, groups=${this.groups}`})`;
   }
 }
 
@@ -1800,9 +1889,12 @@ function adaptivePool2d(
   layer: string
 ): GradTensor {
   rejectString(input.dtype, layer);
+  if (input.ndim === 3) {
+    return withBatchAxis(input, (batched) => adaptivePool2d(batched, outputSize, mode, layer));
+  }
   if (input.ndim !== 4) {
     throw new ShapeError(
-      `${layer} expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+      `${layer} expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
     );
   }
 
@@ -1892,9 +1984,10 @@ export class AdaptiveAvgPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D
+   * @throws {ShapeError} If the input is not 3-D or 4-D
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -1943,9 +2036,10 @@ export class AdaptiveMaxPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D
+   * @throws {ShapeError} If the input is not 3-D or 4-D
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;

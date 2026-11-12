@@ -19,6 +19,9 @@ import { computeStrides } from "../../ndarray/tensor/Tensor";
 /** How per-sample losses are combined: average, total, or kept per sample. */
 export type LossReduction = "mean" | "sum" | "none";
 
+/** Class index skipped by default by the class-index losses, as in PyTorch. */
+export const DEFAULT_IGNORE_INDEX = -100;
+
 /**
  * Options for {@link crossEntropyLoss}.
  */
@@ -34,7 +37,7 @@ export interface CrossEntropyLossOptions {
   /**
    * Class index to skip (class-index targets only). Samples with this target
    * contribute no loss and no gradient and are not counted by `"mean"`.
-   * Ignored for probability targets. By default no index is ignored.
+   * Ignored for probability targets. Default: -100, as in PyTorch.
    */
   readonly ignoreIndex?: number;
   /**
@@ -378,6 +381,78 @@ export function classIndexLoss(
 }
 
 /**
+ * Class-index layout of a loss call: the input flattened to `(M, C)` and the target to `(M,)`
+ * (class indices) or `(M, C)` (probabilities), plus the shape of the per-sample loss.
+ * @internal
+ */
+export type ClassLayout = {
+  readonly input: GradTensor;
+  readonly target: GradTensor;
+  readonly outShape: readonly number[];
+};
+
+/**
+ * Reduce the supported torch layouts to the 2D form the losses compute on:
+ * `(C)` input with a scalar target (or `(C)` probabilities), `(N, C)` input with an `(N)` target
+ * (or `(N, C)` probabilities), and `(N, C, d1, ...)` input with an `(N, d1, ...)` target (or
+ * probabilities of the input shape). Spatial positions become extra rows.
+ * @internal
+ */
+export function flattenClassLayout(
+  input: GradTensor,
+  target: GradTensor,
+  context: string,
+  allowProbabilities: boolean
+): ClassLayout {
+  const nClasses = input.shape[input.ndim === 1 ? 0 : 1] ?? 0;
+  if (input.ndim === 0) {
+    throw new ShapeError(
+      `${context} expects input of shape (C), (N, C) or (N, C, d1, ...); got a scalar`
+    );
+  }
+  if (input.ndim === 1) {
+    if (target.ndim === 0) {
+      return { input: input.reshape([1, nClasses]), target: target.reshape([1]), outShape: [] };
+    }
+    if (allowProbabilities && target.ndim === 1 && shapesEqual(target.shape, input.shape)) {
+      return {
+        input: input.reshape([1, nClasses]),
+        target: target.reshape([1, nClasses]),
+        outShape: [],
+      };
+    }
+    throw new ShapeError(
+      `${context} with an unbatched input of shape [${input.shape}] expects a scalar class index` +
+        `${allowProbabilities ? " or a probability vector of the same shape" : ""}; ` +
+        `got a target of shape [${target.shape}]`
+    );
+  }
+  if (input.ndim === 2) {
+    return { input, target, outShape: [input.shape[0] ?? 0] };
+  }
+
+  const outShape = [input.shape[0] ?? 0, ...input.shape.slice(2)];
+  const rows = outShape.reduce((a, b) => a * b, 1);
+  // Move the class axis last: (N, C, d1, ...) -> (N, d1, ..., C).
+  const axes = [0, ...Array.from({ length: input.ndim - 2 }, (_, i) => i + 2), 1];
+  const flatInput = input.transpose(axes).reshape([rows, nClasses]);
+  if (shapesEqual(target.shape, outShape)) {
+    return { input: flatInput, target: target.reshape([rows]), outShape };
+  }
+  if (allowProbabilities && shapesEqual(target.shape, input.shape)) {
+    return {
+      input: flatInput,
+      target: target.transpose(axes).reshape([rows, nClasses]),
+      outShape,
+    };
+  }
+  throw new ShapeError(
+    `${context} with an input of shape [${input.shape}] expects a target of shape [${outShape}]` +
+      `${allowProbabilities ? ` or [${input.shape}]` : ""}; got [${target.shape}]`
+  );
+}
+
+/**
  * Cross Entropy Loss.
  *
  * Computes the cross entropy between logits and targets. Commonly used for
@@ -385,7 +460,11 @@ export function classIndexLoss(
  * log-sum-exp, so large logits do not overflow.
  *
  * Targets are either integer class indices of shape `(n_samples,)` or class
- * probabilities (for example one-hot) of shape `(n_samples, n_classes)`.
+ * probabilities (for example one-hot) of shape `(n_samples, n_classes)`. As in PyTorch the input
+ * may also have shape `(n_samples, n_classes, d1, ...)` with targets of shape
+ * `(n_samples, d1, ...)` (or probabilities of the input shape), and an unbatched input of shape
+ * `(n_classes)` takes a scalar class index (or a probability vector). Targets equal to
+ * `ignoreIndex` (default -100) are skipped.
  *
  * **Formula** (probability targets): `L_i = -sum_c target[i, c] * log_softmax(input)[i, c]`,
  * averaged over the batch by default. For class-index targets this is
@@ -394,8 +473,8 @@ export function classIndexLoss(
  * Passing plain tensors returns a number (or a tensor for `reduction: "none"`);
  * passing a GradTensor input or target returns a GradTensor that supports `.backward()`.
  *
- * @param input - Logits of shape (n_samples, n_classes)
- * @param target - Class indices of shape (n_samples,), or probabilities of shape (n_samples, n_classes)
+ * @param input - Logits of shape (n_samples, n_classes), (n_samples, n_classes, d1, ...) or (n_classes)
+ * @param target - Class indices of shape (n_samples,), (n_samples, d1, ...) or a scalar, or probabilities of the input shape
  * @param options - `reduction`, per-class `weight`, `ignoreIndex` and `labelSmoothing`
  * @returns The reduced loss, or the per-sample losses of shape (n_samples,) for `reduction: "none"`
  * @throws {ShapeError} If shapes are inconsistent
@@ -452,8 +531,8 @@ export function crossEntropyLoss(
       labelSmoothing
     );
   }
-  const ignoreIndex = options.ignoreIndex;
-  if (ignoreIndex !== undefined && !Number.isInteger(ignoreIndex)) {
+  const ignoreIndex = options.ignoreIndex ?? DEFAULT_IGNORE_INDEX;
+  if (!Number.isInteger(ignoreIndex)) {
     throw new InvalidParameterError(
       `ignoreIndex must be an integer; got ${String(ignoreIndex)}`,
       "ignoreIndex",
@@ -461,16 +540,16 @@ export function crossEntropyLoss(
     );
   }
 
-  const yPred = GradTensor.isGradTensor(input) ? input : GradTensor.fromTensor(input);
   const targetIsGrad = GradTensor.isGradTensor(target);
-  // Target usually doesn't require grad, but if it's soft labels (distillation), it might.
-  const yTrue = GradTensor.isGradTensor(target)
-    ? target
-    : GradTensor.fromTensor(target, { requiresGrad: false });
-
-  if (yPred.ndim !== 2) {
-    throw new ShapeError(`Input must be 2-dimensional (batch, classes); got ${yPred.ndim}`);
-  }
+  const layout = flattenClassLayout(
+    GradTensor.isGradTensor(input) ? input : GradTensor.fromTensor(input),
+    // Target usually doesn't require grad, but if it's soft labels (distillation), it might.
+    targetIsGrad ? target : GradTensor.fromTensor(target, { requiresGrad: false }),
+    "crossEntropyLoss",
+    true
+  );
+  const yPred = layout.input;
+  const yTrue = layout.target;
 
   const nSamples = yPred.shape[0] ?? 0;
   const nClasses = yPred.shape[1] ?? 0;
@@ -527,6 +606,8 @@ export function crossEntropyLoss(
   } else {
     throw new ShapeError(`Target must be 1D (indices) or 2D (probs); got ${yTrue.ndim}D`);
   }
+
+  if (reduction === "none") loss = loss.reshape([...layout.outShape]);
 
   if (!GradTensor.isGradTensor(input) && !targetIsGrad) {
     return reduction === "none" ? loss.tensor : scalarValue(loss.tensor, "crossEntropyLoss");

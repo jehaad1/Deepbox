@@ -66,7 +66,6 @@ describe("AlphaDropout", () => {
 
   it("throws for invalid probability", () => {
     expect(() => new AlphaDropout(-0.1)).toThrow();
-    expect(() => new AlphaDropout(1.0)).toThrow();
     expect(() => new AlphaDropout(1.5)).toThrow();
     expect(() => new AlphaDropout(NaN)).toThrow();
   });

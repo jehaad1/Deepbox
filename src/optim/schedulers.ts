@@ -73,6 +73,68 @@ function setGroupLr(group: SchedulerParamGroup, lr: number) {
   if (record) record.last = lr;
 }
 
+/** Optimizer option a scheduler can cycle: SGD-style momentum or the first Adam moment decay. */
+type MomentumKey = "momentum" | "beta1";
+
+function groupMomentumKey(group: SchedulerParamGroup): MomentumKey | undefined {
+  const options = isRecord(group.options) ? group.options : undefined;
+  if (!options) return undefined;
+  if (typeof options["beta1"] === "number") return "beta1";
+  if (typeof options["momentum"] === "number") return "momentum";
+  return undefined;
+}
+
+/**
+ * Momentum option of every parameter group that a scheduler cycles, or `null` when it does not
+ * cycle momentum. `cycleMomentum: false` turns cycling off. With `true`, every group must expose
+ * `beta1` or `momentum`; by default only the groups that do are cycled.
+ */
+function resolveMomentumKeys(
+  optimizer: SchedulerOptimizer,
+  cycleMomentum: boolean | undefined,
+  owner: string
+): (MomentumKey | undefined)[] | null {
+  if (cycleMomentum === false) return null;
+  const keys = optimizer.paramGroups.map((group) => groupMomentumKey(group));
+  if (cycleMomentum === true && keys.some((key) => key === undefined)) {
+    throw new InvalidParameterError(
+      `${owner} with cycleMomentum needs an optimizer whose parameter groups expose a numeric ` +
+        "momentum or beta1 option. Pass cycleMomentum: false to leave the momentum alone.",
+      "cycleMomentum",
+      cycleMomentum
+    );
+  }
+  return keys.some((key) => key !== undefined) ? keys : null;
+}
+
+function validateMomentumBounds(baseMomentum: number, maxMomentum: number): void {
+  for (const [name, value] of [
+    ["baseMomentum", baseMomentum],
+    ["maxMomentum", maxMomentum],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new InvalidParameterError(`${name} must be in [0, 1]`, name, value);
+    }
+  }
+}
+
+function setGroupMomentum(group: SchedulerParamGroup, key: MomentumKey, value: number): void {
+  if (isRecord(group.options)) group.options[key] = value;
+}
+
+/** Write `value` to the momentum option of every group that has one. */
+function applyMomentum(
+  optimizer: SchedulerOptimizer,
+  keys: readonly (MomentumKey | undefined)[] | null,
+  value: number
+): void {
+  if (keys === null) return;
+  optimizer.paramGroups.forEach((group, i) => {
+    const key = keys[i];
+    if (key !== undefined) setGroupMomentum(group, key, value);
+  });
+}
+
 function validateLastEpoch(value: number) {
   if (!Number.isInteger(value) || value < -1) {
     throw new InvalidParameterError("lastEpoch must be an integer >= -1", "lastEpoch", value);
@@ -168,16 +230,6 @@ function validateMilestones(milestones: number[]) {
         "milestones",
         milestones
       );
-    }
-    if (i > 0) {
-      const prev = sorted[i - 1];
-      if (prev !== undefined && value <= prev) {
-        throw new InvalidParameterError(
-          "milestones must be strictly increasing",
-          "milestones",
-          milestones
-        );
-      }
     }
   }
   return sorted;
@@ -521,7 +573,8 @@ export class CosineAnnealingLR extends LRScheduler {
 /**
  * Multi-step learning rate scheduler.
  *
- * Decays the learning rate by gamma once the epoch reaches one of the milestones.
+ * Decays the learning rate by gamma once the epoch reaches one of the milestones. A milestone
+ * listed twice decays the rate twice at that epoch, as in PyTorch.
  *
  * @example
  * ```ts
@@ -962,6 +1015,9 @@ export class OneCycleLR extends LRScheduler {
   private divFactor: number;
   private finalDivFactor: number;
   private annealStrategy: "cos" | "linear";
+  private baseMomentum: number;
+  private maxMomentum: number;
+  private momentumKeys: (MomentumKey | undefined)[] | null = null;
 
   constructor(
     optimizer: SchedulerOptimizer,
@@ -972,6 +1028,9 @@ export class OneCycleLR extends LRScheduler {
       divFactor?: number;
       finalDivFactor?: number;
       annealStrategy?: "cos" | "linear";
+      cycleMomentum?: boolean;
+      baseMomentum?: number;
+      maxMomentum?: number;
       lastEpoch?: number;
     }
   ) {
@@ -995,6 +1054,9 @@ export class OneCycleLR extends LRScheduler {
         annealStrategy
       );
     }
+    const baseMomentum = options.baseMomentum ?? 0.85;
+    const maxMomentum = options.maxMomentum ?? 0.95;
+    validateMomentumBounds(baseMomentum, maxMomentum);
     const lastEpoch = validateLastEpoch(options.lastEpoch ?? -1);
     super(optimizer, -1);
     this.maxLr = maxLr;
@@ -1003,6 +1065,9 @@ export class OneCycleLR extends LRScheduler {
     this.divFactor = divFactor;
     this.finalDivFactor = finalDivFactor;
     this.annealStrategy = annealStrategy;
+    this.baseMomentum = baseMomentum;
+    this.maxMomentum = maxMomentum;
+    this.momentumKeys = resolveMomentumKeys(optimizer, options.cycleMomentum, "OneCycleLR");
     this.initializeFromLastEpoch(lastEpoch);
   }
 
@@ -1011,6 +1076,25 @@ export class OneCycleLR extends LRScheduler {
       return end + ((start - end) / 2) * (Math.cos(Math.PI * pct) + 1);
     }
     return (end - start) * pct + start;
+  }
+
+  /** Momentum for the current step: it falls while the rate rises and rises while it falls. */
+  private momentumAt(): number {
+    const stepNum = this.lastEpoch;
+    const peakStep = this.pctStart * this.totalSteps - 1;
+    const lastStep = this.totalSteps - 1;
+    if (stepNum >= lastStep) return this.maxMomentum;
+    if (stepNum <= peakStep) {
+      const pct = peakStep > 0 ? stepNum / peakStep : 1;
+      return this.anneal(this.maxMomentum, this.baseMomentum, pct);
+    }
+    const pct = (stepNum - peakStep) / (lastStep - peakStep);
+    return this.anneal(this.baseMomentum, this.maxMomentum, pct);
+  }
+
+  protected override applyLrs(lrs: readonly number[]): void {
+    super.applyLrs(lrs);
+    applyMomentum(this.optimizer, this.momentumKeys, this.momentumAt());
   }
 
   getLr(): number[] {
@@ -1158,6 +1242,9 @@ export class CyclicLR extends LRScheduler {
   private readonly stepSizeDown: number;
   private readonly mode: "triangular" | "triangular2" | "exp_range";
   private readonly gamma: number;
+  private readonly baseMomentum: number;
+  private readonly maxMomentum: number;
+  private momentumKeys: (MomentumKey | undefined)[] | null = null;
 
   constructor(
     optimizer: SchedulerOptimizer,
@@ -1168,6 +1255,9 @@ export class CyclicLR extends LRScheduler {
       stepSizeDown?: number;
       mode?: "triangular" | "triangular2" | "exp_range";
       gamma?: number;
+      cycleMomentum?: boolean;
+      baseMomentum?: number;
+      maxMomentum?: number;
       lastEpoch?: number;
     }
   ) {
@@ -1189,10 +1279,15 @@ export class CyclicLR extends LRScheduler {
       );
     }
     this.gamma = validatePositiveNumber(options.gamma ?? 1, "gamma");
+    this.baseMomentum = options.baseMomentum ?? 0.8;
+    this.maxMomentum = options.maxMomentum ?? 0.9;
+    validateMomentumBounds(this.baseMomentum, this.maxMomentum);
+    this.momentumKeys = resolveMomentumKeys(optimizer, options.cycleMomentum, "CyclicLR");
     this.initializeFromLastEpoch(lastEpoch);
   }
 
-  getLr(): number[] {
+  /** Fraction of the way from the base to the peak at the current step, in [0, 1]. */
+  private amplitude(): number {
     const cycleLen = this.stepSizeUp + this.stepSizeDown;
     const cycle = Math.floor(this.lastEpoch / cycleLen);
     const x = this.lastEpoch - cycle * cycleLen;
@@ -1211,7 +1306,22 @@ export class CyclicLR extends LRScheduler {
       scaleMode = this.gamma ** this.lastEpoch;
     }
 
-    const lr = this.baseLr + (this.maxLr - this.baseLr) * Math.max(0, scaleFn) * scaleMode;
+    return Math.max(0, scaleFn) * scaleMode;
+  }
+
+  protected override applyLrs(lrs: readonly number[]): void {
+    super.applyLrs(lrs);
+    // The momentum moves opposite to the rate: maxMomentum at the base, baseMomentum at the peak.
+    const amplitude = this.amplitude();
+    applyMomentum(
+      this.optimizer,
+      this.momentumKeys,
+      this.maxMomentum - (this.maxMomentum - this.baseMomentum) * amplitude
+    );
+  }
+
+  getLr(): number[] {
+    const lr = this.baseLr + (this.maxLr - this.baseLr) * this.amplitude();
 
     // Scale for each param group
     const baseRef = this.baseLrs[0] ?? 0;

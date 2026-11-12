@@ -595,7 +595,7 @@ class Regressor extends Module {
 }
 
 const noopOptimizer = { step() {}, zeroGrad() {} };
-const constantLoss = (value: number) => (_o: AnyTensor, _t: Tensor) => tensor([value]);
+const constantLoss = (value: number) => (_o: AnyTensor, _t: Tensor) => parameter([value]);
 
 function batch(rows: number, target = 0): readonly [Tensor, Tensor] {
   return [tensor(Array.from({ length: rows }, () => [1, 2])), tensor([target])];
@@ -646,7 +646,7 @@ describe("Trainer (v1.5.0)", () => {
     // batches of 3 samples (loss 1) and 1 sample (loss 5): (3 * 1 + 1 * 5) / 4 = 2
     const losses = [1, 5];
     let call = 0;
-    const lossFn = () => tensor([losses[call++ % 2] as number]);
+    const lossFn = () => parameter([losses[call++ % 2] as number]);
     const trainer = new Trainer(new Passthrough(), noopOptimizer, lossFn, { epochs: 1 });
     const result = trainer.fit([batch(3), batch(1)], [batch(3), batch(1)]);
     expect(result.history[0]?.trainLoss).toBeCloseTo(2, 12);

@@ -18,12 +18,11 @@ describe("deepbox/nn - Dropout Layer", () => {
     });
 
     it("should throw error for invalid probability < 0", () => {
-      expect(() => new Dropout(-0.1)).toThrow("Dropout probability must be in [0, 1)");
+      expect(() => new Dropout(-0.1)).toThrow("Dropout probability must be in [0, 1]");
     });
 
-    it("should throw error for invalid probability >= 1", () => {
-      expect(() => new Dropout(1.0)).toThrow("Dropout probability must be in [0, 1)");
-      expect(() => new Dropout(1.5)).toThrow("Dropout probability must be in [0, 1)");
+    it("should throw error for invalid probability > 1", () => {
+      expect(() => new Dropout(1.5)).toThrow("Dropout probability must be in [0, 1]");
     });
 
     it("should throw error for non-finite probability", () => {

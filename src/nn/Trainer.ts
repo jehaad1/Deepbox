@@ -15,7 +15,7 @@
  * @see {@link https://deepbox.dev/docs/nn-module | Deepbox documentation}
  */
 
-import { InvalidParameterError, ShapeError } from "../core";
+import { InvalidParameterError, Logger, ShapeError } from "../core";
 import { type AnyTensor, GradTensor, mulScalar, noGrad, type Tensor, tensor } from "../ndarray";
 import { clip_grad_norm_ } from "./clip";
 import type { Module } from "./module/Module";
@@ -70,7 +70,11 @@ export type TrainerOptions = {
   readonly checkpoint?: ModelCheckpoint;
   /** Callbacks invoked after each epoch, including the one that triggers early stopping. */
   readonly callbacks?: readonly TrainerCallback[];
-  /** Whether to log epoch progress to the console. Default: false */
+  /**
+   * Whether to log epoch progress (default: false). Messages go through the core logger: they
+   * print to the console unless a handler was installed with `setLogHandler`, and carry the
+   * source `"Trainer"`.
+   */
   readonly verbose?: boolean;
   /**
    * Clip the global L2 norm of the gradients to this value before every
@@ -118,12 +122,14 @@ export type TrainerResult = {
  * validation batches without recording an autograd graph. The loss function
  * must return a single-element loss. Input batches are wrapped in a
  * `GradTensor` during training so that the model's parameters receive
- * gradients. If the loss is a plain `Tensor` rather than a `GradTensor`, no
- * backward pass is run.
+ * gradients. The training loss must be a `GradTensor` that requires grad; a plain
+ * `Tensor` or detached loss would train nothing, so it throws an `InvalidParameterError`.
  *
  * `fit()` can be called again to continue training: the history restarts at
- * epoch 1 and early-stopping state is reset. The model is left in the mode it
- * was last in (evaluation mode when validation data was given).
+ * epoch 1 and early-stopping state is reset. The model is put in training mode for each
+ * epoch (and in evaluation mode for validation), and returned to the mode it had before
+ * `fit()` was called when the run ends, also when it ends with an error. Call `model.eval()`
+ * yourself afterwards for inference.
  *
  * The loss value is read on the host after each step, so `Trainer` is meant for
  * CPU tensors. A loss that lives in device memory throws a `DeviceError`; train
@@ -163,7 +169,7 @@ export class Trainer {
   private readonly earlyStopping: EarlyStopping | undefined;
   private readonly checkpoint: ModelCheckpoint | undefined;
   private readonly callbacks: readonly TrainerCallback[];
-  private readonly verbose: boolean;
+  private readonly logger: Logger;
   private readonly maxGradNorm: number | undefined;
   private readonly accumulationSteps: number;
   private readonly restoreBest: ModelCheckpoint | undefined;
@@ -213,7 +219,7 @@ export class Trainer {
     this.epochs = options.epochs ?? 10;
     this.checkpoint = options.checkpoint;
     this.callbacks = options.callbacks ?? [];
-    this.verbose = options.verbose ?? false;
+    this.logger = new Logger(options.verbose === true ? 1 : 0, "Trainer");
     this.maxGradNorm = options.maxGradNorm;
     this.accumulationSteps = options.accumulationSteps ?? 1;
     this.restoreBest =
@@ -271,7 +277,7 @@ export class Trainer {
    * @param trainData - Iterable of [input, target] tensor pairs (batches)
    * @param valData - Optional validation batches
    * @returns Training result with history and early stopping info
-   * @throws {InvalidParameterError} If an epoch yields no batches
+   * @throws {InvalidParameterError} If an epoch yields no batches, or the loss is not a GradTensor that requires grad
    * @throws {ShapeError} If the loss function does not return a single-element loss
    */
   fit(
@@ -280,29 +286,33 @@ export class Trainer {
   ): TrainerResult {
     const run = this.beginRun();
 
-    for (let epoch = 1; epoch <= this.epochs; epoch++) {
-      this.model.train();
-      const train = new LossMeter();
-      for (const [x, y] of trainData) {
-        train.add(this.trainStep(x, y), batchWeight(x));
-      }
-      this.flushAccumulation();
-      const trainLoss = train.mean("trainData", epoch);
-
-      let valLoss: number | undefined;
-      if (valData) {
-        this.model.eval();
-        const val = new LossMeter();
-        for (const [x, y] of valData) {
-          val.add(this.evalStep(x, y), batchWeight(x));
+    try {
+      for (let epoch = 1; epoch <= this.epochs; epoch++) {
+        this.model.train();
+        const train = new LossMeter();
+        for (const [x, y] of trainData) {
+          train.add(this.trainStep(x, y), batchWeight(x));
         }
-        valLoss = val.mean("valData", epoch);
+        this.flushAccumulation();
+        const trainLoss = train.mean("trainData", epoch);
+
+        let valLoss: number | undefined;
+        if (valData) {
+          this.model.eval();
+          const val = new LossMeter();
+          for (const [x, y] of valData) {
+            val.add(this.evalStep(x, y), batchWeight(x));
+          }
+          valLoss = val.mean("valData", epoch);
+        }
+
+        if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
       }
 
-      if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
+      return this.finishRun(run);
+    } finally {
+      this.model.train(run.wasTraining);
     }
-
-    return this.finishRun(run);
   }
 
   /**
@@ -317,7 +327,7 @@ export class Trainer {
    * @param trainData - Async or sync iterable of [input, target] batches.
    * @param valData - Optional validation batches (async or sync iterable).
    * @returns A promise of the training result with history and early-stopping info.
-   * @throws {InvalidParameterError} If an epoch yields no batches
+   * @throws {InvalidParameterError} If an epoch yields no batches, or the loss is not a GradTensor that requires grad
    * @throws {ShapeError} If the loss function does not return a single-element loss
    */
   async fitAsync(
@@ -326,29 +336,33 @@ export class Trainer {
   ): Promise<TrainerResult> {
     const run = this.beginRun();
 
-    for (let epoch = 1; epoch <= this.epochs; epoch++) {
-      this.model.train();
-      const train = new LossMeter();
-      for await (const [x, y] of trainData) {
-        train.add(this.trainStep(x, y), batchWeight(x));
-      }
-      this.flushAccumulation();
-      const trainLoss = train.mean("trainData", epoch);
-
-      let valLoss: number | undefined;
-      if (valData) {
-        this.model.eval();
-        const val = new LossMeter();
-        for await (const [x, y] of valData) {
-          val.add(this.evalStep(x, y), batchWeight(x));
+    try {
+      for (let epoch = 1; epoch <= this.epochs; epoch++) {
+        this.model.train();
+        const train = new LossMeter();
+        for await (const [x, y] of trainData) {
+          train.add(this.trainStep(x, y), batchWeight(x));
         }
-        valLoss = val.mean("valData", epoch);
+        this.flushAccumulation();
+        const trainLoss = train.mean("trainData", epoch);
+
+        let valLoss: number | undefined;
+        if (valData) {
+          this.model.eval();
+          const val = new LossMeter();
+          for await (const [x, y] of valData) {
+            val.add(this.evalStep(x, y), batchWeight(x));
+          }
+          valLoss = val.mean("valData", epoch);
+        }
+
+        if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
       }
 
-      if (this.endEpoch(run, epoch, trainLoss, valLoss)) break;
+      return this.finishRun(run);
+    } finally {
+      this.model.train(run.wasTraining);
     }
-
-    return this.finishRun(run);
   }
 
   /** Reset per-run state: early stopping starts fresh on every fit. */
@@ -356,7 +370,7 @@ export class Trainer {
     this.earlyStopping?.reset();
     this.restoreBest?.reset();
     this.pending = 0;
-    return { history: [], stoppedEarly: false };
+    return { history: [], stoppedEarly: false, wasTraining: this.model.training };
   }
 
   /**
@@ -374,14 +388,23 @@ export class Trainer {
     const loss = this.lossFn(output, y);
     const lossVal = scalarLoss(loss);
 
-    // Backward pass (if loss is a GradTensor). With accumulation each batch contributes
-    // 1 / accumulationSteps of its gradient, so the sum over a group is the mean.
-    if (GradTensor.isGradTensor(loss)) {
-      if (this.accumulationSteps === 1) {
-        loss.backward();
-      } else {
-        loss.backward(tensor([1 / this.accumulationSteps], { dtype: loss.dtype }));
-      }
+    if (!GradTensor.isGradTensor(loss) || !loss.requiresGrad) {
+      throw new InvalidParameterError(
+        "lossFn must return a GradTensor connected to the model parameters (one that requires " +
+          "grad). The returned loss is detached, so training would silently update nothing. " +
+          "Compute the loss from the model output with GradTensor-aware losses such as mseLoss " +
+          "and do not wrap it in noGrad or convert it to a plain Tensor.",
+        "lossFn",
+        GradTensor.isGradTensor(loss) ? "GradTensor without requiresGrad" : "Tensor"
+      );
+    }
+
+    // With accumulation each batch contributes 1 / accumulationSteps of its gradient, so the
+    // sum over a group is the mean.
+    if (this.accumulationSteps === 1) {
+      loss.backward();
+    } else {
+      loss.backward(tensor([1 / this.accumulationSteps], { dtype: loss.dtype }));
     }
 
     this.pending++;
@@ -438,11 +461,9 @@ export class Trainer {
     const epochInfo: EpochInfo = { epoch, trainLoss, valLoss };
     run.history.push(epochInfo);
 
-    if (this.verbose) {
-      let msg = `Epoch ${epoch}/${this.epochs}, train_loss: ${trainLoss.toFixed(6)}`;
-      if (valLoss !== undefined) msg += `, val_loss: ${valLoss.toFixed(6)}`;
-      console.log(msg);
-    }
+    let msg = `Epoch ${epoch}/${this.epochs}, train_loss: ${trainLoss.toFixed(6)}`;
+    if (valLoss !== undefined) msg += `, val_loss: ${valLoss.toFixed(6)}`;
+    this.logger.info(msg);
 
     const monitored = valLoss ?? trainLoss;
     if (this.checkpoint) {
@@ -476,6 +497,8 @@ export class Trainer {
 type RunState = {
   readonly history: EpochInfo[];
   stoppedEarly: boolean;
+  /** Mode of the model when the run started, restored when it ends. */
+  readonly wasTraining: boolean;
 };
 
 /** Read the value of a single-element loss tensor. */
