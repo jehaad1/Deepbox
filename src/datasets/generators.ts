@@ -8,6 +8,7 @@ import {
   type DatasetRng,
   normal01,
   normalizeOptionalSeed,
+  shuffleInPlace,
   shuffleRowsPairedInPlace,
 } from "./utils";
 
@@ -107,11 +108,31 @@ function addNoiseInPlace(out: Float64Array, count: number, std: number, rng: Dat
 }
 
 /**
+ * Class labels `0..nClasses-1` with scikit-learn's per-class counts for equal class weights:
+ * each class gets `floor(nSamples / nClasses)` samples and the remaining samples go one each to
+ * classes 0, 1, 2, ... in order. The labels are grouped by class (not shuffled).
+ */
+function balancedLabels(nSamples: number, nClasses: number): number[] {
+  const base = Math.floor(nSamples / nClasses);
+  const extra = nSamples - base * nClasses;
+  const labels: number[] = [];
+  for (let c = 0; c < nClasses; c++) {
+    const count = base + (c < extra ? 1 : 0);
+    for (let i = 0; i < count; i++) labels.push(c);
+  }
+  return labels;
+}
+
+/**
  * Generate a random n-class classification dataset.
  *
  * Produces informative features drawn from class-conditional Gaussians,
  * redundant features as random linear combinations of the informative ones,
  * and noise features sampled from N(0, 1).
+ *
+ * Class sizes are balanced as in scikit-learn with equal class weights: each class gets
+ * `floor(nSamples / nClasses)` samples, and the remaining samples go one each to classes 0, 1, 2,
+ * and so on. The rows are then shuffled. `flipY` can unbalance the classes afterwards.
  *
  * @param options - Configuration options.
  * @param options.nSamples - Number of samples (default: 100).
@@ -208,11 +229,15 @@ export function makeClassification(
   const XData = new Float64Array(nSamples * nFeatures);
   const yData = new Int32Array(nSamples);
 
+  // Balanced class counts, shuffled like scikit-learn (shuffle=True).
+  const labels = balancedLabels(nSamples, nClasses);
+  shuffleInPlace(labels, rng);
+
   const nNoise = nFeatures - nInformative - nRedundant;
   const informative = new Float64Array(nInformative);
 
   for (let i = 0; i < nSamples; i++) {
-    const label = __randomBelow(rng, nClasses);
+    const label = labels[i] as number;
     yData[i] = label;
 
     const meanVec = getRequired(classMeans, label, "classMeans");
