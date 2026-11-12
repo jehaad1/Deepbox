@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 describe("Index exports coverage", () => {
+  // The first import transforms every module under coverage, which takes tens of seconds on a
+  // loaded machine, so this test gets a longer limit than the 30 s default.
   it("exposes root module exports", async () => {
     const root = await import("../src/index");
     expect(root).toBeDefined();
     expect(root.ndarray).toBeDefined();
     expect(root.linalg).toBeDefined();
-  }, 20000);
+  }, 120_000);
 
   it("exposes submodule indices", async () => {
     const core = await import("../src/core/index");

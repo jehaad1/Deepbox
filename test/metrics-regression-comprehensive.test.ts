@@ -516,7 +516,7 @@ describe("Regression Metrics tests", () => {
       mse(yTrue, yPred);
       mae(yTrue, yPred);
       r2Score(yTrue, yPred);
-    }, 20000);
+    });
   });
 
   describe("Consistency Tests", () => {

@@ -679,7 +679,7 @@ describe("Clustering Metrics tests", () => {
       adjustedRandScore(labels1, labels2);
       normalizedMutualInfoScore(labels1, labels2);
       fowlkesMallowsScore(labels1, labels2);
-    }, 20000);
+    });
   });
 
   describe("Consistency Tests", () => {
