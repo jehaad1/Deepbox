@@ -64,7 +64,7 @@ export function ensureSameDType(a: Tensor, b: Tensor): void {
  *   need a dtype conversion
  *
  * @example
- * ```ts
+ * ```ts fragment
  * const [x, y] = promoteOperands(tensor([1, 2], { dtype: "int32" }), tensor([0.5, 1.5]), "add");
  * x.dtype; // "float32"
  * ```

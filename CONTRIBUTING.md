@@ -131,6 +131,7 @@ If a change affects the public surface, update the relevant docs in the same PR:
 - For new or substantially revised public APIs, prefer JSDoc with `@see https://deepbox.dev/docs/<slug>` when a matching docs page exists. Cross-links are still being added; add them where you touch code.
 - Run `npm run jsdoc:docs-gaps` for a list of `src/**/*.ts` files that still lack a `deepbox.dev/docs` URL. The script fails when gaps exist, so `validate:all` stays honest.
 - Run `npm run jsdoc:core-slugs` to check that `src/core/**` files reference the correct docs slugs (`core-types`, `core-config`, `core-errors`, `core-utils`, or `devices-and-execution` for the optional GPU and WASM backends), matching `DeepboxDocs` `core.json`.
+- Run `npm run jsdoc:examples` to execute every fenced code block inside an `@example` JSDoc tag under `src/`. Each block runs as an ES module (top-level `await` works) with `deepbox` and `deepbox/<module>` imports resolved to the source, so every example needs its own imports and inline data. A block that is a true snippet which cannot stand alone (a method body excerpt, or network or file IO) is marked `fragment` in the fence info string, for example ```` ```ts fragment ````. Fragments are skipped but counted. Prefer making the example runnable, and write any files to `os.tmpdir()`.
 - [README.md](README.md)
 - [CHANGELOG.md](CHANGELOG.md)
 - [SKILL.md](SKILL.md)

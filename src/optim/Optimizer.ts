@@ -220,12 +220,18 @@ function emptyParameterListError(): InvalidParameterError {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss } from 'deepbox/nn';
  * import { SGD } from 'deepbox/optim';
  *
+ * const model = new Linear(2, 1);
+ * const input = tensor([[1, 2], [3, 4]]);
+ * const target = tensor([[1], [2]]);
+ * const computeLoss = () => mseLoss(model.forward(input), target);
  * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
  *
  * // Training loop
- * for (let epoch = 0; epoch < 100; epoch++) {
+ * for (let epoch = 0; epoch < 3; epoch++) {
  *   optimizer.zeroGrad();
  *   const loss = computeLoss();
  *   loss.backward();
@@ -236,10 +242,16 @@ function emptyParameterListError(): InvalidParameterError {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { SGD } from 'deepbox/optim';
+ *
+ * const layer1 = new Linear(4, 3);
+ * const layer2 = new Linear(3, 1);
+ *
  * // Different learning rates per group
  * const optimizer = new SGD([
- *   { params: model.layer1.parameters(), lr: 0.01 },
- *   { params: model.layer2.parameters(), lr: 0.001 }
+ *   { params: layer1.parameters(), lr: 0.01 },
+ *   { params: layer2.parameters(), lr: 0.001 }
  * ], { lr: 0.01 });
  * ```
  *
@@ -487,6 +499,16 @@ export abstract class Optimizer<
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   * import { Linear, mseLoss } from 'deepbox/nn';
+   * import { SGD } from 'deepbox/optim';
+   *
+   * const model = new Linear(2, 1);
+   * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
+   * const input = tensor([[1, 2], [3, 4]]);
+   * const target = tensor([[1], [2]]);
+   * const criterion = mseLoss;
+   *
    * // Typical training loop
    * optimizer.zeroGrad();              // Clear previous gradients
    * const output = model.forward(input);
@@ -516,10 +538,15 @@ export abstract class Optimizer<
    *
    * @example
    * ```ts
-   * const optimizer = new SGD(model.backbone.parameters(), { lr: 0.001 });
+   * import { Linear } from 'deepbox/nn';
+   * import { SGD } from 'deepbox/optim';
+   *
+   * const backbone = new Linear(4, 3);
+   * const classifier = new Linear(3, 2);
+   * const optimizer = new SGD(backbone.parameters(), { lr: 0.001 });
    * // Later, add classifier with higher learning rate
    * optimizer.addParamGroup({
-   *   params: model.classifier.parameters(),
+   *   params: classifier.parameters(),
    *   lr: 0.01
    * });
    * ```
@@ -565,6 +592,13 @@ export abstract class Optimizer<
    *
    * @example
    * ```ts
+   * import { Linear } from 'deepbox/nn';
+   * import { SGD } from 'deepbox/optim';
+   *
+   * const model = new Linear(2, 1);
+   * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
+   * const currentEpoch = 3;
+   *
    * // Save checkpoint
    * const checkpoint = {
    *   model: model.stateDict(),
@@ -624,8 +658,15 @@ export abstract class Optimizer<
    *
    * @example
    * ```ts
+   * import { Linear } from 'deepbox/nn';
+   * import { SGD } from 'deepbox/optim';
+   *
+   * const model = new Linear(2, 1);
+   * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
+   * const saved = { model: model.stateDict(), optimizer: optimizer.stateDict() };
+   *
    * // Resume from checkpoint
-   * const checkpoint = loadCheckpoint('checkpoint.json');
+   * const checkpoint = saved; // e.g. restored from your own storage
    * model.loadStateDict(checkpoint.model);
    * optimizer.loadStateDict(checkpoint.optimizer);
    * ```

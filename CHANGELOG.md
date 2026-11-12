@@ -395,7 +395,7 @@ scikit-learn / PyTorch references.
 - Root package entry continues to expose module namespaces, while named APIs are available from subpath exports such as `deepbox/ndarray` and `deepbox/ml`
 - Estimator parameter handling and output configuration were standardized across the expanded ML surface
 - `Module.to(device)` now validates backend availability instead of only changing device metadata
-- The current release tree contains 315 implementation files under `src/**/*.ts` (excluding `*.d.ts`), 421 Vitest files matching `test/**/*.test.ts`, 8,686 unit and integration tests, 50 example directories (`00`–`49`), and 9 project directories
+- The current release tree contains 315 implementation files under `src/**/*.ts` (excluding `*.d.ts`), 421 Vitest files matching `test/**/*.test.ts`, 8,686 unit and integration tests, 50 example directories (`00` to `49`), and 9 project directories
 - CI and release automation now validate the full package, dry-run `npm pack`, and publish with npm provenance
 
 ### API
@@ -471,14 +471,14 @@ scikit-learn / PyTorch references.
   0.677ms → 0.111ms (~6x), `fliplr`/`flipud` 100x100 0.125ms → 0.028ms (~4.5x),
   `flip` 100K 0.923ms → 0.268ms (~3.4x), `where` 100K 2.1ms → 1.3ms. NumPy still
   wins the flip family (it returns O(1) negative-stride views) and bulk SIMD,
-  but the embarrassing 50–3000x multipliers are gone
+  but the embarrassing 50 to 3000x multipliers are gone
 - **PCG32 seeded RNG rewritten with 32-bit limb arithmetic** (bit-identical
   sequences, verified across 1.6M samples): the BigInt implementation made
   every sample ~50x slower. Unseeded randomness now batches
   `crypto.getRandomValues` (4096 words/call) and bulk fills. `randn` 100K:
   ~56ms → 2.0ms; `randint` 1M: ~35ms → 7.9ms (SMI-domain modulo); dataset
   generators (`makeClassification`/`makeRegression`/`makeBlobs`/`makeMoons`)
-  17–27x faster; `Linear`/`LSTM` layer initialization similarly
+  17 to 27x faster; `Linear`/`LSTM` layer initialization similarly
 - **Same-shape strided binary arithmetic** (e.g. transpose-fed add/sub/mul/
   div) uses an odometer-walk kernel instead of the generic broadcast
   machinery: transposed 100x100 add 278µs → 11µs (~25x). Contiguous views
@@ -531,9 +531,9 @@ scikit-learn / PyTorch references.
   correlations sort an index array instead of allocating per-element
   objects. Linear-algebra decompositions (LU/QR/SVD/Cholesky/eig/schur and
   the solvers) drop the bounds-checked element accessor in their inner loops.
-  `svd`/`svdvals` now use the Golub–Reinsch algorithm (Householder
+  `svd`/`svdvals` now use the Golub-Reinsch algorithm (Householder
   bidiagonalization + implicit-shift QR) instead of one-sided Jacobi, which
-  ran ~10–30 full O(n³) sweeps: svd 100×100 ~2.8x faster, svdvals ~5.8x, and
+  ran ~10 to 30 full O(n³) sweeps: svd 100×100 ~2.8x faster, svdvals ~5.8x, and
   `matrixRank` ~6.9x (cascading into `pinv` and `lstsq`). Reconstruction and
   singular values match NumPy to machine precision, including the
   numerically-singular case where the smallest value is ~machine epsilon (so

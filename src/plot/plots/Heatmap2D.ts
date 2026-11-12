@@ -150,7 +150,7 @@ export class Heatmap2D implements Drawable {
   drawSVG(ctx: SvgDrawContext): void {
     if (this.rows <= 0 || this.cols <= 0) return;
     // Cell edges fall on fractional pixels. crispEdges stops browsers from anti-aliasing each
-    // cell separately, which would show hairline seams between neighbouring cells.
+    // cell separately, which would show hairline seams between neighboring cells.
     const range = this.vmax - this.vmin;
     const xSpan = this.xMax - this.xMin;
     const ySpan = this.yMax - this.yMin;

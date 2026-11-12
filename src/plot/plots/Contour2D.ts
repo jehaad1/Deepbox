@@ -347,7 +347,7 @@ export class Contour2D implements Drawable {
     // With the automatic palette there is no color the user tied to a level, so deal
     // the colors out to the levels that are actually drawn (the first line is always
     // the first palette color). Explicit `colors` and colormaps keep one color per
-    // level, so a level does not change color when its neighbours miss the data.
+    // level, so a level does not change color when its neighbors miss the data.
     const automatic = !options.colors?.length && !options.color && !options.colormap;
     if (automatic && segments.length > 0) {
       const used = Array.from(new Set(segments.map((seg) => seg.levelIndex))).sort((a, b) => a - b);

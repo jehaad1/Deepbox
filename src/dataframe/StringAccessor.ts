@@ -51,6 +51,8 @@ function mapStringSeries<T>(
  *
  * @example
  * ```ts
+ * import { Series } from 'deepbox/dataframe';
+ *
  * const s = new Series(['hello', 'WORLD', null]);
  * s.str.upper();       // Series(['HELLO', 'WORLD', null])
  * s.str.lower();       // Series(['hello', 'world', null])

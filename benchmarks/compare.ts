@@ -22,7 +22,7 @@ interface Result {
  * Timer-floor threshold, in milliseconds.
  *
  * Deepbox's lazy-view operations (transpose/reshape/head/tail/iloc as strided
- * views, spec-build plot appends) complete in ~0.10–0.50 µs regardless of input
+ * views, spec-build plot appends) complete in ~0.10 to 0.50 µs regardless of input
  * size, because they only rewrite shape/stride metadata and defer the actual
  * work. Below ~1 µs we are measuring the harness/timer floor and V8's ability
  * to elide deferred work, not sustained throughput. A Python library that

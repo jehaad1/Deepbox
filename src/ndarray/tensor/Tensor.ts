@@ -206,7 +206,7 @@ function validateStrides(
  * @returns Array of stride values
  *
  * @example
- * ```ts
+ * ```ts fragment
  * computeStrides([2, 3, 4]); // [12, 4, 1]
  * // To access element [i, j, k]: offset + i*12 + j*4 + k*1
  * ```
@@ -936,6 +936,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([1, 2, 3, 4, 5, 6]);
    * const reshaped = t.reshape([2, 3]);
    * console.log(reshaped.shape); // [2, 3]
@@ -1069,6 +1071,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const matrix = tensor([[1, 2, 3], [4, 5, 6]]);
    * const flat = matrix.flatten();
    * console.log(flat.shape); // [6]
@@ -1098,6 +1102,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).add(10); // [11, 12, 13]
    * ```
    */
@@ -1113,6 +1119,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([5, 7]).sub(tensor([1, 2])); // [4, 5]
    * ```
    */
@@ -1137,6 +1145,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).mul(2); // [2, 4, 6]
    * ```
    */
@@ -1152,6 +1162,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).div(2); // [0.5, 1, 1.5]
    * ```
    */
@@ -1167,6 +1179,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).pow(2); // [1, 4, 9]
    * ```
    */
@@ -1179,6 +1193,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, -2]).neg(); // [-1, 2]
    * ```
    */
@@ -1191,6 +1207,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-1, 2]).abs(); // [1, 2]
    * ```
    */
@@ -1203,6 +1221,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).exp(); // [1, 2.718...]
    * ```
    */
@@ -1215,6 +1235,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, Math.E]).log(); // [0, 1]
    * ```
    */
@@ -1227,6 +1249,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([4, 9]).sqrt(); // [2, 3]
    * ```
    */
@@ -1239,6 +1263,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([2, 3]).square(); // [4, 9]
    * ```
    */
@@ -1251,6 +1277,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, Math.PI / 2]).sin(); // [0, 1]
    * ```
    */
@@ -1263,6 +1291,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).cos(); // [1]
    * ```
    */
@@ -1275,6 +1305,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).tanh(); // [0]
    * ```
    */
@@ -1287,6 +1319,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).sigmoid(); // [0.5]
    * ```
    */
@@ -1299,6 +1333,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-1, 2]).relu(); // [0, 2]
    * ```
    */
@@ -1311,6 +1347,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).expm1(); // [0, 1.718...]
    * ```
    */
@@ -1323,6 +1361,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).log1p(); // [0, 0.693...]
    * ```
    */
@@ -1335,6 +1375,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).tan(); // [0]
    * ```
    */
@@ -1350,6 +1392,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 5, 3]).maximum(tensor([4, 2, 6])); // [4, 5, 6]
    * ```
    */
@@ -1365,6 +1409,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 5, 3]).minimum(tensor([4, 2, 6])); // [1, 2, 3]
    * ```
    */
@@ -1379,6 +1425,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-2, 3]).leakyRelu(0.1); // [-0.2, 3]
    * ```
    */
@@ -1393,6 +1441,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-1, 2]).elu(); // [-0.632..., 2]
    * ```
    */
@@ -1405,6 +1455,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 0]).selu(); // [1.0507..., 0]
    * ```
    */
@@ -1419,6 +1471,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1]).gelu({ approximate: "none" }); // [0.841...]
    * ```
    */
@@ -1431,6 +1485,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).softplus(); // [0.693...]
    * ```
    */
@@ -1443,6 +1499,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).mish(); // [0, 0.865...]
    * ```
    */
@@ -1455,6 +1513,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).swish(); // [0, 0.731...]
    * ```
    */
@@ -1467,6 +1527,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).logSigmoid(); // [-0.693...]
    * ```
    */
@@ -1482,6 +1544,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-2, 0.5, 3]).hardtanh(); // [-1, 0.5, 1]
    * ```
    */
@@ -1494,6 +1558,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0]).tanhshrink(); // [0]
    * ```
    */
@@ -1504,10 +1570,12 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
   /**
    * Softmax along an axis (functional form: `softmax`).
    *
-   * @param axis - Axis to normalise (default -1)
+   * @param axis - Axis to normalize (default -1)
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 1]]).softmax(); // [[0.5, 0.5]]
    * ```
    */
@@ -1518,10 +1586,12 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
   /**
    * Log-softmax along an axis (functional form: `logSoftmax`).
    *
-   * @param axis - Axis to normalise (default -1)
+   * @param axis - Axis to normalize (default -1)
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[0, 0]]).logSoftmax(); // [[-0.693..., -0.693...]]
    * ```
    */
@@ -1537,6 +1607,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2], [3, 4]]).sum(0); // [4, 6]
    * ```
    */
@@ -1552,6 +1624,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2], [3, 4]]).mean(1); // [1.5, 3.5]
    * ```
    */
@@ -1567,6 +1641,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 5], [3, 2]]).max(0); // [3, 5]
    * ```
    */
@@ -1582,6 +1658,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 5], [3, 2]]).min(0); // [1, 2]
    * ```
    */
@@ -1597,6 +1675,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3, 4]).prod(); // 24
    * ```
    */
@@ -1613,6 +1693,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3, 4]).std(); // 1.118...
    * ```
    */
@@ -1629,6 +1711,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3, 4]).var(); // 1.25
    * ```
    */
@@ -1644,6 +1728,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 9, 3]).argmax(); // 1
    * ```
    */
@@ -1659,6 +1745,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([4, 1, 3]).argmin(); // 1
    * ```
    */
@@ -1673,6 +1761,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).cumsum(); // [1, 3, 6]
    * ```
    */
@@ -1687,6 +1777,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2], [3, 4]]).matmul(tensor([[1, 0], [0, 1]])); // [[1, 2], [3, 4]]
    * ```
    */
@@ -1701,6 +1793,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).dot(tensor([4, 5, 6])); // 32
    * ```
    */
@@ -1715,6 +1809,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2, 3]]).transpose().shape; // [3, 1]
    * ```
    */
@@ -1727,6 +1823,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2, 3]]).T.shape; // [3, 1]
    * ```
    */
@@ -1741,6 +1839,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2]]).squeeze().shape; // [2]
    * ```
    */
@@ -1755,6 +1855,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2]).unsqueeze(0).shape; // [1, 2]
    * ```
    */
@@ -1771,6 +1873,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2], [3, 4], [5, 6]]).gather(tensor([0, 2]), 0); // [[1, 2], [5, 6]]
    * ```
    */
@@ -1784,6 +1888,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const x = tensor([1, 2]);
    * x.detach() === x; // true
    * ```
@@ -1828,6 +1934,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const b = tensor([1, 2]).clone();
    * ```
    */
@@ -1847,6 +1955,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([1, 2, 3]);
    * t.fill(7); // t is now [7, 7, 7]
    * ```
@@ -1904,6 +2014,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([-2, 0.5, 3]).clip(0, 1); // [0, 0.5, 1]
    * ```
    */
@@ -1918,6 +2030,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).eq(2); // [false, true, false]
    * ```
    */
@@ -1932,6 +2046,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).ne(2); // [true, false, true]
    * ```
    */
@@ -1946,6 +2062,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).gt(2); // [false, false, true]
    * ```
    */
@@ -1960,6 +2078,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).ge(2); // [false, true, true]
    * ```
    */
@@ -1974,6 +2094,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).lt(2); // [true, false, false]
    * ```
    */
@@ -1988,6 +2110,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).le(2); // [true, true, false]
    * ```
    */
@@ -2000,6 +2124,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, NaN]).isnan(); // [false, true]
    * ```
    */
@@ -2015,6 +2141,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0, 1]).any(); // true
    * ```
    */
@@ -2030,6 +2158,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 0]).all(); // false
    * ```
    */
@@ -2044,6 +2174,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([0.5, 1.5, 2.5]).round(); // [0, 2, 2]
    * ```
    */
@@ -2056,6 +2188,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1.7, -1.2]).floor(); // [1, -2]
    * ```
    */
@@ -2068,6 +2202,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1.2, -1.7]).ceil(); // [2, -1]
    * ```
    */
@@ -2083,6 +2219,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([3, 1, 2]).sort(); // [1, 2, 3]
    * ```
    */
@@ -2098,6 +2236,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([3, 1, 2]).argsort(); // [1, 2, 0]
    * ```
    */
@@ -2112,6 +2252,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([1, 2, 3]).flip(); // [3, 2, 1]
    * ```
    */
@@ -2140,7 +2282,9 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    * @throws {DTypeError} If a tensor of another dtype is moved to a kernel device
    *
    * @example
-   * ```ts
+   * ```ts fragment
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const g = await tensor([1, 2, 3]).to('webgpu');
    * const back = await g.cpu();
    * ```
@@ -2219,6 +2363,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([[1, 2, 3], [4, 5, 6]]);
    * t.slice(0);           // tensor([1, 2, 3])
    * t.slice({ start: 0, end: 1 }, { start: 1 }); // tensor([[2, 3]])
@@ -2401,6 +2547,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([[1, 2], [3, 4]]);
    * t.at(1, 0);   // 3
    * t.at(-1, -1); // 4
@@ -2470,6 +2618,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([1.7, -2.3]);          // float32
    * t.astype("int32").toArray();            // [1, -2]
    * t.astype("float64").dtype;              // "float64"
@@ -2616,6 +2766,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { sum, tensor } from 'deepbox/ndarray';
+   *
    * sum(tensor([1, 2, 3])).item(); // 6
    * ```
    */
@@ -2638,6 +2790,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * tensor([[1, 2], [3, 4]]).toArray(); // [[1, 2], [3, 4]]
    * ```
    */
@@ -2689,6 +2843,8 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const t = tensor([1, 2, 3]);
    * t.toString(); // "tensor([1, 2, 3], dtype=float32)"
    * ```

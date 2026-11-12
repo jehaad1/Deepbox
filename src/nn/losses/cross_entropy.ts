@@ -722,7 +722,7 @@ export function binaryCrossEntropyWithLogitsLoss(
   //
   // |x| is relu(x) + relu(-x), whose gradient is 0 at x = 0. max(x, 0) is written as
   // (x + |x|) / 2 so that the gradient at x = 0 is 1/2 and the total gradient
-  // sigmoid(x) - z is exact there too (zero-initialised logits are common).
+  // sigmoid(x) - z is exact there too (zero-initialized logits are common).
   const reluNeg = pred.neg().relu();
   const absPred = pred.relu().add(reluNeg);
   const expNegAbs = absPred.neg().exp();

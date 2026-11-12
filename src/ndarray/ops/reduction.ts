@@ -1531,6 +1531,8 @@ function truthReduction(
  *
  * @example
  * ```ts
+ * import { any, tensor } from 'deepbox/ndarray';
+ *
  * any(tensor([0, 0, 1, 0]));  // true
  * any(tensor([0, 0, 0]));     // false
  * ```
@@ -1556,6 +1558,8 @@ export function any(t: Tensor, axis?: AxisArg, keepdims = false): Tensor {
  *
  * @example
  * ```ts
+ * import { all, tensor } from 'deepbox/ndarray';
+ *
  * all(tensor([1, 2, 3]));  // true
  * all(tensor([1, 0, 3]));  // false
  * ```
@@ -2023,8 +2027,8 @@ export function nancumsum(t: Tensor, axis?: Axis): Tensor {
 }
 
 /**
- * Linear interpolation between neighbouring order statistics, with NumPy's rounding behaviour
- * for finite values. An infinite neighbour gives that infinity (the limit of the formula)
+ * Linear interpolation between neighboring order statistics, with NumPy's rounding behavior
+ * for finite values. An infinite neighbor gives that infinity (the limit of the formula)
  * instead of the NaN that `inf - inf` would produce; opposite infinities give NaN.
  */
 function lerpQuantile(a: number, b: number, t: number): number {

@@ -87,6 +87,8 @@ export class MultiIndex {
    *
    * @example
    * ```ts
+   * import { MultiIndex } from 'deepbox/dataframe';
+   *
    * const mi = MultiIndex.fromArrays(
    *   [['a', 'a', 'b', 'b'], [1, 2, 1, 2]],
    *   ['letter', 'number']
@@ -150,6 +152,8 @@ export class MultiIndex {
    *
    * @example
    * ```ts
+   * import { MultiIndex } from 'deepbox/dataframe';
+   *
    * const mi = MultiIndex.fromTuples(
    *   [['a', 1], ['a', 2], ['b', 1]],
    *   ['letter', 'number']
@@ -210,6 +214,8 @@ export class MultiIndex {
    *
    * @example
    * ```ts
+   * import { MultiIndex } from 'deepbox/dataframe';
+   *
    * const mi = MultiIndex.fromProduct(
    *   [['a', 'b'], [1, 2, 3]],
    *   ['letter', 'number']

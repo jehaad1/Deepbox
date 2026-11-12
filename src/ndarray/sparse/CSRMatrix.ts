@@ -356,8 +356,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const sparse = CSRMatrix.fromDense(tensor([[1, 0, 2], [0, 3, 0]]));
    * const dense = sparse.toDense();
-   * console.log(dense.shape);  // [rows, cols]
+   * console.log(dense.shape);  // [2, 3]
    * ```
    */
   toDense(): Tensor {
@@ -394,6 +397,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
    * const A = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
    * A.nnz; // 2
    * ```
@@ -483,7 +488,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const a = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
+   * const b = CSRMatrix.fromDense(tensor([[0, 3], [0, 4]]));
    * const c = a.add(b);  // c = a + b
+   * console.log(c.toDense().toString());
    * ```
    */
   add(other: CSRMatrix): CSRMatrix {
@@ -505,7 +515,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const a = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
+   * const b = CSRMatrix.fromDense(tensor([[0, 3], [0, 4]]));
    * const c = a.sub(b);  // c = a - b
+   * console.log(c.toDense().toString());
    * ```
    */
   sub(other: CSRMatrix): CSRMatrix {
@@ -528,7 +543,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const matrix = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
    * const scaled = matrix.scale(2.0);  // Double all values
+   * console.log(scaled.toDense().toString());
    * ```
    */
   scale(scalar: number): CSRMatrix {
@@ -570,7 +589,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const a = CSRMatrix.fromDense(tensor([[1, 2], [0, 3]]));
+   * const b = CSRMatrix.fromDense(tensor([[4, 0], [0, 5]]));
    * const c = a.multiply(b);  // c[i,j] = a[i,j] * b[i,j]
+   * console.log(c.toDense().toString());
    * ```
    */
   multiply(other: CSRMatrix): CSRMatrix {
@@ -618,8 +642,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const sparse = CSRMatrix.fromDense(tensor([[1, 0, 2], [0, 3, 0]]));
    * const x = tensor([1, 2, 3]);
    * const y = sparse.matvec(x);  // y = A * x
+   * console.log(y.toString());
    * ```
    */
   matvec(vector: Tensor | Float64Array): Tensor {
@@ -677,8 +705,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const sparse = CSRMatrix.fromDense(tensor([[1, 0, 2], [0, 3, 0]]));
    * const B = tensor([[1, 2], [3, 4], [5, 6]]);
    * const C = sparse.matmul(B);  // C = A * B
+   * console.log(C.toString());
    * ```
    */
   matmul(dense: Tensor): Tensor {
@@ -728,7 +760,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const A = CSRMatrix.fromDense(tensor([[1, 0, 2], [0, 3, 0]]));
    * const At = A.transpose();  // At[i,j] = A[j,i]
+   * console.log(At.shape);  // [3, 2]
    * ```
    */
   transpose(): CSRMatrix {
@@ -781,7 +817,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
-   * const value = matrix.get(1, 2);
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const matrix = CSRMatrix.fromDense(tensor([[1, 0, 2], [0, 3, 0]]));
+   * const value = matrix.get(1, 1);
+   * console.log(value);  // 3
    * ```
    */
   get(row: number, col: number): number {
@@ -850,7 +890,12 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
-   * const C = A.spmm(B);  // C = A * B (sparse × sparse)
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const A = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
+   * const B = CSRMatrix.fromDense(tensor([[0, 3], [4, 0]]));
+   * const C = A.spmm(B);  // C = A * B (sparse x sparse)
+   * console.log(C.toDense().toString());
    * ```
    */
   spmm(other: CSRMatrix): CSRMatrix {
@@ -897,7 +942,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const matrix = CSRMatrix.fromDense(tensor([[1, 0], [0, 2], [3, 0], [0, 4]]));
    * const sub = matrix.sliceRows(1, 3);  // rows 1 and 2
+   * console.log(sub.shape);  // [2, 2]
    * ```
    */
   sliceRows(start: number, end: number): CSRMatrix {
@@ -954,7 +1003,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
-   * const row = matrix.getRow(0);  // [1, 0, 2, 0, ...]
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const matrix = CSRMatrix.fromDense(tensor([[1, 0, 2, 0], [0, 3, 0, 4]]));
+   * const row = matrix.getRow(0);
+   * console.log(row);  // Float64Array [1, 0, 2, 0]
    * ```
    */
   getRow(row: number): Float64Array {
@@ -982,7 +1035,11 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
-   * const col = matrix.getCol(2);  // [0, 2, 0, ...]
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
+   * const matrix = CSRMatrix.fromDense(tensor([[1, 0, 2, 0], [0, 3, 0, 4]]));
+   * const col = matrix.getCol(2);
+   * console.log(col);  // Float64Array [2, 0]
    * ```
    */
   getCol(col: number): Float64Array {
@@ -1006,6 +1063,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const I = CSRMatrix.eye(4);  // 4×4 identity
    * ```
    */
@@ -1029,6 +1088,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const D = CSRMatrix.diag(new Float64Array([1, 2, 3]));
    * ```
    */
@@ -1077,6 +1138,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const sparse = CSRMatrix.fromCOO({
    *   rows: 3, cols: 3,
    *   rowIndices: new Int32Array([0, 1, 2]),

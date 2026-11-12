@@ -181,6 +181,9 @@ export class Linear extends Module {
    *
    * @example
    * ```ts
+   * import { Linear } from 'deepbox/nn';
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const layer = new Linear(3, 2);
    * const out = layer.forward(tensor([[1, 2, 3]])); // GradTensor that tracks the weights
    * ```
@@ -210,7 +213,7 @@ export class Linear extends Module {
       );
     }
 
-    // Convert to the layer dtype. `astype` honours strides and offsets, and the
+    // Convert to the layer dtype. `astype` honors strides and offsets, and the
     // GradTensor variant keeps the autograd link to the caller's graph.
     const layerDtype = this.weightParam.tensor.dtype;
     if (input.dtype !== layerDtype) {

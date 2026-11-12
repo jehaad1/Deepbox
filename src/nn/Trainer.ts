@@ -138,6 +138,7 @@ export type TrainerResult = {
  * @example
  * ```ts
  * import { Linear, mseLoss, Trainer } from 'deepbox/nn';
+ * import { tensor } from 'deepbox/ndarray';
  * import { Adam } from 'deepbox/optim';
  *
  * const model = new Linear(2, 1);
@@ -147,9 +148,13 @@ export type TrainerResult = {
  * const trainer = new Trainer(model, optimizer, lossFn, {
  *   epochs: 50,
  *   earlyStopping: { patience: 5 },
- *   verbose: true,
+ *   verbose: false,
  * });
  *
+ * const xBatch1 = tensor([[1, 2], [3, 4]]);
+ * const yBatch1 = tensor([[5], [11]]);
+ * const xBatch2 = tensor([[5, 6], [7, 8]]);
+ * const yBatch2 = tensor([[17], [23]]);
  * const trainData = [[xBatch1, yBatch1], [xBatch2, yBatch2]];
  * const result = trainer.fit(trainData);
  *

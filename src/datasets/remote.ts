@@ -96,7 +96,7 @@ function validateCSVOptions(options: {
  * @throws {DataValidationError} If the CSV is malformed or contains non-numeric or missing values
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchCSVDataset } from 'deepbox/datasets';
  *
  * const ds = await fetchCSVDataset({

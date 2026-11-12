@@ -567,6 +567,8 @@ export class StreamingDataset<S> implements Iterable<S>, AsyncIterable<S> {
  *
  * @example
  * ```ts
+ * import { iterableDataset } from 'deepbox/datasets';
+ *
  * const ds = iterableDataset(function* () {
  *   yield* [[[1, 2], 0], [[3, 4], 1]] as const;
  * });

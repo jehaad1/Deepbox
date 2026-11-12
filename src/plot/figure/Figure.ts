@@ -21,6 +21,9 @@ import { getTheme } from "./theme";
  *
  * @example
  * ```ts
+ * import { Figure } from 'deepbox/plot';
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const fig = new Figure({ width: 400, height: 300 });
  * const ax = fig.addAxes();
  * ax.plot(tensor([0, 1, 2]), tensor([0, 1, 4]));

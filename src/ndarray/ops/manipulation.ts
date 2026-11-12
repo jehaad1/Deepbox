@@ -202,6 +202,8 @@ function productOf(shape: readonly number[], from: number, to: number): number {
  *
  * @example
  * ```ts
+ * import { tensor, concatenate } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const b = tensor([[5, 6]]);
  * const c = concatenate([a, b], 0);  // [[1, 2], [3, 4], [5, 6]]
@@ -304,6 +306,8 @@ export function concatenate(tensors: Tensor[], axis: Axis = 0): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, stack } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3]);
  * const b = tensor([4, 5, 6]);
  * const c = stack([a, b], 0);  // [[1, 2, 3], [4, 5, 6]]
@@ -392,6 +396,8 @@ export function stack(tensors: Tensor[], axis: Axis = 0): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, split } from 'deepbox/ndarray';
+ *
  * const t = tensor([1, 2, 3, 4, 5, 6]);
  * const parts = split(t, 3);  // [tensor([1, 2]), tensor([3, 4]), tensor([5, 6])]
  * const parts2 = split(t, [2, 4]);  // [tensor([1, 2]), tensor([3, 4]), tensor([5, 6])]
@@ -500,6 +506,8 @@ export function split(t: Tensor, indices_or_sections: number | number[], axis: A
  *
  * @example
  * ```ts
+ * import { tensor, tile } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2], [3, 4]]);
  * const tiled = tile(t, [2, 3]);
  * // [[1, 2, 1, 2, 1, 2],
@@ -587,6 +595,8 @@ export function tile(t: Tensor, reps: number[]): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, repeat } from 'deepbox/ndarray';
+ *
  * const t = tensor([1, 2, 3]);
  * repeat(t, 2);           // [1, 1, 2, 2, 3, 3]
  * repeat(t, [0, 2, 1]);   // [2, 2, 3]

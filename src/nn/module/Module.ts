@@ -259,6 +259,13 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { GradTensor, noGrad, tensor } from 'deepbox/ndarray';
+   * import { Linear, mseLoss } from 'deepbox/nn';
+   *
+   * const model = new Linear(2, 1);
+   * const inputTensor = tensor([[1, 2], [3, 4]]);
+   * const targets = tensor([[1], [2]]);
+   *
    * // A plain tensor in training: the result tracks the weights
    * const pred = model.forward(inputTensor);
    * if (GradTensor.isGradTensor(pred)) mseLoss(pred, targets).backward();
@@ -587,9 +594,18 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   * import { Linear, mseLoss } from 'deepbox/nn';
+   * import { SGD } from 'deepbox/optim';
+   *
+   * const model = new Linear(2, 1);
+   * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
+   * const input = tensor([[1, 2], [3, 4]]);
+   * const target = tensor([[1], [2]]);
+   *
    * model.zeroGrad();
    * const output = model.forward(input);
-   * // ... compute loss and backward
+   * mseLoss(output, target).backward(); // compute loss and backward
    * optimizer.step();
    * ```
    */
@@ -651,6 +667,25 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { Linear, Module, ReLU } from 'deepbox/nn';
+   *
+   * class MyModel extends Module {
+   *   readonly fc1 = new Linear(4, 3);
+   *   readonly fc2 = new Linear(3, 1);
+   *   readonly act = new ReLU();
+   *
+   *   constructor() {
+   *     super();
+   *     this.registerModule('fc1', this.fc1);
+   *     this.registerModule('fc2', this.fc2);
+   *     this.registerModule('act', this.act);
+   *   }
+   *
+   *   forward(x) {
+   *     return this.fc2.forward(this.act.forward(this.fc1.forward(x)));
+   *   }
+   * }
+   *
    * const model = new MyModel();
    * // Freeze only the first layer's weights
    * model.freezeParameters(['fc1.weight']);
@@ -672,6 +707,25 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { Linear, Module, ReLU } from 'deepbox/nn';
+   *
+   * class MyModel extends Module {
+   *   readonly fc1 = new Linear(4, 3);
+   *   readonly fc2 = new Linear(3, 1);
+   *   readonly act = new ReLU();
+   *
+   *   constructor() {
+   *     super();
+   *     this.registerModule('fc1', this.fc1);
+   *     this.registerModule('fc2', this.fc2);
+   *     this.registerModule('act', this.act);
+   *   }
+   *
+   *   forward(x) {
+   *     return this.fc2.forward(this.act.forward(this.fc1.forward(x)));
+   *   }
+   * }
+   *
    * const model = new MyModel();
    * model.freezeParameters(); // Freeze all
    * model.unfreezeParameters(['fc2.weight']); // Unfreeze only fc2 weights
@@ -882,7 +936,9 @@ export abstract class Module {
    * @throws {DeviceError} If no backend is registered/available for the device
    *
    * @example
-   * ```ts
+   * ```ts fragment
+   * import { Linear } from 'deepbox/nn';
+   *
    * const model = new Linear(10, 5);
    * await model.to('webgpu'); // parameters now live in GPU memory
    * await model.to('cpu');    // ...and back
@@ -978,6 +1034,9 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { Linear, ReLU, Sequential } from 'deepbox/nn';
+   *
+   * const model = new Sequential(new Linear(4, 3), new ReLU());
    * model.apply((m) => console.log(m.constructor.name));
    * ```
    */

@@ -126,7 +126,7 @@ function slidingAxis(
 
 /**
  * Adaptive pooling window along one axis: `[floor(o * in / out), ceil((o + 1) * in / out))`.
- * Neighbouring windows overlap when `in` is not a multiple of `out`, and no window is
+ * Neighboring windows overlap when `in` is not a multiple of `out`, and no window is
  * empty when `in < out` (the same rule PyTorch uses).
  */
 function adaptiveAxis(inSize: number, outSize: number): PoolAxis {
@@ -1352,7 +1352,7 @@ export class MaxPool2d extends Module {
  * 2D Average Pooling Layer.
  *
  * Applies a 2D average pooling over an input of shape `(batch, channels, height, width)`.
- * By default padded zeros count towards the average (PyTorch's `count_include_pad=True`);
+ * By default padded zeros count toward the average (PyTorch's `count_include_pad=True`);
  * pass `countIncludePad: false` to divide by the number of real elements in each window.
  *
  * The stride defaults to the kernel size. As in PyTorch, `padding` may be at most
@@ -1958,7 +1958,7 @@ function adaptivePool1d(
  *
  * Produces output of specified size regardless of input dimensions. Output cell `o`
  * averages the input range `[floor(o * in / out), ceil((o + 1) * in / out))`, so
- * neighbouring windows overlap when `in` is not a multiple of `out`. Typical use is a
+ * neighboring windows overlap when `in` is not a multiple of `out`. Typical use is a
  * global average pool (`[1, 1]`) before a classifier head, so that the head does not depend
  * on the input resolution.
  *
@@ -2175,7 +2175,7 @@ export class MaxPool1d extends Module {
  * Applies average pooling over a 1D signal.
  * Input: (N, C, L) -> Output: (N, C, L_out)
  *
- * By default padded zeros count towards the average (PyTorch's `count_include_pad=True`);
+ * By default padded zeros count toward the average (PyTorch's `count_include_pad=True`);
  * pass `countIncludePad: false` to divide by the number of real elements in each window.
  * The stride defaults to the kernel size and `padding` may be at most half of `kernelSize`.
  *
@@ -3156,7 +3156,7 @@ export class MaxPool3d extends Module {
  * Applies average pooling over a 3D input signal (volumetric data).
  * Input: (N, C, D, H, W) -> Output: (N, C, D_out, H_out, W_out)
  *
- * By default padded zeros count towards the average (PyTorch's `count_include_pad=True`);
+ * By default padded zeros count toward the average (PyTorch's `count_include_pad=True`);
  * pass `countIncludePad: false` to divide by the number of real elements in each window.
  * The stride defaults to the kernel size and `padding` may be at most half of `kernelSize`.
  *

@@ -22,10 +22,18 @@ export type ConvergenceErrorDetails = {
  *
  * @example
  * ```ts
- * if (iterations >= maxIterations) {
- *   throw new ConvergenceError(
- *     `Algorithm did not converge after ${maxIterations} iterations`
- *   );
+ * import { ConvergenceError } from 'deepbox/core';
+ *
+ * const maxIterations = 100;
+ * const iterations = 100;
+ * try {
+ *   if (iterations >= maxIterations) {
+ *     throw new ConvergenceError(
+ *       `Algorithm did not converge after ${maxIterations} iterations`
+ *     );
+ *   }
+ * } catch (error) {
+ *   console.log((error as Error).message); // Algorithm did not converge after 100 iterations
  * }
  * ```
  *

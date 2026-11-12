@@ -300,20 +300,31 @@ function validateSchedulerState(
  * scheduler left behind, unless the rate was changed by hand in between.
  *
  * Schedulers write the rate to `paramGroups[i].options.lr` (or `paramGroups[i].lr`).
- * Optimizers that use the learning rate only to initialise their state (for example
+ * Optimizers that use the learning rate only to initialize their state (for example
  * `Rprop`, whose step sizes start at `lr`) are not affected by later changes.
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss } from 'deepbox/nn';
  * import { SGD, StepLR } from 'deepbox/optim';
  *
+ * const model = new Linear(2, 1);
+ * const input = tensor([[1, 2], [3, 4]]);
+ * const target = tensor([[1], [2]]);
  * const optimizer = new SGD(model.parameters(), { lr: 0.1 });
  * const scheduler = new StepLR(optimizer, { stepSize: 10, gamma: 0.1 });
  *
+ * const train = () => {
+ *   optimizer.zeroGrad();
+ *   mseLoss(model.forward(input), target).backward();
+ *   optimizer.step();
+ * };
  * for (let epoch = 0; epoch < 100; epoch++) {
  *   train();
  *   scheduler.step();
  * }
+ * console.log(scheduler.getLastLr()); // [1e-11], approximately
  * ```
  *
  * @see {@link https://deepbox.dev/docs/optim-schedulers | Deepbox LR Schedulers}
@@ -460,6 +471,10 @@ export abstract class LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { StepLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new StepLR(optimizer, { stepSize: 30, gamma: 0.1 });
  * // lr = 0.1 for epochs 0-29
  * // lr = 0.01 for epochs 30-59
@@ -499,6 +514,10 @@ export class StepLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { ExponentialLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new ExponentialLR(optimizer, { gamma: 0.95 });
  * // lr *= 0.95 each epoch
  * ```
@@ -529,6 +548,10 @@ export class ExponentialLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { CosineAnnealingLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new CosineAnnealingLR(optimizer, { T_max: 100, etaMin: 0.001 });
  * ```
  *
@@ -578,6 +601,10 @@ export class CosineAnnealingLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { MultiStepLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new MultiStepLR(optimizer, { milestones: [30, 80], gamma: 0.1 });
  * // lr = 0.1 for epochs 0-29
  * // lr = 0.01 for epochs 30-79
@@ -628,6 +655,10 @@ export class MultiStepLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { LinearLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new LinearLR(optimizer, {
  *   startFactor: 0.1,
  *   endFactor: 0.01,
@@ -699,12 +730,17 @@ export type PlateauStateDict = {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { ReduceLROnPlateau, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new ReduceLROnPlateau(optimizer, {
  *   mode: 'min',
  *   factor: 0.1,
  *   patience: 10
  * });
  *
+ * const validate = () => 1.0; // validation loss that stops improving
  * for (let epoch = 0; epoch < 100; epoch++) {
  *   const valLoss = validate();
  *   scheduler.step(valLoss);
@@ -926,6 +962,10 @@ export class ReduceLROnPlateau {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { CosineAnnealingLR, SGD, WarmupLR } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const baseScheduler = new CosineAnnealingLR(optimizer, { T_max: 100 });
  * const scheduler = new WarmupLR(optimizer, baseScheduler, { warmupEpochs: 5 });
  * ```
@@ -999,6 +1039,10 @@ export class WarmupLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { OneCycleLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new OneCycleLR(optimizer, {
  *   maxLr: 0.1,
  *   totalSteps: 1000,
@@ -1141,6 +1185,10 @@ export class OneCycleLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { CosineAnnealingWarmRestarts, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new CosineAnnealingWarmRestarts(optimizer, { T_0: 10, T_mult: 2 });
  * // restarts at epochs 10, 30, 70, ...
  * ```
@@ -1229,6 +1277,10 @@ export class CosineAnnealingWarmRestarts extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { CyclicLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new CyclicLR(optimizer, { baseLr: 0.001, maxLr: 0.01, stepSizeUp: 100 });
  * ```
  *
@@ -1340,6 +1392,10 @@ export class CyclicLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { LambdaLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * // Halve the learning rate every 10 epochs
  * const scheduler = new LambdaLR(optimizer, {
  *   lrLambda: (epoch) => 0.5 ** Math.floor(epoch / 10)
@@ -1420,6 +1476,10 @@ export class LambdaLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { ExponentialLR, LinearLR, SGD, SequentialLR } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler1 = new LinearLR(optimizer, { startFactor: 0.1, totalIters: 5 });
  * const scheduler2 = new ExponentialLR(optimizer, { gamma: 0.9 });
  * const scheduler = new SequentialLR(optimizer, {
@@ -1549,6 +1609,10 @@ export class SequentialLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
+ * import { PolynomialLR, SGD } from 'deepbox/optim';
+ *
+ * const optimizer = new SGD(new Linear(2, 1).parameters(), { lr: 0.1 });
  * const scheduler = new PolynomialLR(optimizer, {
  *   totalIters: 100,
  *   power: 2.0

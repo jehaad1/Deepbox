@@ -110,7 +110,7 @@ function randomIntBelow(maxExclusive: number): number {
 const LEMIRE_MAX_BOUND = 1 << 21;
 
 /**
- * Fill `js[from..0]` (descending) with Fisher–Yates swap targets: `js[i]` is an
+ * Fill `js[from..0]` (descending) with Fisher-Yates swap targets: `js[i]` is an
  * unbiased integer in `[0, i]`. All random draws are produced in a single bulk
  * fill so the hot loop never crosses the RNG module boundary per element, and
  * Lemire's nearly-divisionless map replaces the per-draw modulo. `js[0]` is 0.
@@ -1639,7 +1639,8 @@ function sampleFromCdf(cdf: Float64Array): number {
  *
  * @example
  * ```js
- * import { choice, tensor } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ * import { choice } from 'deepbox/random';
  *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const sample = choice(x, 3);  // Pick 3 elements with replacement
@@ -1761,7 +1762,7 @@ export function choice(
         outputSize
       );
     }
-    // Partial Fisher–Yates. Draw all bounds in bulk when the population is small
+    // Partial Fisher-Yates. Draw all bounds in bulk when the population is small
     // enough for Lemire's exact multiply.
     const useBatch = n <= LEMIRE_MAX_BOUND;
     const rnd = useBatch ? new Uint32Array(outputSize) : null;
@@ -1891,11 +1892,12 @@ export function choice(
  *
  * @example
  * ```js
- * import { shuffle, tensor } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ * import { shuffle } from 'deepbox/random';
  *
  * const x = tensor([1, 2, 3, 4, 5]);
  * shuffle(x);  // x is now shuffled IN-PLACE
- * console.log(x);  // e.g., [3, 1, 5, 2, 4]
+ * console.log(x.toString());  // e.g., tensor([3, 1, 5, 2, 4], dtype=float32)
  *
  * // Shuffle the rows of a matrix, keeping each row intact
  * const m = tensor([[1, 2], [3, 4], [5, 6]]);
@@ -1918,7 +1920,7 @@ export function shuffle(x: Tensor, options: SliceSamplingOptions = {}): void {
     throw new DTypeError("shuffle() does not support string tensors");
   }
 
-  // Fisher–Yates shuffle over exactly this tensor's elements (a view must not
+  // Fisher-Yates shuffle over exactly this tensor's elements (a view must not
   // disturb the rest of its underlying buffer). All swap targets are drawn in
   // one batched pass so the per-element RNG cost is a table lookup.
   if (slices && x.ndim > 1) {
@@ -1985,7 +1987,8 @@ export function shuffle(x: Tensor, options: SliceSamplingOptions = {}): void {
  *
  * @example
  * ```js
- * import { permutation, tensor } from 'deepbox/random';
+ * import { tensor } from 'deepbox/ndarray';
+ * import { permutation } from 'deepbox/random';
  *
  * // Permutation of integers
  * const x = permutation(10);  // Random permutation of [0...9]
@@ -2014,7 +2017,7 @@ export function permutation(x: Tensor | number, options: SliceSamplingOptions = 
     const indices = new Int32Array(n);
     for (let i = 0; i < n; i++) indices[i] = i;
 
-    // Batched Fisher–Yates: swap targets are precomputed in one RNG pass.
+    // Batched Fisher-Yates: swap targets are precomputed in one RNG pass.
     const js = fisherYatesTargets(n);
     for (let i = n - 1; i > 0; i--) {
       const j = js[i] as number;

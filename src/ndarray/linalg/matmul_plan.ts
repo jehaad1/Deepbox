@@ -46,7 +46,7 @@ export type MatmulPlan = {
  * NumPy-style shape text: `(3,)` for 1-D, `(2, 3)` otherwise.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * formatMatmulShape([3]); // "(3,)"
  * formatMatmulShape([2, 3]); // "(2, 3)"
  * ```
@@ -73,7 +73,7 @@ export function formatMatmulShape(shape: readonly number[]): string {
  * batch dimensions cannot be broadcast
  *
  * @example
- * ```ts
+ * ```ts fragment
  * const plan = planMatmul(
  *   { shape: [1, 2, 3], strides: [6, 3, 1] },
  *   { shape: [4, 3, 5], strides: [15, 5, 1] },

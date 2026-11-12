@@ -137,7 +137,7 @@ function materialize(input: GradTensor, dtype: FloatDType): GradTensor {
  *
  * BatchNorm1d, BatchNorm2d, and BatchNorm3d differ only in the expected
  * input dimensionality, spatial permute order, and broadcast shapes.
- * This base class parameterises those differences.
+ * This base class parameterizes those differences.
  */
 abstract class _BatchNorm extends Module {
   protected readonly numFeatures: number;
@@ -544,6 +544,8 @@ export class LayerNorm extends Module {
  *
  * @example
  * ```ts
+ * import { GroupNorm } from 'deepbox/nn';
+ *
  * const gn = new GroupNorm(32, 256); // 32 groups, 256 channels
  * ```
  */
@@ -786,6 +788,8 @@ abstract class _InstanceNorm extends Module {
  *
  * @example
  * ```ts
+ * import { InstanceNorm } from 'deepbox/nn';
+ *
  * const inorm = new InstanceNorm(64); // 64 channels
  * ```
  */
@@ -822,6 +826,8 @@ export class InstanceNorm extends _InstanceNorm {
  *
  * @example
  * ```ts
+ * import { RMSNorm } from 'deepbox/nn';
+ *
  * const rms = new RMSNorm(512);
  * ```
  */
@@ -911,6 +917,8 @@ export class RMSNorm extends Module {
  *
  * @example
  * ```ts
+ * import { BatchNorm2d } from 'deepbox/nn';
+ *
  * const bn2d = new BatchNorm2d(64);
  * // input: (N, 64, H, W) -> normalized output
  * ```
@@ -968,6 +976,8 @@ export class BatchNorm2d extends _BatchNorm {
  *
  * @example
  * ```ts
+ * import { BatchNorm3d } from 'deepbox/nn';
+ *
  * const bn3d = new BatchNorm3d(64);
  * // input: (N, 64, D, H, W) -> normalized output
  * ```
@@ -1028,6 +1038,8 @@ export class BatchNorm3d extends _BatchNorm {
  *
  * @example
  * ```ts
+ * import { InstanceNorm1d } from 'deepbox/nn';
+ *
  * const inorm = new InstanceNorm1d(64);
  * // input: (N, 64, L) -> normalized output
  * ```
@@ -1061,6 +1073,8 @@ export class InstanceNorm1d extends _InstanceNorm {
  *
  * @example
  * ```ts
+ * import { InstanceNorm2d } from 'deepbox/nn';
+ *
  * const inorm = new InstanceNorm2d(64);
  * // input: (N, 64, H, W) -> normalized output
  * ```
@@ -1094,6 +1108,8 @@ export class InstanceNorm2d extends _InstanceNorm {
  *
  * @example
  * ```ts
+ * import { InstanceNorm3d } from 'deepbox/nn';
+ *
  * const inorm = new InstanceNorm3d(64);
  * // input: (N, 64, D, H, W) -> normalized output
  * ```
@@ -1125,13 +1141,15 @@ export class InstanceNorm3d extends _InstanceNorm {
  * nearby channels.
  *
  * **Formula**: out_i = x_i / (k + alpha/size * sum(x_j^2))^beta
- * where the sum runs over `size` neighbouring channels: channel `i` itself,
+ * where the sum runs over `size` neighboring channels: channel `i` itself,
  * `floor(size / 2)` channels before it and `floor((size - 1) / 2)` after it.
  * Channels outside the input count as zero, and the divisor is always `size`.
  * This matches `torch.nn.LocalResponseNorm`, including for even `size`.
  *
  * @example
  * ```ts
+ * import { LocalResponseNorm } from 'deepbox/nn';
+ *
  * const lrn = new LocalResponseNorm(5);
  * // input: (N, C, ...) -> normalized output
  * ```
@@ -1144,7 +1162,7 @@ export class LocalResponseNorm extends Module {
   private readonly layerDtype: FloatDType;
 
   /**
-   * @param size - Number of neighbouring channels used for normalization
+   * @param size - Number of neighboring channels used for normalization
    * @param options.alpha - Multiplicative factor (default: 1e-4)
    * @param options.beta - Exponent (default: 0.75)
    * @param options.k - Additive factor (default: 1)
@@ -1212,7 +1230,7 @@ export class LocalResponseNorm extends Module {
       spatialSize *= shape[d] ?? 1;
     }
 
-    // Zero-based row-major view of the values; honours strides and offsets.
+    // Zero-based row-major view of the values; honors strides and offsets.
     const data = readNumbers(t, "LocalResponseNorm");
 
     const front = Math.floor(this.size / 2);

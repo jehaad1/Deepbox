@@ -1233,7 +1233,7 @@ export class Hardshrink extends Module {
  * import { Threshold } from 'deepbox/nn';
  * import { tensor } from 'deepbox/ndarray';
  *
- * new Threshold(0.1, 20).forward(tensor([0, 0.1, 0.5])); // [20, 20, 0.5]
+ * new Threshold(0.1, 20).forward(tensor([0, 0.05, 0.5])); // [20, 20, 0.5]
  * ```
  *
  * @category Neural Network Layers

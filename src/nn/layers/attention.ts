@@ -409,6 +409,12 @@ export class MultiheadAttention extends Module {
    *
    * @example
    * ```ts
+   * import { randn, tensor } from 'deepbox/ndarray';
+   * import { MultiheadAttention } from 'deepbox/nn';
+   *
+   * const mha = new MultiheadAttention(8, 2);
+   * const x = randn([2, 5, 8]); // (batch, seqLen, embedDim)
+   * const padMask = tensor([[false, false, false, true, true], [false, false, false, false, false]], { dtype: 'bool' });
    * const [out, weights] = mha.forward(x, x, x, undefined, { needWeights: true });
    * // weights: (batch, seqLen, seqLen), averaged over the heads
    * const padded = mha.forward(x, x, x, undefined, { keyPaddingMask: padMask }); // (batch, seqLen) bool

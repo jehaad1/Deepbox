@@ -67,6 +67,8 @@ export class Categorical {
    *
    * @example
    * ```ts
+   * import { Categorical } from 'deepbox/dataframe';
+   *
    * const cat = Categorical.from(['a', 'b', 'a', 'c']);
    * const ordered = Categorical.from(['low', 'mid', 'high'], {
    *   categories: ['low', 'mid', 'high'],

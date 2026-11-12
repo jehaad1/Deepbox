@@ -549,6 +549,8 @@ export function fft(t: Tensor, n?: number, axis = -1, norm: FFTNorm = "backward"
  *
  * @example
  * ```ts
+ * import { fft, tensor, ifft } from 'deepbox/ndarray';
+ *
  * const spectrum = fft(tensor([1, 2, 3, 4]));
  * const { real } = ifft(spectrum.real, spectrum.imag);
  * // real is approximately [1, 2, 3, 4]
@@ -597,6 +599,8 @@ export function ifft(
  *
  * @example
  * ```ts
+ * import { rfft, tensor } from 'deepbox/ndarray';
+ *
  * const { real, imag } = rfft(tensor([1, 2, 3, 4]));
  * // real = [10, -2, -2], imag = [0, 2, 0]
  * ```
@@ -628,6 +632,8 @@ export function rfft(t: Tensor, n?: number, axis = -1, norm: FFTNorm = "backward
  *
  * @example
  * ```ts
+ * import { rfft, tensor, irfft } from 'deepbox/ndarray';
+ *
  * const { real, imag } = rfft(tensor([1, 2, 3, 4]));
  * irfft(real, imag).real;  // [1, 2, 3, 4]
  * ```
@@ -715,6 +721,8 @@ function transformN(
  *
  * @example
  * ```ts
+ * import { fft2, tensor } from 'deepbox/ndarray';
+ *
  * const { real, imag } = fft2(tensor([[1, 0], [0, 0]]));
  * // real = [[1, 1], [1, 1]], imag = zeros
  * ```
@@ -764,6 +772,8 @@ export function ifft2(
  *
  * @example
  * ```ts
+ * import { fftn, tensor } from 'deepbox/ndarray';
+ *
  * const { real } = fftn(tensor([[1, 0], [0, 0]]));
  * ```
  */
@@ -806,6 +816,8 @@ export function ifftn(
  *
  * @example
  * ```ts
+ * import { fftfreq } from 'deepbox/ndarray';
+ *
  * fftfreq(4);  // [0, 0.25, -0.5, -0.25]
  * ```
  */
@@ -861,6 +873,8 @@ function shiftAxes(t: Tensor, axes: number[] | undefined, inverse: boolean): Ten
  *
  * @example
  * ```ts
+ * import { fftshift, fftfreq } from 'deepbox/ndarray';
+ *
  * fftshift(fftfreq(4));  // [-0.5, -0.25, 0, 0.25]
  * ```
  */

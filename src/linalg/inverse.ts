@@ -38,13 +38,14 @@ import { svd } from "./decomposition/svd";
  * @example
  * ```ts
  * import { inv } from 'deepbox/linalg';
- * import { tensor, matmul } from 'deepbox/ndarray';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const A = tensor([[1, 2], [3, 4]]);
  * const Ainv = inv(A);
  *
  * // Verify: A * A^(-1) ≈ I
- * const I = matmul(A, Ainv);
+ * const I = A.matmul(Ainv);
+ * console.log(I.toString());
  * ```
  *
  * @throws {ShapeError} If matrix is not square or not 2D

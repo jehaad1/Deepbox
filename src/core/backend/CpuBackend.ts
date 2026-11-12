@@ -24,7 +24,7 @@ const CPU_CAPABILITIES: readonly BackendCapability[] = [
 /**
  * The built-in CPU execution backend.
  *
- * Supports all capabilities and requires no async initialisation. It holds
+ * Supports all capabilities and requires no async initialization. It holds
  * no resources, so it stays available after {@link CpuBackend.dispose}:
  * disposing it only sets {@link CpuBackend.isDisposed}. Otherwise one stray
  * `dispose()` call on the registered CPU backend would make every tensor

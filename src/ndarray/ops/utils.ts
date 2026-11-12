@@ -491,6 +491,8 @@ function broadcastStrides(
  *
  * @example
  * ```ts
+ * import { tensor, where } from 'deepbox/ndarray';
+ *
  * const cond = tensor([1, 0, 1, 0], { dtype: 'bool' });
  * const x = tensor([10, 20, 30, 40]);
  * const y = tensor([1, 2, 3, 4]);
@@ -652,6 +654,8 @@ export interface LikeOptions {
  *
  * @example
  * ```ts
+ * import { tensor, zerosLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const z = zerosLike(a); // [[0, 0], [0, 0]]
  * ```
@@ -688,6 +692,8 @@ export function zeros_like(t: Tensor, options?: LikeOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, onesLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const o = onesLike(a); // [[1, 1], [1, 1]]
  * ```
@@ -740,6 +746,8 @@ export function empty_like(t: Tensor, options?: LikeOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, fullLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const f = fullLike(a, 7); // [[7, 7], [7, 7]]
  * ```
@@ -775,6 +783,8 @@ export function full_like(t: Tensor, fillValue: number | bigint, options?: LikeO
  *
  * @example
  * ```ts
+ * import { tensor, clone } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3]);
  * const b = clone(a);
  * ```
@@ -867,6 +877,8 @@ function assertIntegerOffset(k: number, fnName: string): void {
  *
  * @example
  * ```ts
+ * import { diag, tensor } from 'deepbox/ndarray';
+ *
  * diag(tensor([1, 2, 3]));     // [[1, 0, 0], [0, 2, 0], [0, 0, 3]]
  * diag(tensor([[1, 2], [3, 4]])); // [1, 4]
  * ```
@@ -1026,6 +1038,8 @@ function triangle(t: Tensor, k: number, upper: boolean, fnName: string): Tensor 
  *
  * @example
  * ```ts
+ * import { triu, tensor } from 'deepbox/ndarray';
+ *
  * triu(tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]));
  * // [[1, 2, 3], [0, 5, 6], [0, 0, 9]]
  * ```
@@ -1047,6 +1061,8 @@ export function triu(t: Tensor, k = 0): Tensor {
  *
  * @example
  * ```ts
+ * import { tril, tensor } from 'deepbox/ndarray';
+ *
  * tril(tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]));
  * // [[1, 0, 0], [4, 5, 0], [7, 8, 9]]
  * ```
@@ -1067,6 +1083,8 @@ export function tril(t: Tensor, k = 0): Tensor {
  *
  * @example
  * ```ts
+ * import { flip, tensor } from 'deepbox/ndarray';
+ *
  * flip(tensor([1, 2, 3]));     // [3, 2, 1]
  * flip(tensor([[1, 2], [3, 4]]), [1]); // [[2, 1], [4, 3]]
  * ```
@@ -1199,6 +1217,8 @@ function rollAxis(t: Tensor, ax: number, shift: number): Tensor {
  *
  * @example
  * ```ts
+ * import { roll, tensor } from 'deepbox/ndarray';
+ *
  * roll(tensor([1, 2, 3, 4, 5]), 2);  // [4, 5, 1, 2, 3]
  * ```
  */
@@ -1408,6 +1428,8 @@ function padSourceIndex(c: number, dim: number, mode: ResolvedPadMode): number {
  *
  * @example
  * ```ts
+ * import { pad, tensor } from 'deepbox/ndarray';
+ *
  * pad(tensor([1, 2, 3]), [[2, 1]]); // [0, 0, 1, 2, 3, 0]
  * ```
  */
@@ -1484,6 +1506,8 @@ export function pad(
  *
  * @example
  * ```ts
+ * import { moveaxis, zeros } from 'deepbox/ndarray';
+ *
  * moveaxis(zeros([2, 3, 4]), 0, -1).shape; // [3, 4, 2]
  * ```
  */
@@ -2212,6 +2236,8 @@ function uniqueAlongAxis(
  *
  * @example
  * ```ts
+ * import { unique, tensor } from 'deepbox/ndarray';
+ *
  * const { values, counts } = unique(tensor([3, 1, 2, 1, 3]), true);
  * // values: [1, 2, 3], counts: [2, 1, 2]
  *
@@ -2454,6 +2480,8 @@ export interface HistogramOptions {
  *
  * @example
  * ```ts
+ * import { histogram, tensor } from 'deepbox/ndarray';
+ *
  * const { counts, binEdges } = histogram(tensor([1, 2, 2, 3, 10]), 3, [0, 12]);
  * // counts: [4, 0, 1], binEdges: [0, 4, 8, 12]
  * ```
@@ -2716,6 +2744,8 @@ export function bincount(t: Tensor, minlength = 0, weights?: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, booleanIndex } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3, 4, 5]);
  * const m = tensor([1, 0, 1, 0, 1], { dtype: 'bool' });
  * booleanIndex(a, m); // [1, 3, 5]
@@ -3034,6 +3064,8 @@ function takeLoop<V>(
  *
  * @example
  * ```ts
+ * import { tensor, argsort, takeAlongAxis } from 'deepbox/ndarray';
+ *
  * const a = tensor([[10, 30, 20], [60, 40, 50]]);
  * const order = argsort(a, 1); // [[0, 2, 1], [1, 2, 0]]
  * takeAlongAxis(a, order, 1); // [[10, 20, 30], [40, 50, 60]]
@@ -3106,6 +3138,8 @@ export function takeAlongAxis(arr: Tensor, indices: Tensor, axis: Axis | null = 
  *
  * @example
  * ```ts
+ * import { tensor, putAlongAxis } from 'deepbox/ndarray';
+ *
  * const a = tensor([[10, 30, 20], [60, 40, 50]]);
  * const idx = tensor([[0], [2]]);
  * putAlongAxis(a, idx, 99, 1); // [[99, 30, 20], [60, 40, 99]]
@@ -3224,6 +3258,8 @@ function assertNonzeroDType(t: Tensor, name: string): void {
  *
  * @example
  * ```ts
+ * import { nonzero, tensor } from 'deepbox/ndarray';
+ *
  * const [rows, cols] = nonzero(tensor([[0, 2], [3, 0]]));
  * // rows: [0, 1], cols: [1, 0]
  * ```
@@ -3259,6 +3295,8 @@ export function nonzero(t: Tensor): Tensor[] {
  *
  * @example
  * ```ts
+ * import { argwhere, tensor } from 'deepbox/ndarray';
+ *
  * argwhere(tensor([[0, 2], [3, 0]])); // [[0, 1], [1, 0]]
  * ```
  */
@@ -3285,6 +3323,8 @@ export function argwhere(t: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, countNonzero } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 0, 3], [0, 0, 5]]);
  * countNonzero(a); // 3
  * countNonzero(a, 0); // [1, 0, 2]
@@ -3332,6 +3372,8 @@ export function countNonzero(t: Tensor, axis?: Axis | readonly Axis[], keepdims 
  *
  * @example
  * ```ts
+ * import { rot90, tensor, ones } from 'deepbox/ndarray';
+ *
  * rot90(tensor([[1, 2], [3, 4]]));        // [[2, 4], [1, 3]]
  * rot90(ones([2, 3, 4]), 1, [1, 2]).shape; // [2, 4, 3]
  * ```
@@ -3434,6 +3476,8 @@ function crossDType(
  *
  * @example
  * ```ts
+ * import { cross, tensor } from 'deepbox/ndarray';
+ *
  * cross(tensor([1, 0, 0]), tensor([0, 1, 0])); // [0, 0, 1]
  *
  * // Batched: every row of `a` crossed with the same vector.
@@ -3553,6 +3597,8 @@ export function cross(a: Tensor, b: Tensor, options?: CrossOptions | Axis): Tens
  *
  * @example
  * ```ts
+ * import { tensor, meshgrid } from 'deepbox/ndarray';
+ *
  * const x = tensor([1, 2, 3]);
  * const y = tensor([4, 5]);
  * const [X, Y] = meshgrid(x, y);
@@ -3665,6 +3711,8 @@ export function meshgrid(
  *
  * @example
  * ```ts
+ * import { tensor, indexSelect } from 'deepbox/ndarray';
+ *
  * const x = tensor([[1, 2, 3], [4, 5, 6]]);
  * const idx = tensor([0, 2], { dtype: 'int32' });
  * const result = indexSelect(x, 1, idx); // [[1, 3], [4, 6]]
@@ -3746,6 +3794,8 @@ export function index_select(input: Tensor, dim: Axis, index: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { isin, tensor } from 'deepbox/ndarray';
+ *
  * isin(tensor([1, 2, 3, 4]), [2, 4]); // [0, 1, 0, 1]
  * ```
  */
@@ -3857,6 +3907,8 @@ export const atleast2d = atleast_2d;
  *
  * @example
  * ```ts
+ * import { tensor, zerosLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const z = zerosLike(a); // [[0, 0], [0, 0]]
  * ```
@@ -3872,6 +3924,8 @@ export const zerosLike = zeros_like;
  *
  * @example
  * ```ts
+ * import { tensor, onesLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const o = onesLike(a); // [[1, 1], [1, 1]]
  * ```
@@ -3903,6 +3957,8 @@ export const emptyLike = empty_like;
  *
  * @example
  * ```ts
+ * import { tensor, fullLike } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * const f = fullLike(a, 7); // [[7, 7], [7, 7]]
  * ```
@@ -3927,6 +3983,8 @@ export const fullLike = full_like;
  *
  * @example
  * ```ts
+ * import { tensor, indexSelect } from 'deepbox/ndarray';
+ *
  * const x = tensor([[1, 2, 3], [4, 5, 6]]);
  * const idx = tensor([0, 2], { dtype: 'int32' });
  * const result = indexSelect(x, 1, idx); // [[1, 3], [4, 6]]

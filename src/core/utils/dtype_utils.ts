@@ -47,6 +47,8 @@ export function ensureNumericDType(dtype: DType, context = "operation"): Numeric
  *
  * @example
  * ```ts
+ * import { dtypeToTypedArrayCtor } from 'deepbox/core';
+ *
  * const Ctor = dtypeToTypedArrayCtor('float32');
  * const arr = new Ctor(10); // Float32Array with 10 elements
  * ```
@@ -149,6 +151,8 @@ const FLOAT_RANK: Readonly<Record<string, number>> = {
  *
  * @example
  * ```ts
+ * import { isFloatDType } from 'deepbox/core';
+ *
  * isFloatDType("float32"); // true
  * isFloatDType("int32"); // false
  * ```
@@ -168,6 +172,8 @@ export function isFloatDType(dtype: DType): boolean {
  *
  * @example
  * ```ts
+ * import { toFloatDType } from 'deepbox/core';
+ *
  * toFloatDType("float64"); // "float64"
  * toFloatDType("int32"); // "float32"
  * ```
@@ -192,6 +198,8 @@ export function toFloatDType(dtype: DType): "float16" | "bfloat16" | "float32" |
  *
  * @example
  * ```ts
+ * import { promoteTypes } from 'deepbox/core';
+ *
  * promoteTypes("int32", "float32"); // "float32"
  * promoteTypes("uint8", "int64"); // "int64"
  * promoteTypes("float16", "bfloat16"); // "float32"

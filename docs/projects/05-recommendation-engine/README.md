@@ -7,7 +7,7 @@ Collaborative filtering on a synthetic rating matrix of 200 users and 50 movies,
 ## Features
 
 - User-item matrix with missing ratings stored as zeros
-- User-based filtering: cosine similarity between users, then a similarity-weighted average of the neighbours' ratings
+- User-based filtering: cosine similarity between users, then a similarity-weighted average of the neighbors' ratings
 - Item-based similarity with adjusted cosine
 - `KMeans` clustering of users, with k picked by silhouette score
 - `PCA` projection of users to two components

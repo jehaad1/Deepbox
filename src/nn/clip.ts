@@ -6,7 +6,9 @@
  *
  * @example
  * ```ts
- * import { clipGradNorm_, clipGradValue_ } from 'deepbox/nn';
+ * import { clipGradNorm_, clipGradValue_, Linear } from 'deepbox/nn';
+ *
+ * const model = new Linear(2, 1);
  *
  * // Clip by global L2 norm (most common)
  * const totalNorm = clipGradNorm_(model.parameters(), 1.0);

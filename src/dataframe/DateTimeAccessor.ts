@@ -288,6 +288,8 @@ const pad2 = (n: number): string => String(n).padStart(2, "0");
  *
  * @example
  * ```ts
+ * import { Series } from 'deepbox/dataframe';
+ *
  * const s = new Series([new Date('2024-01-15'), new Date('2024-06-20')]);
  * s.dt.year();       // Series([2024, 2024])
  * s.dt.month();      // Series([1, 6])
@@ -617,6 +619,8 @@ export class DateTimeAccessor {
    *
    * @example
    * ```ts
+   * import { toDatetime } from 'deepbox/dataframe';
+   *
    * toDatetime(['2024-01-15']).dt.strftime('%d %B %Y');  // ['15 January 2024']
    * ```
    */
