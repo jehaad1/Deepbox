@@ -37,7 +37,7 @@ Format: id, priority, area, evidence, status.
 | BENCHPRIV-1 | P2 | bench-private | `npm run docs:check` fails: `bench/docs.ts` older than DeepboxDocs. | open (after docs pass) |
 | BENCHWEB-1 | P1 | bench-web | Uncommitted `src/app/components/LabLogo.tsx` corrupts the DeepSeek and MiniMax SVG paths. | dropped (D2) |
 | PKG-1 | P1 | packaging | Emitted `.d.ts` use extensionless relative imports; `moduleResolution: node16/nodenext` users get TS2834 errors, or untyped imports with `skipLibCheck`. attw flags all 14 entry points. Reproduced. | fixed bb0672f |
-| PKG-2 | P2 | packaging | `import {tensor} from "deepbox/ndarray"` bundles 342 KB minified; namespace `__export` objects share chunks with code. Marking them pure gives 127 KB. | open |
+| PKG-2 | P2 | packaging | `import {tensor} from "deepbox/ndarray"` bundles 342 KB minified; namespace `__export` objects share chunks with code. Marking them pure gives 127 KB. | fixed (tensor bundle 342,456 to 127,321 bytes) |
 | PKG-3 | P2 | packaging | `engines.node >=24.13.0` blocks Node 22 with `--engine-strict`, while all entry points, WASM and a fit/predict smoke test pass on Node 22.23.4. | fixed ce103a0 (CI confirms 22.12.0 on push) |
 | PKG-4 | P2 | packaging | Dual package hazard: ESM and CJS copies do not share `Tensor` class, error classes, seed or backend registry. | open |
 | PKG-5 | P2 | packaging | Browser bundling of `deepbox/plot`, `deepbox/datasets` and the root fails on `fs/promises`, `path`, `os` dynamic imports (tsup strips `node:`). | fixed 99ea22e |
