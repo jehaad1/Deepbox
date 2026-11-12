@@ -5,6 +5,7 @@ import {
   any,
   arange,
   argsort,
+  cov,
   diff,
   expandDims,
   gcd,
@@ -221,6 +222,32 @@ describe("sort and argsort with an explicit undefined axis", () => {
     expect(sort(m, undefined, true).toArray()).toEqual([
       [3, 2, 1],
       [9, 8, 7],
+    ]);
+  });
+});
+
+describe("cov without degrees of freedom", () => {
+  // numpy.cov([[1.], [2.]]) -> [[nan, nan], [nan, nan]]; numpy.cov([[1., 2.], [3., 5.]], ddof=2)
+  // -> [[inf, inf], [inf, inf]] (both with a RuntimeWarning)
+  it("returns NaN for one observation and Infinity when the sum is non-zero", () => {
+    const one = cov(tensor([[1], [2]], { dtype: "float64" }));
+    expect(one.toArray()).toEqual([
+      [Number.NaN, Number.NaN],
+      [Number.NaN, Number.NaN],
+    ]);
+    const two = cov(
+      tensor(
+        [
+          [1, 2],
+          [3, 5],
+        ],
+        { dtype: "float64" }
+      ),
+      2
+    );
+    expect(two.toArray()).toEqual([
+      [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+      [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
     ]);
   });
 });

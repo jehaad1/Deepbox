@@ -506,7 +506,8 @@ function covarianceOf(obs: ObservationMatrix, ddof: number): Float64Array {
     for (let j = 0; j < n; j++) values[base + j] = (values[base + j] as number) - mean;
   }
 
-  const denom = n - ddof;
+  // Without degrees of freedom the divisor is 0, as in NumPy: 0 / 0 is NaN, x / 0 is Infinity.
+  const denom = Math.max(n - ddof, 0);
   const out = new Float64Array(m * m);
   for (let i = 0; i < m; i++) {
     const bi = i * n;
@@ -598,7 +599,9 @@ export function corrcoef(x: Tensor, rowvar: boolean = true): Tensor {
  * column is an observation (like NumPy); with `rowvar = false` the roles are swapped.
  *
  * Uses Bessel's correction (ddof=1) by default. Entries are `sum / (n - ddof)`
- * over the n observations, computed from mean-centered values.
+ * over the n observations, computed from mean-centered values. When `n <= ddof` the divisor
+ * is 0, as in NumPy: a single observation with `ddof = 1` gives NaN entries (and other
+ * non-zero sums give Infinity).
  *
  * Note that `deepbox/stats` `cov` treats columns as variables.
  *
@@ -609,8 +612,7 @@ export function corrcoef(x: Tensor, rowvar: boolean = true): Tensor {
  *
  * @throws {ShapeError} If input has more than 2 dimensions
  * @throws {DTypeError} If input has string dtype
- * @throws {InvalidParameterError} If `ddof` is negative or not finite, or the number of
- *   observations is not larger than `ddof`
+ * @throws {InvalidParameterError} If `ddof` is negative or not finite, or there is no observation
  * @throws {DeviceError} If the tensor lives on a device; call `await t.cpu()` first
  *
  * @example
@@ -624,12 +626,8 @@ export function cov(x: Tensor, ddof: number = 1, rowvar: boolean = true): Tensor
     throw new InvalidParameterError("ddof must be a non-negative finite number", "ddof", ddof);
   }
   const obs = readObservations(x, rowvar, "cov");
-  if (obs.n <= ddof) {
-    throw new InvalidParameterError(
-      `cov: ddof=${ddof} must be smaller than the number of observations (${obs.n})`,
-      "ddof",
-      ddof
-    );
+  if (obs.n === 0) {
+    throw new InvalidParameterError("cov: at least one observation is required", "nObs", 0);
   }
   const m = obs.m;
   const out = covarianceOf(obs, ddof);
