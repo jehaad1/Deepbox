@@ -241,8 +241,9 @@ export class ModuleDict extends Module {
   set(key: string, module: Module): this {
     assertKey(key, "ModuleDict");
     assertModule(module, "ModuleDict");
-    this.items.set(key, module);
+    // Register first: a reserved name throws and must leave the dict unchanged.
     this.registerModule(key, module);
+    this.items.set(key, module);
     return this;
   }
 

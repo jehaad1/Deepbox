@@ -1594,7 +1594,8 @@ export class PositionalEncoding extends Module {
       dtype: "float64",
       device: "cpu",
     });
-    this.registerBuffer("pe", this.peBuffer);
+    // The table is rebuilt by the constructor, so it is not saved in the state dict.
+    this.registerBuffer("pe", this.peBuffer, { persistent: false });
   }
 
   /**

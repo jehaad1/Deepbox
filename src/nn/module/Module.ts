@@ -227,6 +227,8 @@ export abstract class Module {
 
   /** Buffers (non-trainable tensors) of this module - e.g., running stats in BatchNorm */
   protected _buffers: Map<string, Tensor> = new Map();
+  /** Names of buffers that are left out of the state dict. */
+  private readonly _nonPersistentBuffers: Set<string> = new Set();
 
   /** Training mode flag - affects behavior of layers like Dropout and BatchNorm */
   protected _training = true;
@@ -337,21 +339,65 @@ export abstract class Module {
    * Register a buffer (non-trainable tensor).
    *
    * Buffers are typically used for running statistics in batch normalization.
+   * A persistent buffer (the default) is part of the state dict. A non-persistent buffer
+   * still appears in `buffers()` and `namedBuffers()` and moves with the module, but
+   * `stateDict()` leaves it out and `loadStateDict()` ignores an entry for it, as PyTorch's
+   * `register_buffer(name, tensor, persistent=False)` does.
    *
    * @param name - Name of the buffer
    * @param buffer - The buffer tensor
+   * @param options - `persistent`: whether the buffer is saved in the state dict (default: true)
    */
-  protected registerBuffer(name: string, buffer: Tensor): void {
+  protected registerBuffer(
+    name: string,
+    buffer: Tensor,
+    options: { readonly persistent?: boolean } = {}
+  ): void {
     Module.assertRegistrationName(name, "buffer");
     // Register a non-trainable buffer (e.g., running mean/variance in BatchNorm)
     // Buffers are saved with the model but not updated by optimizers
     this._buffers.set(name, buffer);
+    if (options.persistent === false) {
+      this._nonPersistentBuffers.add(name);
+    } else {
+      this._nonPersistentBuffers.delete(name);
+    }
   }
 
   private static assertRegistrationName(name: string, kind: string): void {
     if (typeof name !== "string" || name.length === 0) {
       throw new InvalidParameterError(`${kind} name must be a non-empty string`, "name", name);
     }
+    // These names would corrupt the plain records built by stateDict() and the lookups in
+    // loadStateDict(), so they cannot be registered.
+    if (name === "__proto__" || name === "constructor" || name === "prototype") {
+      throw new InvalidParameterError(
+        `${kind} name must not be '__proto__', 'constructor' or 'prototype'; got '${name}'`,
+        "name",
+        name
+      );
+    }
+  }
+
+  /** Buffers saved in the state dict, by full name: all buffers except the non-persistent ones. */
+  private *namedPersistentBuffers(): Generator<[string, Tensor]> {
+    for (const [mPrefix, module] of this.namedModules("", true, false)) {
+      for (const [name, buffer] of module._buffers.entries()) {
+        if (module._nonPersistentBuffers.has(name)) continue;
+        yield [mPrefix ? `${mPrefix}.${name}` : name, buffer];
+      }
+    }
+  }
+
+  /** Full names of the non-persistent buffers of this module and its children. */
+  private nonPersistentBufferNames(): Set<string> {
+    const names = new Set<string>();
+    for (const [mPrefix, module] of this.namedModules("", true, false)) {
+      for (const name of module._nonPersistentBuffers) {
+        names.add(mPrefix ? `${mPrefix}.${name}` : name);
+      }
+    }
+    return names;
   }
 
   /**
@@ -485,8 +531,16 @@ export abstract class Module {
    *
    * @param mode - Training mode (true) or evaluation mode (false)
    * @returns this
+   * @throws {InvalidParameterError} If `mode` is not a boolean
    */
   train(mode = true): this {
+    if (typeof mode !== "boolean") {
+      throw new InvalidParameterError(
+        `train(mode) expects a boolean; got ${String(mode)}`,
+        "mode",
+        mode
+      );
+    }
     // Set training mode for this module
     this._training = mode;
 
@@ -684,6 +738,8 @@ export abstract class Module {
    * through their strides), so the result does not alias the live tensors. A
    * parameter shared under several names appears under each name.
    *
+   * Non-persistent buffers (see {@link Module.registerBuffer}) are not included.
+   *
    * @returns Plain objects keyed by dot-separated name with `data`, `shape` and `dtype`
    */
   stateDict(): {
@@ -702,7 +758,7 @@ export abstract class Module {
       };
     }
 
-    for (const [name, buffer] of this.namedBuffers("", true, false)) {
+    for (const [name, buffer] of this.namedPersistentBuffers()) {
       buffers[name] = {
         data: cloneTensorData(buffer),
         shape: [...buffer.shape],
@@ -719,8 +775,11 @@ export abstract class Module {
    * Every entry is validated (names, shapes, dtypes, element types) before any
    * tensor is written, so a failed load leaves the module unchanged.
    *
+   * An entry for a non-persistent buffer is ignored.
+   *
    * @param stateDict - Object produced by {@link Module.stateDict}
-   * @throws {InvalidParameterError} If a parameter or buffer is missing or unexpected
+   * @throws {InvalidParameterError} If `stateDict` is not an object, or a parameter or buffer is
+   *   missing or unexpected
    * @throws {ShapeError} If an entry's shape or data length does not match
    * @throws {DTypeError} If an entry's dtype or element type does not match
    */
@@ -728,12 +787,32 @@ export abstract class Module {
     parameters?: Record<string, StateEntry>;
     buffers?: Record<string, StateEntry>;
   }): void {
+    if (typeof stateDict !== "object" || stateDict === null || Array.isArray(stateDict)) {
+      throw new InvalidParameterError(
+        "stateDict must be an object with 'parameters' and 'buffers' records",
+        "stateDict",
+        stateDict
+      );
+    }
     const parameters = stateDict.parameters ?? {};
     const buffers = stateDict.buffers ?? {};
+    for (const [section, record] of [
+      ["parameters", parameters],
+      ["buffers", buffers],
+    ] as const) {
+      if (typeof record !== "object" || record === null || Array.isArray(record)) {
+        throw new InvalidParameterError(
+          `stateDict.${section} must be an object keyed by name`,
+          `stateDict.${section}`,
+          record
+        );
+      }
+    }
     const has = (record: object, key: string): boolean => Object.hasOwn(record, key);
 
     const namedParams = new Map(this.namedParameters("", true, false));
-    const namedBuffs = new Map(this.namedBuffers("", true, false));
+    const namedBuffs = new Map(this.namedPersistentBuffers());
+    const skipped = this.nonPersistentBufferNames();
 
     for (const name of namedParams.keys()) {
       if (!has(parameters, name)) {
@@ -758,7 +837,7 @@ export abstract class Module {
     }
 
     for (const name of Object.keys(buffers)) {
-      if (!namedBuffs.has(name)) {
+      if (!namedBuffs.has(name) && !skipped.has(name)) {
         throw new InvalidParameterError(`unexpected buffer: ${name}`, "stateDict.buffers", name);
       }
     }
