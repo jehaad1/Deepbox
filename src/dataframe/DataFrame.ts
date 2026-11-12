@@ -120,6 +120,15 @@ const ensureUniqueLabels = (labels: readonly string[], labelName: string): void 
   }
 };
 
+/** Target types of `DataFrame.astype`. */
+type AstypeDtype = "number" | "string" | "boolean";
+
+/** Options of `DataFrame.astype`. */
+type AstypeOptions = { readonly errors?: "raise" | "coerce" };
+
+/** Decimal numbers accepted by `astype("number")`: no hex, octal or binary forms. */
+const DECIMAL_NUMBER = /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|Infinity)$/;
+
 /**
  * Normalize a join key option (a column name or an array of names) to a list.
  * Empty names, empty lists, duplicates and non-strings are rejected.
@@ -5288,32 +5297,47 @@ export class DataFrame {
    * Cast columns to a target type.
    *
    * Missing values (null, undefined, NaN) stay missing: they become NaN for
-   * `"number"` and null for `"string"` and `"boolean"`. Strings convert to
-   * numbers like `Number()` does, except that empty or blank strings give NaN.
-   * The strings `"true"` and `"false"` (any case) convert to booleans.
+   * `"number"` and null for `"string"` and `"boolean"`.
+   *
+   * Strings convert to numbers only when they are decimal numbers (optional sign, digits with an
+   * optional fraction and exponent, `Infinity` or `-Infinity`), after trimming white space; hex,
+   * octal and binary forms such as `"0x10"` are not numbers. Empty or blank strings give NaN.
+   * The strings `"true"`, `"false"`, `"1"`, `"0"`, `"yes"` and `"no"` (any case, trimmed) convert
+   * to booleans; other values convert by truthiness.
+   *
+   * `errors` decides what happens to a non-missing string that cannot be converted: with
+   * `"coerce"` (the default) it becomes NaN for numbers and null for booleans, with `"raise"` a
+   * `DataValidationError` names the column and the value.
    *
    * @param column - Column to cast, or an object mapping column names to types
    * @param dtype - Target type when `column` is a name
+   * @param options - `{ errors: "raise" | "coerce" }` (default `"coerce"`); passed as the second
+   *   argument when `column` is an object
    * @returns New DataFrame
    * @throws {IndexError} If a column does not exist
-   * @throws {InvalidParameterError} If the target type is unknown
+   * @throws {InvalidParameterError} If the target type or `errors` is unknown
+   * @throws {DataValidationError} With `errors: "raise"`, if a value cannot be converted
    *
    * @example
    * ```ts
    * df.astype("age", "number");
    * df.astype({ age: "number", name: "string" });
+   * df.astype("age", "number", { errors: "raise" });
    * ```
    */
-  astype(column: string, dtype: "number" | "string" | "boolean"): DataFrame;
-  astype(dtypes: Record<string, "number" | "string" | "boolean">): DataFrame;
+  astype(column: string, dtype: AstypeDtype, options?: AstypeOptions): DataFrame;
+  astype(dtypes: Record<string, AstypeDtype>, options?: AstypeOptions): DataFrame;
   astype(
-    columnOrMap: string | Record<string, "number" | "string" | "boolean">,
-    dtype?: "number" | "string" | "boolean"
+    columnOrMap: string | Record<string, AstypeDtype>,
+    dtypeOrOptions?: AstypeDtype | AstypeOptions,
+    maybeOptions?: AstypeOptions
   ): DataFrame {
-    const plan: [string, "number" | "string" | "boolean"][] =
-      typeof columnOrMap === "string"
-        ? [[columnOrMap, dtype as "number" | "string" | "boolean"]]
-        : Object.entries(columnOrMap);
+    const single = typeof columnOrMap === "string";
+    const dtype = single ? (dtypeOrOptions as AstypeDtype) : undefined;
+    const options = (single ? maybeOptions : (dtypeOrOptions as AstypeOptions | undefined)) ?? {};
+    const plan: [string, AstypeDtype][] = single
+      ? [[columnOrMap, dtype as AstypeDtype]]
+      : Object.entries(columnOrMap);
 
     for (const [col, target] of plan) {
       if (!this._data.has(col)) throw new IndexError(`Column '${col}' not found`);
@@ -5325,23 +5349,42 @@ export class DataFrame {
         );
       }
     }
+    const errors = options.errors ?? "coerce";
+    if (errors !== "raise" && errors !== "coerce") {
+      throw new InvalidParameterError('errors must be "raise" or "coerce"', "errors", errors);
+    }
+    const unconvertible = (col: string, value: unknown, target: string): DataValidationError =>
+      new DataValidationError(
+        `astype: cannot convert ${JSON.stringify(value)} in column '${col}' to ${target}`
+      );
 
-    const toNumber = (v: unknown): number => {
+    const toNumber = (col: string, v: unknown): number => {
       if (isMissing(v)) return NaN;
       if (typeof v === "number") return v;
-      if (typeof v === "string") return v.trim() === "" ? NaN : Number(v);
+      if (typeof v === "string") {
+        const t = v.trim();
+        if (t === "") return NaN;
+        if (DECIMAL_NUMBER.test(t)) return Number(t);
+        if (errors === "raise") throw unconvertible(col, v, "number");
+        return NaN;
+      }
       if (typeof v === "boolean") return v ? 1 : 0;
       if (typeof v === "bigint") return Number(v);
       if (v instanceof Date) return v.getTime();
-      return Number(v);
+      const n = Number(v);
+      if (Number.isNaN(n) && errors === "raise") throw unconvertible(col, v, "number");
+      return n;
     };
     const toText = (v: unknown): string | null => (isMissing(v) ? null : String(v));
-    const toBool = (v: unknown): boolean | null => {
+    const toBool = (col: string, v: unknown): boolean | null => {
       if (isMissing(v)) return null;
       if (typeof v === "string") {
         const t = v.trim().toLowerCase();
-        if (t === "true") return true;
-        if (t === "false") return false;
+        if (t === "") return null;
+        if (t === "true" || t === "1" || t === "yes") return true;
+        if (t === "false" || t === "0" || t === "no") return false;
+        if (errors === "raise") throw unconvertible(col, v, "boolean");
+        return null;
       }
       return Boolean(v);
     };
@@ -5351,9 +5394,9 @@ export class DataFrame {
     for (const col of this._columns) {
       const colData = this._data.get(col) ?? [];
       const target = targets.get(col);
-      if (target === "number") data[col] = colData.map(toNumber);
+      if (target === "number") data[col] = colData.map((v) => toNumber(col, v));
       else if (target === "string") data[col] = colData.map(toText);
-      else if (target === "boolean") data[col] = colData.map(toBool);
+      else if (target === "boolean") data[col] = colData.map((v) => toBool(col, v));
       else data[col] = [...colData];
     }
     return new DataFrame(data, {
@@ -5437,8 +5480,8 @@ export class DataFrame {
    *
    * Groups are listed by descending count; equal counts keep the order of first appearance.
    * Unlike pandas, missing values are counted as their own group by default (Deepbox 1.0
-   * behavior; null, undefined and NaN count as one missing value); pass `{ dropna: true }` to leave out every row that has a missing value in one of
-   * the counted columns. Pass `{ normalize: true }` for relative frequencies: the count column
+   * behavior; null, undefined and NaN count as one missing value); pass `{ dropna: true }` to
+   * leave out every row that has a missing value in one of the counted columns. Pass `{ normalize: true }` for relative frequencies: the count column
    * is then called `proportion`. `sort: false` keeps the order of first appearance and
    * `ascending: true` lists the rarest combinations first.
    *
