@@ -583,7 +583,8 @@ describe("Poisson Distribution", () => {
   });
 
   it("rejects invalid mu", () => {
-    expect(() => poisson(0)).toThrow();
+    // mu = 0 is the point mass at 0 since 1.5.1 (scipy.stats.poisson(0)).
+    expect(poisson(0).pmf(0)).toBe(1);
     expect(() => poisson(-1)).toThrow();
   });
 });
