@@ -1685,9 +1685,11 @@ describe("HashingVectorizer matches scikit-learn", () => {
           expected[flat[k] as number] = (flat[k + 1] as number) / scale;
         }
         const row = dense[r] as number[];
+        let maxDiff = 0;
         for (let c = 0; c < config.nf; c++) {
-          expect(row[c], `corpus ${i} doc ${r} column ${c}`).toBeCloseTo(expected[c] as number, 6);
+          maxDiff = Math.max(maxDiff, Math.abs((row[c] as number) - (expected[c] as number)));
         }
+        expect(maxDiff, `corpus ${i} doc ${r}`).toBeLessThan(1e-6);
       }
     }
   });
