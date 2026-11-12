@@ -11,6 +11,7 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow, __SeededRandom } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   percentileSorted,
@@ -482,6 +483,27 @@ export type GradientBoostingRegressorOptions = {
   readonly randomState?: number;
 } & BoostingTreeOptions;
 
+const GRADIENT_BOOSTING_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GradientBoostingRegressor>[0]>
+>({
+  nEstimators: true,
+  learningRate: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  warmStart: true,
+  subsample: true,
+  maxFeatures: true,
+  validationFraction: true,
+  nIterNoChange: true,
+  loss: true,
+  alpha: true,
+  randomState: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Gradient Boosting Regressor.
  *
@@ -565,6 +587,11 @@ export class GradientBoostingRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: GradientBoostingRegressorOptions = {}) {
+    assertKnownOptions(
+      "GradientBoostingRegressor",
+      options,
+      GRADIENT_BOOSTING_REGRESSOR_OPTION_KEYS
+    );
     this.nEstimators = checkNEstimators(options.nEstimators ?? 100);
     this.learningRate = checkLearningRate(options.learningRate ?? 0.1);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 3);
@@ -1085,6 +1112,23 @@ export type GradientBoostingClassifierOptions = {
   readonly randomState?: number;
 } & BoostingTreeOptions;
 
+const GRADIENT_BOOSTING_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GradientBoostingClassifier>[0]>
+>({
+  nEstimators: true,
+  learningRate: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  warmStart: true,
+  subsample: true,
+  maxFeatures: true,
+  randomState: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Gradient Boosting Classifier.
  *
@@ -1158,6 +1202,11 @@ export class GradientBoostingClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: GradientBoostingClassifierOptions = {}) {
+    assertKnownOptions(
+      "GradientBoostingClassifier",
+      options,
+      GRADIENT_BOOSTING_CLASSIFIER_OPTION_KEYS
+    );
     this.nEstimators = checkNEstimators(options.nEstimators ?? 100);
     this.learningRate = checkLearningRate(options.learningRate ?? 0.1);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 3);

@@ -13,6 +13,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
@@ -207,7 +208,7 @@ function solveLinearSvr(
   n: number,
   d: number,
   y: Float64Array,
-  C: number,
+  C: Float64Array,
   epsilon: number,
   squared: boolean,
   scale: number,
@@ -218,8 +219,6 @@ function solveLinearSvr(
   const w = new Float64Array(d);
   let wb = 0;
   const beta = new Float64Array(n);
-  const lambda = squared ? 0.5 / C : 0;
-  const upper = squared ? Number.POSITIVE_INFINITY : C;
   const QD = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     let sq = scale * scale;
@@ -240,6 +239,11 @@ function solveLinearSvr(
     let gmaxNew = 0;
     for (let s = 0; s < n; s++) {
       const i = order[s] as number;
+      const Ci = C[i] as number;
+      // A sample with a penalty of zero cannot influence the fit.
+      if (Ci === 0) continue;
+      const lambda = squared ? 0.5 / Ci : 0;
+      const upper = squared ? Number.POSITIVE_INFINITY : Ci;
       const base = i * d;
       const bi = beta[i] as number;
       const H = (QD[i] as number) + lambda;
@@ -361,6 +365,17 @@ type LinearSvcModel = {
   readonly nIter: number;
 };
 
+const LINEAR_SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof LinearSVC>[0]>>({
+  C: true,
+  loss: true,
+  fitIntercept: true,
+  interceptScaling: true,
+  maxIter: true,
+  tol: true,
+  classWeight: true,
+  randomState: true,
+});
+
 /**
  * Support Vector Machine classifier with a linear kernel.
  *
@@ -369,6 +384,8 @@ type LinearSvcModel = {
  *
  * `predictProba` returns a monotone squashing of the decision values, not calibrated
  * probabilities.
+ *
+ * Default differs from scikit-learn: `loss` is "hinge" (scikit-learn: "squared_hinge").
  *
  * @example
  * ```ts
@@ -394,6 +411,7 @@ export class LinearSVC implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: LinearSVCOptions = {}) {
+    assertKnownOptions("LinearSVC", options, LINEAR_SVC_OPTION_KEYS);
     this.cfg = normalizeLinearSvcConfig(options as Record<string, unknown>);
   }
 
@@ -741,11 +759,24 @@ function normalizeLinearSvrConfig(o: Record<string, unknown>): LinearSvrConfig {
   };
 }
 
+const LINEAR_SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof LinearSVR>[0]>>({
+  C: true,
+  epsilon: true,
+  loss: true,
+  fitIntercept: true,
+  interceptScaling: true,
+  maxIter: true,
+  tol: true,
+  randomState: true,
+});
+
 /**
  * Support Vector Regression with a linear kernel.
  *
  * Minimizes `0.5 ||w||^2 + C * sum_i loss(|y_i - w.x_i - b| - epsilon)` with dual coordinate
  * descent (the LIBLINEAR algorithm).
+ *
+ * Default differs from scikit-learn: `epsilon` is 0.1 (scikit-learn: 0.0).
  *
  * @example
  * ```ts
@@ -774,6 +805,7 @@ export class LinearSVR implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: LinearSVROptions = {}) {
+    assertKnownOptions("LinearSVR", options, LINEAR_SVR_OPTION_KEYS);
     this.cfg = normalizeLinearSvrConfig(options as Record<string, unknown>);
   }
 
@@ -789,20 +821,25 @@ export class LinearSVR implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Targets of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample multipliers of `C`, shape (n_samples,)
    * @returns this
-   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
-   * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, the sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf, or a weight is negative or not finite
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const d = X.shape[1] ?? 0;
+    const sw = readSampleWeight(sampleWeightArg as Tensor | undefined, n);
+    const C = new Float64Array(n);
+    for (let i = 0; i < n; i++) C[i] = this.cfg.C * (sw === undefined ? 1 : (sw[i] as number));
     const sol = solveLinearSvr(
       toFloat64View(X),
       n,
       d,
       toFloat64View(y),
-      this.cfg.C,
+      C,
       this.cfg.epsilon,
       this.cfg.loss === "squaredEpsilonInsensitive",
       this.cfg.fitIntercept ? this.cfg.interceptScaling : 0,

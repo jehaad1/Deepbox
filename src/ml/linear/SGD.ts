@@ -20,6 +20,7 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -27,6 +28,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Classifier, Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { createTreeRng } from "../tree/DecisionTree";
 import { r2ScoreOf } from "./LinearRegression";
 
@@ -635,6 +637,35 @@ function ovrWeights(
   return sw;
 }
 
+/** Elementwise product of two optional weight vectors; `undefined` stands for all ones. */
+function multiplyWeights(
+  a: Float64Array | undefined,
+  b: Float64Array | undefined
+): Float64Array | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Float64Array.from(a, (v, i) => v * (b[i] as number));
+}
+
+const SGDCLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SGDClassifier>[0]>
+>({
+  penalty: true,
+  alpha: true,
+  l1Ratio: true,
+  fitIntercept: true,
+  maxIter: true,
+  tol: true,
+  shuffle: true,
+  randomState: true,
+  learningRate: true,
+  eta0: true,
+  powerT: true,
+  nIterNoChange: true,
+  loss: true,
+  classWeight: true,
+});
+
 /**
  * SGD Classifier: linear classifiers trained with stochastic gradient descent.
  *
@@ -698,6 +729,7 @@ export class SGDClassifier implements Classifier {
       readonly classWeight?: ClassWeight;
     } = {}
   ) {
+    assertKnownOptions("SGDClassifier", options, SGDCLASSIFIER_OPTION_KEYS);
     this.p = defaultParams(options, options.loss ?? "hinge", "optimal", 0.5);
     validateParams(this.p, CLASSIFIER_LOSSES);
     if (options.classWeight !== undefined) {
@@ -716,11 +748,13 @@ export class SGDClassifier implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each scales the loss gradient of its sample, on top of `classWeight`, as in scikit-learn
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If the data is empty, contains NaN/Inf, or training overflows
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If the data is empty, contains NaN/Inf, training overflows, or a weight is negative, not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     validateParams(this.p, CLASSIFIER_LOSSES);
 
@@ -728,6 +762,7 @@ export class SGDClassifier implements Classifier {
     const nFeatures = X.shape[1] ?? 0;
     const x = toFloat64View(X);
     const yData = toFloat64View(y);
+    const userWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
     const uniqueClasses = [...new Set(yData)].sort((a, b) => a - b);
     const nClasses = uniqueClasses.length;
@@ -745,7 +780,7 @@ export class SGDClassifier implements Classifier {
         lossFn,
         x,
         yBinary,
-        perSampleWeights(yData, uniqueClasses, perClass),
+        multiplyWeights(perSampleWeights(yData, uniqueClasses, perClass), userWeight),
         nSamples,
         nFeatures,
         createTreeRng(this.p.randomState)
@@ -762,7 +797,7 @@ export class SGDClassifier implements Classifier {
           lossFn,
           x,
           yBinary,
-          ovrWeights(yData, uniqueClasses, perClass, k),
+          multiplyWeights(ovrWeights(yData, uniqueClasses, perClass, k), userWeight),
           nSamples,
           nFeatures,
           createTreeRng(this.p.randomState)
@@ -1248,6 +1283,25 @@ export class SGDClassifier implements Classifier {
   }
 }
 
+const SGDREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SGDRegressor>[0]>
+>({
+  penalty: true,
+  alpha: true,
+  l1Ratio: true,
+  fitIntercept: true,
+  maxIter: true,
+  tol: true,
+  shuffle: true,
+  randomState: true,
+  learningRate: true,
+  eta0: true,
+  powerT: true,
+  nIterNoChange: true,
+  loss: true,
+  epsilon: true,
+});
+
 /**
  * SGD Regressor: linear regressor trained with stochastic gradient descent.
  *
@@ -1305,6 +1359,7 @@ export class SGDRegressor implements Regressor {
       readonly epsilon?: number;
     } = {}
   ) {
+    assertKnownOptions("SGDRegressor", options, SGDREGRESSOR_OPTION_KEYS);
     this.p = defaultParams(options, options.loss ?? "squared_error", "invscaling", 0.25);
     validateParams(this.p, REGRESSION_LOSSES);
   }
@@ -1314,11 +1369,13 @@ export class SGDRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each scales the loss gradient of its sample, as in scikit-learn
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If the data is empty, contains NaN/Inf, or training overflows
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If the data is empty, contains NaN/Inf, training overflows, or a weight is negative, not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     validateParams(this.p, REGRESSION_LOSSES);
 
@@ -1326,6 +1383,7 @@ export class SGDRegressor implements Regressor {
     const nFeatures = X.shape[1] ?? 0;
     const x = toFloat64View(X);
     const yData = toFloat64View(y);
+    const userWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
     const lossFn = regressionLoss(this.p.loss as RegressionLoss, this.p.epsilon);
 
     const res = trainBinary(
@@ -1333,7 +1391,7 @@ export class SGDRegressor implements Regressor {
       lossFn,
       x,
       yData,
-      undefined,
+      userWeight,
       nSamples,
       nFeatures,
       createTreeRng(this.p.randomState)

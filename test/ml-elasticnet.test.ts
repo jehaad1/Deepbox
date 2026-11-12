@@ -39,17 +39,11 @@ describe("ElasticNet", () => {
   });
 
   it("throws InvalidParameterError for negative alpha", () => {
-    const X = tensor([[1], [2]]);
-    const y = tensor([1, 2]);
-    const model = new ElasticNet({ alpha: -1 });
-    expect(() => model.fit(X, y)).toThrow(/alpha/i);
+    expect(() => new ElasticNet({ alpha: -1 })).toThrow(/alpha/i);
   });
 
   it("throws InvalidParameterError for l1Ratio out of range", () => {
-    const X = tensor([[1], [2]]);
-    const y = tensor([1, 2]);
-    const model = new ElasticNet({ l1Ratio: 1.5 });
-    expect(() => model.fit(X, y)).toThrow(/l1Ratio/i);
+    expect(() => new ElasticNet({ l1Ratio: 1.5 })).toThrow(/l1Ratio/i);
   });
 
   it("performs feature selection with high l1Ratio (Lasso-like)", () => {

@@ -1,6 +1,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow, __SeededRandom } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
@@ -505,6 +506,26 @@ function averageImportances(
 // Classifier
 // ---------------------------------------------------------------------------
 
+const RANDOM_FOREST_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RandomForestClassifier>[0]>
+>({
+  nEstimators: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  bootstrap: true,
+  warmStart: true,
+  randomState: true,
+  maxSamples: true,
+  oobScore: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+  criterion: true,
+  classWeight: true,
+});
+
 /**
  * Random Forest Classifier.
  *
@@ -520,6 +541,8 @@ function averageImportances(
  *
  * Differences from scikit-learn defaults: `maxDepth` defaults to 10 (not unlimited); pass
  * `Infinity` to grow full trees.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts
@@ -555,6 +578,7 @@ export class RandomForestClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range or inconsistent
    */
   constructor(options: RandomForestClassifierOptions = {}) {
+    assertKnownOptions("RandomForestClassifier", options, RANDOM_FOREST_CLASSIFIER_OPTION_KEYS);
     this.params = paramsFromOptions(options, "sqrt");
     const criterion = options.criterion ?? "gini";
     if (criterion !== "gini" && criterion !== "entropy" && criterion !== "log_loss") {
@@ -1055,6 +1079,24 @@ export class RandomForestClassifier implements Classifier {
 // Regressor
 // ---------------------------------------------------------------------------
 
+const RANDOM_FOREST_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RandomForestRegressor>[0]>
+>({
+  nEstimators: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  bootstrap: true,
+  warmStart: true,
+  randomState: true,
+  maxSamples: true,
+  oobScore: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Random Forest Regressor.
  *
@@ -1070,6 +1112,8 @@ export class RandomForestClassifier implements Classifier {
  * tell apart from the float 1.0 that scikit-learn uses for "all features"; `null` states it
  * explicitly). To examine fewer, pass `"sqrt"`, `"log2"`, an integer >= 2, or a fraction in
  * (0, 1). `maxDepth` defaults to 10 (not unlimited); pass `Infinity` to grow full trees.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts
@@ -1101,6 +1145,7 @@ export class RandomForestRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range or inconsistent
    */
   constructor(options: RandomForestRegressorOptions = {}) {
+    assertKnownOptions("RandomForestRegressor", options, RANDOM_FOREST_REGRESSOR_OPTION_KEYS);
     this.params = paramsFromOptions(options, 1.0);
   }
 

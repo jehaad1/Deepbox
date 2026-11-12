@@ -18,7 +18,7 @@ import {
   warn,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { cloneEstimator } from "./_internal";
+import { assertKnownOptions, cloneEstimator, optionKeys } from "./_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "./_validation";
 import type { Classifier } from "./base";
 
@@ -446,6 +446,10 @@ abstract class GraphLabelModel {
   }
 }
 
+const LABEL_PROPAGATION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LabelPropagation>[0]>
+>({ maxIter: true, tol: true, gamma: true });
+
 /**
  * Label Propagation algorithm.
  *
@@ -485,6 +489,7 @@ export class LabelPropagation extends GraphLabelModel implements Classifier {
       readonly gamma?: number;
     } = {}
   ) {
+    assertKnownOptions("LabelPropagation", options, LABEL_PROPAGATION_OPTION_KEYS);
     super(options.maxIter ?? 1000, options.tol ?? 1e-3, options.gamma ?? 20);
   }
 
@@ -540,6 +545,10 @@ export class LabelPropagation extends GraphLabelModel implements Classifier {
   }
 }
 
+const LABEL_SPREADING_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LabelSpreading>[0]>
+>({ maxIter: true, tol: true, gamma: true, alpha: true });
+
 /**
  * Label Spreading algorithm.
  *
@@ -585,6 +594,7 @@ export class LabelSpreading extends GraphLabelModel implements Classifier {
       readonly alpha?: number;
     } = {}
   ) {
+    assertKnownOptions("LabelSpreading", options, LABEL_SPREADING_OPTION_KEYS);
     super(options.maxIter ?? 30, options.tol ?? 1e-3, options.gamma ?? 20);
     this.alpha = checkAlpha(options.alpha ?? 0.2);
   }
@@ -692,6 +702,17 @@ function takeRows(data: Float64Array, nF: number, rows: readonly number[]): Tens
   return tensor(out).reshape([rows.length, nF]);
 }
 
+const SELF_TRAINING_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SelfTrainingClassifier>[0]>
+>({
+  baseEstimator: true,
+  threshold: true,
+  maxIter: true,
+  criterion: true,
+  kBest: true,
+  verbose: true,
+});
+
 /**
  * Self-Training Classifier.
  *
@@ -763,6 +784,7 @@ export class SelfTrainingClassifier implements Classifier {
     readonly kBest?: number;
     readonly verbose?: boolean;
   }) {
+    assertKnownOptions("SelfTrainingClassifier", options, SELF_TRAINING_CLASSIFIER_OPTION_KEYS);
     SelfTrainingClassifier.checkBase(options.baseEstimator);
     this.baseEstimator = options.baseEstimator;
     this.threshold = checkThreshold(options.threshold ?? 0.75);

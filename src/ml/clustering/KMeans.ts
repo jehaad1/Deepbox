@@ -1,6 +1,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -29,6 +30,17 @@ function createRng(seed: number | undefined): () => number {
   return () => gen.next();
 }
 
+const KMEANS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof KMeans>[0]>>({
+  nClusters: true,
+  maxIter: true,
+  tol: true,
+  init: true,
+  nInit: true,
+  warmStart: true,
+  randomState: true,
+  algorithm: true,
+});
+
 /**
  * K-Means clustering algorithm.
  *
@@ -52,6 +64,8 @@ function createRng(seed: number | undefined): () => number {
  * - k = number of clusters
  * - i = number of iterations
  * - d = number of features
+ *
+ * Default differs from scikit-learn: `nInit` is 10 (scikit-learn: "auto", which runs one k-means++ initialization).
  *
  * @example
  * ```ts
@@ -112,6 +126,7 @@ export class KMeans implements Clusterer {
       readonly algorithm?: "lloyd" | "elkan" | "auto";
     } = {}
   ) {
+    assertKnownOptions("KMeans", options, KMEANS_OPTION_KEYS);
     this.nClusters = options.nClusters ?? 8;
     this.maxIter = options.maxIter ?? 300;
     this.tol = options.tol ?? 1e-4;

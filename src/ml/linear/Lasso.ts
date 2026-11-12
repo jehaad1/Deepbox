@@ -5,10 +5,12 @@
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { InvalidParameterError, NotFittedError } from "../../core";
+import { NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import {
   applyCoordinateDescentParam,
   fitCoordinateDescent,
@@ -37,6 +39,18 @@ export type LassoOptions = {
   /** Seed for `selection: "random"`; the global generator is used when omitted. */
   readonly randomState?: number;
 };
+
+const LASSO_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Lasso>[0]>>({
+  alpha: true,
+  fitIntercept: true,
+  normalize: true,
+  maxIter: true,
+  tol: true,
+  warmStart: true,
+  positive: true,
+  selection: true,
+  randomState: true,
+});
 
 /**
  * Lasso Regression (L1 Regularized Linear Regression).
@@ -113,17 +127,15 @@ export class Lasso implements Regressor {
    * @param options.positive - Whether to force coefficients to be non-negative (default: false)
    * @param options.selection - Coordinate order: 'cyclic' (default) or 'random'
    * @param options.randomState - Seed for the random coordinate order
-   * @throws {InvalidParameterError} If `randomState` is not a finite number
+   * @throws {InvalidParameterError} If an option is outside its valid range (the same checks as `setParams`)
    */
   constructor(options: LassoOptions = {}) {
-    this.options = { ...options };
-    if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
-      throw new InvalidParameterError(
-        `randomState must be a finite number; received ${String(this.options.randomState)}`,
-        "randomState",
-        this.options.randomState
-      );
+    assertKnownOptions("Lasso", options, LASSO_OPTION_KEYS);
+    const validated: LassoOptions = {};
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) applyCoordinateDescentParam(validated, key, value, false);
     }
+    this.options = validated;
   }
 
   /**
@@ -147,15 +159,18 @@ export class Lasso implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); rescaled to sum to n_samples, as scikit-learn does
    * @returns this - The fitted estimator for method chaining
    * @throws {ShapeError} If X is not 2D or y is not 1D
-   * @throws {ShapeError} If X and y have different number of samples
-   * @throws {DataValidationError} If X or y contain NaN/Inf values
+   * @throws {ShapeError} If X and y have different number of samples, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf values, or a weight is negative, not finite, or all weights are zero
    * @throws {DataValidationError} If X or y are empty
    * @throws {InvalidParameterError} If alpha < 0 or another hyper-parameter is out of range
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, X.shape[0] ?? 0);
 
     const alpha = this.options.alpha ?? 1.0;
     const maxIter = this.options.maxIter ?? 1000;
@@ -181,6 +196,7 @@ export class Lasso implements Regressor {
       randomState: this.options.randomState,
       warmCoef,
       modelName: "Lasso",
+      sampleWeight,
     });
 
     this.nFeaturesIn_ = n;

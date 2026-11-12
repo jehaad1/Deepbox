@@ -14,6 +14,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validateFitInputs,
@@ -117,6 +118,17 @@ function normalizeNuSvcConfig(o: Record<string, unknown>): NuSvcConfig {
   };
 }
 
+const NU_SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof NuSVC>[0]>>({
+  nu: true,
+  kernel: true,
+  gamma: true,
+  coef0: true,
+  degree: true,
+  maxIter: true,
+  tol: true,
+  cacheSize: true,
+});
+
 /**
  * Nu-Support Vector Classification.
  *
@@ -126,6 +138,8 @@ function normalizeNuSvcConfig(o: Record<string, unknown>): NuSvcConfig {
  *
  * `predictProba` returns a monotone squashing of the decision values, not calibrated
  * probabilities.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
  *
  * @example
  * ```ts
@@ -151,6 +165,7 @@ export class NuSVC implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: NuSVCOptions = {}) {
+    assertKnownOptions("NuSVC", options, NU_SVC_OPTION_KEYS);
     this.cfg = normalizeNuSvcConfig(options as Record<string, unknown>);
   }
 
@@ -416,11 +431,25 @@ function normalizeNuSvrConfig(o: Record<string, unknown>): NuSvrConfig {
   return { ...normalizeNuSvcConfig(o), C: optionOr(o, "C", 1.0, parseC) };
 }
 
+const NU_SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof NuSVR>[0]>>({
+  nu: true,
+  C: true,
+  kernel: true,
+  gamma: true,
+  coef0: true,
+  degree: true,
+  maxIter: true,
+  tol: true,
+  cacheSize: true,
+});
+
 /**
  * Nu-Support Vector Regression.
  *
  * Like {@link SVR} but `nu` in (0, 1] controls the fraction of support vectors and the
  * width of the insensitive tube is found by the solver instead of being given.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
  *
  * @example
  * ```ts
@@ -446,6 +475,7 @@ export class NuSVR implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: NuSVROptions = {}) {
+    assertKnownOptions("NuSVR", options, NU_SVR_OPTION_KEYS);
     this.cfg = normalizeNuSvrConfig(options as Record<string, unknown>);
   }
 
@@ -600,6 +630,19 @@ export class NuSVR implements Regressor {
 /** Constructor options of {@link OneClassSVM}. */
 export type OneClassSVMOptions = NuSVCOptions;
 
+const ONE_CLASS_SVM_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof OneClassSVM>[0]>
+>({
+  nu: true,
+  kernel: true,
+  gamma: true,
+  coef0: true,
+  degree: true,
+  maxIter: true,
+  tol: true,
+  cacheSize: true,
+});
+
 /**
  * One-Class SVM for unsupervised outlier detection.
  *
@@ -610,6 +653,8 @@ export type OneClassSVMOptions = NuSVCOptions;
  * `scoreSamples` returns the raw kernel expansion `sum_i alpha_i K(sv_i, x)`,
  * `decisionFunction` returns `scoreSamples(X) - offset`, and `predict` returns +1 where the
  * decision function is `>= 0` and -1 elsewhere.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
  *
  * @example
  * ```ts
@@ -634,6 +679,7 @@ export class OneClassSVM implements OutlierDetector {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: OneClassSVMOptions = {}) {
+    assertKnownOptions("OneClassSVM", options, ONE_CLASS_SVM_OPTION_KEYS);
     this.cfg = normalizeNuSvcConfig(options as Record<string, unknown>);
   }
 

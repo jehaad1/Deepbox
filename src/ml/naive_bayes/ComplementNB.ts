@@ -4,6 +4,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError } from "../../core";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
 import {
@@ -20,6 +21,10 @@ import {
   nbValidatePriors,
   nbValidateScoreTarget,
 } from "./index";
+
+const COMPLEMENT_NB_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof ComplementNB>[0]>
+>({ alpha: true, fitPrior: true, norm: true, classPrior: true });
 
 /**
  * Complement Naive Bayes classifier.
@@ -80,6 +85,7 @@ export class ComplementNB implements Classifier {
       readonly classPrior?: readonly number[] | null;
     } = {}
   ) {
+    assertKnownOptions("ComplementNB", options, COMPLEMENT_NB_OPTION_KEYS);
     this.alpha = nbValidateAlpha(options.alpha ?? 1.0);
     this.fitPrior = nbValidateBoolean("fitPrior", options.fitPrior ?? true);
     this.norm = nbValidateBoolean("norm", options.norm ?? false);

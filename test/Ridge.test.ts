@@ -9,10 +9,8 @@ describe("deepbox/ml - Ridge", () => {
   });
 
   it("should validate alpha", () => {
-    const model = new Ridge({ alpha: -1 });
-    const X = tensor([[1], [2]]);
-    const y = tensor([1, 2]);
-    expect(() => model.fit(X, y)).toThrow("alpha must be >= 0");
+    expect(() => new Ridge({ alpha: -1 })).toThrow("alpha must be >= 0");
+    expect(() => new Ridge().setParams({ alpha: -1 })).toThrow("alpha must be >= 0");
   });
 
   it("should fit and predict with intercept", () => {

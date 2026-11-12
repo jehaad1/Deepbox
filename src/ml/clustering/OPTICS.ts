@@ -11,7 +11,7 @@
 
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { kthSmallest } from "../_internal";
+import { assertKnownOptions, kthSmallest, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -261,6 +261,16 @@ function checkBoolean(name: string, value: unknown): boolean {
   return value;
 }
 
+const OPTICS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof OPTICS>[0]>>({
+  minSamples: true,
+  maxEps: true,
+  clusterMethod: true,
+  xi: true,
+  eps: true,
+  minClusterSize: true,
+  predecessorCorrection: true,
+});
+
 /**
  * OPTICS clustering algorithm.
  *
@@ -281,6 +291,8 @@ function checkBoolean(name: string, value: unknown): boolean {
  *
  * Distances are computed on the fly, so memory use is linear in the number of samples;
  * run time is quadratic.
+ *
+ * Default differs from scikit-learn: `clusterMethod` is "dbscan" (scikit-learn: "xi").
  *
  * @example
  * ```ts
@@ -337,6 +349,7 @@ export class OPTICS implements Clusterer {
       readonly predecessorCorrection?: boolean;
     } = {}
   ) {
+    assertKnownOptions("OPTICS", options, OPTICS_OPTION_KEYS);
     this.minSamples = checkMinSamples(options.minSamples ?? 5);
     this.maxEps = checkMaxEps(options.maxEps ?? Infinity);
     this.clusterMethod = checkClusterMethod(options.clusterMethod ?? "dbscan");

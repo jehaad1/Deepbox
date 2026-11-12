@@ -10,6 +10,7 @@ import {
   ShapeError,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, assertReadOnlyParam, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -220,6 +221,10 @@ export type StackingRegressorOptions = {
   readonly cv?: number;
 };
 
+const STACKING_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof StackingClassifier>[0]>
+>({ estimators: true, finalEstimator: true, passthrough: true, cv: true, stackMethod: true });
+
 /**
  * Stacking Classifier.
  *
@@ -282,6 +287,7 @@ export class StackingClassifier implements Classifier {
    * @throws {InvalidParameterError} If there are no base estimators or an option is invalid
    */
   constructor(options: StackingClassifierOptions) {
+    assertKnownOptions("StackingClassifier", options, STACKING_CLASSIFIER_OPTION_KEYS);
     if (!options.estimators || options.estimators.length === 0) {
       throw new InvalidParameterError(
         "StackingClassifier requires at least one base estimator",
@@ -535,7 +541,7 @@ export class StackingClassifier implements Classifier {
 
   /**
    * Set `passthrough`, `cv` or `stackMethod`. The base and final estimators are fixed at
-   * construction.
+   * construction; `nEstimators` is accepted only when it equals their count.
    *
    * @throws {InvalidParameterError} If a value is invalid or the key is unknown
    */
@@ -550,6 +556,9 @@ export class StackingClassifier implements Classifier {
           break;
         case "stackMethod":
           this.stackMethod = checkStackMethod(value);
+          break;
+        case "nEstimators":
+          assertReadOnlyParam("StackingClassifier", key, value, this.estimators.length);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -571,6 +580,10 @@ export class StackingClassifier implements Classifier {
     });
   }
 }
+
+const STACKING_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof StackingRegressor>[0]>
+>({ estimators: true, finalEstimator: true, passthrough: true, cv: true });
 
 /**
  * Stacking Regressor.
@@ -621,6 +634,7 @@ export class StackingRegressor implements Regressor {
    * @throws {InvalidParameterError} If there are no base estimators or an option is invalid
    */
   constructor(options: StackingRegressorOptions) {
+    assertKnownOptions("StackingRegressor", options, STACKING_REGRESSOR_OPTION_KEYS);
     if (!options.estimators || options.estimators.length === 0) {
       throw new InvalidParameterError(
         "StackingRegressor requires at least one base estimator",
@@ -764,7 +778,8 @@ export class StackingRegressor implements Regressor {
   }
 
   /**
-   * Set `passthrough` or `cv`. The base and final estimators are fixed at construction.
+   * Set `passthrough` or `cv`. The base and final estimators are fixed at construction;
+   * `nEstimators` is accepted only when it equals their count.
    *
    * @throws {InvalidParameterError} If a value is invalid or the key is unknown
    */
@@ -776,6 +791,9 @@ export class StackingRegressor implements Regressor {
           break;
         case "cv":
           this.cv = checkCv(value);
+          break;
+        case "nEstimators":
+          assertReadOnlyParam("StackingRegressor", key, value, this.estimators.length);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);

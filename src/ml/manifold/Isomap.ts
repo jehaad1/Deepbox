@@ -13,6 +13,7 @@ import { DataValidationError, InvalidParameterError, NotFittedError, warn } from
 import { fromDenseMatrix2D } from "../../linalg/_internal";
 import { eigh } from "../../linalg/decomposition/eig";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -254,6 +255,11 @@ class MinHeap {
   }
 }
 
+const ISOMAP_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Isomap>[0]>>({
+  nComponents: true,
+  nNeighbors: true,
+});
+
 /**
  * Isomap: nonlinear dimensionality reduction through geodesic distances.
  *
@@ -308,6 +314,7 @@ export class Isomap {
       readonly nNeighbors?: number;
     } = {}
   ) {
+    assertKnownOptions("Isomap", options, ISOMAP_OPTION_KEYS);
     this.nComponents = options.nComponents ?? 2;
     this.nNeighbors = options.nNeighbors ?? 5;
     this.validateParams();

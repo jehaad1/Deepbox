@@ -12,6 +12,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -346,6 +347,10 @@ function solvePinballLP(
   return { beta, nIter, converged };
 }
 
+const QUANTILE_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof QuantileRegressor>[0]>
+>({ quantile: true, alpha: true, fitIntercept: true, maxIter: true, tol: true });
+
 /**
  * Quantile Regressor.
  *
@@ -406,6 +411,7 @@ export class QuantileRegressor implements Regressor {
       readonly tol?: number;
     } = {}
   ) {
+    assertKnownOptions("QuantileRegressor", options, QUANTILE_REGRESSOR_OPTION_KEYS);
     this.quantile = options.quantile ?? 0.5;
     this.alpha = options.alpha ?? 1.0;
     this.fitIntercept = options.fitIntercept ?? true;

@@ -119,7 +119,16 @@ export type { TSNEOptions } from "./manifold/TSNE";
 // Multi-layer Perceptron
 export { MLPClassifier, MLPRegressor } from "./mlp";
 // Model selection
-export type { CrossValidateResult, GridSearchResult } from "./model_selection";
+export type {
+  CrossValidateResult,
+  CrossValidator,
+  CrossValScoreOptions,
+  CvGroups,
+  CvOptions,
+  CvSpec,
+  CvSplit,
+  GridSearchResult,
+} from "./model_selection";
 export {
   cross_val_score,
   cross_validate,

@@ -5,6 +5,7 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   percentileSorted,
   toFloat64View,
@@ -100,6 +101,16 @@ function randomStateError(value: unknown): InvalidParameterError {
   );
 }
 
+const ISOLATION_FOREST_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof IsolationForest>[0]>
+>({
+  nEstimators: true,
+  maxSamples: true,
+  contamination: true,
+  maxFeatures: true,
+  randomState: true,
+});
+
 /**
  * Isolation Forest for anomaly/outlier detection.
  *
@@ -158,6 +169,7 @@ export class IsolationForest implements OutlierDetector {
       readonly randomState?: number;
     } = {}
   ) {
+    assertKnownOptions("IsolationForest", options, ISOLATION_FOREST_OPTION_KEYS);
     const nEstimators = options.nEstimators ?? 100;
     const maxSamples = options.maxSamples ?? "auto";
     const contamination = options.contamination ?? "auto";

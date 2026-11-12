@@ -12,6 +12,7 @@
 import { ConvergenceError, InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { createTreeRng } from "../tree/DecisionTree";
@@ -61,6 +62,20 @@ function dynamicMaxTrials(
   if (denom === 1) return Infinity;
   return Math.abs(Math.ceil(Math.log(nom) / Math.log(denom)));
 }
+
+const RANSACREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RANSACRegressor>[0]>
+>({
+  estimator: true,
+  minSamples: true,
+  residualThreshold: true,
+  maxTrials: true,
+  stopNInliers: true,
+  stopScore: true,
+  stopProbability: true,
+  loss: true,
+  randomState: true,
+});
 
 /**
  * RANSAC (Random Sample Consensus) Regressor.
@@ -114,7 +129,7 @@ export class RANSACRegressor implements Regressor {
    * @param options.minSamples - Samples drawn per trial. An integer >= 1, or a fraction in (0, 1) of the training samples (default: n_features + 1)
    * @param options.residualThreshold - Maximum loss for a sample to count as an inlier (default: median absolute deviation of y)
    * @param options.maxTrials - Maximum number of random trials (default: 100)
-   * @param options.stopNInliers - Stop once a model has this many inliers (default: Infinity)
+   * @param options.stopNInliers - Stop once a model has this many inliers; an integer >= 0 or Infinity (default: Infinity)
    * @param options.stopScore - Stop once a model reaches this R² on its inliers (default: Infinity)
    * @param options.stopProbability - Probability, in [0, 1), of having drawn an outlier-free subset that ends the search early (default: 0.99)
    * @param options.loss - 'absolute_error' or 'squared_error' (default: 'absolute_error'). `residualThreshold` is in the units of this loss.
@@ -122,6 +137,7 @@ export class RANSACRegressor implements Regressor {
    * @throws {InvalidParameterError} If any option is out of range
    */
   constructor(options: RANSACOptions = {}) {
+    assertKnownOptions("RANSACRegressor", options, RANSACREGRESSOR_OPTION_KEYS);
     this.estimator_ = options.estimator;
     this.minSamples = options.minSamples;
     this.residualThreshold = options.residualThreshold;
@@ -162,9 +178,13 @@ export class RANSACRegressor implements Regressor {
         rt
       );
     }
-    if (typeof this.stopNInliers !== "number" || Number.isNaN(this.stopNInliers)) {
+    if (
+      typeof this.stopNInliers !== "number" ||
+      !(Number.isInteger(this.stopNInliers) || this.stopNInliers === Number.POSITIVE_INFINITY) ||
+      this.stopNInliers < 0
+    ) {
       throw new InvalidParameterError(
-        `stopNInliers must be a number; received ${String(this.stopNInliers)}`,
+        `stopNInliers must be an integer >= 0 or Infinity; received ${String(this.stopNInliers)}`,
         "stopNInliers",
         this.stopNInliers
       );

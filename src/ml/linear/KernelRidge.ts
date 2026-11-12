@@ -9,8 +9,10 @@ import { DataValidationError, InvalidParameterError, NotFittedError, warn } from
 import { lstsq } from "../../linalg";
 import { solve } from "../../linalg/solvers/solve";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 /** Kernel functions supported by {@link KernelRidge}. `"poly"` is an alias of `"polynomial"`. */
@@ -109,6 +111,10 @@ function makeKernel(o: Options): KernelFn {
   }
 }
 
+const KERNEL_RIDGE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof KernelRidge>[0]>
+>({ alpha: true, kernel: true, gamma: true, degree: true, coef0: true });
+
 /**
  * Kernel Ridge Regression.
  *
@@ -118,9 +124,10 @@ function makeKernel(o: Options): KernelFn {
  *
  * Solves: (K + alpha * I) * dual_coef = y
  *
- * and predicts `K(X_test, X_train) @ dual_coef`. The defaults differ from scikit-learn's
- * (`kernel: "rbf"` and `gamma: 1.0` here, `"linear"` and `1 / n_features` there), so pass them
- * explicitly when comparing the two.
+ * and predicts `K(X_test, X_train) @ dual_coef`.
+ *
+ * Default differs from scikit-learn: `kernel` is "rbf" (scikit-learn: "linear") and `gamma` is 1.0 (scikit-learn: `None`, meaning `1 / n_features`).
+ * Pass `kernel` and `gamma` explicitly when comparing the two libraries.
  *
  * @example
  * ```ts
@@ -155,6 +162,7 @@ export class KernelRidge implements Regressor {
    * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(options: KernelRidgeOptions = {}) {
+    assertKnownOptions("KernelRidge", options, KERNEL_RIDGE_OPTION_KEYS);
     this.options = resolveOptions(options);
   }
 
@@ -166,22 +174,29 @@ export class KernelRidge implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the system becomes `(K + alpha W^-1) c = y` for the weight matrix `W`, as in scikit-learn
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const d = X.shape[1] ?? 0;
     const xFit = Float64Array.from(toFloat64View(X));
     const yv = toFloat64View(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, n);
+    // sqrt(weight) scaling turns (K + alpha W^-1) c = y into (S K S + alpha I) c' = S y, c = S c'.
+    const root =
+      sampleWeight === undefined ? undefined : Float64Array.from(sampleWeight, Math.sqrt);
 
     const kernel = makeKernel(this.options);
     const K = new Float64Array(n * n);
     for (let i = 0; i < n; i++) {
       for (let j = i; j < n; j++) {
-        const v = kernel(xFit, i * d, xFit, j * d, d);
+        const raw = kernel(xFit, i * d, xFit, j * d, d);
+        const v = root === undefined ? raw : raw * (root[i] as number) * (root[j] as number);
         K[i * n + j] = v;
         K[j * n + i] = v;
       }
@@ -189,7 +204,10 @@ export class KernelRidge implements Regressor {
     }
 
     const KTensor = tensor(K, { dtype: "float64" }).reshape([n, n]);
-    const yTensor = tensor(yv.slice(), { dtype: "float64" });
+    const yScaled = yv.slice();
+    if (root !== undefined)
+      for (let i = 0; i < n; i++) yScaled[i] = (yScaled[i] as number) * (root[i] as number);
+    const yTensor = tensor(yScaled, { dtype: "float64" });
     let solution: Tensor;
     try {
       solution = solve(KTensor, yTensor);
@@ -205,6 +223,10 @@ export class KernelRidge implements Regressor {
 
     this.fitOptions_ = { ...this.options };
     this.dualCoef_ = Float64Array.from(toFloat64View(solution));
+    if (root !== undefined) {
+      for (let i = 0; i < n; i++)
+        this.dualCoef_[i] = (this.dualCoef_[i] as number) * (root[i] as number);
+    }
     this.XFit_ = xFit;
     this.nSamplesFit_ = n;
     this.nFeaturesFit_ = d;

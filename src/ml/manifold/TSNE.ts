@@ -2,6 +2,7 @@ import { ConvergenceError, InvalidParameterError, NotFittedError, ShapeError } f
 import { fromDenseMatrix2D } from "../../linalg/_internal";
 import type { Tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateUnsupervisedFitInputs } from "../_validation";
 
 /**
@@ -142,6 +143,8 @@ export type TSNEOptions = {
   readonly perplexity?: number;
   readonly learningRate?: number | "auto";
   readonly nIter?: number;
+  /** Alias of `nIter` (the scikit-learn name `max_iter`). Giving both with different values is an error. */
+  readonly maxIter?: number;
   readonly earlyExaggeration?: number;
   readonly earlyExaggerationIter?: number;
   readonly randomState?: number;
@@ -171,20 +174,23 @@ type ResolvedTSNEOptions = {
   readonly negativeSamples: number;
 };
 
-const TSNE_PARAM_NAMES: ReadonlySet<string> = new Set([
-  "nComponents",
-  "perplexity",
-  "learningRate",
-  "nIter",
-  "earlyExaggeration",
-  "earlyExaggerationIter",
-  "randomState",
-  "minGradNorm",
-  "method",
-  "maxExactSamples",
-  "approximateNeighbors",
-  "negativeSamples",
-]);
+const TSNE_OPTION_KEYS = optionKeys<TSNEOptions>({
+  nComponents: true,
+  perplexity: true,
+  learningRate: true,
+  nIter: true,
+  maxIter: true,
+  earlyExaggeration: true,
+  earlyExaggerationIter: true,
+  randomState: true,
+  minGradNorm: true,
+  method: true,
+  maxExactSamples: true,
+  approximateNeighbors: true,
+  negativeSamples: true,
+});
+
+const TSNE_PARAM_NAMES: ReadonlySet<string> = new Set(TSNE_OPTION_KEYS);
 
 /**
  * t-Distributed Stochastic Neighbor Embedding (t-SNE).
@@ -208,6 +214,8 @@ const TSNE_PARAM_NAMES: ReadonlySet<string> = new Set([
  *
  * t-SNE is non-parametric: it embeds exactly the samples it was fitted on and cannot
  * project new data.
+ *
+ * Default differs from scikit-learn: `method` is "exact" (scikit-learn: "barnes_hut").
  *
  * @example
  * ```ts
@@ -283,6 +291,7 @@ export class TSNE {
    * @param options.perplexity - Effective number of neighbors, must be < n_samples (default: 30)
    * @param options.learningRate - Step size, or `"auto"` for `max(n_samples / earlyExaggeration / 4, 50)` (default: "auto")
    * @param options.nIter - Total number of optimization iterations, including early exaggeration (default: 1000)
+   * @param options.maxIter - Alias of `nIter`
    * @param options.earlyExaggeration - Multiplier of the input affinities during the first phase (default: 12)
    * @param options.earlyExaggerationIter - Length of the first phase, capped at `nIter` (default: 250)
    * @param options.randomState - Seed of the initialization and sampling; without it the global Deepbox generator is used
@@ -292,7 +301,9 @@ export class TSNE {
    * @param options.approximateNeighbors - Nearest neighbors per point in approximate mode (default: `max(5, 3 * perplexity)`)
    * @param options.negativeSamples - Random repulsion partners per point and iteration in approximate mode (default: `max(10, 2 * perplexity)`)
    */
-  constructor(options: TSNEOptions = {}) {
+  constructor(rawOptions: TSNEOptions = {}) {
+    assertKnownOptions("TSNE", rawOptions, TSNE_OPTION_KEYS);
+    const options = TSNE.canonicalOptions(rawOptions);
     const resolved = TSNE.resolveOptions(options);
     this.nComponents = resolved.nComponents;
     this.perplexity = resolved.perplexity;
@@ -307,6 +318,24 @@ export class TSNE {
     this.approximateNeighbors = resolved.approximateNeighbors;
     this.negativeSamples = resolved.negativeSamples;
     this.userOptions = { ...options };
+  }
+
+  private static checkAlias(maxIter: unknown, nIter: unknown): void {
+    if (maxIter !== undefined && nIter !== undefined && maxIter !== nIter) {
+      throw new InvalidParameterError(
+        `maxIter is an alias of nIter; got maxIter=${String(maxIter)} and nIter=${String(nIter)}`,
+        "maxIter",
+        maxIter
+      );
+    }
+  }
+
+  /** Fold the `maxIter` alias into `nIter`. */
+  private static canonicalOptions(options: TSNEOptions): TSNEOptions {
+    const { maxIter, ...rest } = options;
+    if (maxIter === undefined) return rest;
+    TSNE.checkAlias(maxIter, rest.nIter);
+    return { ...rest, nIter: maxIter };
   }
 
   /** Apply defaults and validate every option; nothing is stored here. */
@@ -945,11 +974,18 @@ export class TSNE {
    */
   setParams(params: Record<string, unknown>): this {
     const merged: Record<string, unknown> = { ...this.userOptions };
+    let alias: unknown;
     for (const [key, value] of Object.entries(params)) {
       if (!TSNE_PARAM_NAMES.has(key)) {
         throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
-      merged[key] = value;
+      if (key === "maxIter") alias = value;
+      else merged[key] = value;
+    }
+    if (alias !== undefined) {
+      // The alias replaces the stored nIter, so it only has to agree with an nIter in `params`.
+      TSNE.checkAlias(alias, params["nIter"]);
+      merged["nIter"] = alias;
     }
     const options = merged as TSNEOptions;
     const resolved = TSNE.resolveOptions(options);

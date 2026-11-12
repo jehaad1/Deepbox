@@ -4,6 +4,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -11,6 +12,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Classifier, Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { createTreeRng, DecisionTreeClassifier, DecisionTreeRegressor } from "../tree/DecisionTree";
 import { predictRegressionTree } from "./_tree";
 
@@ -142,6 +144,14 @@ function gatherValues(v: Float64Array, indices: Int32Array): Tensor {
   return tensor(out, { dtype: "float64" });
 }
 
+/** Starting boosting weights: the normalized sample weights, or `1 / n` for each sample. */
+function initialWeights(sampleWeight: Float64Array | undefined, nSamples: number): Float64Array {
+  if (sampleWeight === undefined) return new Float64Array(nSamples).fill(1 / nSamples);
+  const weights = Float64Array.from(sampleWeight);
+  normalizeWeights(weights);
+  return weights;
+}
+
 /**
  * Normalize `w` in place so it sums to one. Returns false, leaving `w` untouched, when the
  * total is zero or not finite (every weight underflowed), so boosting can stop cleanly.
@@ -204,6 +214,10 @@ function definedOptions<T>(params: Record<string, unknown>): T {
   return out as T;
 }
 
+const ADA_BOOST_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AdaBoostClassifier>[0]>
+>({ nEstimators: true, learningRate: true, maxDepth: true, randomState: true });
+
 /**
  * AdaBoost Classifier (Adaptive Boosting).
  *
@@ -251,6 +265,7 @@ export class AdaBoostClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: AdaBoostClassifierOptions = {}) {
+    assertKnownOptions("AdaBoostClassifier", options, ADA_BOOST_CLASSIFIER_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 50);
     this.learningRate = checkLearningRate(options.learningRate ?? 1.0);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 1);
@@ -262,12 +277,14 @@ export class AdaBoostClassifier implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Integer class labels of shape (n_samples,), with at least two classes
+   * @param sampleWeight - Optional initial per-sample weights of shape (n_samples,); they are normalized to sum to 1 and start the boosting weights, so heavier samples are drawn more often
    * @returns this
-   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
-   * @throws {DataValidationError} If X or y contain NaN/Inf or y has non-integer labels
+   * @throws {ShapeError} If X is not 2D, y is not 1D, the sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf, y has non-integer labels, or a weight is negative, not finite, or all weights are zero
    * @throws {InvalidParameterError} If y contains a single class
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
@@ -286,7 +303,10 @@ export class AdaBoostClassifier implements Classifier {
     }
 
     const rng = createTreeRng(this.randomState);
-    const weights = new Float64Array(nSamples).fill(1 / nSamples);
+    const weights = initialWeights(
+      readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples),
+      nSamples
+    );
     const estimators: DecisionTreeClassifier[] = [];
     const estimatorWeights: number[] = [];
 
@@ -577,6 +597,10 @@ export class AdaBoostClassifier implements Classifier {
   }
 }
 
+const ADA_BOOST_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AdaBoostRegressor>[0]>
+>({ nEstimators: true, learningRate: true, maxDepth: true, randomState: true, loss: true });
+
 /**
  * AdaBoost Regressor (Adaptive Boosting for Regression).
  *
@@ -620,6 +644,7 @@ export class AdaBoostRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: AdaBoostRegressorOptions = {}) {
+    assertKnownOptions("AdaBoostRegressor", options, ADA_BOOST_REGRESSOR_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 50);
     this.learningRate = checkLearningRate(options.learningRate ?? 1.0);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 3);
@@ -632,11 +657,13 @@ export class AdaBoostRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Targets of shape (n_samples,)
+   * @param sampleWeight - Optional initial per-sample weights of shape (n_samples,); they are normalized to sum to 1 and start the boosting weights, so heavier samples are drawn more often
    * @returns this
-   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
-   * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, the sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf, or a weight is negative, not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
@@ -644,7 +671,10 @@ export class AdaBoostRegressor implements Regressor {
     const yv = toFloat64View(y);
 
     const rng = createTreeRng(this.randomState);
-    const weights = new Float64Array(nSamples).fill(1 / nSamples);
+    const weights = initialWeights(
+      readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples),
+      nSamples
+    );
     const losses = new Float64Array(nSamples);
     const estimators: DecisionTreeRegressor[] = [];
     const estimatorWeights: number[] = [];

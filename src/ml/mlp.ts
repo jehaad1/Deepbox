@@ -16,7 +16,7 @@ import {
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../random/random";
-import { r2Score } from "./_internal";
+import { assertKnownOptions, optionKeys, r2Score } from "./_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -24,6 +24,7 @@ import {
   validatePredictInputs,
 } from "./_validation";
 import type { Classifier, Regressor } from "./base";
+import { readSampleWeight } from "./tree/_growth";
 
 type ActivationFn = "relu" | "tanh" | "logistic" | "identity";
 
@@ -178,6 +179,8 @@ type TrainConfig = {
   readonly shuffle: boolean;
   readonly nIterNoChange: number;
   readonly rng: () => number;
+  /** Per-sample weights: they scale each sample's loss and gradient. */
+  readonly sampleWeight?: Float64Array | undefined;
 };
 
 const LOSS_EPS = 1e-15;
@@ -214,6 +217,12 @@ function train(
   const lr = cfg.learningRate;
   const alpha = cfg.alpha;
 
+  let weightTotal = nSamples;
+  if (cfg.sampleWeight !== undefined) {
+    weightTotal = 0;
+    for (let i = 0; i < nSamples; i++) weightTotal += cfg.sampleWeight[i] as number;
+  }
+
   const lossCurve: number[] = [];
   let bestLoss = Infinity;
   let noImprovement = 0;
@@ -231,6 +240,8 @@ function train(
     let epochLoss = 0;
     for (let s = 0; s < nSamples; s++) {
       const idx = order[s] as number;
+      const sw = cfg.sampleWeight === undefined ? 1 : (cfg.sampleWeight[idx] as number);
+      const lossBefore = epochLoss;
       const xBase = idx * nFeatures;
       for (let f = 0; f < nFeatures; f++) input[f] = X[xBase + f] as number;
       forward(net, acts);
@@ -248,9 +259,10 @@ function train(
       }
       for (let k = 0; k < nOut; k++) {
         const err = (output[k] as number) - (T[tBase + k] as number);
-        outDelta[k] = err;
+        outDelta[k] = err * sw;
         if (outputKind === "squared") epochLoss += 0.5 * err * err;
       }
+      if (sw !== 1) epochLoss = lossBefore + sw * (epochLoss - lossBefore);
 
       // Backward pass. The delta of the layer below is computed from the weights
       // before they are updated.
@@ -278,7 +290,7 @@ function train(
       }
     }
 
-    epochLoss /= nSamples;
+    epochLoss /= weightTotal;
     if (!Number.isFinite(epochLoss)) {
       throw new ConvergenceError(
         `Training diverged at epoch ${epoch + 1}: the loss is not finite. ` +
@@ -458,6 +470,20 @@ function buildLayers(
   return layers;
 }
 
+const MLPCLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MLPClassifier>[0]>
+>({
+  hiddenLayerSizes: true,
+  activation: true,
+  learningRate: true,
+  maxIter: true,
+  tol: true,
+  alpha: true,
+  shuffle: true,
+  randomState: true,
+  nIterNoChange: true,
+});
+
 /**
  * Multi-layer Perceptron Classifier.
  *
@@ -507,21 +533,32 @@ export class MLPClassifier implements Classifier {
    * @param options.nIterNoChange - Epochs without improvement tolerated before stopping (default: 10)
    */
   constructor(options: MLPOptions = {}) {
+    assertKnownOptions("MLPClassifier", options, MLPCLASSIFIER_OPTION_KEYS);
     this.opts = resolveOptions(options);
     validateOptions(this.opts);
   }
 
-  fit(X: Tensor, y: Tensor): this {
+  /**
+   * Train the network.
+   *
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each scales the loss gradient of its sample, as in scikit-learn
+   * @throws {DataValidationError} If a label is not an integer in the int32 range, `y` holds fewer than 2 classes, or a weight is negative, not finite, or all weights are zero
+   * @throws {ShapeError} If `sampleWeight` does not have one entry per sample
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
     const XData = toFloat64View(X);
     const yData = toFloat64View(y);
     for (let i = 0; i < nSamples; i++) {
-      if (!Number.isInteger(yData[i])) {
+      const v = yData[i] as number;
+      if (!Number.isInteger(v) || v < -2147483648 || v > 2147483647) {
         throw new DataValidationError(
-          `MLPClassifier requires integer class labels; y[${i}] = ${yData[i]}`
+          `MLPClassifier requires integer class labels in the int32 range; y[${i}] = ${v}`
         );
       }
     }
@@ -567,6 +604,7 @@ export class MLPClassifier implements Classifier {
       shuffle: this.opts.shuffle,
       nIterNoChange: this.opts.nIterNoChange,
       rng,
+      sampleWeight,
     });
 
     this.net_ = net;
@@ -746,6 +784,20 @@ export class MLPClassifier implements Classifier {
   }
 }
 
+const MLPREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MLPRegressor>[0]>
+>({
+  hiddenLayerSizes: true,
+  activation: true,
+  learningRate: true,
+  maxIter: true,
+  tol: true,
+  alpha: true,
+  shuffle: true,
+  randomState: true,
+  nIterNoChange: true,
+});
+
 /**
  * Multi-layer Perceptron Regressor.
  *
@@ -794,14 +846,24 @@ export class MLPRegressor implements Regressor {
    * @param options.nIterNoChange - Epochs without improvement tolerated before stopping (default: 10)
    */
   constructor(options: MLPOptions = {}) {
+    assertKnownOptions("MLPRegressor", options, MLPREGRESSOR_OPTION_KEYS);
     this.opts = resolveOptions(options);
     validateOptions(this.opts);
   }
 
-  fit(X: Tensor, y: Tensor): this {
+  /**
+   * Train the network.
+   *
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each scales the loss gradient of its sample, as in scikit-learn
+   * @throws {ShapeError} If `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If a weight is negative, not finite, or all weights are zero
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
     const XData = toFloat64View(X);
     const yData = toFloat64View(y);
@@ -831,6 +893,7 @@ export class MLPRegressor implements Regressor {
       shuffle: this.opts.shuffle,
       nIterNoChange: this.opts.nIterNoChange,
       rng,
+      sampleWeight,
     });
 
     this.net_ = net;

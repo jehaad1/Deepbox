@@ -76,7 +76,7 @@ export class KDTree {
   private readonly root: KDNode | null;
 
   /**
-   * @param data - Row-major points, at least `nSamples * nDims` values
+   * @param data - Row-major points, at least `nSamples * nDims` values; the first `nSamples * nDims` values are copied
    * @param nSamples - Number of points (rows) to index
    * @param nDims - Number of coordinates per point (>= 1)
    * @throws {InvalidParameterError} If `nSamples` or `nDims` is not a valid integer
@@ -112,7 +112,8 @@ export class KDTree {
 
     this.nSamples = nSamples;
     this.nDims = nDims;
-    this.data = data;
+    // The tree keeps its own copy, so later changes to the caller's buffer cannot corrupt it.
+    this.data = data.slice(0, total);
 
     const order = new Uint32Array(nSamples);
     for (let i = 0; i < nSamples; i++) order[i] = i;

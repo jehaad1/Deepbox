@@ -14,7 +14,7 @@ import {
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../random/random";
-import { cloneEstimator } from "./_internal";
+import { assertKnownOptions, cloneEstimator, optionKeys } from "./_internal";
 import { type Classifier, type Estimator, getEstimatorTags, type Regressor } from "./base";
 
 /** Scoring callback: higher is better. */
@@ -40,9 +40,64 @@ function createRng(seed: number | undefined): () => number {
   return () => gen.next();
 }
 
-function validateCv(cv: unknown): asserts cv is number {
+/** One train/test split, as index lists into the rows of X. */
+export type CvSplit = {
+  readonly trainIndex: ArrayLike<number>;
+  readonly testIndex: ArrayLike<number>;
+};
+
+/** Group label per sample, as a 1-D tensor or an array. */
+export type CvGroups = Tensor | readonly (string | number | bigint)[];
+
+/**
+ * Anything that yields train/test index splits, such as the splitters of `deepbox/preprocess`
+ * (`KFold`, `StratifiedKFold`, `GroupKFold`, `TimeSeriesSplit`, ...). `y` and `groups` are only
+ * passed on; a splitter ignores the ones it does not need.
+ */
+export type CrossValidator = {
+  split(X: Tensor, y?: Tensor, groups?: CvGroups): Iterable<CvSplit>;
+};
+
+/** Cross-validation strategy: a number of folds, or a splitter object. */
+export type CvSpec = number | CrossValidator;
+
+/** Options shared by the cross-validation helpers. */
+export type CvOptions = {
+  /** Group label per sample, forwarded to a splitter that uses groups (ignored for integer `cv`). */
+  groups?: CvGroups | undefined;
+  /** For integer `cv`: shuffle the samples before building folds (default: true). */
+  shuffle?: boolean | undefined;
+  /** For integer `cv` with `shuffle`: seed of the shuffle (default: 0). */
+  randomState?: number | undefined;
+};
+
+function isCrossValidator(cv: unknown): cv is CrossValidator {
+  return (
+    typeof cv === "object" && cv !== null && typeof (cv as CrossValidator).split === "function"
+  );
+}
+
+function validateCv(cv: unknown): asserts cv is CvSpec {
+  if (isCrossValidator(cv)) return;
   if (typeof cv !== "number" || !Number.isInteger(cv) || cv < 2) {
-    throw new InvalidParameterError(`cv must be an integer >= 2; received ${String(cv)}`, "cv", cv);
+    throw new InvalidParameterError(
+      `cv must be an integer >= 2 or an object with a split() method; received ${String(cv)}`,
+      "cv",
+      cv
+    );
+  }
+}
+
+function validateCvOptions(options: CvOptions): void {
+  if (options.shuffle !== undefined && typeof options.shuffle !== "boolean") {
+    throw new InvalidParameterError("shuffle must be a boolean", "shuffle", options.shuffle);
+  }
+  if (options.randomState !== undefined && !Number.isFinite(options.randomState)) {
+    throw new InvalidParameterError(
+      "randomState must be a finite number",
+      "randomState",
+      options.randomState
+    );
   }
 }
 
@@ -52,7 +107,7 @@ function validateCv(cv: unknown): asserts cv is number {
  * @throws {ShapeError} If X is not 2-D, y is not 1-D or 2-D, or their row counts differ
  * @throws {DataValidationError} If X has no rows or no columns
  */
-function validateXY(X: Tensor, y: Tensor, cv: number): number {
+function validateXY(X: Tensor, y: Tensor): number {
   if (X.ndim !== 2) {
     throw new ShapeError(`X must be 2-dimensional; got ndim=${X.ndim}`);
   }
@@ -67,9 +122,6 @@ function validateXY(X: Tensor, y: Tensor, cv: number): number {
   }
   if (nSamples === 0 || (X.shape[1] ?? 0) === 0) {
     throw new DataValidationError("X must have at least one sample and one feature");
-  }
-  if (nSamples < cv) {
-    throw new InvalidParameterError(`Cannot have cv=${cv} with n_samples=${nSamples}`, "cv", cv);
   }
   return nSamples;
 }
@@ -105,43 +157,59 @@ function takeRows(t: Tensor, rows: ArrayLike<number>, squeeze = false): Tensor {
 }
 
 /**
- * Assign every sample to one of `cv` folds with a deterministic (fixed-seed)
- * shuffle. Contiguous folds would fail on class-sorted data: a training fold
- * could contain a single class and silently corrupt model selection.
- *
- * With `stratify`, the samples of each class are spread evenly over the folds,
- * so every fold keeps (as far as possible) the class proportions of `y`.
- * Fold sizes differ by at most one.
+ * Class code (order of first appearance) of every sample, or `undefined` when `y` does not look
+ * like a classification target: more than one column, a single class, or (nearly) as many
+ * distinct values as samples.
  */
-function assignFolds(y: Tensor, nSamples: number, cv: number, stratify: boolean): Int32Array {
-  const rng = createRng(0);
+function classCodes(y: Tensor, nSamples: number): Int32Array | undefined {
+  if (y.ndim !== 1 && y.shape[1] !== 1) return undefined;
+  const classOf = new Map<number, number>();
+  const codes = new Int32Array(nSamples);
+  for (let i = 0; i < nSamples; i++) {
+    const v = Number(y.data[y.offset + i * (y.strides[0] ?? 1)]);
+    let code = classOf.get(v);
+    if (code === undefined) {
+      code = classOf.size;
+      classOf.set(v, code);
+    }
+    codes[i] = code;
+  }
+  return classOf.size >= 2 && classOf.size <= nSamples / 2 ? codes : undefined;
+}
+
+/**
+ * Assign every sample to one of `cv` folds. Fold sizes differ by at most one.
+ *
+ * With `shuffle`, the samples are permuted with a private generator seeded by `seed`. Contiguous
+ * folds would fail on class-sorted data: a training fold could contain a single class and
+ * silently corrupt model selection.
+ *
+ * With `stratify`, the samples of each class are spread evenly over the folds, so every fold
+ * keeps (as far as possible) the class proportions of `y`. Without `shuffle` the folds equal
+ * those of scikit-learn's `KFold` / `StratifiedKFold`.
+ */
+function assignFolds(
+  y: Tensor,
+  nSamples: number,
+  cv: number,
+  stratify: boolean,
+  shuffle: boolean,
+  seed: number
+): Int32Array {
   const perm = Array.from({ length: nSamples }, (_, i) => i);
-  for (let i = nSamples - 1; i > 0; i--) {
-    const j = Math.min(__randomBelow(rng, i + 1), i);
-    const tmp = perm[i] as number;
-    perm[i] = perm[j] as number;
-    perm[j] = tmp;
-  }
-
-  let order = perm;
-  if (stratify && (y.ndim === 1 || y.shape[1] === 1)) {
-    const label = (i: number): number => Number(y.data[y.offset + i * (y.strides[0] ?? 1)]);
-    const classOf = new Map<number, number>();
-    for (let i = 0; i < nSamples; i++) {
-      const v = label(i);
-      if (!classOf.has(v)) classOf.set(v, classOf.size);
-    }
-    // Continuous targets have (nearly) as many distinct values as samples.
-    if (classOf.size >= 2 && classOf.size <= nSamples / 2) {
-      // Stable sort keeps the shuffled order inside each class.
-      order = [...perm].sort(
-        (a, b) => (classOf.get(label(a)) as number) - (classOf.get(label(b)) as number)
-      );
+  if (shuffle) {
+    const rng = createRng(seed);
+    for (let i = nSamples - 1; i > 0; i--) {
+      const j = Math.min(__randomBelow(rng, i + 1), i);
+      const tmp = perm[i] as number;
+      perm[i] = perm[j] as number;
+      perm[j] = tmp;
     }
   }
 
+  const codes = stratify ? classCodes(y, nSamples) : undefined;
   const foldOf = new Int32Array(nSamples);
-  if (order === perm) {
+  if (codes === undefined) {
     const base = Math.floor(nSamples / cv);
     const extra = nSamples % cv;
     let pos = 0;
@@ -149,17 +217,60 @@ function assignFolds(y: Tensor, nSamples: number, cv: number, stratify: boolean)
       const size = base + (fold < extra ? 1 : 0);
       for (let k = 0; k < size; k++) foldOf[perm[pos++] as number] = fold;
     }
-  } else {
+    return foldOf;
+  }
+
+  // Stable sort keeps the (shuffled) sample order inside each class.
+  const order = [...perm].sort((a, b) => (codes[a] as number) - (codes[b] as number));
+  if (shuffle) {
     for (let pos = 0; pos < nSamples; pos++) foldOf[order[pos] as number] = pos % cv;
+    return foldOf;
+  }
+
+  // As scikit-learn's StratifiedKFold: the class counts of the folds come from dealing the
+  // class-sorted samples round-robin, and each class then fills its folds in consecutive blocks.
+  const nClasses = codes.reduce((m, c) => Math.max(m, c), 0) + 1;
+  const allocation = Array.from({ length: cv }, () => new Int32Array(nClasses));
+  for (let pos = 0; pos < nSamples; pos++) {
+    const row = allocation[pos % cv] as Int32Array;
+    const code = codes[order[pos] as number] as number;
+    row[code] = (row[code] as number) + 1;
+  }
+  const nextFold = new Int32Array(nClasses);
+  const used = new Int32Array(nClasses);
+  for (let i = 0; i < nSamples; i++) {
+    const code = codes[i] as number;
+    let fold = nextFold[code] as number;
+    while ((allocation[fold] as Int32Array)[code] === used[code]) {
+      fold++;
+      used[code] = 0;
+    }
+    nextFold[code] = fold;
+    foldOf[i] = fold;
+    used[code] = (used[code] as number) + 1;
   }
   return foldOf;
 }
 
 type FoldData = { XTrain: Tensor; yTrain: Tensor; XTest: Tensor; yTest: Tensor };
 
-function buildFolds(X: Tensor, y: Tensor, foldOf: Int32Array, cv: number): FoldData[] {
+function foldData(
+  X: Tensor,
+  y: Tensor,
+  trainRows: ArrayLike<number>,
+  testRows: ArrayLike<number>
+): FoldData {
   // Estimators expect a 1-D target, so an (n_samples, 1) column is flattened.
   const squeezeY = y.ndim === 2 && y.shape[1] === 1;
+  return {
+    XTrain: takeRows(X, trainRows),
+    yTrain: takeRows(y, trainRows, squeezeY),
+    XTest: takeRows(X, testRows),
+    yTest: takeRows(y, testRows, squeezeY),
+  };
+}
+
+function buildFolds(X: Tensor, y: Tensor, foldOf: Int32Array, cv: number): FoldData[] {
   const folds: FoldData[] = [];
   for (let fold = 0; fold < cv; fold++) {
     const trainRows: number[] = [];
@@ -168,12 +279,78 @@ function buildFolds(X: Tensor, y: Tensor, foldOf: Int32Array, cv: number): FoldD
       if (foldOf[i] === fold) testRows.push(i);
       else trainRows.push(i);
     }
-    folds.push({
-      XTrain: takeRows(X, trainRows),
-      yTrain: takeRows(y, trainRows, squeezeY),
-      XTest: takeRows(X, testRows),
-      yTest: takeRows(y, testRows, squeezeY),
-    });
+    folds.push(foldData(X, y, trainRows, testRows));
+  }
+  return folds;
+}
+
+function checkIndices(indices: ArrayLike<number>, nSamples: number, name: string): void {
+  if (indices.length === 0) {
+    throw new InvalidParameterError(`cv produced a split with an empty ${name}`, "cv", indices);
+  }
+  for (let i = 0; i < indices.length; i++) {
+    const idx = indices[i] as number;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= nSamples) {
+      throw new InvalidParameterError(
+        `cv produced ${name} entry ${String(idx)}, which is not a sample index in [0, ${nSamples})`,
+        "cv",
+        idx
+      );
+    }
+  }
+}
+
+function checkGroups(groups: CvGroups, nSamples: number): void {
+  const length = Array.isArray(groups) ? groups.length : (groups as Tensor).shape[0];
+  if (length !== nSamples) {
+    throw new InvalidParameterError(
+      `groups must have one entry per sample; got ${String(length)} for ${nSamples} samples`,
+      "groups",
+      groups
+    );
+  }
+}
+
+/**
+ * Build the train/test data of every fold. An integer `cv` makes folds as described in
+ * {@link cross_val_score}; a splitter object supplies its own index lists.
+ *
+ * @throws {InvalidParameterError} If `cv` is an integer above the sample count, `groups` has the
+ *   wrong length, or a splitter returns no splits, an empty side, or an index outside the data
+ */
+function resolveFolds(
+  X: Tensor,
+  y: Tensor,
+  cv: CvSpec,
+  options: CvOptions,
+  stratify: boolean
+): FoldData[] {
+  validateCvOptions(options);
+  const nSamples = validateXY(X, y);
+  if (typeof cv === "number") {
+    if (nSamples < cv) {
+      throw new InvalidParameterError(`Cannot have cv=${cv} with n_samples=${nSamples}`, "cv", cv);
+    }
+    const foldOf = assignFolds(
+      y,
+      nSamples,
+      cv,
+      stratify,
+      options.shuffle ?? true,
+      options.randomState ?? 0
+    );
+    return buildFolds(X, y, foldOf, cv);
+  }
+  if (options.groups !== undefined) checkGroups(options.groups, nSamples);
+  const yFlat = y.ndim === 2 && y.shape[1] === 1 ? y.reshape([nSamples]) : y;
+  const folds: FoldData[] = [];
+  for (const split of cv.split(X, yFlat, options.groups)) {
+    checkIndices(split.trainIndex, nSamples, "trainIndex");
+    checkIndices(split.testIndex, nSamples, "testIndex");
+    folds.push(foldData(X, y, split.trainIndex, split.testIndex));
+  }
+  if (folds.length === 0) {
+    throw new InvalidParameterError("cv produced no splits", "cv", cv);
   }
   return folds;
 }
@@ -216,32 +393,52 @@ function runFolds(
   return { scores, fitTime, scoreTime };
 }
 
+/** Options object accepted as the 4th argument of {@link cross_val_score}. */
+export type CrossValScoreOptions = CvOptions & {
+  /** Number of folds or a splitter object (default: 5). */
+  cv?: CvSpec;
+  /** Scoring function `(estimator, XTest, yTest) => number` used instead of `estimator.score`. */
+  scoring?: Scorer;
+};
+
 /**
  * Evaluate an estimator using cross-validation.
  *
- * Splits data into `cv` folds, trains on (cv-1) folds, scores on the remaining fold,
- * and returns an array of scores.
+ * With an integer `cv` the data is split into `cv` folds, the estimator is trained on `cv - 1`
+ * of them and scored on the remaining one. The folds come from a shuffle with a fixed seed (set
+ * `shuffle: false` for contiguous folds like scikit-learn's `KFold`, or `randomState` for another
+ * seed), so results are reproducible. For classifiers (estimators exposing `classes` or
+ * `predictProba`) the folds are stratified by the labels in `y`. Fold sizes differ by at most one
+ * sample.
  *
- * The folds come from a fixed-seed shuffle, so results are reproducible. For
- * classifiers (estimators exposing `classes` or `predictProba`) the folds are
- * stratified by the labels in `y`. Fold sizes differ by at most one sample.
+ * `cv` may also be any splitter object with a `split(X, y?, groups?)` method returning
+ * `{ trainIndex, testIndex }` pairs, such as `TimeSeriesSplit`, `GroupKFold` or `KFold` from
+ * `deepbox/preprocess`. Then `groups` is passed on to it, and `shuffle` and `randomState` are
+ * ignored.
+ *
+ * The 4th argument is either `cv` (a number or a splitter) followed by `scoring` and an options
+ * object, or one options object holding `cv`, `scoring`, `groups`, `shuffle` and `randomState`.
  *
  * @param estimator - Estimator with `fit`, `predict`, and `score` methods
  * @param X - Features of shape (n_samples, n_features)
  * @param y - Targets of shape (n_samples,)
- * @param cv - Number of folds (default: 5)
+ * @param cv - Number of folds, a splitter object, or an options object (default: 5)
  * @param scoring - Optional scoring function `(estimator, XTest, yTest) => number` used instead of `estimator.score`
+ * @param options - `groups`, `shuffle` and `randomState` (only with a `cv` that is not an options object)
  * @returns Array of scores, one per fold
- * @throws {InvalidParameterError} If `cv < 2`, `cv > n_samples`, or the estimator has no `score` method and no `scoring` function is given
+ * @throws {InvalidParameterError} If `cv` is invalid, `cv > n_samples`, a splitter returns an invalid split, or the estimator has no `score` method and no `scoring` function is given
  * @throws {ShapeError} If X is not 2-D or X and y disagree on the number of samples
  *
  * @example
  * ```ts
  * import { crossValScore } from 'deepbox/ml';
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { TimeSeriesSplit } from 'deepbox/preprocess';
  *
  * const scores = crossValScore(new LogisticRegression(), X, y, 5);
  * console.log('Mean CV score:', scores.reduce((a,b) => a+b, 0) / scores.length);
+ *
+ * const ts = crossValScore(new LogisticRegression(), X, y, { cv: new TimeSeriesSplit({ nSplits: 4 }) });
  * ```
  *
  * @deprecated Prefer {@link crossValScore}.
@@ -250,27 +447,43 @@ export function cross_val_score(
   estimator: Estimator,
   X: Tensor,
   y: Tensor,
-  cv = 5,
-  scoring?: Scorer
+  cv?: CvSpec | CrossValScoreOptions,
+  scoring?: Scorer,
+  options?: CvOptions
 ): number[] {
-  validateCv(cv);
-  if (scoring === undefined && !hasScore(estimator)) {
+  const resolved = splitCrossValArgs(cv, scoring, options);
+  validateCv(resolved.cv);
+  if (resolved.scoring === undefined && !hasScore(estimator)) {
     throw new InvalidParameterError("Estimator must implement score()", "estimator", estimator);
   }
-  if (scoring !== undefined && typeof scoring !== "function") {
-    throw new InvalidParameterError("scoring must be a function", "scoring", scoring);
+  if (resolved.scoring !== undefined && typeof resolved.scoring !== "function") {
+    throw new InvalidParameterError("scoring must be a function", "scoring", resolved.scoring);
   }
-  const nSamples = validateXY(X, y, cv);
-  const foldOf = assignFolds(y, nSamples, cv, isClassifier(estimator));
-  const folds = buildFolds(X, y, foldOf, cv);
+  const folds = resolveFolds(X, y, resolved.cv, resolved.options, isClassifier(estimator));
   const { scores } = runFolds(
     estimator,
     {},
     folds,
-    { score: scoring ?? defaultScorer },
+    { score: resolved.scoring ?? defaultScorer },
     "cross-validation"
   );
   return scores["score"] as number[];
+}
+
+/**
+ * Normalize the positional and options-object call forms of `cross_val_score`.
+ * A splitter is told apart from an options object by its `split` method.
+ */
+function splitCrossValArgs(
+  cv: CvSpec | CrossValScoreOptions | undefined,
+  scoring: Scorer | undefined,
+  options: CvOptions | undefined
+): { cv: CvSpec; scoring: Scorer | undefined; options: CvOptions } {
+  if (typeof cv === "object" && cv !== null && !isCrossValidator(cv)) {
+    const { cv: innerCv, scoring: innerScoring, ...rest } = cv;
+    return { cv: innerCv ?? 5, scoring: innerScoring ?? scoring, options: { ...options, ...rest } };
+  }
+  return { cv: cv ?? 5, scoring, options: options ?? {} };
 }
 
 /**
@@ -290,12 +503,14 @@ export type CrossValidateResult = {
  *
  * Unlike `cross_val_score` which returns only scores for a single metric,
  * `cross_validate` supports multiple scoring functions and also reports
- * fit/score times. Folds are built as in {@link cross_val_score}.
+ * fit/score times. Folds are built as in {@link cross_val_score}: `options.cv` is a number of
+ * folds or a splitter object, and `options.groups`, `options.shuffle` and `options.randomState`
+ * behave as there.
  *
  * @param estimator - Estimator with `fit` and `score` methods
  * @param X - Features of shape (n_samples, n_features)
  * @param y - Targets of shape (n_samples,)
- * @param options - Configuration options
+ * @param options - Configuration options (`cv`, `scoring`, `groups`, `shuffle`, `randomState`)
  * @returns Object with testScores (per metric), fitTime, and scoreTime arrays
  * @throws {InvalidParameterError} If `cv` is invalid, `scoring` is empty or holds a non-function, or no scorer is available
  *
@@ -324,8 +539,8 @@ export function cross_validate(
   estimator: Estimator,
   X: Tensor,
   y: Tensor,
-  options: {
-    cv?: number;
+  options: CvOptions & {
+    cv?: CvSpec;
     scoring?: Record<string, Scorer> | Scorer;
   } = {}
 ): CrossValidateResult {
@@ -366,9 +581,7 @@ export function cross_validate(
     }
   }
 
-  const nSamples = validateXY(X, y, cv);
-  const foldOf = assignFolds(y, nSamples, cv, isClassifier(estimator));
-  const folds = buildFolds(X, y, foldOf, cv);
+  const folds = resolveFolds(X, y, cv, options, isClassifier(estimator));
   const { scores, fitTime, scoreTime } = runFolds(
     estimator,
     {},
@@ -447,7 +660,8 @@ function searchCandidates(
   candidates: readonly Record<string, unknown>[],
   X: Tensor,
   y: Tensor,
-  cv: number,
+  cv: CvSpec,
+  cvOptions: CvOptions,
   scoring: Scorer | undefined,
   label: string
 ): {
@@ -458,9 +672,7 @@ function searchCandidates(
   if (scoring === undefined && !hasScore(base)) {
     throw new InvalidParameterError("Estimator must implement score()", "estimator", base);
   }
-  const nSamples = validateXY(X, y, cv);
-  const foldOf = assignFolds(y, nSamples, cv, isClassifier(base));
-  const folds = buildFolds(X, y, foldOf, cv);
+  const folds = resolveFolds(X, y, cv, cvOptions, isClassifier(base));
   const scorers = { score: scoring ?? defaultScorer };
   const context = `${label} cross-validation`;
 
@@ -492,6 +704,10 @@ function searchCandidates(
   return { results, bestIndex, bestEstimator };
 }
 
+const GRID_SEARCH_CV_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GridSearchCV>[2]>
+>({ cv: true, shuffle: true, randomState: true, scoring: true });
+
 /**
  * Exhaustive search over specified parameter values for an estimator.
  *
@@ -512,7 +728,9 @@ function searchCandidates(
  */
 export class GridSearchCV {
   private paramGrid: Record<string, unknown[]>;
-  private cv: number;
+  private cv: CvSpec;
+  private shuffle: boolean | undefined;
+  private randomState: number | undefined;
   private scoring: Scorer | undefined;
   private fitted = false;
 
@@ -530,27 +748,39 @@ export class GridSearchCV {
   /**
    * @param estimator - Estimator to tune; its constructor must accept the object returned by `getParams()`
    * @param paramGrid - Candidate values per parameter name (each list must be non-empty)
-   * @param options.cv - Number of folds (default: 5)
+   * @param options.cv - Number of folds or a splitter object (default: 5)
+   * @param options.shuffle - For integer `cv`: shuffle before building folds (default: true)
+   * @param options.randomState - For integer `cv` with `shuffle`: seed of the shuffle (default: 0)
    * @param options.scoring - Scoring function `(estimator, XTest, yTest) => number`; defaults to `estimator.score`
    */
   constructor(
     private estimator: Estimator,
     paramGrid: Record<string, unknown[]>,
-    options: { cv?: number; scoring?: Scorer } = {}
+    options: { cv?: CvSpec; shuffle?: boolean; randomState?: number; scoring?: Scorer } = {}
   ) {
+    assertKnownOptions("GridSearchCV", options, GRID_SEARCH_CV_OPTION_KEYS);
     this.paramGrid = validateParamSpace(paramGrid, "paramGrid");
     this.cv = options.cv ?? 5;
+    this.shuffle = options.shuffle;
+    this.randomState = options.randomState;
     validateCv(this.cv);
+    validateCvOptions({ shuffle: this.shuffle, randomState: this.randomState });
     this.scoring = validateOptionalScoring(options.scoring);
   }
 
-  fit(X: Tensor, y: Tensor): this {
+  /**
+   * Cross-validate every combination and refit the best one.
+   *
+   * @param groups - Group label per sample, forwarded to a `cv` splitter that uses groups
+   */
+  fit(X: Tensor, y: Tensor, groups?: CvGroups): this {
     const { results, bestIndex, bestEstimator } = searchCandidates(
       this.estimator,
       cartesianProduct(this.paramGrid),
       X,
       y,
       this.cv,
+      { groups, shuffle: this.shuffle, randomState: this.randomState },
       this.scoring,
       "GridSearchCV"
     );
@@ -605,6 +835,8 @@ export class GridSearchCV {
       estimator: this.estimator,
       paramGrid: this.paramGrid,
       cv: this.cv,
+      shuffle: this.shuffle,
+      randomState: this.randomState,
       scoring: this.scoring,
     };
   }
@@ -615,10 +847,12 @@ export class GridSearchCV {
    * @throws {InvalidParameterError} On an unknown or invalid parameter
    */
   setParams(params: Record<string, unknown>): this {
-    let { estimator, paramGrid, cv, scoring } = {
+    let { estimator, paramGrid, cv, shuffle, randomState, scoring } = {
       estimator: this.estimator,
       paramGrid: this.paramGrid,
       cv: this.cv,
+      shuffle: this.shuffle,
+      randomState: this.randomState,
       scoring: this.scoring,
     };
     for (const [key, value] of Object.entries(params)) {
@@ -633,6 +867,12 @@ export class GridSearchCV {
           validateCv(value);
           cv = value;
           break;
+        case "shuffle":
+          shuffle = value as boolean | undefined;
+          break;
+        case "randomState":
+          randomState = value as number | undefined;
+          break;
         case "scoring":
           scoring = validateOptionalScoring(value);
           break;
@@ -640,9 +880,12 @@ export class GridSearchCV {
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }
     }
+    validateCvOptions({ shuffle, randomState });
     this.estimator = estimator;
     this.paramGrid = paramGrid;
     this.cv = cv;
+    this.shuffle = shuffle;
+    this.randomState = randomState;
     this.scoring = scoring;
     return this;
   }
@@ -663,6 +906,10 @@ function sampleDistinct(total: number, count: number, rng: () => number): number
   }
   return chosen;
 }
+
+const RANDOMIZED_SEARCH_CV_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RandomizedSearchCV>[2]>
+>({ nIter: true, cv: true, shuffle: true, cvRandomState: true, randomState: true, scoring: true });
 
 /**
  * Randomized search over parameter distributions.
@@ -687,7 +934,9 @@ function sampleDistinct(total: number, count: number, rng: () => number): number
  */
 export class RandomizedSearchCV {
   private paramDistributions: Record<string, unknown[]>;
-  private cv: number;
+  private cv: CvSpec;
+  private shuffle: boolean | undefined;
+  private cvRandomState: number | undefined;
   private nIter: number;
   private randomState: number | undefined;
   private scoring: Scorer | undefined;
@@ -708,18 +957,30 @@ export class RandomizedSearchCV {
    * @param estimator - Estimator to tune; its constructor must accept the object returned by `getParams()`
    * @param paramDistributions - Candidate values per parameter name (each list must be non-empty)
    * @param options.nIter - Number of combinations to sample (default: 10)
-   * @param options.cv - Number of folds (default: 5)
+   * @param options.cv - Number of folds or a splitter object (default: 5)
+   * @param options.shuffle - For integer `cv`: shuffle before building folds (default: true)
+   * @param options.cvRandomState - For integer `cv` with `shuffle`: seed of the fold shuffle (default: 0)
    * @param options.randomState - Seed of the sampler; without it the global Deepbox generator is used
    * @param options.scoring - Scoring function `(estimator, XTest, yTest) => number`; defaults to `estimator.score`
    */
   constructor(
     private estimator: Estimator,
     paramDistributions: Record<string, unknown[]>,
-    options: { nIter?: number; cv?: number; randomState?: number; scoring?: Scorer } = {}
+    options: {
+      nIter?: number;
+      cv?: CvSpec;
+      shuffle?: boolean;
+      cvRandomState?: number;
+      randomState?: number;
+      scoring?: Scorer;
+    } = {}
   ) {
+    assertKnownOptions("RandomizedSearchCV", options, RANDOMIZED_SEARCH_CV_OPTION_KEYS);
     this.paramDistributions = validateParamSpace(paramDistributions, "paramDistributions");
     this.nIter = options.nIter ?? 10;
     this.cv = options.cv ?? 5;
+    this.shuffle = options.shuffle;
+    this.cvRandomState = options.cvRandomState;
     this.randomState = options.randomState;
     this.scoring = validateOptionalScoring(options.scoring);
     this.validateScalars();
@@ -734,6 +995,7 @@ export class RandomizedSearchCV {
       );
     }
     validateCv(this.cv);
+    validateCvOptions({ shuffle: this.shuffle, randomState: this.cvRandomState });
     if (this.randomState !== undefined && !Number.isFinite(this.randomState)) {
       throw new InvalidParameterError(
         "randomState must be a finite number",
@@ -743,7 +1005,12 @@ export class RandomizedSearchCV {
     }
   }
 
-  fit(X: Tensor, y: Tensor): this {
+  /**
+   * Cross-validate the sampled combinations and refit the best one.
+   *
+   * @param groups - Group label per sample, forwarded to a `cv` splitter that uses groups
+   */
+  fit(X: Tensor, y: Tensor, groups?: CvGroups): this {
     const keys = Object.keys(this.paramDistributions);
     const sizes = keys.map((k) => (this.paramDistributions[k] as unknown[]).length);
     const total = sizes.reduce((a, b) => a * b, 1);
@@ -781,6 +1048,7 @@ export class RandomizedSearchCV {
       X,
       y,
       this.cv,
+      { groups, shuffle: this.shuffle, randomState: this.cvRandomState },
       this.scoring,
       "RandomizedSearchCV"
     );
@@ -836,6 +1104,8 @@ export class RandomizedSearchCV {
       paramDistributions: this.paramDistributions,
       nIter: this.nIter,
       cv: this.cv,
+      shuffle: this.shuffle,
+      cvRandomState: this.cvRandomState,
       randomState: this.randomState,
       scoring: this.scoring,
     };
@@ -852,6 +1122,8 @@ export class RandomizedSearchCV {
       paramDistributions: this.paramDistributions,
       nIter: this.nIter,
       cv: this.cv,
+      shuffle: this.shuffle,
+      cvRandomState: this.cvRandomState,
       randomState: this.randomState,
       scoring: this.scoring,
     };
@@ -868,7 +1140,13 @@ export class RandomizedSearchCV {
             this.nIter = value as number;
             break;
           case "cv":
-            this.cv = value as number;
+            this.cv = value as CvSpec;
+            break;
+          case "shuffle":
+            this.shuffle = value as boolean | undefined;
+            break;
+          case "cvRandomState":
+            this.cvRandomState = value as number | undefined;
             break;
           case "randomState":
             this.randomState = value as number | undefined;
@@ -886,6 +1164,8 @@ export class RandomizedSearchCV {
       this.paramDistributions = prev.paramDistributions;
       this.nIter = prev.nIter;
       this.cv = prev.cv;
+      this.shuffle = prev.shuffle;
+      this.cvRandomState = prev.cvRandomState;
       this.randomState = prev.randomState;
       this.scoring = prev.scoring;
       throw error;
@@ -897,29 +1177,41 @@ export class RandomizedSearchCV {
 /**
  * Evaluate an estimator using cross-validation.
  *
- * Splits data into `cv` folds, trains on (cv-1) folds, scores on the remaining fold,
- * and returns an array of scores.
+ * With an integer `cv` the data is split into `cv` folds, the estimator is trained on `cv - 1`
+ * of them and scored on the remaining one. The folds come from a shuffle with a fixed seed (set
+ * `shuffle: false` for contiguous folds like scikit-learn's `KFold`, or `randomState` for another
+ * seed), so results are reproducible. For classifiers (estimators exposing `classes` or
+ * `predictProba`) the folds are stratified by the labels in `y`. Fold sizes differ by at most one
+ * sample.
  *
- * The folds come from a fixed-seed shuffle, so results are reproducible. For
- * classifiers (estimators exposing `classes` or `predictProba`) the folds are
- * stratified by the labels in `y`. Fold sizes differ by at most one sample.
+ * `cv` may also be any splitter object with a `split(X, y?, groups?)` method returning
+ * `{ trainIndex, testIndex }` pairs, such as `TimeSeriesSplit`, `GroupKFold` or `KFold` from
+ * `deepbox/preprocess`. Then `groups` is passed on to it, and `shuffle` and `randomState` are
+ * ignored.
+ *
+ * The 4th argument is either `cv` (a number or a splitter) followed by `scoring` and an options
+ * object, or one options object holding `cv`, `scoring`, `groups`, `shuffle` and `randomState`.
  *
  * @param estimator - Estimator with `fit`, `predict`, and `score` methods
  * @param X - Features of shape (n_samples, n_features)
  * @param y - Targets of shape (n_samples,)
- * @param cv - Number of folds (default: 5)
+ * @param cv - Number of folds, a splitter object, or an options object (default: 5)
  * @param scoring - Optional scoring function `(estimator, XTest, yTest) => number` used instead of `estimator.score`
+ * @param options - `groups`, `shuffle` and `randomState` (only with a `cv` that is not an options object)
  * @returns Array of scores, one per fold
- * @throws {InvalidParameterError} If `cv < 2`, `cv > n_samples`, or the estimator has no `score` method and no `scoring` function is given
+ * @throws {InvalidParameterError} If `cv` is invalid, `cv > n_samples`, a splitter returns an invalid split, or the estimator has no `score` method and no `scoring` function is given
  * @throws {ShapeError} If X is not 2-D or X and y disagree on the number of samples
  *
  * @example
  * ```ts
  * import { crossValScore } from 'deepbox/ml';
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { TimeSeriesSplit } from 'deepbox/preprocess';
  *
  * const scores = crossValScore(new LogisticRegression(), X, y, 5);
  * console.log('Mean CV score:', scores.reduce((a,b) => a+b, 0) / scores.length);
+ *
+ * const ts = crossValScore(new LogisticRegression(), X, y, { cv: new TimeSeriesSplit({ nSplits: 4 }) });
  * ```
  */
 export const crossValScore = cross_val_score;
@@ -929,12 +1221,14 @@ export const crossValScore = cross_val_score;
  *
  * Unlike `cross_val_score` which returns only scores for a single metric,
  * `cross_validate` supports multiple scoring functions and also reports
- * fit/score times. Folds are built as in {@link cross_val_score}.
+ * fit/score times. Folds are built as in {@link cross_val_score}: `options.cv` is a number of
+ * folds or a splitter object, and `options.groups`, `options.shuffle` and `options.randomState`
+ * behave as there.
  *
  * @param estimator - Estimator with `fit` and `score` methods
  * @param X - Features of shape (n_samples, n_features)
  * @param y - Targets of shape (n_samples,)
- * @param options - Configuration options
+ * @param options - Configuration options (`cv`, `scoring`, `groups`, `shuffle`, `randomState`)
  * @returns Object with testScores (per metric), fitTime, and scoreTime arrays
  * @throws {InvalidParameterError} If `cv` is invalid, `scoring` is empty or holds a non-function, or no scorer is available
  *

@@ -7,6 +7,7 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -756,6 +757,21 @@ type ClassifierContext = {
   readonly rightCounts: Float64Array;
 };
 
+const DECISION_TREE_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof DecisionTreeClassifier>[0]>
+>({
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  randomState: true,
+  criterion: true,
+  classWeight: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Decision Tree Classifier.
  *
@@ -772,6 +788,8 @@ type ClassifierContext = {
  *
  * Class labels may be any finite numbers. `predict` and `classes` are `int32` when all labels
  * are integers and `float64` otherwise.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts
@@ -811,6 +829,7 @@ export class DecisionTreeClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: DecisionTreeClassifierOptions = {}) {
+    assertKnownOptions("DecisionTreeClassifier", options, DECISION_TREE_CLASSIFIER_OPTION_KEYS);
     this.maxDepth = checkTreeMaxDepth(options.maxDepth ?? 10);
     this.minSamplesSplit = checkTreeInteger("minSamplesSplit", options.minSamplesSplit ?? 2, 2);
     this.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", options.minSamplesLeaf ?? 1, 1);
@@ -1356,11 +1375,26 @@ type RegressorContext = {
   readonly yLocal: Float64Array;
 };
 
+const DECISION_TREE_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof DecisionTreeRegressor>[0]>
+>({
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  randomState: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Decision Tree Regressor.
  *
  * Uses MSE reduction to find optimal splits for regression tasks. Leaves predict the mean
  * target of their training samples; `predict` returns `float64`.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts
@@ -1394,6 +1428,7 @@ export class DecisionTreeRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: DecisionTreeRegressorOptions = {}) {
+    assertKnownOptions("DecisionTreeRegressor", options, DECISION_TREE_REGRESSOR_OPTION_KEYS);
     this.maxDepth = checkTreeMaxDepth(options.maxDepth ?? 10);
     this.minSamplesSplit = checkTreeInteger("minSamplesSplit", options.minSamplesSplit ?? 2, 2);
     this.minSamplesLeaf = checkTreeInteger("minSamplesLeaf", options.minSamplesLeaf ?? 1, 1);

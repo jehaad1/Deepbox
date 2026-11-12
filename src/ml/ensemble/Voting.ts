@@ -5,6 +5,12 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import {
+  assertKnownOptions,
+  assertReadOnlyParam,
+  assertUnchangedEstimators,
+  optionKeys,
+} from "../_internal";
+import {
   assertContiguous,
   toFloat64View,
   validateFitInputs,
@@ -133,6 +139,10 @@ function cloneEstimator<T extends { getParams(): Record<string, unknown>; clone?
   }
 }
 
+const VOTING_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof VotingClassifier>[0]>
+>({ estimators: true, voting: true, weights: true });
+
 /**
  * Voting Classifier.
  *
@@ -178,6 +188,7 @@ export class VotingClassifier implements Classifier {
    * @throws {InvalidParameterError} If there are no estimators, `voting` is unknown, or `weights` is invalid
    */
   constructor(options: VotingClassifierOptions) {
+    assertKnownOptions("VotingClassifier", options, VOTING_CLASSIFIER_OPTION_KEYS);
     if (!Array.isArray(options.estimators) || options.estimators.length === 0) {
       throw new InvalidParameterError(
         "VotingClassifier requires at least one estimator",
@@ -419,7 +430,8 @@ export class VotingClassifier implements Classifier {
 
   /**
    * Update `voting` and/or `weights`. The change applies to later `predict` calls;
-   * the estimators are not refitted.
+   * the estimators are not refitted. `estimators` is accepted only when it lists the
+   * estimators already in use, and `nEstimators` only when it equals their count.
    *
    * @throws {InvalidParameterError} On an unknown key or an invalid value
    */
@@ -437,6 +449,12 @@ export class VotingClassifier implements Classifier {
           break;
         case "weights":
           weights = normalizeWeights(value, this.estimators.length);
+          break;
+        case "estimators":
+          assertUnchangedEstimators("VotingClassifier", key, value, this.estimators);
+          break;
+        case "nEstimators":
+          assertReadOnlyParam("VotingClassifier", key, value, this.estimators.length);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
@@ -458,6 +476,10 @@ export class VotingClassifier implements Classifier {
     });
   }
 }
+
+const VOTING_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof VotingRegressor>[0]>
+>({ estimators: true, weights: true });
 
 /**
  * Voting Regressor.
@@ -498,6 +520,7 @@ export class VotingRegressor implements Regressor {
    * @throws {InvalidParameterError} If there are no estimators or `weights` is invalid
    */
   constructor(options: VotingRegressorOptions) {
+    assertKnownOptions("VotingRegressor", options, VOTING_REGRESSOR_OPTION_KEYS);
     if (!Array.isArray(options.estimators) || options.estimators.length === 0) {
       throw new InvalidParameterError(
         "VotingRegressor requires at least one estimator",
@@ -603,6 +626,12 @@ export class VotingRegressor implements Regressor {
       switch (key) {
         case "weights":
           weights = normalizeWeights(value, this.estimators.length);
+          break;
+        case "estimators":
+          assertUnchangedEstimators("VotingRegressor", key, value, this.estimators);
+          break;
+        case "nEstimators":
+          assertReadOnlyParam("VotingRegressor", key, value, this.estimators.length);
           break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);

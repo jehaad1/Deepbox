@@ -8,6 +8,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { lstsq } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys, scaleRowsBySqrtWeight, weightedMeans } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -15,6 +16,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 
 /**
  * Coefficient of determination between a target tensor and the predictions of a model.
@@ -67,6 +69,10 @@ export function r2ScoreOf(y: Tensor, predict: () => Tensor): number {
   if (ssTot === 0) return ssRes === 0 ? 1.0 : 0.0;
   return 1 - ssRes / ssTot;
 }
+
+const LINEAR_REGRESSION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LinearRegression>[0]>
+>({ fitIntercept: true, normalize: true, copyX: true });
 
 /**
  * Ordinary Least Squares Linear Regression.
@@ -141,6 +147,7 @@ export class LinearRegression implements Regressor {
       readonly copyX?: boolean;
     } = {}
   ) {
+    assertKnownOptions("LinearRegression", options, LINEAR_REGRESSION_OPTION_KEYS);
     this.options = { ...options };
   }
 
@@ -154,13 +161,17 @@ export class LinearRegression implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,). Multi-output regression is not supported.
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the fit minimizes the weighted squared error and centers on the weighted means
    * @returns this - The fitted estimator
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {DataValidationError} If X or y are empty
+   * @throws {ShapeError} If `sampleWeight` is not 1D with one entry per sample
+   * @throws {DataValidationError} If a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
 
     const m = X.shape[0] ?? 0;
@@ -175,17 +186,12 @@ export class LinearRegression implements Regressor {
     // A float64 view shares memory with X, so it can be overwritten directly.
     const xWork = allowInPlace && X.dtype === "float64" ? xRaw : Float64Array.from(xRaw);
 
-    const xMean = new Float64Array(n);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, m);
+    let xMean: Float64Array = new Float64Array(n);
     let yMean = 0;
     const yWork = Float64Array.from(yRaw);
     if (fitIntercept) {
-      for (let i = 0; i < m; i++) {
-        const base = i * n;
-        for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xWork[base + j] as number);
-        yMean += yWork[i] as number;
-      }
-      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
-      yMean /= m;
+      ({ xMean, yMean } = weightedMeans(xWork, yWork, m, n, sampleWeight));
       for (let i = 0; i < m; i++) {
         const base = i * n;
         for (let j = 0; j < n; j++) {
@@ -194,6 +200,9 @@ export class LinearRegression implements Regressor {
         yWork[i] = (yWork[i] as number) - yMean;
       }
     }
+
+    // Least squares on rows scaled by sqrt(weight) is the weighted least squares fit.
+    if (sampleWeight !== undefined) scaleRowsBySqrtWeight(xWork, yWork, m, n, sampleWeight);
 
     const scale = new Float64Array(n).fill(1);
     if (normalize) {

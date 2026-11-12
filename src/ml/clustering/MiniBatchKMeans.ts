@@ -8,6 +8,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -67,6 +68,19 @@ function checkMaxNoImprovement(value: unknown): number {
   return checkPositiveInt("maxNoImprovement", value);
 }
 
+const MINI_BATCH_KMEANS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MiniBatchKMeans>[0]>
+>({
+  nClusters: true,
+  maxIter: true,
+  batchSize: true,
+  tol: true,
+  nInit: true,
+  init: true,
+  randomState: true,
+  maxNoImprovement: true,
+});
+
 /**
  * Mini-Batch K-Means clustering.
  *
@@ -83,6 +97,8 @@ function checkMaxNoImprovement(value: unknown): number {
  * movement of a step is at most `tol * mean(var(X))` (disabled for the default `tol: 0`).
  * With `nInit > 1` the whole procedure is repeated and the run with the lowest inertia
  * on the full data is kept.
+ *
+ * Default differs from scikit-learn: `batchSize` is 100 (scikit-learn: 1024) and `nInit` is 3 (scikit-learn: "auto").
  *
  * @example
  * ```ts
@@ -139,6 +155,7 @@ export class MiniBatchKMeans implements Clusterer {
       readonly maxNoImprovement?: number;
     } = {}
   ) {
+    assertKnownOptions("MiniBatchKMeans", options, MINI_BATCH_KMEANS_OPTION_KEYS);
     this.nClusters = checkPositiveInt("nClusters", options.nClusters ?? 8);
     this.maxIter = checkPositiveInt("maxIter", options.maxIter ?? 100);
     this.batchSize = checkPositiveInt("batchSize", options.batchSize ?? 100);

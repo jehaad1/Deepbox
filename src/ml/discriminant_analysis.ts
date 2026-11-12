@@ -18,9 +18,10 @@ import {
   warn,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { jacobiEigenSymmetric } from "./_internal";
+import { assertKnownOptions, optionKeys, symmetricEigenDescending } from "./_internal";
 import {
   assertContiguous,
+  assertNoSampleWeight,
   toFloat64View,
   validateFitInputs,
   validatePredictInputs,
@@ -215,6 +216,10 @@ function ledoitWolfShrinkage(Z: Float64Array, n: number, f: number): number {
   return Math.min(1, beta / delta);
 }
 
+const LINEAR_DISCRIMINANT_ANALYSIS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LinearDiscriminantAnalysis>[0]>
+>({ nComponents: true, shrinkage: true, priors: true });
+
 /**
  * Linear Discriminant Analysis (LDA).
  *
@@ -227,7 +232,7 @@ function ledoitWolfShrinkage(Z: Float64Array, n: number, f: number): number {
  * data to the most discriminant directions.
  *
  * **Algorithm** (same as scikit-learn's default `svd` solver):
- * 1. Compute class means and the pooled within-class covariance (divided by n - n_classes)
+ * 1. Compute class means and the pooled within-class covariance (divided by n, as scikit-learn does)
  * 2. Whiten the pooled covariance; directions with a numerically zero variance are dropped
  * 3. Take the eigenvectors of the between-class scatter in the whitened space as
  *    discriminant directions, so projected data has identity within-class covariance
@@ -279,6 +284,11 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
       readonly priors?: readonly number[];
     } = {}
   ) {
+    assertKnownOptions(
+      "LinearDiscriminantAnalysis",
+      options,
+      LINEAR_DISCRIMINANT_ANALYSIS_OPTION_KEYS
+    );
     if (options.nComponents !== undefined) {
       this.nComponents = LinearDiscriminantAnalysis.checkNComponents(options.nComponents);
     }
@@ -315,11 +325,14 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: LinearDiscriminantAnalysis has no sample weights, so passing one throws
    * @returns this
    * @throws {DataValidationError} If there are fewer than 2 classes or not more samples than classes
    * @throws {InvalidParameterError} If nComponents or priors are inconsistent with the data
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("LinearDiscriminantAnalysis", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const f = X.shape[1] ?? 0;
@@ -370,7 +383,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
       }
     }
 
-    // Within-class centered data and pooled covariance Sigma = Sw / (n - K)
+    // Within-class centered data and pooled covariance Sigma = Sw / n (scikit-learn's SVD solver)
     const centered = new Float64Array(nSamples * f);
     const sigma = new Float64Array(f * f);
     for (let i = 0; i < nSamples; i++) {
@@ -388,7 +401,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
         }
       }
     }
-    const denom = nSamples - K;
+    const denom = nSamples;
     for (let p = 0; p < f; p++) {
       for (let q = p; q < f; q++) {
         const v = (sigma[p * f + q] ?? 0) / denom;
@@ -426,7 +439,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
     }
 
     // Whitening of the pooled covariance: Sigma = V diag(lambda) V^T
-    const eig = jacobiEigenSymmetric(sigma, f);
+    const eig = symmetricEigenDescending(sigma, f);
     const lambdaMax = eig.values[0] ?? 0;
     if (!(lambdaMax > 0)) {
       throw new DataValidationError(
@@ -477,7 +490,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
         }
       }
     }
-    const betweenEig = jacobiEigenSymmetric(between, rank);
+    const betweenEig = symmetricEigenDescending(between, rank);
 
     // Discriminant directions: scalings = whitener @ U[:, :nComp]
     const scalings = new Float64Array(f * nComp);
@@ -790,6 +803,10 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
   }
 }
 
+const QUADRATIC_DISCRIMINANT_ANALYSIS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof QuadraticDiscriminantAnalysis>[0]>
+>({ regParam: true, priors: true });
+
 /**
  * Quadratic Discriminant Analysis (QDA).
  *
@@ -842,6 +859,11 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
       readonly priors?: readonly number[];
     } = {}
   ) {
+    assertKnownOptions(
+      "QuadraticDiscriminantAnalysis",
+      options,
+      QUADRATIC_DISCRIMINANT_ANALYSIS_OPTION_KEYS
+    );
     this.regParam = QuadraticDiscriminantAnalysis.checkRegParam(options.regParam ?? 0);
     if (options.priors !== undefined) {
       checkPriorValues(options.priors);
@@ -861,12 +883,15 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: QuadraticDiscriminantAnalysis has no sample weights, so passing one throws
    * @returns this
    * @throws {DataValidationError} If there are fewer than 2 classes, or a class has a single
    *   sample while `regParam` is 0
    * @throws {InvalidParameterError} If priors are inconsistent with the data
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("QuadraticDiscriminantAnalysis", sampleWeight);
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const f = X.shape[1] ?? 0;
@@ -905,7 +930,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
       for (let j = 0; j < f; j++) means[c * f + j] = (means[c * f + j] ?? 0) / (counts[c] ?? 1);
     }
 
-    // Per-class covariance (n_c - 1 denominator) and its eigen-decomposition
+    // Per-class covariance (n_c denominator, as scikit-learn) and its eigen-decomposition
     const covs: Float64Array[] = Array.from({ length: K }, () => new Float64Array(f * f));
     for (let i = 0; i < nSamples; i++) {
       const c = index[i] ?? 0;
@@ -926,7 +951,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
     let collinear = false;
     for (let c = 0; c < K; c++) {
       const cov = covs[c] ?? new Float64Array(f * f);
-      const denom = Math.max((counts[c] ?? 1) - 1, 1);
+      const denom = counts[c] ?? 1;
       for (let p = 0; p < f; p++) {
         for (let q = p; q < f; q++) {
           const v = (cov[p * f + q] ?? 0) / denom;
@@ -935,7 +960,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
         }
         cov[p * f + p] = (cov[p * f + p] ?? 0) + this.regParam;
       }
-      const eig = jacobiEigenSymmetric(cov, f);
+      const eig = symmetricEigenDescending(cov, f);
       const top = eig.values[0] ?? 0;
       const floor = top > 0 ? top * 1e-12 : 1e-12;
       const rotation = new Float64Array(f * f);

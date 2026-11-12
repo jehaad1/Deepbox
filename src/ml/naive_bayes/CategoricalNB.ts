@@ -4,6 +4,7 @@
 
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
 import {
@@ -47,6 +48,10 @@ function validateMinCategories(value: unknown): MinCategories {
   }
   return check(value);
 }
+
+const CATEGORICAL_NB_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof CategoricalNB>[0]>
+>({ alpha: true, fitPrior: true, classPrior: true, minCategories: true });
 
 /**
  * Categorical Naive Bayes classifier.
@@ -115,6 +120,7 @@ export class CategoricalNB implements Classifier {
       readonly minCategories?: number | readonly number[] | null;
     } = {}
   ) {
+    assertKnownOptions("CategoricalNB", options, CATEGORICAL_NB_OPTION_KEYS);
     this.alpha = nbValidateAlpha(options.alpha ?? 1.0);
     this.fitPrior = nbValidateBoolean("fitPrior", options.fitPrior ?? true);
     this.classPrior = nbValidatePriors("classPrior", options.classPrior);

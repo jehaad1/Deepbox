@@ -12,8 +12,10 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { svd } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys, scaleRowsBySqrtWeight, weightedMeans } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 /** Constructor options of {@link BayesianRidge}. */
@@ -114,6 +116,21 @@ function resolveOptions(options: BayesianRidgeOptions): ResolvedOptions {
   return resolved;
 }
 
+const BAYESIAN_RIDGE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof BayesianRidge>[0]>
+>({
+  maxIter: true,
+  tol: true,
+  fitIntercept: true,
+  alphaInit: true,
+  lambdaInit: true,
+  alpha1: true,
+  alpha2: true,
+  lambda1: true,
+  lambda2: true,
+  computeScore: true,
+});
+
 /**
  * Bayesian Ridge Regression with automatic regularization.
  *
@@ -160,6 +177,7 @@ export class BayesianRidge implements Regressor {
    * @throws {InvalidParameterError} If an option is outside its valid range
    */
   constructor(options: BayesianRidgeOptions = {}) {
+    assertKnownOptions("BayesianRidge", options, BAYESIAN_RIDGE_OPTION_KEYS);
     this.opts = resolveOptions(options);
   }
 
@@ -168,30 +186,27 @@ export class BayesianRidge implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the data is centered on the weighted means and its rows are scaled by the square root of the weights, as in scikit-learn
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const p = X.shape[1] ?? 0;
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, n);
     const { fitIntercept, maxIter, tol, alpha1, alpha2, lambda1, lambda2 } = this.opts;
 
     const xRaw = toFloat64View(X);
     const yRaw = toFloat64View(y);
     const xc = Float64Array.from(xRaw);
     const yc = Float64Array.from(yRaw);
-    const xMean = new Float64Array(p);
+    let xMean: Float64Array = new Float64Array(p);
     let yMean = 0;
     if (fitIntercept) {
-      for (let i = 0; i < n; i++) {
-        const base = i * p;
-        for (let j = 0; j < p; j++) xMean[j] = (xMean[j] as number) + (xc[base + j] as number);
-        yMean += yc[i] as number;
-      }
-      for (let j = 0; j < p; j++) xMean[j] = (xMean[j] as number) / n;
-      yMean /= n;
+      ({ xMean, yMean } = weightedMeans(xc, yc, n, p, sampleWeight));
       for (let i = 0; i < n; i++) {
         const base = i * p;
         for (let j = 0; j < p; j++) xc[base + j] = (xc[base + j] as number) - (xMean[j] as number);
@@ -199,14 +214,26 @@ export class BayesianRidge implements Regressor {
       }
     }
 
-    // Variance of y about its mean, used for the default initial noise precision.
+    if (sampleWeight !== undefined) scaleRowsBySqrtWeight(xc, yc, n, p, sampleWeight);
+
+    // Effective sample count (the weight total) and the weighted variance of y about its weighted
+    // mean, used for the default initial noise precision.
+    let swSum = n;
     let yVar = 0;
     {
       let m = 0;
-      for (let i = 0; i < n; i++) m += yRaw[i] as number;
-      m /= n;
-      for (let i = 0; i < n; i++) yVar += ((yRaw[i] as number) - m) ** 2;
-      yVar /= n;
+      swSum = 0;
+      for (let i = 0; i < n; i++) {
+        const wi = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+        swSum += wi;
+        m += wi * (yRaw[i] as number);
+      }
+      m /= swSum;
+      for (let i = 0; i < n; i++) {
+        const wi = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+        yVar += wi * ((yRaw[i] as number) - m) ** 2;
+      }
+      yVar /= swSum;
     }
 
     // Thin SVD of the centered design matrix: X = U diag(s) Vt.
@@ -265,11 +292,11 @@ export class BayesianRidge implements Regressor {
       score +=
         0.5 *
         (p * Math.log(lambda) +
-          n * Math.log(alpha) -
+          swSum * Math.log(alpha) -
           alpha * sse -
           lambda * coefSS +
           logdetSigma -
-          n * Math.log(2 * Math.PI));
+          swSum * Math.log(2 * Math.PI));
       return score;
     };
 
@@ -291,7 +318,7 @@ export class BayesianRidge implements Regressor {
       let coefSS = 0;
       for (let j = 0; j < p; j++) coefSS += (coef[j] as number) ** 2;
       lambda = (gamma + 2 * lambda1) / (coefSS + 2 * lambda2);
-      alpha = (n - gamma + 2 * alpha1) / (sse + 2 * alpha2);
+      alpha = (swSum - gamma + 2 * alpha1) / (sse + 2 * alpha2);
 
       if (iter !== 0 && coefOld !== undefined) {
         let change = 0;

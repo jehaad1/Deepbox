@@ -5,8 +5,10 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { svd } from "../../linalg/decomposition/svd";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys, scaleRowsBySqrtWeight, weightedMeans } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 type RidgeSolver = "auto" | "svd" | "cholesky" | "lsqr" | "sag";
@@ -282,6 +284,73 @@ function accelerated(
 }
 
 /**
+ * Validate one Ridge hyper-parameter, by type and range.
+ *
+ * @throws {InvalidParameterError} If the name is unknown or the value is invalid
+ */
+function checkRidgeOption(key: string, value: unknown): void {
+  switch (key) {
+    case "alpha":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError(
+          `alpha must be >= 0 and finite; received ${String(value)}`,
+          "alpha",
+          value
+        );
+      }
+      return;
+    case "maxIter":
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+        throw new InvalidParameterError(
+          `maxIter must be a positive integer; received ${String(value)}`,
+          "maxIter",
+          value
+        );
+      }
+      return;
+    case "tol":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError(
+          `tol must be a finite number >= 0; received ${String(value)}`,
+          "tol",
+          value
+        );
+      }
+      return;
+    case "fitIntercept":
+    case "normalize":
+      if (typeof value !== "boolean") {
+        throw new InvalidParameterError(
+          `${key} must be a boolean; received ${String(value)}`,
+          key,
+          value
+        );
+      }
+      return;
+    case "solver":
+      if (typeof value !== "string" || !RIDGE_SOLVERS.includes(value as RidgeSolver)) {
+        throw new InvalidParameterError(
+          `solver must be one of ${RIDGE_SOLVERS.map((x) => `'${x}'`).join(", ")}; received ${String(value)}`,
+          "solver",
+          value
+        );
+      }
+      return;
+    default:
+      throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+  }
+}
+
+const RIDGE_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Ridge>[0]>>({
+  alpha: true,
+  fitIntercept: true,
+  normalize: true,
+  solver: true,
+  maxIter: true,
+  tol: true,
+});
+
+/**
  * Ridge Regression (L2 Regularized Linear Regression).
  *
  * Minimizes `||y - Xw||^2 + alpha * ||w||^2`. The intercept is never
@@ -292,6 +361,8 @@ function accelerated(
  * (removed from scikit-learn 1.2) divides every centered column by its L2 norm
  * before the penalty is applied, and the coefficients are mapped back to the
  * original feature scale afterwards.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: `None`, the solver default).
  *
  * @example
  * ```ts
@@ -357,6 +428,10 @@ export class Ridge implements Regressor {
       readonly tol?: number;
     } = {}
   ) {
+    assertKnownOptions("Ridge", options, RIDGE_OPTION_KEYS);
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) checkRidgeOption(key, value);
+    }
     this.options = { ...options };
   }
 
@@ -367,7 +442,8 @@ export class Ridge implements Regressor {
    * `minimize ||y - Xw||^2 + alpha * ||w||^2`, i.e. the normal equations
    * `(X^T X + alpha I) w = X^T y` on the centered data.
    *
-   * - `'auto'` and `'cholesky'` factor `X^T X + alpha I`. With `alpha > 0`, `'auto'` falls back
+   * - `'auto'` and `'cholesky'` factor `X^T X + alpha I`, or, with more features than samples,
+   *   the dual system `X X^T + alpha I` (as scikit-learn does). With `alpha > 0`, `'auto'` falls back
    *   to Gaussian elimination when the matrix is not numerically positive definite. When the
    *   system is singular or nearly so (`alpha = 0` with collinear features) both fall back to
    *   the SVD solution, which is the minimum-norm least-squares solution, as in scikit-learn.
@@ -376,53 +452,29 @@ export class Ridge implements Regressor {
    * - `'lsqr'` runs conjugate gradient on the normal equations.
    * - `'sag'` runs accelerated gradient descent that never forms `X^T X`.
    *
-   * **Time Complexity**: O(m n^2 + n^3) for the direct solvers, where m = samples, n = features
+   * **Time Complexity**: O(m n^2 + n^3) for the direct solvers, O(m^2 n + m^3) when n > m, where m = samples, n = features
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the fit minimizes `sum_i w_i (y_i - x_i w - b)^2 + alpha |w|^2` and centers on the weighted means
    * @returns this - The fitted estimator for method chaining
    * @throws {ShapeError} If X is not 2D or y is not 1D
    * @throws {ShapeError} If X and y have different number of samples
    * @throws {DataValidationError} If X or y contain NaN/Inf values
    * @throws {DataValidationError} If X or y are empty
    * @throws {InvalidParameterError} If alpha < 0 or another option is invalid
+   * @throws {ShapeError} If `sampleWeight` is not 1D with one entry per sample
+   * @throws {DataValidationError} If a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     // Validate inputs (dimensions, empty data, NaN/Inf)
     validateFitInputs(X, y);
 
     const alpha = this.options.alpha ?? 1.0;
-    if (typeof alpha !== "number" || !Number.isFinite(alpha) || alpha < 0) {
-      throw new InvalidParameterError(
-        `alpha must be >= 0 and finite; received ${String(alpha)}`,
-        "alpha",
-        alpha
-      );
-    }
     const solver = this.options.solver ?? "auto";
-    if (!RIDGE_SOLVERS.includes(solver)) {
-      throw new InvalidParameterError(
-        `solver must be one of ${RIDGE_SOLVERS.map((s) => `'${s}'`).join(", ")}; received ${String(solver)}`,
-        "solver",
-        solver
-      );
-    }
     const maxIter = this.options.maxIter ?? 1000;
-    if (!Number.isInteger(maxIter) || maxIter < 1) {
-      throw new InvalidParameterError(
-        `maxIter must be a positive integer; received ${String(maxIter)}`,
-        "maxIter",
-        maxIter
-      );
-    }
     const tol = this.options.tol ?? 1e-4;
-    if (!Number.isFinite(tol) || tol < 0) {
-      throw new InvalidParameterError(
-        `tol must be a finite number >= 0; received ${String(tol)}`,
-        "tol",
-        tol
-      );
-    }
     const fitIntercept = this.options.fitIntercept ?? true;
     const normalize = this.options.normalize ?? false;
 
@@ -435,17 +487,10 @@ export class Ridge implements Regressor {
 
     // Center X and y. The intercept is not penalized, so centering reduces the
     // problem to a penalized fit through the origin.
-    const xMean = new Float64Array(n);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, m);
+    let xMean: Float64Array = new Float64Array(n);
     let yMean = 0;
-    if (fitIntercept) {
-      for (let i = 0; i < m; i++) {
-        const base = i * n;
-        for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) + (xRaw[base + j] as number);
-        yMean += yRaw[i] as number;
-      }
-      for (let j = 0; j < n; j++) xMean[j] = (xMean[j] as number) / m;
-      yMean /= m;
-    }
+    if (fitIntercept) ({ xMean, yMean } = weightedMeans(xRaw, yRaw, m, n, sampleWeight));
 
     const Xc = new Float64Array(m * n);
     const yc = new Float64Array(m);
@@ -456,6 +501,9 @@ export class Ridge implements Regressor {
       }
       yc[i] = (yRaw[i] as number) - yMean;
     }
+
+    // Ridge on rows scaled by sqrt(weight) is the weighted ridge fit.
+    if (sampleWeight !== undefined) scaleRowsBySqrtWeight(Xc, yc, m, n, sampleWeight);
 
     let xScale: Float64Array | undefined;
     if (normalize) {
@@ -488,52 +536,59 @@ export class Ridge implements Regressor {
     } else if (solver === "svd") {
       coef = this.solveSvd(Xc, yc, m, n, alpha);
     } else {
-      // Normal equations: gram = X^T X + alpha I, rhs = X^T y.
-      const gram = new Float64Array(n * n);
-      const rhs = new Float64Array(n);
-      for (let r = 0; r < m; r++) {
-        const base = r * n;
-        const yr = yc[r] as number;
-        for (let i = 0; i < n; i++) {
-          const xi = Xc[base + i] as number;
-          if (xi === 0) continue;
-          rhs[i] = (rhs[i] as number) + xi * yr;
-          const gRow = i * n;
-          for (let j = i; j < n; j++) {
-            gram[gRow + j] = (gram[gRow + j] as number) + xi * (Xc[base + j] as number);
-          }
-        }
-      }
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < i; j++) gram[i * n + j] = gram[j * n + i] as number;
-        gram[i * n + i] = (gram[i * n + i] as number) + alpha;
-      }
-
-      if (solver === "lsqr") {
-        const res = conjugateGradient(gram, rhs, n, maxIter, tol);
-        coef = res.x;
-        nIter = res.nIter;
-        converged = res.converged;
+      // With more features than samples the system is solved in its dual form (as scikit-learn
+      // does): (X X^T + alpha I) a = y has m unknowns instead of n, and w = X^T a.
+      const dual = n > m && solver !== "lsqr";
+      if (dual) {
+        coef = this.solveDual(Xc, yc, m, n, alpha, solver === "auto");
       } else {
-        // A singular system (alpha = 0 with collinear columns) falls back to the minimum-norm
-        // least-squares solution, as scikit-learn does. Without regularization X^T X is only
-        // positive semi-definite, so a pivot that is tiny next to the largest diagonal entry
-        // (rounding noise of a rank-deficient matrix, condition number above 1e12) also sends
-        // the fit to the SVD, which stays accurate where the normal equations do not.
-        let direct: Float64Array | undefined = choleskySolve(
-          gram,
-          rhs,
-          n,
-          alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
-        );
-        if (direct === undefined && solver === "auto" && alpha > 0) {
-          try {
-            direct = gaussianSolve(gram, rhs, n);
-          } catch (error) {
-            if (!(error instanceof DataValidationError)) throw error;
+        // Normal equations: gram = X^T X + alpha I, rhs = X^T y.
+        const gram = new Float64Array(n * n);
+        const rhs = new Float64Array(n);
+        for (let r = 0; r < m; r++) {
+          const base = r * n;
+          const yr = yc[r] as number;
+          for (let i = 0; i < n; i++) {
+            const xi = Xc[base + i] as number;
+            if (xi === 0) continue;
+            rhs[i] = (rhs[i] as number) + xi * yr;
+            const gRow = i * n;
+            for (let j = i; j < n; j++) {
+              gram[gRow + j] = (gram[gRow + j] as number) + xi * (Xc[base + j] as number);
+            }
           }
         }
-        coef = direct ?? this.solveSvd(Xc, yc, m, n, alpha);
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < i; j++) gram[i * n + j] = gram[j * n + i] as number;
+          gram[i * n + i] = (gram[i * n + i] as number) + alpha;
+        }
+
+        if (solver === "lsqr") {
+          const res = conjugateGradient(gram, rhs, n, maxIter, tol);
+          coef = res.x;
+          nIter = res.nIter;
+          converged = res.converged;
+        } else {
+          // A singular system (alpha = 0 with collinear columns) falls back to the minimum-norm
+          // least-squares solution, as scikit-learn does. Without regularization X^T X is only
+          // positive semi-definite, so a pivot that is tiny next to the largest diagonal entry
+          // (rounding noise of a rank-deficient matrix, condition number above 1e12) also sends
+          // the fit to the SVD, which stays accurate where the normal equations do not.
+          let direct: Float64Array | undefined = choleskySolve(
+            gram,
+            rhs,
+            n,
+            alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
+          );
+          if (direct === undefined && solver === "auto" && alpha > 0) {
+            try {
+              direct = gaussianSolve(gram, rhs, n);
+            } catch (error) {
+              if (!(error instanceof DataValidationError)) throw error;
+            }
+          }
+          coef = direct ?? this.solveSvd(Xc, yc, m, n, alpha);
+        }
       }
     }
 
@@ -567,6 +622,54 @@ export class Ridge implements Regressor {
     this.nIter_ = nIter;
     this.fitted = true;
     return this;
+  }
+
+  /**
+   * Ridge solution from the dual system `(X X^T + alpha I) a = y`, `w = X^T a`, for `n > m`.
+   * The same fallbacks as the primal system apply: Gaussian elimination (`'auto'` with
+   * `alpha > 0`), then the SVD when the kernel matrix is singular.
+   */
+  private solveDual(
+    Xc: Float64Array,
+    yc: Float64Array,
+    m: number,
+    n: number,
+    alpha: number,
+    allowGaussian: boolean
+  ): Float64Array {
+    const kernel = new Float64Array(m * m);
+    for (let i = 0; i < m; i++) {
+      const rowI = i * n;
+      for (let j = i; j < m; j++) {
+        const rowJ = j * n;
+        let dot = 0;
+        for (let k = 0; k < n; k++) dot += (Xc[rowI + k] as number) * (Xc[rowJ + k] as number);
+        kernel[i * m + j] = dot;
+        kernel[j * m + i] = dot;
+      }
+      kernel[i * m + i] = (kernel[i * m + i] as number) + alpha;
+    }
+    let a: Float64Array | undefined = choleskySolve(
+      kernel,
+      yc,
+      m,
+      alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
+    );
+    if (a === undefined && allowGaussian && alpha > 0) {
+      try {
+        a = gaussianSolve(kernel, yc, m);
+      } catch (error) {
+        if (!(error instanceof DataValidationError)) throw error;
+      }
+    }
+    if (a === undefined) return this.solveSvd(Xc, yc, m, n, alpha);
+    const coef = new Float64Array(n);
+    for (let i = 0; i < m; i++) {
+      const ai = a[i] as number;
+      const row = i * n;
+      for (let k = 0; k < n; k++) coef[k] = (coef[k] as number) + ai * (Xc[row + k] as number);
+    }
+    return coef;
   }
 
   /**
@@ -683,81 +786,16 @@ export class Ridge implements Regressor {
    * Set the parameters of this estimator.
    *
    * Changing parameters does not alter a fitted model; call `fit` again.
-   * Range checks (for example `alpha >= 0`) run at `fit`.
+   * Types and ranges are checked here, as in the constructor, and nothing is changed if any entry is invalid.
    *
    * @param params - Dictionary of parameters to set
    * @returns this - The estimator for method chaining
    * @throws {InvalidParameterError} If a parameter name is unknown or its value has the wrong type
    */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "alpha":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `alpha must be a finite number; received ${String(value)}`,
-              "alpha",
-              value
-            );
-          }
-          this.options.alpha = value;
-          break;
-
-        case "maxIter":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `maxIter must be a finite number; received ${String(value)}`,
-              "maxIter",
-              value
-            );
-          }
-          this.options.maxIter = value;
-          break;
-
-        case "tol":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `tol must be a finite number; received ${String(value)}`,
-              "tol",
-              value
-            );
-          }
-          this.options.tol = value;
-          break;
-
-        case "fitIntercept":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError(
-              `fitIntercept must be a boolean; received ${String(value)}`,
-              "fitIntercept",
-              value
-            );
-          }
-          this.options.fitIntercept = value;
-          break;
-
-        case "normalize":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError(
-              `normalize must be a boolean; received ${String(value)}`,
-              "normalize",
-              value
-            );
-          }
-          this.options.normalize = value;
-          break;
-
-        case "solver":
-          if (typeof value !== "string" || !RIDGE_SOLVERS.includes(value as RidgeSolver)) {
-            throw new InvalidParameterError(`Invalid solver: ${String(value)}`, "solver", value);
-          }
-          this.options.solver = value as RidgeSolver;
-          break;
-
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    // Validate everything first so that a bad entry leaves the estimator unchanged.
+    for (const [key, value] of Object.entries(params)) checkRidgeOption(key, value);
+    this.options = { ...this.options, ...params } as typeof this.options;
     return this;
   }
 
