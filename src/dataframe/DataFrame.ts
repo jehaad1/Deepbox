@@ -120,6 +120,28 @@ const ensureUniqueLabels = (labels: readonly string[], labelName: string): void 
   }
 };
 
+/**
+ * Normalize a join key option (a column name or an array of names) to a list.
+ * Empty names, empty lists, duplicates and non-strings are rejected.
+ */
+const joinKeyList = (value: unknown, name: string): string[] => {
+  const list = Array.isArray(value) ? value : [value];
+  if (list.length === 0 || !isStringArray(list)) {
+    throw new InvalidParameterError(
+      `${name} must be a column name or a non-empty array of column names`,
+      name,
+      value
+    );
+  }
+  if (list.some((col) => col === "")) {
+    throw new InvalidParameterError(`${name} must not contain an empty column name`, name, value);
+  }
+  if (new Set(list).size !== list.length) {
+    throw new InvalidParameterError(`${name} must not repeat a column name`, name, value);
+  }
+  return list;
+};
+
 /** Cell texts read as missing (null) by default; see `CsvReadOptions.naValues`. */
 const DEFAULT_CSV_NA_VALUES: readonly string[] = [
   "null",
@@ -1131,7 +1153,9 @@ export class DataFrame {
    * unmatched right rows.
    *
    * @param other - DataFrame to join with
-   * @param on - Column name to join on (must exist in both DataFrames)
+   * @param on - Column name, or array of column names, to join on (must exist in
+   *   both DataFrames). With several names a row matches when every key column
+   *   is equal; rows with a null or undefined part never match.
    * @param how - Type of join operation
    *   - 'inner': Only rows with matching keys in both DataFrames
    *   - 'left': All rows from left, matched rows from right (nulls for non-matches)
@@ -1139,7 +1163,8 @@ export class DataFrame {
    *   - 'outer': All rows from both DataFrames (nulls for non-matches)
    * @returns New DataFrame with joined data
    *
-   * @throws {InvalidParameterError} If join column doesn't exist in either DataFrame
+   * @throws {InvalidParameterError} If `on` is an empty string or empty array, or a join
+   *   column doesn't exist in either DataFrame
    *
    * @example
    * ```ts
@@ -1165,7 +1190,7 @@ export class DataFrame {
    */
   join(
     other: DataFrame,
-    on: string,
+    on: string | readonly string[],
     how: "inner" | "left" | "right" | "outer" = "inner"
   ): DataFrame {
     if (!JOIN_KINDS.includes(how)) {
@@ -1175,15 +1200,26 @@ export class DataFrame {
         how
       );
     }
-    // Validate join column exists in both DataFrames
-    if (!this._data.has(on)) {
-      throw new InvalidParameterError(`Join column '${on}' not found in left DataFrame`, "on", on);
-    }
-    if (!other._data.has(on)) {
-      throw new InvalidParameterError(`Join column '${on}' not found in right DataFrame`, "on", on);
+    const keys = joinKeyList(on, "on");
+    // Validate join columns exist in both DataFrames
+    for (const key of keys) {
+      if (!this._data.has(key)) {
+        throw new InvalidParameterError(
+          `Join column '${key}' not found in left DataFrame`,
+          "on",
+          key
+        );
+      }
+      if (!other._data.has(key)) {
+        throw new InvalidParameterError(
+          `Join column '${key}' not found in right DataFrame`,
+          "on",
+          key
+        );
+      }
     }
 
-    return this.hashJoin(other, on, on, how, ["_left", "_right"]);
+    return this.hashJoin(other, keys, keys, how, ["_left", "_right"]);
   }
 
   /**
@@ -1198,21 +1234,43 @@ export class DataFrame {
    */
   private hashJoin(
     other: DataFrame,
-    leftOn: string,
-    rightOn: string,
+    leftOn: readonly string[],
+    rightOn: readonly string[],
     how: "inner" | "left" | "right" | "outer",
     suffixes: readonly [string, string]
   ): DataFrame {
-    const leftKeys = this._data.get(leftOn) ?? [];
-    const rightKeys = other._data.get(rightOn) ?? [];
-    const sameKey = leftOn === rightOn;
+    const leftKeyCols = leftOn.map((col) => this._data.get(col) ?? []);
+    const rightKeyCols = rightOn.map((col) => other._data.get(col) ?? []);
+    const nLeft = this._index.length;
+    const nRight = other._index.length;
+    // Key columns with the same name on both sides are emitted once, unsuffixed.
+    const sharedKeys = new Map<string, readonly unknown[]>();
+    for (let k = 0; k < leftOn.length; k++) {
+      if (leftOn[k] === rightOn[k]) {
+        sharedKeys.set(leftOn[k] as string, rightKeyCols[k] as readonly unknown[]);
+      }
+    }
 
-    const buildHash = (keys: readonly unknown[]): Map<string, number[]> => {
+    // Hash key of row i, or undefined when any key part is null/undefined (never matches).
+    const keyAt = (cols: readonly (readonly unknown[])[], i: number): string | undefined => {
+      if (cols.length === 1) {
+        const val = (cols[0] as readonly unknown[])[i];
+        return val === null || val === undefined ? undefined : createKey(val);
+      }
+      const parts: unknown[] = new Array(cols.length);
+      for (let c = 0; c < cols.length; c++) {
+        const val = (cols[c] as readonly unknown[])[i];
+        if (val === null || val === undefined) return undefined;
+        parts[c] = val;
+      }
+      return createKey(parts);
+    };
+
+    const buildHash = (cols: readonly (readonly unknown[])[], n: number): Map<string, number[]> => {
       const hash = new Map<string, number[]>();
-      for (let i = 0; i < keys.length; i++) {
-        const val = keys[i];
-        if (val === null || val === undefined) continue;
-        const key = createKey(val);
+      for (let i = 0; i < n; i++) {
+        const key = keyAt(cols, i);
+        if (key === undefined) continue;
         const bucket = hash.get(key);
         if (bucket === undefined) hash.set(key, [i]);
         else bucket.push(i);
@@ -1225,11 +1283,10 @@ export class DataFrame {
     const rightRows: number[] = [];
 
     if (how === "right") {
-      const leftHash = buildHash(leftKeys);
-      for (let r = 0; r < rightKeys.length; r++) {
-        const val = rightKeys[r];
-        const matches =
-          val === null || val === undefined ? undefined : leftHash.get(createKey(val));
+      const leftHash = buildHash(leftKeyCols, nLeft);
+      for (let r = 0; r < nRight; r++) {
+        const key = keyAt(rightKeyCols, r);
+        const matches = key === undefined ? undefined : leftHash.get(key);
         if (matches === undefined) {
           leftRows.push(-1);
           rightRows.push(r);
@@ -1241,12 +1298,11 @@ export class DataFrame {
         }
       }
     } else {
-      const rightHash = buildHash(rightKeys);
-      const matchedRight = how === "outer" ? new Uint8Array(rightKeys.length) : null;
-      for (let l = 0; l < leftKeys.length; l++) {
-        const val = leftKeys[l];
-        const matches =
-          val === null || val === undefined ? undefined : rightHash.get(createKey(val));
+      const rightHash = buildHash(rightKeyCols, nRight);
+      const matchedRight = how === "outer" ? new Uint8Array(nRight) : null;
+      for (let l = 0; l < nLeft; l++) {
+        const key = keyAt(leftKeyCols, l);
+        const matches = key === undefined ? undefined : rightHash.get(key);
         if (matches === undefined) {
           if (how === "left" || how === "outer") {
             leftRows.push(l);
@@ -1261,7 +1317,7 @@ export class DataFrame {
         }
       }
       if (matchedRight) {
-        for (let r = 0; r < rightKeys.length; r++) {
+        for (let r = 0; r < nRight; r++) {
           if (matchedRight[r] === 0) {
             leftRows.push(-1);
             rightRows.push(r);
@@ -1272,7 +1328,7 @@ export class DataFrame {
 
     // Output column names. A column present on both sides gets a suffix on each
     // side (the shared join key itself is emitted once, unsuffixed).
-    const rightSource = other._columns.filter((col) => !(sameKey && col === rightOn));
+    const rightSource = other._columns.filter((col) => !sharedKeys.has(col));
     const leftColumnSet = new Set(this._columns);
     const overlapping = new Set(rightSource.filter((col) => leftColumnSet.has(col)));
     const usedNames = new Set<string>();
@@ -1296,7 +1352,7 @@ export class DataFrame {
       const col = this._columns[j] as string;
       const src = this._data.get(col) ?? [];
       // Unmatched right rows take the join key from the right frame.
-      const fallback = sameKey && col === leftOn ? rightKeys : null;
+      const fallback = sharedKeys.get(col) ?? null;
       const out = new Array<unknown>(nOut);
       for (let k = 0; k < nOut; k++) {
         const l = leftRows[k] as number;
@@ -1331,16 +1387,17 @@ export class DataFrame {
    *
    * @param other - DataFrame to merge with
    * @param options - Merge configuration
-   *   - on: Column name to join on (must exist in both DataFrames)
-   *   - leftOn: Column name in left DataFrame
-   *   - rightOn: Column name in right DataFrame
+   *   - on: Column name, or array of column names, to join on (must exist in both
+   *     DataFrames). With several names a row matches when every key column is equal.
+   *   - leftOn: Column name (or array of names) in left DataFrame
+   *   - rightOn: Column name (or array of names) in right DataFrame, as many as `leftOn`
    *   - left_on, right_on: Deprecated spellings of `leftOn` and `rightOn`. `leftOn` and
    *     `rightOn` win when both spellings are given.
    *   - how: Join type ('inner', 'left', 'right', 'outer')
    *   - suffixes: Suffix for duplicate column names ['_x', '_y']
    * @returns New DataFrame with merged data
    *
-   * @throws {InvalidParameterError} If merge columns don't exist or conflicting options provided
+   * @throws {InvalidParameterError} If merge columns are empty, don't exist or conflicting options provided
    *
    * @example
    * ```ts
@@ -1366,13 +1423,13 @@ export class DataFrame {
   merge(
     other: DataFrame,
     options: {
-      readonly on?: string;
-      readonly leftOn?: string;
-      readonly rightOn?: string;
+      readonly on?: string | readonly string[];
+      readonly leftOn?: string | readonly string[];
+      readonly rightOn?: string | readonly string[];
       /** @deprecated Prefer `leftOn`. */
-      readonly left_on?: string;
+      readonly left_on?: string | readonly string[];
       /** @deprecated Prefer `rightOn`. */
-      readonly right_on?: string;
+      readonly right_on?: string | readonly string[];
       readonly how?: "inner" | "left" | "right" | "outer";
       readonly suffixes?: readonly [string, string];
     } = {}
@@ -1405,31 +1462,29 @@ export class DataFrame {
     // Determine join columns. The camelCase keys win over the deprecated snake_case ones.
     const leftOnOption = options.leftOn ?? options.left_on;
     const rightOnOption = options.rightOn ?? options.right_on;
-    let leftOn: string;
-    let rightOn: string;
+    let leftOn: string[];
+    let rightOn: string[];
 
-    if (options.on) {
-      if (typeof options.on !== "string") {
-        throw new InvalidParameterError("on must be a string", "on", options.on);
-      }
-      // Same column name in both DataFrames
-      if (leftOnOption || rightOnOption) {
+    if (options.on !== undefined) {
+      // Same column names in both DataFrames
+      if (leftOnOption !== undefined || rightOnOption !== undefined) {
         throw new InvalidParameterError(
           'Cannot specify both "on" and "left_on"/"right_on" (or "leftOn"/"rightOn")'
         );
       }
-      leftOn = options.on;
-      rightOn = options.on;
-    } else if (leftOnOption && rightOnOption) {
-      if (typeof leftOnOption !== "string") {
-        throw new InvalidParameterError("leftOn must be a string", "leftOn", leftOnOption);
-      }
-      if (typeof rightOnOption !== "string") {
-        throw new InvalidParameterError("rightOn must be a string", "rightOn", rightOnOption);
-      }
+      leftOn = joinKeyList(options.on, "on");
+      rightOn = leftOn;
+    } else if (leftOnOption !== undefined && rightOnOption !== undefined) {
       // Different column names
-      leftOn = leftOnOption;
-      rightOn = rightOnOption;
+      leftOn = joinKeyList(leftOnOption, "leftOn");
+      rightOn = joinKeyList(rightOnOption, "rightOn");
+      if (leftOn.length !== rightOn.length) {
+        throw new InvalidParameterError(
+          `leftOn and rightOn must name the same number of columns (${leftOn.length} vs ${rightOn.length})`,
+          "rightOn",
+          rightOnOption
+        );
+      }
     } else {
       throw new InvalidParameterError(
         'Must specify either "on" or both "left_on" and "right_on" (or "leftOn" and "rightOn")'
@@ -1437,19 +1492,23 @@ export class DataFrame {
     }
 
     // Validate columns exist
-    if (!this._data.has(leftOn)) {
-      throw new InvalidParameterError(
-        `Column '${leftOn}' not found in left DataFrame`,
-        "leftOn",
-        leftOn
-      );
+    for (const col of leftOn) {
+      if (!this._data.has(col)) {
+        throw new InvalidParameterError(
+          `Column '${col}' not found in left DataFrame`,
+          "leftOn",
+          col
+        );
+      }
     }
-    if (!other._data.has(rightOn)) {
-      throw new InvalidParameterError(
-        `Column '${rightOn}' not found in right DataFrame`,
-        "rightOn",
-        rightOn
-      );
+    for (const col of rightOn) {
+      if (!other._data.has(col)) {
+        throw new InvalidParameterError(
+          `Column '${col}' not found in right DataFrame`,
+          "rightOn",
+          col
+        );
+      }
     }
 
     return this.hashJoin(other, leftOn, rightOn, how, suffixes);
