@@ -1570,7 +1570,7 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
   /**
    * Softmax along an axis (functional form: `softmax`).
    *
-   * @param axis - Axis to normalise (default -1)
+   * @param axis - Axis to normalize (default -1)
    *
    * @example
    * ```ts
@@ -1586,7 +1586,7 @@ export class Tensor<S extends Shape = Shape, D extends DType = DType> implements
   /**
    * Log-softmax along an axis (functional form: `logSoftmax`).
    *
-   * @param axis - Axis to normalise (default -1)
+   * @param axis - Axis to normalize (default -1)
    *
    * @example
    * ```ts

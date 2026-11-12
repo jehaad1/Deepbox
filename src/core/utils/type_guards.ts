@@ -13,7 +13,7 @@ import type { TypedArray } from "../types/common";
  * Returns false for unsupported typed arrays (e.g. Uint16Array, Int16Array,
  * Uint8ClampedArray), DataView, and regular arrays. The check uses
  * `instanceof`, so arrays created in another realm (iframe, vm context) are
- * not recognised.
+ * not recognized.
  *
  * @param value - The value to check
  * @returns True if value is a supported TypedArray, false otherwise

@@ -213,7 +213,7 @@ export class Linear extends Module {
       );
     }
 
-    // Convert to the layer dtype. `astype` honours strides and offsets, and the
+    // Convert to the layer dtype. `astype` honors strides and offsets, and the
     // GradTensor variant keeps the autograd link to the caller's graph.
     const layerDtype = this.weightParam.tensor.dtype;
     if (input.dtype !== layerDtype) {

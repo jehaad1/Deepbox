@@ -64,7 +64,7 @@ export interface Backend {
   supports(cap: BackendCapability): boolean;
 
   /**
-   * Perform any async initialisation the backend requires.
+   * Perform any async initialization the backend requires.
    *
    * For the CPU backend this is a no-op that resolves immediately.
    * GPU/WASM backends may need to request adapters or compile modules.

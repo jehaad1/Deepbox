@@ -119,7 +119,7 @@ export type NamedAggregation = readonly [
 export type FillMethod = "ffill" | "bfill";
 
 /**
- * Options for filling missing values by propagating neighbours.
+ * Options for filling missing values by propagating neighbors.
  *
  * @property method - `"ffill"` (alias `"pad"`) or `"bfill"` (alias `"backfill"`)
  * @property limit - Maximum number of consecutive missing values to fill per gap (default: no limit)

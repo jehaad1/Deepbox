@@ -2066,7 +2066,7 @@ export class DataFrame {
    *
    * @param method - Coefficient name, or an options object `{ method?, minPeriods? }`
    * @param minPeriods - Minimum number of complete pairs per cell (default: 1)
-   * @returns Square DataFrame labelled by the numeric column names
+   * @returns Square DataFrame labeled by the numeric column names
    * @throws {InvalidParameterError} If `method` is unknown or `minPeriods` is not a non-negative integer
    *
    * @example
@@ -3638,7 +3638,7 @@ export class DataFrame {
    * `weights`, each draw picks among the remaining rows in proportion to their weights. With
    * `replace: true` a row can appear several times; because row labels must stay unique (a
    * DataFrame cannot hold duplicate labels), the original labels are not kept and the result is
-   * labelled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
+   * labeled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
    *
    * @param n - Number of rows, or an options object (see {@link SampleOptions})
    * @param randomState - Integer seed (positional form only)
@@ -5862,11 +5862,11 @@ export class DataFrame {
    * - `"linear"`: gaps between two numbers are filled on a straight line over
    *   the row positions; a gap after the last number repeats that number;
    *   a gap before the first number stays missing.
-   * - `"nearest"`: gaps between two numbers take the closer neighbour (the
+   * - `"nearest"`: gaps between two numbers take the closer neighbor (the
    *   earlier one on a tie); gaps before the first or after the last number stay
    *   missing.
    *
-   * Only finite numbers act as neighbours; other values are left untouched.
+   * Only finite numbers act as neighbors; other values are left untouched.
    *
    * @param method - Interpolation method: 'linear' (default) or 'nearest'
    * @returns New DataFrame
@@ -7589,7 +7589,7 @@ export class DataFrameGroupBy {
    *   to the numeric columns only, like the other group aggregations;
    * - `cumsum`, `cumprod`, `cummax`, `cummin` (numeric columns), `ffill` or `bfill`: computed within
    *   each group, with the semantics of the same-named DataFrame methods;
-   * - a function that receives the group's values of one column as a Series (labelled with the row
+   * - a function that receives the group's values of one column as a Series (labeled with the row
    *   labels) and returns a Series or array of the same length, or one value that is repeated.
    *
    * Rows that belong to no group (a dropped missing key) get null.

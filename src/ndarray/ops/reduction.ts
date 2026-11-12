@@ -2027,8 +2027,8 @@ export function nancumsum(t: Tensor, axis?: Axis): Tensor {
 }
 
 /**
- * Linear interpolation between neighbouring order statistics, with NumPy's rounding behaviour
- * for finite values. An infinite neighbour gives that infinity (the limit of the formula)
+ * Linear interpolation between neighboring order statistics, with NumPy's rounding behavior
+ * for finite values. An infinite neighbor gives that infinity (the limit of the formula)
  * instead of the NaN that `inf - inf` would produce; opposite infinities give NaN.
  */
 function lerpQuantile(a: number, b: number, t: number): number {

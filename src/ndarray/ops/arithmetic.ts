@@ -1045,7 +1045,7 @@ function powBigInt(base: bigint, exp: bigint): bigint {
 }
 
 /**
- * Float power with one scalar exponent, specialised for the common exponents.
+ * Float power with one scalar exponent, specialized for the common exponents.
  * `0.5` uses `Math.sqrt`, which (like NumPy's scalar-power shortcut) returns -0
  * for -0 and NaN for negative inputs.
  */

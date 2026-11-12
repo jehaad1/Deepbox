@@ -137,7 +137,7 @@ function materialize(input: GradTensor, dtype: FloatDType): GradTensor {
  *
  * BatchNorm1d, BatchNorm2d, and BatchNorm3d differ only in the expected
  * input dimensionality, spatial permute order, and broadcast shapes.
- * This base class parameterises those differences.
+ * This base class parameterizes those differences.
  */
 abstract class _BatchNorm extends Module {
   protected readonly numFeatures: number;
@@ -1141,7 +1141,7 @@ export class InstanceNorm3d extends _InstanceNorm {
  * nearby channels.
  *
  * **Formula**: out_i = x_i / (k + alpha/size * sum(x_j^2))^beta
- * where the sum runs over `size` neighbouring channels: channel `i` itself,
+ * where the sum runs over `size` neighboring channels: channel `i` itself,
  * `floor(size / 2)` channels before it and `floor((size - 1) / 2)` after it.
  * Channels outside the input count as zero, and the divisor is always `size`.
  * This matches `torch.nn.LocalResponseNorm`, including for even `size`.
@@ -1162,7 +1162,7 @@ export class LocalResponseNorm extends Module {
   private readonly layerDtype: FloatDType;
 
   /**
-   * @param size - Number of neighbouring channels used for normalization
+   * @param size - Number of neighboring channels used for normalization
    * @param options.alpha - Multiplicative factor (default: 1e-4)
    * @param options.beta - Exponent (default: 0.75)
    * @param options.k - Additive factor (default: 1)
@@ -1230,7 +1230,7 @@ export class LocalResponseNorm extends Module {
       spatialSize *= shape[d] ?? 1;
     }
 
-    // Zero-based row-major view of the values; honours strides and offsets.
+    // Zero-based row-major view of the values; honors strides and offsets.
     const data = readNumbers(t, "LocalResponseNorm");
 
     const front = Math.floor(this.size / 2);

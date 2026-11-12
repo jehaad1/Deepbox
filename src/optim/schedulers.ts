@@ -300,7 +300,7 @@ function validateSchedulerState(
  * scheduler left behind, unless the rate was changed by hand in between.
  *
  * Schedulers write the rate to `paramGroups[i].options.lr` (or `paramGroups[i].lr`).
- * Optimizers that use the learning rate only to initialise their state (for example
+ * Optimizers that use the learning rate only to initialize their state (for example
  * `Rprop`, whose step sizes start at `lr`) are not affected by later changes.
  *
  * @example

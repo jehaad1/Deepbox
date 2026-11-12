@@ -352,7 +352,7 @@ const XML_ILLEGAL_CHARS = /[\u0000-\u0008\u000B-\u001F￾￿]/g;
 
 /**
  * Escape text for an XML element or attribute. Characters XML cannot carry
- * (control characters, including a literal CR which parsers would normalise)
+ * (control characters, including a literal CR which parsers would normalize)
  * use Excel's `_xHHHH_` escape, and text that already looks like such an
  * escape has its underscore escaped so it reads back unchanged.
  */

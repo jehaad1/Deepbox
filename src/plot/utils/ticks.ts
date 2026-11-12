@@ -51,7 +51,7 @@ function formatTick(value: number, step: number): string {
   const absStep = Math.abs(step);
   if (abs === 0 || abs < absStep * 1e-9) return "0";
   if (abs < 1e-4 || abs >= 1e6) {
-    // Show enough mantissa digits to tell neighbouring ticks apart (e.g. 1e9 + 2 and 1e9 + 4),
+    // Show enough mantissa digits to tell neighboring ticks apart (e.g. 1e9 + 2 and 1e9 + 4),
     // never fewer than two.
     const needed = Math.ceil(Math.log10(abs / absStep));
     return value.toExponential(Math.min(15, Math.max(2, needed)));
@@ -125,7 +125,7 @@ export function generateTicks(min: number, max: number, maxTicks = 5): readonly 
   for (let k = first; k <= last; k++) {
     // toPrecision(15) removes representation noise such as 0.30000000000000004 and turns -0
     // into 0. When the value is so large against the step that 15 digits would merge
-    // neighbouring ticks, the product is already as exact as a double allows and is kept.
+    // neighboring ticks, the product is already as exact as a double allows and is kept.
     const raw = k * step;
     const v = Math.abs(raw) < step * 1e14 ? Number(raw.toPrecision(15)) : raw;
     ticks.push({ value: v, label: formatTick(v, step) });

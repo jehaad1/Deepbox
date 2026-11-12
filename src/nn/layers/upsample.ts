@@ -266,7 +266,7 @@ export class Upsample extends Module {
 
     // Per output pixel, up to four (input plane index, weight) taps in the order
     // (lo row, lo col), (lo row, hi col), (hi row, lo col), (hi row, hi col).
-    // Taps with zero weight are dropped so non-finite neighbours never leak in.
+    // Taps with zero weight are dropped so non-finite neighbors never leak in.
     const spatialLen = outH * outW;
     const tapIndex = new Int32Array(spatialLen * 4);
     const tapWeight = new Float64Array(spatialLen * 4);

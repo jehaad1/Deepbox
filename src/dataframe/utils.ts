@@ -250,10 +250,10 @@ export const checkFillMethod = (method: unknown): "ffill" | "bfill" => {
 };
 
 /**
- * Fills missing entries by propagating the nearest valid neighbour: the previous one for
+ * Fills missing entries by propagating the nearest valid neighbor: the previous one for
  * `"ffill"`, the next one for `"bfill"`. At most `limit` consecutive missing entries are
  * filled in each gap, counted from the valid value that is propagated. Entries with no
- * valid neighbour on the propagating side keep their value. Returns a new array.
+ * valid neighbor on the propagating side keep their value. Returns a new array.
  */
 export const propagateFill = (
   values: readonly unknown[],

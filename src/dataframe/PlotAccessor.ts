@@ -197,7 +197,7 @@ export class PlotAccessor {
    *
    * @param options - Plot configuration
    * @param options.x - Column for the bar positions (default: the first column).
-   *   A non-numeric column is drawn as categories, labelled with its values.
+   *   A non-numeric column is drawn as categories, labeled with its values.
    * @param options.y - Column or columns for the bar heights (default: all numeric columns except `x`)
    * @returns The Figure containing the plot
    * @throws {InvalidParameterError} If a named column does not exist
@@ -238,7 +238,7 @@ export class PlotAccessor {
    *
    * @param options - Plot configuration
    * @param options.y - Column for the bar positions (default: the first column).
-   *   A non-numeric column is drawn as categories, labelled with its values.
+   *   A non-numeric column is drawn as categories, labeled with its values.
    * @param options.x - Column for the bar lengths (default: the second column)
    * @returns The Figure containing the plot
    * @throws {InvalidParameterError} If a named column does not exist
