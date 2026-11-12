@@ -19,7 +19,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup && tsc --emitDeclarationOnly",
+    "build": "tsup && tsc --emitDeclarationOnly && node scripts/fix-declarations.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
@@ -40,7 +40,7 @@
     "prepack": "npm run build",
     "all": "npm run validate:all",
     "all:fix": "npm run validate:fix",
-    "validate:runtime": "npm run build && npm run test && npm run bench:ci && npm run examples:all && npm run projects:all && npm run test:coverage",
+    "validate:runtime": "npm run build && npm run check:package && npm run test && npm run bench:ci && npm run examples:all && npm run projects:all && npm run test:coverage",
     "validate:all": "npm run format:check && npm run prose:check && npm run lint:check && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
     "validate:fix": "npm run format && npm run lint:fix && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
     "project:01": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/01-financial-risk-analysis/index.ts",
@@ -122,79 +122,151 @@
     "bench:deepbox": "node -e \"console.log('[bench:deepbox] Running suites 01–13. Suite 14 (tensor) is separate: npm run bench:tensor (Deepbox-only; excluded from bench:python compare).')\" && npm run bench:dataframe && npm run bench:datasets && npm run bench:linalg && npm run bench:metrics && npm run bench:ml && npm run bench:ndarray && npm run bench:nn && npm run bench:optim && npm run bench:plot && npm run bench:preprocess && npm run bench:random && npm run bench:stats && npm run bench:core",
     "bench:python": "python benchmarks/python/01_dataframe.py && python benchmarks/python/02_datasets.py && python benchmarks/python/03_linalg.py && python benchmarks/python/04_metrics.py && python benchmarks/python/05_ml.py && python benchmarks/python/06_ndarray.py && python benchmarks/python/07_nn.py && python benchmarks/python/08_optim.py && python benchmarks/python/09_plot.py && python benchmarks/python/10_preprocess.py && python benchmarks/python/11_random.py && python benchmarks/python/12_stats.py",
     "bench:all": "npm run bench:deepbox && npm run bench:python && npm run bench:compare",
-    "bench:ci": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/13-core.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/06-ndarray.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts"
+    "bench:ci": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/13-core.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/06-ndarray.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts",
+    "check:package": "node scripts/check-package.mjs"
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./core": {
-      "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js",
-      "require": "./dist/core/index.cjs"
+      "import": {
+        "types": "./dist/core/index.d.ts",
+        "default": "./dist/core/index.js"
+      },
+      "require": {
+        "types": "./dist/core/index.d.cts",
+        "default": "./dist/core/index.cjs"
+      }
     },
     "./ndarray": {
-      "types": "./dist/ndarray/index.d.ts",
-      "import": "./dist/ndarray/index.js",
-      "require": "./dist/ndarray/index.cjs"
+      "import": {
+        "types": "./dist/ndarray/index.d.ts",
+        "default": "./dist/ndarray/index.js"
+      },
+      "require": {
+        "types": "./dist/ndarray/index.d.cts",
+        "default": "./dist/ndarray/index.cjs"
+      }
     },
     "./linalg": {
-      "types": "./dist/linalg/index.d.ts",
-      "import": "./dist/linalg/index.js",
-      "require": "./dist/linalg/index.cjs"
+      "import": {
+        "types": "./dist/linalg/index.d.ts",
+        "default": "./dist/linalg/index.js"
+      },
+      "require": {
+        "types": "./dist/linalg/index.d.cts",
+        "default": "./dist/linalg/index.cjs"
+      }
     },
     "./dataframe": {
-      "types": "./dist/dataframe/index.d.ts",
-      "import": "./dist/dataframe/index.js",
-      "require": "./dist/dataframe/index.cjs"
+      "import": {
+        "types": "./dist/dataframe/index.d.ts",
+        "default": "./dist/dataframe/index.js"
+      },
+      "require": {
+        "types": "./dist/dataframe/index.d.cts",
+        "default": "./dist/dataframe/index.cjs"
+      }
     },
     "./stats": {
-      "types": "./dist/stats/index.d.ts",
-      "import": "./dist/stats/index.js",
-      "require": "./dist/stats/index.cjs"
+      "import": {
+        "types": "./dist/stats/index.d.ts",
+        "default": "./dist/stats/index.js"
+      },
+      "require": {
+        "types": "./dist/stats/index.d.cts",
+        "default": "./dist/stats/index.cjs"
+      }
     },
     "./metrics": {
-      "types": "./dist/metrics/index.d.ts",
-      "import": "./dist/metrics/index.js",
-      "require": "./dist/metrics/index.cjs"
+      "import": {
+        "types": "./dist/metrics/index.d.ts",
+        "default": "./dist/metrics/index.js"
+      },
+      "require": {
+        "types": "./dist/metrics/index.d.cts",
+        "default": "./dist/metrics/index.cjs"
+      }
     },
     "./preprocess": {
-      "types": "./dist/preprocess/index.d.ts",
-      "import": "./dist/preprocess/index.js",
-      "require": "./dist/preprocess/index.cjs"
+      "import": {
+        "types": "./dist/preprocess/index.d.ts",
+        "default": "./dist/preprocess/index.js"
+      },
+      "require": {
+        "types": "./dist/preprocess/index.d.cts",
+        "default": "./dist/preprocess/index.cjs"
+      }
     },
     "./ml": {
-      "types": "./dist/ml/index.d.ts",
-      "import": "./dist/ml/index.js",
-      "require": "./dist/ml/index.cjs"
+      "import": {
+        "types": "./dist/ml/index.d.ts",
+        "default": "./dist/ml/index.js"
+      },
+      "require": {
+        "types": "./dist/ml/index.d.cts",
+        "default": "./dist/ml/index.cjs"
+      }
     },
     "./nn": {
-      "types": "./dist/nn/index.d.ts",
-      "import": "./dist/nn/index.js",
-      "require": "./dist/nn/index.cjs"
+      "import": {
+        "types": "./dist/nn/index.d.ts",
+        "default": "./dist/nn/index.js"
+      },
+      "require": {
+        "types": "./dist/nn/index.d.cts",
+        "default": "./dist/nn/index.cjs"
+      }
     },
     "./optim": {
-      "types": "./dist/optim/index.d.ts",
-      "import": "./dist/optim/index.js",
-      "require": "./dist/optim/index.cjs"
+      "import": {
+        "types": "./dist/optim/index.d.ts",
+        "default": "./dist/optim/index.js"
+      },
+      "require": {
+        "types": "./dist/optim/index.d.cts",
+        "default": "./dist/optim/index.cjs"
+      }
     },
     "./random": {
-      "types": "./dist/random/index.d.ts",
-      "import": "./dist/random/index.js",
-      "require": "./dist/random/index.cjs"
+      "import": {
+        "types": "./dist/random/index.d.ts",
+        "default": "./dist/random/index.js"
+      },
+      "require": {
+        "types": "./dist/random/index.d.cts",
+        "default": "./dist/random/index.cjs"
+      }
     },
     "./plot": {
-      "types": "./dist/plot/index.d.ts",
-      "import": "./dist/plot/index.js",
-      "require": "./dist/plot/index.cjs"
+      "import": {
+        "types": "./dist/plot/index.d.ts",
+        "default": "./dist/plot/index.js"
+      },
+      "require": {
+        "types": "./dist/plot/index.d.cts",
+        "default": "./dist/plot/index.cjs"
+      }
     },
     "./datasets": {
-      "types": "./dist/datasets/index.d.ts",
-      "import": "./dist/datasets/index.js",
-      "require": "./dist/datasets/index.cjs"
-    }
+      "import": {
+        "types": "./dist/datasets/index.d.ts",
+        "default": "./dist/datasets/index.js"
+      },
+      "require": {
+        "types": "./dist/datasets/index.d.cts",
+        "default": "./dist/datasets/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
@@ -247,6 +319,7 @@
     "SKILL.md"
   ],
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "^2.5.0",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.9",
