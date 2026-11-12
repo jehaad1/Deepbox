@@ -3561,8 +3561,9 @@ export class DataFrame {
    *
    * Without `replace`, rows are distinct and `n` may not exceed the number of rows. With
    * `weights`, each draw picks among the remaining rows in proportion to their weights. With
-   * `replace: true` a row can appear several times; because row labels must stay unique, the
-   * result is then labelled 0..k-1.
+   * `replace: true` a row can appear several times; because row labels must stay unique (a
+   * DataFrame cannot hold duplicate labels), the original labels are not kept and the result is
+   * labelled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
    *
    * @param n - Number of rows, or an options object (see {@link SampleOptions})
    * @param randomState - Integer seed (positional form only)
