@@ -107,24 +107,24 @@ Format: id, priority, area, evidence, status.
 | NN-21 | P3 | core | `WorkerPool` is sequential; `taskTimeout` stored but not enforced. | fixed cb5c615 |
 | NN-22 | P3 | core | `SerializedEstimator` unused; `save()` not atomic; checkpoints pretty-printed. | fixed 6a741a2 |
 | NN-23 | P3 | nn | Conv2d and pooling reject unbatched `(C,H,W)` input. | fixed 63d599d |
-| ND-1 | P1 | linalg | `eig`/`eigvals` throw for complex eigenvalues: 91 of 100 random 4x4 matrices. Verified. Documented limitation. | open (additive option; default is owner decision) |
-| ND-2 | P1 | random | `shuffle`/`permutation`/`choice` on N-D tensors work over flattened elements and scramble rows (numpy/torch use axis 0). Verified. Documented, so changing the default is breaking. | owner decision; additive `axis` option |
-| ND-3 | P2 | ndarray | `matmul` accepts 2-D only; `dot` is batched. | open |
-| ND-4 | P2 | ndarray | int64 beyond 2^53: `searchsorted`, `isclose`, `allclose` compare as Number. Verified. | open |
-| ND-5 | P2 | ndarray | int32/uint8/bool casts silently produce garbage (`NaN` to 0, 3e9 wraps, `"0x10"` to 16); int64 path throws `DTypeError`. Verified. | open |
-| ND-6 | P2 | ndarray | String dtype unsupported in `equal`, `where`, `unique`, `flip`, `roll`, `booleanIndex`, `fancyIndex`, `union1d`, `sort`. | open |
-| ND-7 | P2 | linalg | `sparseSolve` allocates a dense N x N workspace with no guard (n=20000 needs 3.2 GB). | open |
-| ND-8 | P2 | ndarray | Unknown option keys ignored: `slice({start, stop})` drops `stop`; `histogram(t, {bins})` raw RangeError. Verified. | open |
-| ND-9 | P2 | ndarray | `nanmax`/`nanmin` on empty return NaN while `max`/`min` throw (numpy raises). | open |
-| ND-10 | P2 | ndarray | `astype` to the same dtype returns `this` (aliasing). Documented. | owner decision |
-| ND-11 | P3 | linalg | `norm`, `cond`, `det`, `matrixRank` throw on NaN/Inf instead of propagating. | open |
-| ND-12 | P3 | ndarray | `logspace` parameter order differs from `linspace`; `base` unvalidated. | open |
-| ND-13 | P3 | ndarray | `@internal` `dropoutMask` exported; dropout rejects p = 1. | open |
-| ND-14 | P3 | ndarray | `rot90` 3-D, set ops on N-D, `expandDims` axis tuple, 0-d axis 0, `repeat` message, `diff(bool)` narrower than numpy. | open |
-| ND-15 | P3 | ndarray | `eye(3, {dtype})` misleading error; `multinomial` counts float32; integer GradTensor accepts `requiresGrad`. | open |
-| ND-16 | P3 | ndarray | `gcd`/`lcm` truncate non-integer floats silently. | open |
-| ND-17 | P3 | ndarray | `sort(x, undefined)` sorts last axis instead of flattening. | open |
-| ND-18 | P3 | linalg | `trace` returns shape `[1]`; `cov` of 1-D returns `[1,1]`; one-observation `cov` throws. | open |
+| ND-1 | P1 | linalg | `eig`/`eigvals` throw for complex eigenvalues: 91 of 100 random 4x4 matrices. Verified. Documented limitation. | fixed e2a27e1 (additive complex option) |
+| ND-2 | P1 | random | `shuffle`/`permutation`/`choice` on N-D tensors work over flattened elements and scramble rows (numpy/torch use axis 0). Verified. Documented, so changing the default is breaking. | additive axis option 7290f85; default change is owner decision |
+| ND-3 | P2 | ndarray | `matmul` accepts 2-D only; `dot` is batched. | fixed 7f5a2d5 |
+| ND-4 | P2 | ndarray | int64 beyond 2^53: `searchsorted`, `isclose`, `allclose` compare as Number. Verified. | fixed e7ba0a6 |
+| ND-5 | P2 | ndarray | int32/uint8/bool casts silently produce garbage (`NaN` to 0, 3e9 wraps, `"0x10"` to 16); int64 path throws `DTypeError`. Verified. | fixed b873456 (behavior change: invalid casts throw) |
+| ND-6 | P2 | ndarray | String dtype unsupported in `equal`, `where`, `unique`, `flip`, `roll`, `booleanIndex`, `fancyIndex`, `union1d`, `sort`. | fixed 58193cc |
+| ND-7 | P2 | linalg | `sparseSolve` allocates a dense N x N workspace with no guard (n=20000 needs 3.2 GB). | guard added aae9de7 (MemoryError above N=8192) |
+| ND-8 | P2 | ndarray | Unknown option keys ignored: `slice({start, stop})` drops `stop`; `histogram(t, {bins})` raw RangeError. Verified. | fixed 4fd8045 |
+| ND-9 | P2 | ndarray | `nanmax`/`nanmin` on empty return NaN while `max`/`min` throw (numpy raises). | fixed 0cc092b; median([]) throws (owner decision) |
+| ND-10 | P2 | ndarray | `astype` to the same dtype returns `this` (aliasing). Documented. | documented; owner decision |
+| ND-11 | P3 | linalg | `norm`, `cond`, `det`, `matrixRank` throw on NaN/Inf instead of propagating. | fixed 6c9b553 |
+| ND-12 | P3 | ndarray | `logspace` parameter order differs from `linspace`; `base` unvalidated. | fixed 8382a6b |
+| ND-13 | P3 | ndarray | `@internal` `dropoutMask` exported; dropout rejects p = 1. | fixed d58f37b (dropoutMask removed from public ndarray barrel) |
+| ND-14 | P3 | ndarray | `rot90` 3-D, set ops on N-D, `expandDims` axis tuple, 0-d axis 0, `repeat` message, `diff(bool)` narrower than numpy. | fixed e1e3074, f618014 |
+| ND-15 | P3 | ndarray | `eye(3, {dtype})` misleading error; `multinomial` counts float32; integer GradTensor accepts `requiresGrad`. | fixed 86b60fd; multinomial dtype owner decision |
+| ND-16 | P3 | ndarray | `gcd`/`lcm` truncate non-integer floats silently. | fixed f618014 |
+| ND-17 | P3 | ndarray | `sort(x, undefined)` sorts last axis instead of flattening. | documented, already correct |
+| ND-18 | P3 | linalg | `trace` returns shape `[1]`; `cov` of 1-D returns `[1,1]`; one-observation `cov` throws. | one-observation cov fixed 96619bb; trace and 1-D cov shapes owner decision |
 | ML-1 | P1 | ml | `crossValScore`/`crossValidate`/`GridSearchCV`/`RandomizedSearchCV` accept only integer `cv`; the shipped splitters (`KFold`, `TimeSeriesSplit`, `GroupKFold`) cannot be used, so time-ordered data leaks. Verified. | open |
 | ML-2 | P1 | ml | `MLPClassifier` wraps labels outside int32 (3e9 becomes -1294967296). Verified. | open |
 | ML-3 | P2 | ml | 74 estimator constructors ignore unknown keys (`KMeans({n_clusters})`, `SVC({probability})`, `TSNE({maxIter})`). | open |
