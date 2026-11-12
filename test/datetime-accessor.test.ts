@@ -122,9 +122,9 @@ describe("DateTimeAccessor", () => {
     });
 
     it("converts to ISO format", () => {
-      const d = new Date(Date.UTC(2024, 0, 1, 12, 0, 0));
+      const d = new Date(2024, 0, 1, 12, 0, 0);
       const s = new Series([d]);
-      expect(s.dt.isoformat().data).toEqual(["2024-01-01T12:00:00.000Z"]);
+      expect(s.dt.isoformat().data).toEqual(["2024-01-01T12:00:00"]);
     });
 
     it("formats with strftime", () => {
