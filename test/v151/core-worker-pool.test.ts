@@ -73,16 +73,28 @@ describe("NN-21: WorkerPool taskTimeout", () => {
       TaskTimeoutError
     );
     await expect(pool.forEach([1], () => busyWait(60))).rejects.toThrow(TaskTimeoutError);
-    await expect(pool.reduce([1, 2], (a, b) => (busyWait(60), a + b), 0)).rejects.toThrow(
-      TaskTimeoutError
-    );
+    await expect(
+      pool.reduce(
+        [1, 2],
+        (a, b) => {
+          busyWait(60);
+          return a + b;
+        },
+        0
+      )
+    ).rejects.toThrow(TaskTimeoutError);
     await expect(pool.all([() => busyWait(60)])).rejects.toThrow(TaskTimeoutError);
   });
 
   it("lets tasks that finish in time through, and the error is a DeepboxError", async () => {
     const pool = new WorkerPool({ taskTimeout: 1000 });
     expect(await pool.map([1, 2, 3], (x) => x + 1)).toEqual([2, 3, 4]);
-    expect(await pool.map([1], async (x) => (await sleep(5), x))).toEqual([1]);
+    expect(
+      await pool.map([1], async (x) => {
+        await sleep(5);
+        return x;
+      })
+    ).toEqual([1]);
     const error = new TaskTimeoutError("late");
     expect(error).toBeInstanceOf(DeepboxError);
     expect(error.name).toBe("TaskTimeoutError");

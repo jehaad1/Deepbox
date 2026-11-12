@@ -202,6 +202,10 @@ export function fromJSON(json: string): SerializedPayload {
  * Uses dynamic import of `node:fs` so the library remains
  * browser-compatible when file I/O is not used.
  *
+ * The write is atomic: the JSON goes to a temporary file next to `path`, which is then renamed
+ * over it, so a failed write leaves an existing file untouched and never truncated. The
+ * temporary file is removed when the write or the rename fails.
+ *
  * @param path - File path to write to
  * @param payload - The payload to serialize and save
  * @throws {InvalidParameterError} If `path` is empty
@@ -222,7 +226,14 @@ export async function save(path: string, payload: SerializedPayload): Promise<vo
   const json = toJSON(payload);
   try {
     const fs = await importNodeFs();
-    await fs.promises.writeFile(path, json, "utf-8");
+    const temporary = `${path}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}.tmp`;
+    try {
+      await fs.promises.writeFile(temporary, json, "utf-8");
+      await fs.promises.rename(temporary, path);
+    } catch (err) {
+      await fs.promises.rm(temporary, { force: true }).catch(() => undefined);
+      throw err;
+    }
   } catch (err) {
     if (err instanceof DeepboxError) throw err;
     throw new DeepboxError(
@@ -269,6 +280,8 @@ export async function load(path: string): Promise<SerializedPayload> {
 type FsLike = {
   promises: {
     writeFile(path: string, data: string, encoding: string): Promise<void>;
+    rename(oldPath: string, newPath: string): Promise<void>;
+    rm(path: string, options: { force: boolean }): Promise<void>;
     readFile(path: string, encoding: string): Promise<string>;
   };
 };
