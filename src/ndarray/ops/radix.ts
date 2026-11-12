@@ -18,7 +18,7 @@
  *
  * @internal
  *
- * @see {@link https://deepbox.dev/docs/ndarray-sorting | Deepbox Sorting Functions}
+ * @see {@link https://deepbox.dev/docs/ndarray-ops | Deepbox array operations}
  */
 
 /** Lane length at which radix beats V8's built-in typed sort. */
