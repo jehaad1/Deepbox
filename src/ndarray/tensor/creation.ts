@@ -961,8 +961,11 @@ export function geomspace(
  *
  * Returns a 2D tensor with ones on the diagonal and zeros elsewhere.
  *
+ * Call as `eye(n)`, `eye(n, opts)` or `eye(n, m, k, opts)`.
+ *
  * @param n - Number of rows
- * @param m - Number of columns (default: n, making it square)
+ * @param m - Number of columns (default: n, making it square), or the tensor options for a
+ *   square matrix
  * @param k - Index of the diagonal (default: 0, main diagonal; positive is above)
  * @param opts - Tensor options
  * @returns Tensor of shape (n, m)
@@ -986,7 +989,16 @@ export function geomspace(
  *
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
-export function eye(n: number, m?: number, k = 0, opts: TensorCreateOptions = {}): Tensor {
+export function eye(n: number, opts?: TensorCreateOptions): Tensor;
+export function eye(n: number, m?: number, k?: number, opts?: TensorCreateOptions): Tensor;
+export function eye(
+  n: number,
+  mOrOpts?: number | TensorCreateOptions,
+  k = 0,
+  optsArg: TensorCreateOptions = {}
+): Tensor {
+  const m = typeof mOrOpts === "object" ? undefined : mOrOpts;
+  const opts = typeof mOrOpts === "object" ? mOrOpts : optsArg;
   if (!Number.isInteger(k)) {
     throw new InvalidParameterError(`k must be an integer; received ${String(k)}`, "k", k);
   }

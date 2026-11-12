@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { InvalidParameterError } from "../../src/core";
-import { arange, dropoutGrad, histogram, parameter, tensor } from "../../src/ndarray";
+import { DTypeError, InvalidParameterError } from "../../src/core";
+import {
+  arange,
+  dropoutGrad,
+  eye,
+  GradTensor,
+  histogram,
+  parameter,
+  tensor,
+} from "../../src/ndarray";
 
 describe("slice range objects", () => {
   it("throws on an unknown key and hints at end for stop", () => {
@@ -55,5 +63,50 @@ describe("dropoutMask", () => {
   it("is not part of the public ndarray surface", async () => {
     const api = await import("../../src/ndarray");
     expect("dropoutMask" in api).toBe(false);
+  });
+});
+
+describe("eye with an options object", () => {
+  it("accepts options as the second argument", () => {
+    const i = eye(3, { dtype: "float64" });
+    expect(i.dtype).toBe("float64");
+    expect(i.shape).toEqual([3, 3]);
+    expect(i.toArray()).toEqual([
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ]);
+  });
+
+  it("keeps the (n, m, k, options) form", () => {
+    expect(eye(2, 3, 1, { dtype: "float64" }).toArray()).toEqual([
+      [0, 1, 0],
+      [0, 0, 1],
+    ]);
+    expect(eye(2).shape).toEqual([2, 2]);
+  });
+});
+
+describe("autograd on integer dtypes", () => {
+  // torch: "Only Tensors of floating point dtype can require gradients"
+  it("rejects requiresGrad for an integer or bool tensor", () => {
+    for (const dtype of ["int32", "int64", "uint8", "bool"] as const) {
+      const t = tensor([1, 0], { dtype });
+      expect(() => GradTensor.fromTensor(t, { requiresGrad: true })).toThrow(DTypeError);
+    }
+    expect(() => new GradTensor([1, 2], { dtype: "int32", requiresGrad: true })).toThrow(
+      DTypeError
+    );
+    expect(() => GradTensor.scalar(1, { dtype: "int32", requiresGrad: true })).toThrow(DTypeError);
+    const leaf = GradTensor.fromTensor(tensor([1, 2], { dtype: "int32" }));
+    expect(() => leaf.setRequiresGrad(true)).toThrow(DTypeError);
+  });
+
+  it("accepts integer tensors without requiresGrad and float tensors with it", () => {
+    expect(GradTensor.fromTensor(tensor([1, 2], { dtype: "int32" })).requiresGrad).toBe(false);
+    expect(GradTensor.fromTensor(tensor([1, 2]), { requiresGrad: true }).requiresGrad).toBe(true);
+    expect(
+      GradTensor.fromTensor(tensor([1, 2], { dtype: "float16" }), { requiresGrad: true })
+    ).toBeDefined();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DTypeError, InvalidParameterError } from "../src/core";
-import { parameter, tensor } from "../src/ndarray";
+import { GradTensor, parameter, tensor } from "../src/ndarray";
 import { AdaDelta, Adagrad, Adam, AdamW, Nadam, RMSprop, SGD } from "../src/optim";
 import { getParamValue } from "./optim-test-helpers";
 
@@ -205,7 +205,13 @@ describe("deepbox/optim - Edge Cases", () => {
     });
 
     it("should reject non-float parameters", () => {
-      const createParam = () => parameter(tensor([1, 2], { dtype: "int32" }));
+      const createParam = () =>
+        GradTensor.create({
+          tensor: tensor([1, 2], { dtype: "int32" }),
+          requiresGrad: true,
+          prev: [],
+          backward: () => {},
+        });
       const optimizers = [
         (() => {
           const p = createParam();

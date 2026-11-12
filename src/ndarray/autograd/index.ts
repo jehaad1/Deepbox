@@ -547,6 +547,16 @@ function fromFloat64Dense(shape: Shape, device: Tensor["device"], data: Float64A
   });
 }
 
+/** Throws unless gradients can flow through `dtype`: only floating point tensors can require them. */
+function assertCanRequireGrad(dtype: DType): void {
+  if (!isFloatDType(dtype)) {
+    throw new DTypeError(
+      `Only floating point tensors can require gradients; received dtype ${dtype}. ` +
+        "Convert with astype('float32') first."
+    );
+  }
+}
+
 /**
  * Tensor wrapper that records a computation graph for reverse-mode autodiff.
  *
@@ -621,6 +631,7 @@ export class GradTensor {
       // PyTorch semantics: the flag is what the caller asked for, also inside
       // noGrad(). Only operations executed inside noGrad() skip recording.
       this.requiresGrad = options?.requiresGrad ?? false;
+      if (this.requiresGrad) assertCanRequireGrad(t.dtype);
       this._prev = [];
       this._backward = () => {};
     }
@@ -655,6 +666,7 @@ export class GradTensor {
       );
     }
     const requiresGrad = options.requiresGrad ?? false;
+    if (requiresGrad) assertCanRequireGrad(t.dtype);
     return new GradTensor({
       tensor: t,
       requiresGrad,
@@ -666,6 +678,7 @@ export class GradTensor {
   /** Create a 0-d GradTensor holding `value` (default dtype float32). */
   static scalar(value: number, options: GradTensorOptions = {}): GradTensor {
     const dtype = options.dtype ?? "float32";
+    if (options.requiresGrad === true) assertCanRequireGrad(dtype);
     const Ctor = dtypeToTypedArrayCtor(dtype);
     const out = new Ctor(1);
     if (out instanceof BigInt64Array) {
@@ -856,6 +869,7 @@ export class GradTensor {
    * `noGrad` still do not record a graph.
    */
   setRequiresGrad(value: boolean): void {
+    if (value) assertCanRequireGrad(this.tensor.dtype);
     this.requiresGrad = value;
     if (!this.requiresGrad) {
       this._grad = null;

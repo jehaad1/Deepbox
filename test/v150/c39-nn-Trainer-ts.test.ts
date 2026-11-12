@@ -174,7 +174,12 @@ describe("clip_grad_norm_ (v1.5.0)", () => {
   });
 
   it("rejects integer gradients instead of writing garbage", () => {
-    const p = GradTensor.fromTensor(tensor([0, 0], { dtype: "int32" }), { requiresGrad: true });
+    const p = GradTensor.create({
+      tensor: tensor([0, 0], { dtype: "int32" }),
+      requiresGrad: true,
+      prev: [],
+      backward: () => {},
+    });
     p.setGrad(tensor([30, 40], { dtype: "int32" }));
     expect(() => clipGradNorm_([p], 1)).toThrow(DTypeError);
   });

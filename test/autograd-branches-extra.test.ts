@@ -134,7 +134,8 @@ describe("Autograd - branch coverage extras", () => {
       dtype: "int64",
       device: "cpu",
     });
-    const g = GradTensor.fromTensor(big, { requiresGrad: true });
+    // An integer leaf cannot be created with requiresGrad; build one directly to test the op guards.
+    const g = GradTensor.create({ tensor: big, requiresGrad: true, prev: [], backward: () => {} });
     expect(() => g.pow(2)).toThrow("pow() backward is not supported for int64 tensors");
     // relu must not silently detach the graph, it throws like pow
     expect(() => g.relu()).toThrow("relu gradients are not supported for int64 tensors");
