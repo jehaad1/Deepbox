@@ -1806,7 +1806,8 @@ function nanReduce(
   axis: Axis | readonly Axis[] | undefined,
   keepdims: boolean,
   opName: string,
-  kernel: NanKernel
+  kernel: NanKernel,
+  requireElements = false
 ): Tensor {
   if (t.dtype === "string") {
     throw new DTypeError(`${opName} is not defined for string dtype`);
@@ -1814,6 +1815,9 @@ function nanReduce(
   const vals = readNumbers(t, opName, false);
   const ndim = t.ndim;
   const redAxes = resolveAxes(axis, ndim, opName).sort((a, b) => a - b);
+  if (requireElements && redAxes.some((ax) => t.shape[ax] === 0)) {
+    throw new InvalidParameterError(`${opName}() requires at least one element`, "t");
+  }
   const isReduced = new Uint8Array(ndim);
   for (const ax of redAxes) isReduced[ax] = 1;
   const keptAxes: number[] = [];
@@ -1960,33 +1964,35 @@ function nanExtreme(vals: ArrayLike<number>, n: number, isMax: boolean): number 
 }
 
 /**
- * Minimum of elements, ignoring NaN. A slice without non-NaN values (including
- * an empty slice) gives NaN. The result is always float64.
+ * Minimum of elements, ignoring NaN. A slice whose values are all NaN gives NaN
+ * (NumPy also warns). Reducing over an empty axis throws, like NumPy and like
+ * {@link min}, because an empty slice has no minimum. The result is always float64.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes to reduce (default: all)
  * @param keepdims - Keep reduced axes as size-1 dimensions
  * @returns float64 tensor of minima
  * @throws {DTypeError} If `t` has string dtype
- * @throws {InvalidParameterError} If an axis is out of range or repeated
+ * @throws {InvalidParameterError} If an axis is out of range or repeated, or a reduced axis is empty
  */
 export function nanmin(t: Tensor, axis?: Axis | readonly Axis[], keepdims = false): Tensor {
-  return nanReduce(t, axis, keepdims, "nanmin", (vals, n) => nanExtreme(vals, n, false));
+  return nanReduce(t, axis, keepdims, "nanmin", (vals, n) => nanExtreme(vals, n, false), true);
 }
 
 /**
- * Maximum of elements, ignoring NaN. A slice without non-NaN values (including
- * an empty slice) gives NaN. The result is always float64.
+ * Maximum of elements, ignoring NaN. A slice whose values are all NaN gives NaN
+ * (NumPy also warns). Reducing over an empty axis throws, like NumPy and like
+ * {@link max}, because an empty slice has no maximum. The result is always float64.
  *
  * @param t - Input tensor
  * @param axis - Axis or axes to reduce (default: all)
  * @param keepdims - Keep reduced axes as size-1 dimensions
  * @returns float64 tensor of maxima
  * @throws {DTypeError} If `t` has string dtype
- * @throws {InvalidParameterError} If an axis is out of range or repeated
+ * @throws {InvalidParameterError} If an axis is out of range or repeated, or a reduced axis is empty
  */
 export function nanmax(t: Tensor, axis?: Axis | readonly Axis[], keepdims = false): Tensor {
-  return nanReduce(t, axis, keepdims, "nanmax", (vals, n) => nanExtreme(vals, n, true));
+  return nanReduce(t, axis, keepdims, "nanmax", (vals, n) => nanExtreme(vals, n, true), true);
 }
 
 // ─── unique ─────────────────────────────────────────────────────────────────

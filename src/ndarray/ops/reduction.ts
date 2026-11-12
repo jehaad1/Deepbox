@@ -1874,7 +1874,7 @@ export function nanvar(t: Tensor, axis?: AxisArg, keepdims = false, ddof = 0): T
  * Median ignoring NaN (NumPy `nanmedian`).
  *
  * Each slice uses only its non-NaN values; a slice without any (including an empty slice)
- * gives NaN. Float input keeps its dtype and integer or bool input gives `float32`.
+ * gives NaN, as in NumPy (which also warns). {@link median} of an empty tensor throws instead. Float input keeps its dtype and integer or bool input gives `float32`.
  *
  * @param t - Input tensor
  * @param axis - Axis or list of axes to reduce. If omitted, all elements
