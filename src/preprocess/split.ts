@@ -1,4 +1,5 @@
 import { DeepboxError, InvalidParameterError, MemoryError, ShapeError } from "../core/errors";
+import { compareCodePoints } from "../metrics/_internal";
 import { type Tensor, zeros } from "../ndarray";
 import { __random } from "../random/random";
 import { createRandomStream, deriveSeed, shuffleIndicesInPlace } from "./_internal";
@@ -188,16 +189,13 @@ function resolveTrainTestCounts(
 
 /**
  * Total order over labels: numbers and bigints by value (NaN last), strings by
- * UTF-16 code unit order. Code unit order, unlike `localeCompare`, does not
+ * Unicode code point. Code point order, unlike `localeCompare`, does not
  * depend on the runtime's locale data, so seeded splits are reproducible
  * across machines.
  */
 function compareLabels(a: Label, b: Label): number {
   if (typeof a === "string" || typeof b === "string") {
-    if (typeof a === "string" && typeof b === "string") {
-      if (a < b) return -1;
-      return a > b ? 1 : 0;
-    }
+    if (typeof a === "string" && typeof b === "string") return compareCodePoints(a, b);
     return typeof a === "string" ? 1 : -1;
   }
   const aNaN = typeof a === "number" && Number.isNaN(a);

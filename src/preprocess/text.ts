@@ -19,6 +19,7 @@ import {
   ShapeError,
 } from "../core";
 import { resolveLosslessDType } from "../core/utils/dtype_utils";
+import { compareCodePoints } from "../metrics/_internal";
 import { type Tensor, Tensor as TensorClass, tensor } from "../ndarray";
 
 type TokenPattern = RegExp;
@@ -116,12 +117,6 @@ const ENGLISH_STOP_WORDS: readonly string[] = (
 
 function defaultTokenPattern(): RegExp {
   return /[\p{L}\p{N}_]{2,}/gu;
-}
-
-/** Compare strings by UTF-16 code units (locale independent, like Python's `sorted`). */
-function compareStrings(a: string, b: string): number {
-  if (a < b) return -1;
-  return a > b ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,8 +440,7 @@ function normalizeRows(data: Float64Array, nRows: number, nCols: number, norm: "
  *
  * Implements the bag-of-words model: each document becomes a vector of
  * word counts. The vocabulary is learned from the training data and sorted
- * alphabetically by UTF-16 code unit, which is scikit-learn's order except for
- * rare characters outside the Basic Multilingual Plane. Features whose
+ * alphabetically by Unicode code point, which is scikit-learn's order. Features whose
  * document frequency is outside `[minDf, maxDf]` are dropped, then at most
  * `maxFeatures` of the most frequent terms are kept. Fitting throws a
  * `DataValidationError` when no term survives.
@@ -534,7 +528,7 @@ export class CountVectorizer {
 
     if (maxFeatures !== undefined && candidates.length > maxFeatures) {
       // Most frequent terms first; alphabetical order breaks ties.
-      candidates.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : compareStrings(a[0], b[0])));
+      candidates.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : compareCodePoints(a[0], b[0])));
       candidates = candidates.slice(0, maxFeatures);
     }
 
@@ -546,7 +540,7 @@ export class CountVectorizer {
     }
 
     // Final vocabulary order is alphabetical (scikit-learn convention).
-    candidates.sort((a, b) => compareStrings(a[0], b[0]));
+    candidates.sort((a, b) => compareCodePoints(a[0], b[0]));
 
     const vocabulary = new Map<string, number>();
     const featureNames: string[] = [];

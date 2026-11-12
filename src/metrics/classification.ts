@@ -4,6 +4,7 @@ import { radixArgsortF64 } from "../ndarray/ops/radix";
 import {
   assertSameSizeVectors,
   assertVectorLike,
+  compareCodePoints,
   compensatedSum,
   type DenseLabels,
   denseLabels,
@@ -96,7 +97,7 @@ function assertComparableLabelTypes(yTrue: Tensor, yPred: Tensor): LabelKind {
 
 function compareLabels(a: Label, b: Label): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
-  if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === "string" && typeof b === "string") return compareCodePoints(a, b);
   if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
   return 0;
 }
@@ -1198,7 +1199,7 @@ function normalizeLabelList(
  * A confusion matrix is a table showing the counts of correct and incorrect
  * predictions broken down by each class. Rows represent true labels,
  * columns represent predicted labels. Classes are listed in ascending order
- * (strings by code unit, like NumPy), unless `options.labels` fixes the order.
+ * (strings by Unicode code point, like NumPy), unless `options.labels` fixes the order.
  *
  * **Time Complexity**: O(n + k²) where n is number of samples, k is number of classes
  * **Space Complexity**: O(n + k²)

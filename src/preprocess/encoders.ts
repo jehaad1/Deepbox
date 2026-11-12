@@ -7,6 +7,7 @@ import {
   NotFittedError,
   ShapeError,
 } from "../core";
+import { compareCodePoints } from "../metrics/_internal";
 import { CSRMatrix, empty, type Tensor, Tensor as TensorImpl, tensor, zeros } from "../ndarray";
 import {
   assert2D,
@@ -247,29 +248,6 @@ function inferCategoryType(values: Category[], paramName: string): CategoryType 
   if (hasString) return "string";
   if (hasBigInt) return "bigint";
   return "number";
-}
-
-/**
- * Order two strings by Unicode code point, the order NumPy and scikit-learn
- * use for string categories. `localeCompare` is locale dependent and puts
- * "a" before "B", which would make class order differ between machines.
- */
-function compareCodePoints(a: string, b: string): number {
-  if (a === b) return 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    let ca = a.charCodeAt(i);
-    let cb = b.charCodeAt(i);
-    if (ca !== cb) {
-      // UTF-16 surrogates (astral code points) must sort above U+E000..U+FFFF.
-      if (ca >= 0xd800 && cb >= 0xd800) {
-        ca += ca >= 0xe000 ? -0x800 : 0x2000;
-        cb += cb >= 0xe000 ? -0x800 : 0x2000;
-      }
-      return ca - cb;
-    }
-  }
-  return a.length - b.length;
 }
 
 function sortCategories(values: Iterable<Category>, paramName: string): Category[] {
