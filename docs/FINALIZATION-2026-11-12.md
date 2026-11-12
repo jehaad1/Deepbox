@@ -138,22 +138,22 @@ Format: id, priority, area, evidence, status.
 | ML-11 | P3 | ml | `KDTree`/`BallTree` keep a reference to the caller's buffer. | fixed 9a5d1e8 |
 | ML-12 | P3 | ml | Lasso/ElasticNet/Ridge/SGD/RANSAC/KernelRidge validate hyperparameters only in `fit`. | fixed ebe2963, 52aba8d |
 | ML-13 | P3 | ml | TSNE `nIter` vs `maxIter`; predict label dtype varies; `crossValScore` positional vs options. | fixed 63dc6b1 (label dtype unchanged) |
-| PP-1 | P1 | preprocess | Encoders and `KBinsDiscretizer` lack `getParams`/`setParams`/`clone`; Pipeline clone and CV fail. Verified. | open |
-| MT-1 | P1 | metrics | `classificationReport` accepts only binary 0/1 labels. Verified. | open |
-| MT-2 | P1 | metrics | No `posLabel`; `{-1,1}` and `{1,2}` labels throw by default. Verified. | open |
-| MT-3 | P2 | metrics | Two-class string labels silently use "weighted" while the JSDoc says "binary". Verified. | open |
-| PP-2 | P2 | preprocess | `ngramRange: [1, 1e9]` loops to 1e9 per document (8.5 s for 5 tokens). | open |
-| PP-3 | P2 | preprocess | Scaler `setParams` accept unknown keys; `MaxAbsScaler.setParams` ignores all input. | open |
-| PP-4 | P2 | preprocess | Text vectorizers lack `fit`/`transform`/`clone`; cannot be Pipeline steps. | open |
-| MT-4 | P2 | metrics | `daviesBouldinScore`/`calinskiHarabaszScore` return a score for a single cluster (sklearn raises). | open |
-| MT-5 | P2 | metrics | No multioutput regression or multilabel classification metrics. | open |
-| MT-6 | P3 | metrics | `cohenKappaScore` lacks `sampleWeight`; error prints `[object Object]`. | open |
-| MT-7 | P3 | metrics | String labels ordered by UTF-16 unit, not code point; `LabelEncoder` disagrees. | open |
-| PP-5 | P3 | preprocess | `LabelBinarizer` returns 2 columns for 2 classes (sklearn 1). Changing is breaking. | owner decision; accept 1-column inverse |
-| PP-6 | P3 | preprocess | Transformers upcast float32 to float64. | open |
-| ST-1 | P3 | stats | `kendalltau` constant input returns NaN while `pearsonr`/`spearmanr` throw (scipy: NaN). | open |
-| ST-2 | P3 | stats | `poisson(0)` rejected. | open |
-| PP-7 | P3 | preprocess | `HashingVectorizer` uses FNV-1a, not MurmurHash3. | open |
+| PP-1 | P1 | preprocess | Encoders and `KBinsDiscretizer` lack `getParams`/`setParams`/`clone`; Pipeline clone and CV fail. Verified. | fixed 16154dd |
+| MT-1 | P1 | metrics | `classificationReport` accepts only binary 0/1 labels. Verified. | fixed cb8b299 |
+| MT-2 | P1 | metrics | No `posLabel`; `{-1,1}` and `{1,2}` labels throw by default. Verified. | fixed cf2c9c0 |
+| MT-3 | P2 | metrics | Two-class string labels silently use "weighted" while the JSDoc says "binary". Verified. | fixed cf2c9c0 (behavior change: string labels need posLabel) |
+| PP-2 | P2 | preprocess | `ngramRange: [1, 1e9]` loops to 1e9 per document (8.5 s for 5 tokens). | fixed 72aec0a |
+| PP-3 | P2 | preprocess | Scaler `setParams` accept unknown keys; `MaxAbsScaler.setParams` ignores all input. | fixed 16154dd |
+| PP-4 | P2 | preprocess | Text vectorizers lack `fit`/`transform`/`clone`; cannot be Pipeline steps. | fixed 03b1da6; crossValScore over raw text needs takeRows to slice string tensors (ML-16) |
+| MT-4 | P2 | metrics | `daviesBouldinScore`/`calinskiHarabaszScore` return a score for a single cluster (sklearn raises). | fixed c2651cd (behavior change: throws) |
+| MT-5 | P2 | metrics | No multioutput regression or multilabel classification metrics. | fixed 06ceb8a, 6f80bbb |
+| MT-6 | P3 | metrics | `cohenKappaScore` lacks `sampleWeight`; error prints `[object Object]`. | fixed fba4457 |
+| MT-7 | P3 | metrics | String labels ordered by UTF-16 unit, not code point; `LabelEncoder` disagrees. | fixed c73db78 (behavior change: code-point order) |
+| PP-5 | P3 | preprocess | `LabelBinarizer` returns 2 columns for 2 classes (sklearn 1). Changing is breaking. | inverse accepts one column 881da19; transform output is owner decision |
+| PP-6 | P3 | preprocess | Transformers upcast float32 to float64. | fixed bbbf125 (behavior change: float32 kept) |
+| ST-1 | P3 | stats | `kendalltau` constant input returns NaN while `pearsonr`/`spearmanr` throw (scipy: NaN). | fixed e3fb588 (behavior change: NaN plus warning) |
+| ST-2 | P3 | stats | `poisson(0)` rejected. | fixed a428280 |
+| PP-7 | P3 | preprocess | `HashingVectorizer` uses FNV-1a, not MurmurHash3. | fixed 186cd9c (behavior change: MurmurHash3, matches sklearn) |
 | TEST-1 | P2 | tests | `test/plot-png-zlib-mock.test.ts` timed out at the 5 s default on an unchanged tree under load. | fixed b9ac513 |
 | BUILD-1 | P3 | tooling | `benchmarks/tsconfig.json` had 143 type errors (no Node types) and was not checked. | fixed ce103a0 (`typecheck:bench` in `validate:all`) |
 | DOCS-1 | P1 | docs site | `deepbox.dev` 307-redirects to `www`, but canonical, og:url, sitemap and robots use the apex. Verified. | fixed and live (Deepbox-Docs fc4a0ed) |
@@ -174,3 +174,5 @@ Format: id, priority, area, evidence, status.
 | BENCH-1 | P1 | bench site | `https://bench.deepbox.dev` serves a Let's Encrypt certificate that expired 2026-08-04 and no Vercel project has the alias, so the subdomain is broken for visitors. | owner decision (restore with the leaderboard, or remove the DNS record) |
 | ML-14 | P2 | ml | MultinomialNB, BernoulliNB, ComplementNB, CategoricalNB, QuantileRegressor, RANSAC, Bagging, GaussianProcess silently ignore a third `fit` argument from untyped code. | open |
 | ML-15 | P3 | ml | QDA `regParam` adds to the diagonal; sklearn uses `(1-reg)*S + reg*I`. LDA `shrinkage` differs from sklearn's lsqr estimator. | owner decision |
+| ML-16 | P2 | ml | `takeRows` in `model_selection.ts` rejects string tensors, so `crossValScore` cannot run a text Pipeline on raw strings. | open |
+| PP-8 | P3 | preprocess | `Binarizer` returns float64 for float32 input (sklearn keeps float32). | open |
