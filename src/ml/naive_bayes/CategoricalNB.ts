@@ -7,6 +7,7 @@ import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import {
   nbAccuracy,
   nbArgmaxRows,
@@ -20,6 +21,7 @@ import {
   nbValidateBoolean,
   nbValidatePriors,
   nbValidateScoreTarget,
+  nbWeightedClassCounts,
 } from "./index";
 
 type MinCategories = number | number[] | null;
@@ -132,15 +134,19 @@ export class CategoricalNB implements Classifier {
    *
    * @param X - Categorical features of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); category counts and class priors are weighted
    * @returns this
-   * @throws {ShapeError} If X is not 2-D, y is not 1-D or their lengths differ
+   * @throws {ShapeError} If X is not 2-D, y is not 1-D, their lengths differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If a weight is negative or not finite, or all weights are zero
    * @throws {InvalidParameterError} If `classPrior` does not have one entry per class, or `minCategories` is an array whose length differs from the number of features
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
     const xv = toFloat64View(X);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
     if (Array.isArray(this.minCategories) && this.minCategories.length !== nFeatures) {
       throw new InvalidParameterError(
@@ -152,9 +158,10 @@ export class CategoricalNB implements Classifier {
 
     const { classes, labelIndex, counts } = nbEncodeLabels(y);
     const nClasses = classes.length;
+    const { classWeight, totalWeight } = nbWeightedClassCounts(labelIndex, counts, sampleWeight);
     const classLogPrior = nbClassLogPrior(
-      counts,
-      nSamples,
+      classWeight,
+      totalWeight,
       this.fitPrior,
       this.classPrior,
       "classPrior"
@@ -189,10 +196,11 @@ export class CategoricalNB implements Classifier {
       for (let i = 0; i < nSamples; i++) {
         const col = index.get((xv[i * nFeatures + j] as number) + 0) as number;
         const slot = (labelIndex[i] as number) * width + col;
-        table[slot] = (table[slot] as number) + 1;
+        table[slot] =
+          (table[slot] as number) + (sampleWeight === undefined ? 1 : (sampleWeight[i] as number));
       }
       for (let c = 0; c < nClasses; c++) {
-        const denominator = (counts[c] as number) + this.alpha * nCat;
+        const denominator = (classWeight[c] as number) + this.alpha * nCat;
         for (let k = 0; k < values.length; k++) {
           table[c * width + k] = Math.log(
             ((table[c * width + k] as number) + this.alpha) / denominator

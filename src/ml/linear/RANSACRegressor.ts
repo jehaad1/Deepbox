@@ -15,6 +15,7 @@ import { __randomBelow } from "../../random/random";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { createTreeRng } from "../tree/DecisionTree";
 import { LinearRegression, r2ScoreOf } from "./LinearRegression";
 
@@ -237,11 +238,17 @@ export class RANSACRegressor implements Regressor {
     }
   }
 
-  /** Fit a fresh copy of the base estimator and return the fitted model (`fit` may return a new object). */
-  private fitEstimator(X: Tensor, y: Tensor): Regressor {
+  /**
+   * Fit a fresh copy of the base estimator and return the fitted model (`fit` may return a new
+   * object). Sample weights go to the base estimator as the third `fit` argument; an estimator
+   * that cannot take them throws.
+   */
+  private fitEstimator(X: Tensor, y: Tensor, sampleWeight?: Tensor): Regressor {
     const base = this.estimator_;
     const fresh: Regressor = base?.clone ? (base.clone() as Regressor) : new LinearRegression();
-    return fresh.fit(X, y) as Regressor;
+    if (sampleWeight === undefined) return fresh.fit(X, y) as Regressor;
+    const fitWeighted = fresh.fit as (X: Tensor, y: Tensor, sampleWeight: Tensor) => Regressor;
+    return fitWeighted.call(fresh, X, y, sampleWeight);
   }
 
   /**
@@ -249,19 +256,22 @@ export class RANSACRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); they are passed to the base estimator for every subset fit and for the final refit on the inliers. Inliers are still chosen by the unweighted residuals.
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
-   * @throws {InvalidParameterError} If `minSamples` exceeds the number of samples
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
+   * @throws {InvalidParameterError} If `minSamples` exceeds the number of samples, or the base estimator does not support `sampleWeight`
    * @throws {ConvergenceError} If no trial produced a single inlier
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const nF = X.shape[1] ?? 0;
 
     const xData = toFloat64View(X);
     const yData = toFloat64View(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, n);
 
     let minSamples: number;
     const ms = this.minSamples;
@@ -300,6 +310,7 @@ export class RANSACRegressor implements Regressor {
     for (let i = 0; i < n; i++) perm[i] = i;
     const subX = new Float64Array(minSamples * nF);
     const subY = new Float64Array(minSamples);
+    const subW = new Float64Array(minSamples);
 
     let bestNInliers = 0;
     let bestScore = -Infinity;
@@ -319,11 +330,17 @@ export class RANSACRegressor implements Regressor {
         const row = perm[i] as number;
         for (let f = 0; f < nF; f++) subX[i * nF + f] = xData[row * nF + f] as number;
         subY[i] = yData[row] as number;
+        if (sampleWeight !== undefined) subW[i] = sampleWeight[row] as number;
       }
+      // A subset whose samples all have zero weight carries no information.
+      if (sampleWeight !== undefined && subW.every((w) => w === 0)) continue;
 
       const reg = this.fitEstimator(
         tensor(Float64Array.from(subX), { dtype: "float64" }).reshape([minSamples, nF]),
-        tensor(Float64Array.from(subY), { dtype: "float64" })
+        tensor(Float64Array.from(subY), { dtype: "float64" }),
+        sampleWeight === undefined
+          ? undefined
+          : tensor(Float64Array.from(subW), { dtype: "float64" })
       );
 
       const pred = toFloat64View(reg.predict(X64));
@@ -380,17 +397,20 @@ export class RANSACRegressor implements Regressor {
     // Refit on the consensus set.
     const inlierX = new Float64Array(bestNInliers * nF);
     const inlierY = new Float64Array(bestNInliers);
+    const inlierW = new Float64Array(bestNInliers);
     let k = 0;
     for (let i = 0; i < n; i++) {
       if (bestMask[i]) {
         for (let f = 0; f < nF; f++) inlierX[k * nF + f] = xData[i * nF + f] as number;
         inlierY[k] = yData[i] as number;
+        if (sampleWeight !== undefined) inlierW[k] = sampleWeight[i] as number;
         k++;
       }
     }
     const finalReg = this.fitEstimator(
       tensor(inlierX, { dtype: "float64" }).reshape([bestNInliers, nF]),
-      tensor(inlierY, { dtype: "float64" })
+      tensor(inlierY, { dtype: "float64" }),
+      sampleWeight === undefined ? undefined : tensor(inlierW, { dtype: "float64" })
     );
 
     this.nFeaturesIn_ = nF;

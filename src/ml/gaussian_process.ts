@@ -16,6 +16,7 @@ import { type Tensor, tensor } from "../ndarray";
 import { assertKnownOptions, optionKeys, r2Score } from "./_internal";
 import {
   assertContiguous,
+  assertNoSampleWeight,
   toFloat64View,
   validateFitInputs,
   validatePredictInputs,
@@ -322,10 +323,15 @@ export class GaussianProcessRegressor implements Regressor {
   /**
    * Fit the model. Previous fitted state is discarded, and kept untouched if fitting throws.
    *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Targets of shape (n_samples,)
+   * @param sampleWeight - Not supported: GaussianProcessRegressor has no sample weights, so passing one throws
    * @throws {DataValidationError} If `K + alpha * I` is not numerically positive definite;
    * increase `alpha` or remove duplicate samples
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("GaussianProcessRegressor", sampleWeight);
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const nF = X.shape[1] ?? 0;
@@ -643,9 +649,14 @@ export class GaussianProcessClassifier implements Classifier {
   /**
    * Fit the model. Previous fitted state is discarded, and kept untouched if fitting throws.
    *
+   * @param X - Training data of shape (n_samples, n_features)
+   * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Not supported: GaussianProcessClassifier has no sample weights, so passing one throws
    * @throws {DataValidationError} If `y` has fewer than two distinct classes
+   * @throws {InvalidParameterError} If `sampleWeight` is given
    */
-  fit(X: Tensor, y: Tensor): this {
+  fit(X: Tensor, y: Tensor, sampleWeight?: undefined): this {
+    assertNoSampleWeight("GaussianProcessClassifier", sampleWeight);
     validateFitInputs(X, y);
     const n = X.shape[0] ?? 0;
     const nF = X.shape[1] ?? 0;

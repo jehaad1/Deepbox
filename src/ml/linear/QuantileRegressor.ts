@@ -15,6 +15,7 @@ import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { r2ScoreOf } from "./LinearRegression";
 
 /**
@@ -463,16 +464,43 @@ export class QuantileRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); the fit minimizes the weighted pinball loss plus `alpha` times the total weight times the L1 norm of the coefficients, and samples with zero weight are dropped
    * @returns this - The fitted estimator
-   * @throws {ShapeError} If X is not 2D, y is not 1D, or their sample counts differ
-   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, their sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y are empty or contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
-    const n = X.shape[0] ?? 0;
+    const nAll = X.shape[0] ?? 0;
     const nF = X.shape[1] ?? 0;
-    const xRaw = toFloat64View(X);
-    const yRaw = toFloat64View(y);
+    const xAll = toFloat64View(X);
+    const yAll = toFloat64View(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nAll);
+    // Samples with zero weight do not affect the fit; dropping them keeps the LP well posed.
+    let xRaw = xAll;
+    let yRaw = yAll;
+    let weights: Float64Array | undefined;
+    let n = nAll;
+    if (sampleWeight !== undefined) {
+      const keep: number[] = [];
+      for (let i = 0; i < nAll; i++) if ((sampleWeight[i] as number) > 0) keep.push(i);
+      n = keep.length;
+      xRaw = new Float64Array(n * nF);
+      yRaw = new Float64Array(n);
+      weights = new Float64Array(n);
+      for (let k = 0; k < n; k++) {
+        const i = keep[k] as number;
+        xRaw.set(xAll.subarray(i * nF, (i + 1) * nF), k * nF);
+        yRaw[k] = yAll[i] as number;
+        weights[k] = sampleWeight[i] as number;
+      }
+    }
+    let totalWeight = n;
+    if (weights !== undefined) {
+      totalWeight = 0;
+      for (let k = 0; k < n; k++) totalWeight += weights[k] as number;
+    }
     const q = this.quantile;
     const hasIntercept = this.fitIntercept;
 
@@ -488,22 +516,25 @@ export class QuantileRegressor implements Regressor {
 
     // Augmented problem: data rows, then two pseudo rows (+c e_j and -c e_j,
     // target 0) per feature. Their pinball losses add up to c * |w_j|, which
-    // encodes n * alpha * |w_j| (the objective multiplied by n).
+    // encodes totalWeight * alpha * |w_j| (the objective multiplied by the total weight).
+    // A weight on a sample scales its row and its target, because
+    // rho_q(w r) = w rho_q(r) for w > 0.
     const p = nF + (hasIntercept ? 1 : 0);
     const penalized = this.alpha > 0;
     const rows = n + (penalized ? 2 * nF : 0);
     const A = new Float64Array(rows * p);
     const target = new Float64Array(rows);
     for (let i = 0; i < n; i++) {
+      const wi = weights === undefined ? 1 : (weights[i] as number);
       for (let f = 0; f < nF; f++) {
-        A[i * p + f] = (xRaw[i * nF + f] as number) / (scale[f] as number);
+        A[i * p + f] = (wi * (xRaw[i * nF + f] as number)) / (scale[f] as number);
       }
-      if (hasIntercept) A[i * p + nF] = 1;
-      target[i] = yRaw[i] as number;
+      if (hasIntercept) A[i * p + nF] = wi;
+      target[i] = wi * (yRaw[i] as number);
     }
     if (penalized) {
       for (let f = 0; f < nF; f++) {
-        const c = (n * this.alpha) / (scale[f] as number);
+        const c = (totalWeight * this.alpha) / (scale[f] as number);
         A[(n + 2 * f) * p + f] = c;
         A[(n + 2 * f + 1) * p + f] = -c;
       }

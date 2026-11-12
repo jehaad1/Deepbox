@@ -55,6 +55,28 @@ export function nbEncodeLabels(y: Tensor): NbClassInfo {
 }
 
 /**
+ * Total weight of every class, and the total weight of all samples. Without `sampleWeight` these
+ * are the sample counts.
+ *
+ * @internal
+ */
+export function nbWeightedClassCounts(
+  labelIndex: Int32Array,
+  counts: Float64Array,
+  sampleWeight: Float64Array | undefined
+): { readonly classWeight: Float64Array; readonly totalWeight: number } {
+  if (sampleWeight === undefined) return { classWeight: counts, totalWeight: labelIndex.length };
+  const classWeight = new Float64Array(counts.length);
+  let totalWeight = 0;
+  for (let i = 0; i < labelIndex.length; i++) {
+    const w = sampleWeight[i] as number;
+    classWeight[labelIndex[i] as number] = (classWeight[labelIndex[i] as number] as number) + w;
+    totalWeight += w;
+  }
+  return { classWeight, totalWeight };
+}
+
+/**
  * Validate the smoothing parameter shared by the discrete Naive Bayes models.
  *
  * @internal

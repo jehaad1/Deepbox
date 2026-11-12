@@ -104,12 +104,18 @@ function validateCvOptions(options: CvOptions): void {
 /**
  * Check shapes of X and y and return the sample count.
  *
- * @throws {ShapeError} If X is not 2-D, y is not 1-D or 2-D, or their row counts differ
+ * X is 2-D, or a 1-D string tensor of documents for a pipeline that starts with a text
+ * vectorizer.
+ *
+ * @throws {ShapeError} If X is not 2-D (or 1-D strings), y is not 1-D or 2-D, or their row counts differ
  * @throws {DataValidationError} If X has no rows or no columns
  */
 function validateXY(X: Tensor, y: Tensor): number {
-  if (X.ndim !== 2) {
-    throw new ShapeError(`X must be 2-dimensional; got ndim=${X.ndim}`);
+  const textColumn = X.ndim === 1 && X.dtype === "string";
+  if (X.ndim !== 2 && !textColumn) {
+    throw new ShapeError(
+      `X must be 2-dimensional (or a 1-D string tensor of documents); got ndim=${X.ndim}`
+    );
   }
   if (y.ndim !== 1 && y.ndim !== 2) {
     throw new ShapeError(`y must be 1- or 2-dimensional; got ndim=${y.ndim}`);
@@ -120,20 +126,36 @@ function validateXY(X: Tensor, y: Tensor): number {
       `X and y must have the same number of samples; got X.shape[0]=${nSamples}, y.shape[0]=${y.shape[0]}`
     );
   }
-  if (nSamples === 0 || (X.shape[1] ?? 0) === 0) {
+  if (nSamples === 0 || (!textColumn && (X.shape[1] ?? 0) === 0)) {
     throw new DataValidationError("X must have at least one sample and one feature");
   }
   return nSamples;
 }
 
 /**
- * Select rows of a 1-D or 2-D tensor, honoring its strides. float32, float64 and
+ * Select rows of a 1-D or 2-D tensor, honoring its strides. String tensors keep their strings;
+ * float32, float64 and
  * int32 inputs keep their dtype; every other numeric dtype becomes float64.
  * With `squeeze`, a single-column result is returned as a 1-D tensor.
  */
 function takeRows(t: Tensor, rows: ArrayLike<number>, squeeze = false): Tensor {
-  if (t.dtype === "string" || t.dtype === "complex64" || t.dtype === "complex128") {
+  if (t.dtype === "complex64" || t.dtype === "complex128") {
     throw new DTypeError(`Cross-validation needs real numeric data; got dtype "${t.dtype}"`);
+  }
+  if (t.dtype === "string") {
+    const strings = t.data as ArrayLike<string>;
+    const nColsStr = t.ndim === 1 ? 1 : (t.shape[1] ?? 0);
+    const s0s = t.strides[0] ?? 1;
+    const s1s = t.ndim === 2 ? (t.strides[1] ?? 1) : 0;
+    const picked: string[] = [];
+    for (let r = 0; r < rows.length; r++) {
+      const base = t.offset + (rows[r] as number) * s0s;
+      for (let c = 0; c < nColsStr; c++) picked.push(strings[base + c * s1s] as string);
+    }
+    const flatStr = tensor(picked, { dtype: "string" });
+    return t.ndim === 1 || (squeeze && nColsStr === 1)
+      ? flatStr
+      : flatStr.reshape([rows.length, nColsStr]);
   }
   const data = t.data as ArrayLike<number | bigint>;
   const nCols = t.ndim === 1 ? 1 : (t.shape[1] ?? 0);

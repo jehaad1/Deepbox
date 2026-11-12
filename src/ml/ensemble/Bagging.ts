@@ -13,6 +13,7 @@ import {
   validatePredictInputs,
 } from "../_validation";
 import type { Classifier, Regressor } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import { createTreeRng, DecisionTreeClassifier, DecisionTreeRegressor } from "../tree/DecisionTree";
 import { predictRegressionTree } from "./_tree";
 
@@ -135,10 +136,79 @@ function r2(pred: Tensor, y: Float64Array): number {
 }
 
 /**
+ * Draw `count` rows with probability proportional to `weights`: with replacement from the
+ * cumulative weights, or without replacement by removing each drawn row from the pool.
+ */
+function drawWeightedRows(
+  rng: () => number,
+  weights: Float64Array,
+  count: number,
+  bootstrap: boolean
+): Int32Array {
+  const n = weights.length;
+  const rows = new Int32Array(count);
+  const pool = Float64Array.from(weights);
+  let total = 0;
+  let positive = 0;
+  for (let i = 0; i < n; i++) {
+    total += pool[i] as number;
+    if ((pool[i] as number) > 0) positive++;
+  }
+  if (!bootstrap && positive < count) {
+    throw new InvalidParameterError(
+      `Cannot draw ${count} rows without replacement from ${positive} samples with a positive weight; set bootstrap to true, lower maxSamples or give more samples a positive weight`,
+      "sampleWeight",
+      weights
+    );
+  }
+  const cumulative = new Float64Array(n);
+  if (bootstrap) {
+    let run = 0;
+    for (let i = 0; i < n; i++) {
+      run += pool[i] as number;
+      cumulative[i] = run;
+    }
+  }
+  for (let r = 0; r < count; r++) {
+    const target = rng() * total;
+    let pick = 0;
+    if (bootstrap) {
+      let lo = 0;
+      let hi = n - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((cumulative[mid] as number) > target) hi = mid;
+        else lo = mid + 1;
+      }
+      pick = lo;
+    } else {
+      // First positive row whose running weight exceeds the target; rounding in `total` can
+      // leave the target past the last row, which then takes the last positive row.
+      let run = 0;
+      let last = 0;
+      pick = -1;
+      for (let i = 0; i < n && pick < 0; i++) {
+        const w = pool[i] as number;
+        if (w <= 0) continue;
+        last = i;
+        run += w;
+        if (run > target) pick = i;
+      }
+      if (pick < 0) pick = last;
+      total -= pool[pick] as number;
+      pool[pick] = 0;
+    }
+    rows[r] = pick;
+  }
+  return rows;
+}
+
+/**
  * Draw the feature subset and the row sample for one ensemble member.
  *
  * Features are always drawn without replacement. Rows are drawn with replacement
- * when `bootstrap` is true and without replacement otherwise.
+ * when `bootstrap` is true and without replacement otherwise. With `sampleWeight`, a row is
+ * drawn with probability proportional to its weight, as in scikit-learn.
  */
 function drawSubsets(
   rng: () => number,
@@ -146,7 +216,8 @@ function drawSubsets(
   nFeatures: number,
   nSamplesDraw: number,
   nFeaturesDraw: number,
-  bootstrap: boolean
+  bootstrap: boolean,
+  sampleWeight: Float64Array | undefined
 ): { rows: Int32Array; features: Int32Array } {
   const features = new Int32Array(nFeatures);
   for (let i = 0; i < nFeatures; i++) features[i] = i;
@@ -160,6 +231,12 @@ function drawSubsets(
   }
   const chosenFeatures = features.slice(0, nFeaturesDraw).sort();
 
+  if (sampleWeight !== undefined) {
+    return {
+      rows: drawWeightedRows(rng, sampleWeight, nSamplesDraw, bootstrap),
+      features: chosenFeatures,
+    };
+  }
   const rows = new Int32Array(nSamplesDraw);
   if (bootstrap) {
     for (let s = 0; s < nSamplesDraw; s++) rows[s] = __randomBelow(rng, nSamples);
@@ -289,16 +366,20 @@ export class BaggingClassifier implements Classifier {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Integer class labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each estimator draws its rows with probability proportional to the weight, so zero-weight samples are never drawn
    * @returns this
-   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
-   * @throws {DataValidationError} If X or y contain NaN/Inf or y has non-integer labels
+   * @throws {ShapeError} If X is not 2D, y is not 1D, the sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf or y has non-integer labels, or a weight is negative or not finite, or all weights are zero
+   * @throws {InvalidParameterError} If `bootstrap` is false and fewer samples than `maxSamples` allows have a positive weight
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
     const xv = toFloat64View(X);
     const yv = toFloat64View(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
     assertIntegerLabels(yv, "BaggingClassifier");
     const classLabels = [...new Set(yv)].sort((a, b) => a - b);
 
@@ -315,7 +396,8 @@ export class BaggingClassifier implements Classifier {
         nFeatures,
         nSamplesDraw,
         nFeaturesDraw,
-        this.bootstrap
+        this.bootstrap,
+        sampleWeight
       );
       const xSub = gather(xv, nFeatures, rows, nSamplesDraw, features);
       const ySub = new Float64Array(nSamplesDraw);
@@ -559,16 +641,20 @@ export class BaggingRegressor implements Regressor {
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Targets of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); each estimator draws its rows with probability proportional to the weight, so zero-weight samples are never drawn
    * @returns this
-   * @throws {ShapeError} If X is not 2D, y is not 1D or the sample counts differ
-   * @throws {DataValidationError} If X or y contain NaN/Inf
+   * @throws {ShapeError} If X is not 2D, y is not 1D, the sample counts differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If X or y contain NaN/Inf, or a weight is negative or not finite, or all weights are zero
+   * @throws {InvalidParameterError} If `bootstrap` is false and fewer samples than `maxSamples` allows have a positive weight
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
     const xv = toFloat64View(X);
     const yv = toFloat64View(y);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
 
     const nSamplesDraw = Math.max(1, Math.floor(this.maxSamples * nSamples));
     const nFeaturesDraw = Math.max(1, Math.floor(this.maxFeatures * nFeatures));
@@ -583,7 +669,8 @@ export class BaggingRegressor implements Regressor {
         nFeatures,
         nSamplesDraw,
         nFeaturesDraw,
-        this.bootstrap
+        this.bootstrap,
+        sampleWeight
       );
       const xSub = gather(xv, nFeatures, rows, nSamplesDraw, features);
       const ySub = new Float64Array(nSamplesDraw);
