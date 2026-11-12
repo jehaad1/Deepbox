@@ -147,6 +147,8 @@ function logicalBinary(a: Tensor, b: Tensor, op: LogicalOp): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, logicalAnd } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 0, 1]);
  * const b = tensor([1, 1, 0]);
  * logicalAnd(a, b);  // tensor([1, 0, 0])
@@ -172,6 +174,8 @@ export function logicalAnd(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, logicalOr } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 0, 0]);
  * const b = tensor([1, 1, 0]);
  * logicalOr(a, b);  // tensor([1, 1, 0])
@@ -197,6 +201,8 @@ export function logicalOr(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, logicalXor } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 0, 1, 0]);
  * const b = tensor([1, 1, 0, 0]);
  * logicalXor(a, b);  // tensor([0, 1, 1, 0])
@@ -219,6 +225,8 @@ export function logicalXor(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, logicalNot } from 'deepbox/ndarray';
+ *
  * const t = tensor([1, 0, 5, 0]);
  * logicalNot(t);  // tensor([0, 1, 0, 1])
  * ```

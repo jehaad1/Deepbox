@@ -225,7 +225,7 @@ export class __SeededRandom {
 
   /**
    * Sample one standard-normal deviate via the Ziggurat method, consuming
-   * this instance's stream. ~2.5x cheaper than Box–Muller (one uint32 draw
+   * this instance's stream. ~2.5x cheaper than Box-Muller (one uint32 draw
    * and a multiply on the ~99% accept path).
    */
   nextNormal(): number {
@@ -474,7 +474,7 @@ export function __randomUint53(): number {
 }
 
 // ─── Ziggurat standard-normal sampler (Marsaglia & Tsang 2000, 128 layers) ──
-// ~99% of samples cost one uint32 draw and one multiply; the Box–Muller
+// ~99% of samples cost one uint32 draw and one multiply; the Box-Muller
 // sampler this replaces paid log+sqrt+cos on two draws for every sample.
 
 const ZIG_R = 3.442619855899;

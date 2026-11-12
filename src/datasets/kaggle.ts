@@ -214,7 +214,7 @@ function parseDatasetInfo(json: Record<string, unknown>, fallbackId: string): Ka
  * @throws {@link DeepboxError} On other HTTP failures or an unparseable response.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchKaggleDatasetInfo } from 'deepbox/datasets';
  *
  * const info = await fetchKaggleDatasetInfo('zillow/zecon', {
@@ -291,7 +291,7 @@ async function readBody(response: Response, maxBytes: number | undefined): Promi
  * @throws {@link DeepboxError} On other HTTP failures.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchKaggleDataset } from 'deepbox/datasets';
  *
  * const result = await fetchKaggleDataset('zillow/zecon', {

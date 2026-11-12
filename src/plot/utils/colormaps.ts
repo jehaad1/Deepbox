@@ -13,7 +13,7 @@ type RGB = readonly [number, number, number];
 
 /**
  * 33 evenly spaced samples (t = 0, 1/32, ..., 1) of the matplotlib 3.10 colormaps, as 8-bit
- * RGB. Linear interpolation between neighbouring samples stays within 5 levels of the
+ * RGB. Linear interpolation between neighboring samples stays within 5 levels of the
  * original 256-entry lookup table.
  */
 const SAMPLED: Readonly<Record<Exclude<ColormapName, "grayscale">, readonly RGB[]>> = {

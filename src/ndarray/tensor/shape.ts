@@ -39,6 +39,8 @@ function isNumericTensor(t: Tensor): t is Tensor<Shape, NumericDType> {
  *
  * @example
  * ```ts
+ * import { tensor, reshape } from 'deepbox/ndarray';
+ *
  * const x = tensor([[1, 2, 3], [4, 5, 6]]);
  * reshape(x, [3, 2]);   // [[1, 2], [3, 4], [5, 6]]
  * reshape(x, [-1]);     // [1, 2, 3, 4, 5, 6]

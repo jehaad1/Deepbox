@@ -128,8 +128,8 @@ describe("v1.5.0 metrics/_internal", () => {
   });
 
   it("shape errors name the offending shape", () => {
-    expect(() => accuracy(tensor([[1, 2]]), tensor([[1, 2]]))).toThrow(
-      /1D or a column vector; got shape \[1, 2\]/
+    expect(() => accuracy(tensor([[[1, 2]]]), tensor([[[1, 2]]]))).toThrow(
+      /1D or a column vector; got shape \[1, 1, 2\]/
     );
   });
 });
@@ -186,7 +186,9 @@ describe("v1.5.0 metrics/classification: int64, bool and strided inputs", () => 
     expect(f1Score(yTrue, yPred)).toBeCloseTo(0.8, 12);
     expect(jaccardScore(yTrue, yPred)).toBeCloseTo(2 / 3, 12);
     expect(matthewsCorrcoef(yTrue, yPred)).toBeCloseTo(0.6666666666666666, 12);
-    expect(() => precision(int64([0n, 2n]), int64([0n, 1n]), "binary")).toThrow(/binary values/);
+    expect(() => precision(int64([0n, 2n]), int64([0n, 1n]), "binary")).toThrow(
+      /multiclass but average=.binary./
+    );
 
     const bTrue = tensor([true, false, true]);
     const bPred = tensor([true, false, false]);
@@ -283,7 +285,7 @@ describe("v1.5.0 metrics/classification: precision, recall, F-scores", () => {
     const ps = tensor(["cat", "cat", "cat", "Dog", "Dog"]);
     expect(f1Score(ys, ps, "weighted")).toBeCloseTo(0.52, 12);
     expect(balancedAccuracyScore(ys, ps)).toBeCloseTo(0.5, 12);
-    expect(() => f1Score(ys, ps, "binary")).toThrow(/string/i);
+    expect(() => f1Score(ys, ps, "binary")).toThrow(/multiclass but average=.binary./);
   });
 
   it("classes seen only in the predictions count for macro but not weighted support", () => {
@@ -377,7 +379,8 @@ describe("v1.5.0 metrics/classification: classificationReport", () => {
     expect(report).toContain("Accuracy");
     expect(report).toContain("1.0000");
     expect(classificationReport(int64([0n, 1n]), int64([0n, 1n]))).toContain("Weighted Avg");
-    expect(() => classificationReport(tensor(["a"]), tensor(["a"]))).toThrow(InvalidParameterError);
+    // String labels are accepted since 1.5.1.
+    expect(classificationReport(tensor(["a"]), tensor(["a"]))).toContain("Accuracy");
   });
 });
 

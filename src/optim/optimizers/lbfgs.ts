@@ -271,7 +271,7 @@ function strongWolfe(
 }
 
 /**
- * L-BFGS (Limited-memory Broyden–Fletcher–Goldfarb–Shanno) optimizer.
+ * L-BFGS (Limited-memory Broyden-Fletcher-Goldfarb-Shanno) optimizer.
  *
  * A quasi-Newton method that approximates the inverse Hessian using a limited
  * history of past updates. Unlike first-order methods (Adam, SGD), LBFGS can
@@ -297,8 +297,15 @@ function strongWolfe(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss } from 'deepbox/nn';
  * import { LBFGS } from 'deepbox/optim';
  *
+ * const model = new Linear(2, 1);
+ * const input = tensor([[1, 2], [3, 4]]);
+ * const target = tensor([[1], [2]]);
+ * const criterion = mseLoss;
+ * const numEpochs = 3;
  * const optimizer = new LBFGS(model.parameters(), { lr: 1 });
  *
  * for (let epoch = 0; epoch < numEpochs; epoch++) {

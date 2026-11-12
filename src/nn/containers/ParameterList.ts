@@ -31,9 +31,17 @@ function assertKey(key: unknown, owner: string): asserts key is string {
  *
  * @example
  * ```ts
+ * import { parameter } from 'deepbox/ndarray';
+ * import { ParameterList } from 'deepbox/nn';
+ *
+ * const param1 = parameter([1, 2, 3]);
+ * const param2 = parameter([4, 5, 6]);
+ * const param3 = parameter([7, 8, 9]);
  * const params = new ParameterList([param1, param2]);
  * params.append(param3);
- * for (const p of params) { ... }
+ * for (const p of params) {
+ *   console.log(p.shape); // [3]
+ * }
  * ```
  *
  * @category Neural Network Containers
@@ -139,6 +147,11 @@ export class ParameterList extends Module {
  *
  * @example
  * ```ts
+ * import { parameter } from 'deepbox/ndarray';
+ * import { ParameterDict } from 'deepbox/nn';
+ *
+ * const weightParam = parameter([[0.1, 0.2], [0.3, 0.4]]);
+ * const biasParam = parameter([0, 0]);
  * const params = new ParameterDict({ weight: weightParam, bias: biasParam });
  * const w = params.get('weight');
  * ```

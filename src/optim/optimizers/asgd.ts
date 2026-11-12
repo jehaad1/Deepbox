@@ -50,7 +50,10 @@ type ASGDState = {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
  * import { ASGD } from 'deepbox/optim';
+ *
+ * const model = new Linear(2, 1);
  *
  * const optimizer = new ASGD(model.parameters(), {
  *   lr: 0.01,

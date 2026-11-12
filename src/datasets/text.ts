@@ -536,7 +536,7 @@ export async function fetch20Newsgroups(options: TextFetchOptions = {}): Promise
  *   `allowSyntheticFallback` is not set
  *
  * @example
- * ```ts
+ * ```ts fragment
  * import { fetchIMDB } from 'deepbox/datasets';
  *
  * const imdb = await fetchIMDB({ subset: 'train', maxSamples: 1000 });

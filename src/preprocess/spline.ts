@@ -13,8 +13,16 @@ import {
   NotImplementedError,
 } from "../core/errors";
 import type { Transformer } from "../ml/base";
-import { type Tensor, Tensor as TensorClass } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import type { Tensor } from "../ndarray";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  floatMatrix,
+  floatOutputDType,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 /**
  * How `transform` treats values outside the range of the fitted knots.
@@ -233,7 +241,7 @@ export class SplineTransformer implements Transformer {
    * Evaluate the spline basis of every feature.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of shape (n_samples, nFeaturesOut)
+   * @returns Tensor of shape (n_samples, nFeaturesOut): float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the transformer has not been fitted
    * @throws {InvalidParameterError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity, or, with
@@ -345,12 +353,7 @@ export class SplineTransformer implements Transformer {
       }
     }
 
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [nSamples, totalFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return floatMatrix(result, nSamples, totalFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -409,6 +412,11 @@ export class SplineTransformer implements Transformer {
    * @throws {InvalidParameterError} If the resulting options are invalid; the transformer is left unchanged
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(
+      params,
+      ["nKnots", "degree", "extrapolation", "includeBias", "knots"],
+      "SplineTransformer"
+    );
     const previous = this.getParams() as Required<SplineOptions>;
     const next = {
       nKnots: params["nKnots"] ?? previous.nKnots,

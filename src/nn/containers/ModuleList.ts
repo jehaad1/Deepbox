@@ -34,9 +34,13 @@ function assertKey(key: unknown, owner: string): asserts key is string {
  *
  * @example
  * ```ts
+ * import { Linear, ModuleList, ReLU } from 'deepbox/nn';
+ *
  * const layers = new ModuleList([new Linear(10, 5), new ReLU()]);
  * layers.append(new Linear(5, 2));
- * for (const layer of layers) { ... }
+ * for (const layer of layers) {
+ *   console.log(layer.constructor.name); // Linear, ReLU, Linear
+ * }
  * ```
  *
  * @category Neural Network Containers
@@ -188,6 +192,8 @@ export class ModuleList extends Module {
  *
  * @example
  * ```ts
+ * import { ModuleDict, Linear } from 'deepbox/nn';
+ *
  * const modules = new ModuleDict({ encoder: new Linear(10, 5), decoder: new Linear(5, 10) });
  * const enc = modules.get('encoder');
  * ```

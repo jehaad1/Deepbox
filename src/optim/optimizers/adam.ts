@@ -66,7 +66,10 @@ type AdamState = {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
  * import { Adam } from 'deepbox/optim';
+ *
+ * const model = new Linear(2, 1);
  *
  * const optimizer = new Adam(model.parameters(), {
  *   lr: 0.001,

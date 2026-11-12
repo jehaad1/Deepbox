@@ -484,6 +484,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   col1: [1, 2, 3],
    *   col2: ['a', 'b', 'c']
@@ -576,6 +578,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.shape;  // [3, 2]
    * ```
@@ -589,7 +593,10 @@ export class DataFrame {
    *
    * @example
    * ```ts
-   * const fig = df.plot.line({ x: 'date', y: 'price' });
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ x: [1, 2, 3], y: [2, 4, 8], price: [10, 12, 11] });
+   * const fig = df.plot.line({ x: 'x', y: 'price' });
    * const fig2 = df.plot.scatter({ x: 'x', y: 'y' });
    * ```
    */
@@ -607,6 +614,9 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ a: [1, 5, 3], b: [4, 2, 6] });
    * const html = df.style.highlightMax().toHTML();
    * ```
    */
@@ -646,6 +656,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ age: [25, 30, 35], name: ['Alice', 'Bob', 'Carol'] });
    * const ageSeries = df.get('age');  // Series([25, 30, 35])
    * ```
@@ -713,6 +725,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame(
    *   { age: [25, 30], name: ['Alice', 'Bob'] },
    *   { index: ['row1', 'row2'] }
@@ -749,6 +763,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ age: [25, 30], name: ['Alice', 'Bob'] });
    * df.iloc(0);  // { age: 25, name: 'Alice' }
    * df.iloc(1);  // { age: 30, name: 'Bob' }
@@ -792,6 +808,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5], b: [6, 7, 8, 9, 10] });
    * df.head(3);  // DataFrame with rows 0-2
    * ```
@@ -823,6 +841,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5], b: [6, 7, 8, 9, 10] });
    * df.tail(3);  // DataFrame with rows 2-4
    * ```
@@ -860,6 +880,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ age: [25, 30, 35], name: ['Alice', 'Bob', 'Carol'] });
    * const filtered = df.filter(row => row.age > 28);
    * // DataFrame with Bob and Carol
@@ -922,6 +944,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4], c: [5, 6] });
    * df.select(['a', 'c']);  // DataFrame with only columns a and c
    * ```
@@ -960,6 +984,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4], c: [5, 6] });
    * df.drop(['b']);  // DataFrame with only columns a and c
    * ```
@@ -1010,6 +1036,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ age: [30, 25, 35], name: ['Bob', 'Alice', 'Carol'] });
    * df.sort('age');  // Sorted by age ascending
    * df.sort(['age'], false);  // Sorted by age descending
@@ -1116,6 +1144,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   category: ['A', 'B', 'A', 'B'],
    *   value: [10, 20, 30, 40]
@@ -1157,6 +1187,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const customers = new DataFrame({
    *   id: [1, 2, 3],
    *   name: ['Alice', 'Bob', 'Charlie']
@@ -1390,6 +1422,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const employees = new DataFrame({
    *   emp_id: [1, 2, 3],
    *   name: ['Alice', 'Bob', 'Charlie']
@@ -1533,6 +1567,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df1 = new DataFrame({ a: [1, 2], b: [3, 4] });
    * const df2 = new DataFrame({ a: [5, 6], c: [7, 8] });
    * df1.concat(df2, "columns");                         // Stack horizontally
@@ -1732,6 +1768,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, null, 3], b: [null, 5, undefined] });
    * df.fillna(0);                          // a: [1, 0, 3], b: [0, 5, 0]
    * df.fillna({ a: -1 });                  // only column a is filled
@@ -1797,6 +1835,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, null, null, 4] });
    * df.ffill();              // a: [1, 1, 1, 4]
    * df.ffill({ limit: 1 });  // a: [1, 1, null, 4]
@@ -1818,6 +1858,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [null, null, 3, null] });
    * df.bfill();  // a: [3, 3, 3, null]
    * ```
@@ -1867,6 +1909,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, null, 3], b: [4, 5, 6] });
    * df.dropna();  // Only keeps rows 0 and 2
    * df.dropna({ subset: ['b'] });  // Keeps every row, b has no gaps
@@ -2022,11 +2066,13 @@ export class DataFrame {
    *
    * @param method - Coefficient name, or an options object `{ method?, minPeriods? }`
    * @param minPeriods - Minimum number of complete pairs per cell (default: 1)
-   * @returns Square DataFrame labelled by the numeric column names
+   * @returns Square DataFrame labeled by the numeric column names
    * @throws {InvalidParameterError} If `method` is unknown or `minPeriods` is not a non-negative integer
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4], b: [1, 4, 9, 16] });
    * df.corr();                     // Pearson, about 0.984 off the diagonal
    * df.corr("spearman");           // 1, the relation is monotonic
@@ -2266,6 +2312,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * // Apply function to each column
    * df.apply(series => series.map(x => Number(x) * 2), 0);
@@ -2377,6 +2425,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * const t = df.toTensor();  // 2D tensor [[1,4], [2,5], [3,6]]
    * const t64 = df.toTensor({ dtype: "float64" });
@@ -2420,6 +2470,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4] });
    * df.toArray();  // [[1, 3], [2, 4]]
    * ```
@@ -2976,8 +3028,12 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ id: [1, 2, 3], name: ['a', 'b', 'c'] });
    * const bytes = df.toParquet();
    * const back = DataFrame.fromParquet(bytes);
+   * console.log(back.shape); // [3, 2]
    * ```
    */
   toParquet(options: ParquetWriteOptions = {}): Uint8Array {
@@ -3045,6 +3101,7 @@ export class DataFrame {
    * @example
    * ```ts
    * import { tensor } from 'deepbox/ndarray';
+   * import { DataFrame } from 'deepbox/dataframe';
    *
    * const t = tensor([[1, 2], [3, 4], [5, 6]]);
    * const df = DataFrame.fromTensor(t, ['col1', 'col2']);
@@ -3175,6 +3232,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 1, 2], b: [3, 3, 4] });
    * df.dropDuplicates();  // Keeps first occurrence: [[1, 3], [2, 4]]
    * df.dropDuplicates(undefined, 'last');  // Keeps last occurrence
@@ -3224,6 +3283,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 1, 2], b: [3, 3, 4] });
    * df.duplicated();  // Series([false, true, false])
    * ```
@@ -3246,6 +3307,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4] });
    * df.rename({ a: 'x', b: 'y' }, 1);  // Rename columns a->x, b->y
    * df.rename((name) => name.toUpperCase(), 1);  // Uppercase all column names
@@ -3308,6 +3371,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2] }, { index: ['x', 'y'] });
    * df.resetIndex();  // Index becomes [0, 1], adds 'index' column with ['x', 'y']
    * df.resetIndex(true);  // Index becomes [0, 1], no new column
@@ -3363,6 +3428,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ id: ['a', 'b', 'c'], value: [1, 2, 3] });
    * df.setIndex('id');  // Index becomes ['a', 'b', 'c']
    * ```
@@ -3421,6 +3488,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, null, 3], b: [4, 5, undefined] });
    * df.isnull();  // [[false, false], [true, false], [false, true]]
    * ```
@@ -3450,6 +3519,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, null, 3], b: [4, 5, undefined] });
    * df.notnull();  // [[true, true], [false, true], [true, false]]
    * ```
@@ -3481,6 +3552,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.replace(2, 99);  // Replace all 2s with 99
    * df.replace([1, 2], 0);  // Replace 1s and 2s with 0
@@ -3515,6 +3588,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 5, 10], b: [2, 8, 15] });
    * df.clip(3, 9);  // [[3, 3], [5, 8], [9, 9]]
    * ```
@@ -3563,7 +3638,7 @@ export class DataFrame {
    * `weights`, each draw picks among the remaining rows in proportion to their weights. With
    * `replace: true` a row can appear several times; because row labels must stay unique (a
    * DataFrame cannot hold duplicate labels), the original labels are not kept and the result is
-   * labelled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
+   * labeled 0..k-1. Put an identifier in a column if you need to trace the drawn rows.
    *
    * @param n - Number of rows, or an options object (see {@link SampleOptions})
    * @param randomState - Integer seed (positional form only)
@@ -3573,6 +3648,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5], w: [0, 0, 1, 1, 8] });
    * df.sample(3);                                     // 3 random rows
    * df.sample(3, 42);                                 // reproducible
@@ -3709,6 +3786,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5], b: [10, 20, 30, 40, 50] });
    * df.quantile(0.5);  // Median: Series({ a: 3, b: 30 })
    * df.quantile(0.25);  // 25th percentile
@@ -3751,6 +3830,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [3, 1, 2, 1] });
    * df.rank();  // [[4], [1.5], [3], [1.5]] (average method)
    * df.rank('min');  // [[4], [1], [3], [1]]
@@ -3841,6 +3922,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 3, 6, 10] });
    * df.diff();  // [[null], [2], [3], [4]]
    * df.diff(2);  // [[null], [null], [5], [7]]
@@ -3893,6 +3976,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [100, 110, 121] });
    * df.pctChange();  // [[null], [0.1], [0.1]] (10% increase each time)
    * ```
@@ -3949,6 +4034,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.cumsum();  // [[1, 4], [3, 9], [6, 15]]
    * ```
@@ -3996,6 +4083,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [2, 3, 4] });
    * df.cumprod();  // [[2], [6], [24]]
    * ```
@@ -4041,6 +4130,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [3, 1, 5, 2] });
    * df.cummax();  // [[3], [3], [5], [5]]
    * ```
@@ -4086,6 +4177,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [3, 1, 5, 2] });
    * df.cummin();  // [[3], [1], [1], [1]]
    * ```
@@ -4131,6 +4224,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4] });
    * df.shift(1);  // [[null], [1], [2], [3]]
    * df.shift(-1);  // [[2], [3], [4], [null]]
@@ -4192,6 +4287,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   country: ['USA', 'USA', 'Canada', 'Canada'],
    *   year: [2010, 2011, 2010, 2011],
@@ -4315,6 +4412,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   id: ['a', 'b'],
    *   x: [1, 2],
@@ -4416,6 +4515,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   city: ['NYC', 'LA'],
    *   pop_2020: [8.3, 3.9],
@@ -4511,6 +4612,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   city: ['NYC', 'NYC', 'LA', 'LA'],
    *   year: ['2020', '2021', '2020', '2021'],
@@ -4634,10 +4737,12 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3, 4, 5] });
-   * df.rolling(3).mean();                          // [null, null, 2, 3, 4]
-   * df.rolling(3, { minPeriods: 1 }).sum();        // [1, 3, 6, 9, 12]
-   * df.rolling(3, { center: true }).mean();        // [null, 2, 3, 4, null]
+   * df.rolling(3).mean();                          // column a: [null, null, 2, 3, 4]
+   * df.rolling(3, { minPeriods: 1 }).sum();        // column a: [1, 3, 6, 9, 12]
+   * df.rolling(3, { center: true }).mean();        // column a: [null, 2, 3, 4, null]
    * ```
    */
   rolling(window: number, on?: string | RollingOptions): Rolling {
@@ -4860,6 +4965,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4] });
    * df.toString();
    * // "   a  b\n0  1  3\n1  2  4"
@@ -5321,9 +5428,12 @@ export class DataFrame {
    *
    * @example
    * ```ts
-   * df.astype("age", "number");
-   * df.astype({ age: "number", name: "string" });
-   * df.astype("age", "number", { errors: "raise" });
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({ age: ['25', '30', '35'], name: ['Alice', 'Bob', 'Carol'] });
+   * const a = df.astype("age", "number");
+   * const b = df.astype({ age: "number", name: "string" });
+   * const c = df.astype("age", "number", { errors: "raise" });
    * ```
    */
   astype(column: string, dtype: AstypeDtype, options?: AstypeOptions): DataFrame;
@@ -5493,6 +5603,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: ["x", "x", "y", null] });
    * df.valueCounts("a");                                 // x: 2, y: 1, null: 1
    * df.valueCounts("a", { dropna: true, normalize: true }); // x: 2/3, y: 1/3
@@ -5750,11 +5862,11 @@ export class DataFrame {
    * - `"linear"`: gaps between two numbers are filled on a straight line over
    *   the row positions; a gap after the last number repeats that number;
    *   a gap before the first number stays missing.
-   * - `"nearest"`: gaps between two numbers take the closer neighbour (the
+   * - `"nearest"`: gaps between two numbers take the closer neighbor (the
    *   earlier one on a tie); gaps before the first or after the last number stay
    *   missing.
    *
-   * Only finite numbers act as neighbours; other values are left untouched.
+   * Only finite numbers act as neighbors; other values are left untouched.
    *
    * @param method - Interpolation method: 'linear' (default) or 'nearest'
    * @returns New DataFrame
@@ -6046,6 +6158,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2], b: [3, 4] });
    * const df2 = df.copy();
    * ```
@@ -6074,6 +6188,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.isin([2, 4]);
    * // DataFrame({ a: [false, true, false], b: [true, false, false] })
@@ -6107,6 +6223,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.transform(series => series.map(x => Number(x) * 2));
    * ```
@@ -6189,6 +6307,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ a: [1, 2, 3], b: [4, 5, 6] });
    * df.eval('c = a + b');  // adds column c = [5, 7, 9]
    * df.eval('a > 1');      // filters to rows where a > 1
@@ -6462,6 +6582,8 @@ export class DataFrame {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   gender: ['M', 'F', 'M', 'F', 'M'],
    *   handed: ['R', 'R', 'L', 'R', 'R'],
@@ -6828,6 +6950,8 @@ export class EWM {
  *
  * @example
  * ```ts
+ * import { DataFrame } from 'deepbox/dataframe';
+ *
  * const df = new DataFrame({
  *   category: ['A', 'B', 'A', 'B'],
  *   value: [10, 20, 30, 40]
@@ -7033,6 +7157,13 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
+   * const df = new DataFrame({
+   *   category: ['a', 'b', 'a', 'b'],
+   *   value: [1, 2, 3, 4],
+   *   count: [1, 1, 1, 1],
+   * });
    * const grouped = df.groupBy('category');
    * const result = grouped.agg({ value: 'sum', count: 'count' });
    * grouped.agg({ avgValue: ['value', 'mean'], spread: ['value', (v) => Math.max(...(v as number[])) - Math.min(...(v as number[]))] });
@@ -7184,6 +7315,8 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({
    *   category: ['A', 'A', 'B', 'B'],
    *   value: [1, 2, 3, 4]
@@ -7354,6 +7487,8 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ team: ["a", "b", "a"], x: [1, 2, 3] });
    * df.groupBy("team").getGroup("a");  // rows 0 and 2
    * df.groupBy(["team", "x"]).getGroup(["b", 2]);
@@ -7393,6 +7528,8 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ team: ["a", "a", "b"], x: [1, 1, 2], y: ["p", "q", null] });
    * df.groupBy("team").nunique();  // a: x=1, y=2; b: x=1, y=0
    * ```
@@ -7412,6 +7549,8 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ team: ["a", "a", "a", "b"], x: [1, 2, 4, 9] });
    * df.groupBy("team").quantile(0.5);  // a: 2, b: 9
    * ```
@@ -7450,7 +7589,7 @@ export class DataFrameGroupBy {
    *   to the numeric columns only, like the other group aggregations;
    * - `cumsum`, `cumprod`, `cummax`, `cummin` (numeric columns), `ffill` or `bfill`: computed within
    *   each group, with the semantics of the same-named DataFrame methods;
-   * - a function that receives the group's values of one column as a Series (labelled with the row
+   * - a function that receives the group's values of one column as a Series (labeled with the row
    *   labels) and returns a Series or array of the same length, or one value that is repeated.
    *
    * Rows that belong to no group (a dropped missing key) get null.
@@ -7462,6 +7601,8 @@ export class DataFrameGroupBy {
    *
    * @example
    * ```ts
+   * import { DataFrame } from 'deepbox/dataframe';
+   *
    * const df = new DataFrame({ team: ["a", "b", "a"], x: [1, 5, 3] });
    * df.groupBy("team").transform("mean");                       // x: [2, 5, 2]
    * df.groupBy("team").transform((s) => s.map((v) => Number(v) - 2));  // x: [-1, 3, 1]

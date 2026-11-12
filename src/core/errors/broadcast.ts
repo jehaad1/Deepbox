@@ -13,10 +13,16 @@ function cloneShape(shape: Shape): Shape {
  *
  * @example
  * ```ts
+ * import { BroadcastError } from 'deepbox/core';
+ *
+ * const shape1 = [3, 4];
+ * const shape2 = [3];
  * // Broadcasting (3, 4) and (4,) works -> (3, 4)
  * // Broadcasting (3, 4) and (3,) fails
- * if (!canBroadcast(shape1, shape2)) {
+ * try {
  *   throw new BroadcastError(shape1, shape2);
+ * } catch (error) {
+ *   console.log(error instanceof BroadcastError); // true
  * }
  * ```
  *

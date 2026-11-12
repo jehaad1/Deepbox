@@ -254,6 +254,8 @@ export function pad2dForward(
  *
  * @example
  * ```ts
+ * import { ZeroPad2d } from 'deepbox/nn';
+ *
  * const pad = new ZeroPad2d(1); // pad 1 on all sides
  * const pad2 = new ZeroPad2d([1, 1, 2, 2]); // [left, right, top, bottom]
  * ```
@@ -292,6 +294,8 @@ export class ZeroPad2d extends Module {
  *
  * @example
  * ```ts
+ * import { ConstantPad2d } from 'deepbox/nn';
+ *
  * const pad = new ConstantPad2d(1, -1); // pad 1 on all sides with -1
  * ```
  *
@@ -328,6 +332,8 @@ export class ConstantPad2d extends Module {
  *
  * @example
  * ```ts
+ * import { ReflectionPad2d } from 'deepbox/nn';
+ *
  * const pad = new ReflectionPad2d(1);
  * ```
  *
@@ -361,6 +367,8 @@ export class ReflectionPad2d extends Module {
  *
  * @example
  * ```ts
+ * import { ReplicationPad2d } from 'deepbox/nn';
+ *
  * const pad = new ReplicationPad2d(1);
  * ```
  *

@@ -72,6 +72,8 @@ function convOutputSize(
  *
  * @example
  * ```ts
+ * import { tensor, im2col } from 'deepbox/ndarray';
+ *
  * const x = tensor([[[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]]);   // (1, 1, 3, 3)
  * im2col(x, [2, 2], [1, 1], [0, 0]).shape;                    // [1, 4, 4]
  * ```

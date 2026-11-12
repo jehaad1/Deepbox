@@ -33,9 +33,17 @@ export type ShapeErrorDetails = {
  * @example
  * ```ts
  * import { ShapeError } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
- * if (tensor.shape[0] !== expectedRows) {
- *   throw ShapeError.mismatch([expectedRows, cols], tensor.shape, 'matrix multiplication');
+ * const t = tensor([[1, 2, 3], [4, 5, 6]]);
+ * const expectedRows = 3;
+ * const cols = 3;
+ * try {
+ *   if (t.shape[0] !== expectedRows) {
+ *     throw ShapeError.mismatch([expectedRows, cols], t.shape, 'matrix multiplication');
+ *   }
+ * } catch (error) {
+ *   console.log((error as Error).message); // Shape mismatch (matrix multiplication): expected [3,3], received [2,3]
  * }
  * ```
  */
@@ -67,8 +75,13 @@ export class ShapeError extends DeepboxError {
    *
    * @example
    * ```ts
-   * throw ShapeError.mismatch([3, 4], [3, 5], 'matrix multiplication');
-   * // ShapeError: Shape mismatch (matrix multiplication): expected [3,4], received [3,5]
+   * import { ShapeError } from 'deepbox/core';
+   *
+   * try {
+   *   throw ShapeError.mismatch([3, 4], [3, 5], 'matrix multiplication');
+   * } catch (error) {
+   *   console.log((error as Error).message); // Shape mismatch (matrix multiplication): expected [3,4], received [3,5]
+   * }
    * ```
    */
   static mismatch(expected: Shape, received: Shape, context?: string): ShapeError {

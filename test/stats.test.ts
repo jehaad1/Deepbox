@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { catchWarnings } from "../src/core";
 import { tensor } from "../src/ndarray";
 import * as stats from "../src/stats";
 import { numData } from "./_helpers";
@@ -587,8 +588,13 @@ describe("stats - Correlation", () => {
       expect(p).toBeLessThan(0.01);
     });
 
-    it("throws on constant input", () => {
-      expect(() => stats.pearsonr(tensor([1, 2, 3, 4, 5]), tensor([1, 1, 1, 1, 1]))).toThrow();
+    it("returns NaN and warns on constant input", () => {
+      let result: [number, number] = [0, 0];
+      const warnings = catchWarnings(() => {
+        result = stats.pearsonr(tensor([1, 2, 3, 4, 5]), tensor([1, 1, 1, 1, 1]));
+      });
+      expect(result[0]).toBeNaN();
+      expect(warnings.length).toBe(1);
     });
 
     it("computes moderate correlation", () => {

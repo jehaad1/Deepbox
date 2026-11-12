@@ -214,9 +214,13 @@ export function fromJSON(json: string): SerializedPayload {
  *
  * @example
  * ```ts
+ * import { tmpdir } from 'node:os';
+ * import { join } from 'node:path';
  * import { save } from 'deepbox/core';
+ *
  * // Save a tensor
- * await save('./model.json', { __type: 'Tensor', data: [1,2,3], shape: [3], dtype: 'float32' });
+ * const file = join(tmpdir(), 'deepbox-tensor.json');
+ * await save(file, { __type: 'Tensor', data: [1,2,3], shape: [3], dtype: 'float32' });
  * ```
  */
 export async function save(path: string, payload: SerializedPayload): Promise<void> {
@@ -254,8 +258,14 @@ export async function save(path: string, payload: SerializedPayload): Promise<vo
  *
  * @example
  * ```ts
- * import { load } from 'deepbox/core';
- * const payload = await load('./model.json');
+ * import { tmpdir } from 'node:os';
+ * import { join } from 'node:path';
+ * import { load, save } from 'deepbox/core';
+ *
+ * const file = join(tmpdir(), 'deepbox-payload.json');
+ * await save(file, { __type: 'Tensor', data: [1,2,3], shape: [3], dtype: 'float32' });
+ * const payload = await load(file);
+ * console.log(payload.shape); // [3]
  * ```
  */
 export async function load(path: string): Promise<SerializedPayload> {

@@ -2,7 +2,7 @@
  * Shared internal helpers for ndarray/ops.
  *
  * These utilities are used across multiple ops modules (arithmetic, comparison,
- * logical, math, activation, trigonometry, reduction). Centralising them here
+ * logical, math, activation, trigonometry, reduction). Centralizing them here
  * eliminates the ~30+ copy-pasted copies that previously lived in each file.
  *
  * @internal

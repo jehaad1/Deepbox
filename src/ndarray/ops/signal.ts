@@ -109,6 +109,8 @@ function besselI0Scaled(x: number): number {
  *
  * @example
  * ```ts
+ * import { hannWindow } from 'deepbox/ndarray';
+ *
  * hannWindow(5); // [0, 0.5, 1, 0.5, 0]
  * ```
  */
@@ -133,6 +135,8 @@ export function hannWindow(n: number, options?: WindowOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { hammingWindow } from 'deepbox/ndarray';
+ *
  * hammingWindow(5); // [0.08, 0.54, 1, 0.54, 0.08]
  * ```
  */
@@ -158,6 +162,8 @@ export function hammingWindow(n: number, options?: WindowOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { blackmanWindow } from 'deepbox/ndarray';
+ *
  * blackmanWindow(5); // [-1.4e-17, 0.34, 1, 0.34, -1.4e-17]
  * ```
  */
@@ -183,6 +189,8 @@ export function blackmanWindow(n: number, options?: WindowOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { bartlettWindow } from 'deepbox/ndarray';
+ *
  * bartlettWindow(5); // [0, 0.5, 1, 0.5, 0]
  * ```
  */
@@ -208,6 +216,8 @@ export function bartlettWindow(n: number, options?: WindowOptions): Tensor {
  *
  * @example
  * ```ts
+ * import { kaiserWindow } from 'deepbox/ndarray';
+ *
  * kaiserWindow(8, 5); // [0.0367, 0.2707, 0.6517, 0.9552, 0.9552, 0.6517, 0.2707, 0.0367]
  * ```
  */
@@ -324,6 +334,8 @@ function correlateLongFirst(
  *
  * @example
  * ```ts
+ * import { convolve, tensor } from 'deepbox/ndarray';
+ *
  * convolve(tensor([1, 2, 3]), tensor([0, 1, 0.5])); // [0, 1, 2.5, 4, 1.5]
  * ```
  */
@@ -349,6 +361,8 @@ export function convolve(a: Tensor, v: Tensor, mode: ConvolveMode = "full"): Ten
  *
  * @example
  * ```ts
+ * import { correlate, tensor } from 'deepbox/ndarray';
+ *
  * correlate(tensor([1, 2, 3]), tensor([0, 1, 0.5])); // [0.5, 2, 3.5, 3, 0]
  * ```
  */

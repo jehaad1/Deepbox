@@ -131,7 +131,7 @@ export function loadWine(options?: DatasetLoadOptions): Dataset {
  * Load the Optical Recognition of Handwritten Digits dataset (UCI).
  *
  * The real, canonical data: 1797 samples, 64 features (8×8 pixels, integer
- * intensities in `[0, 16]`), 10 classes (digits 0–9). Deterministic: the
+ * intensities in `[0, 16]`), 10 classes (digits 0 to 9). Deterministic: the
  * committed reference values are always returned unchanged.
  *
  * @param options - Optional {@link DatasetLoadOptions} (e.g. `{ dtype: "float64" }`).

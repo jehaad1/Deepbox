@@ -92,7 +92,7 @@ export type WorkerPoolOptions = {
   /**
    * Task timeout in milliseconds (positive). Default: 30000 (30s).
    * It applies to each callback call. A callback that returns a promise rejects with a
-   * {@link TaskTimeoutError} once the time has passed (the promise itself cannot be cancelled).
+   * {@link TaskTimeoutError} once the time has passed (the promise itself cannot be canceled).
    * A synchronous callback runs on the calling thread and cannot be pre-empted, so its duration
    * is checked when it returns: one that ran longer than the timeout rejects with a
    * {@link TaskTimeoutError} and its result is dropped.

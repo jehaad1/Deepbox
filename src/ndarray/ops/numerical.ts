@@ -75,6 +75,8 @@ class CompensatedSum {
  *
  * @example
  * ```ts
+ * import { tensor, interp } from 'deepbox/ndarray';
+ *
  * const xp = tensor([0, 1, 2, 3]);
  * const fp = tensor([0, 1, 4, 9]);
  * const x = tensor([0.5, 1.5, 2.5]);
@@ -195,6 +197,8 @@ export function interp(x: Tensor, xp: Tensor, fp: Tensor, left?: number, right?:
  *
  * @example
  * ```ts
+ * import { tensor, trapz } from 'deepbox/ndarray';
+ *
  * const y = tensor([1, 2, 3, 4]);
  * trapz(y);           // 7.5 (dx=1)
  * trapz(y, undefined, 0.5);  // 3.75 (dx=0.5)
@@ -270,6 +274,8 @@ export const trapezoid = trapz;
  *
  * @example
  * ```ts
+ * import { tensor, gradient } from 'deepbox/ndarray';
+ *
  * const f = tensor([1, 2, 4, 7, 11]);
  * gradient(f);         // tensor([1, 1.5, 2.5, 3.5, 4])
  * gradient(f, 0.5);    // tensor([2, 3, 5, 7, 8])
@@ -384,6 +390,8 @@ export function gradient(f: Tensor, spacing?: number | Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, digitize } from 'deepbox/ndarray';
+ *
  * const x = tensor([0.5, 1.5, 2.5, 3.5]);
  * const bins = tensor([1, 2, 3]);
  * digitize(x, bins);  // tensor([0, 1, 2, 3])
@@ -496,6 +504,8 @@ function unifyDTypes(tensors: Tensor[], fnName: string): Tensor[] {
  *
  * @example
  * ```ts
+ * import { tensor, vstack } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3]);
  * const b = tensor([4, 5, 6]);
  * vstack([a, b]);  // tensor([[1, 2, 3], [4, 5, 6]])
@@ -532,6 +542,8 @@ export function vstack(tensors: Tensor[]): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, hstack } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2]);
  * const b = tensor([3, 4]);
  * hstack([a, b]);  // tensor([1, 2, 3, 4])
@@ -570,6 +582,8 @@ export function hstack(tensors: Tensor[]): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, columnStack } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3]);
  * const b = tensor([4, 5, 6]);
  * columnStack([a, b]);  // tensor([[1, 4], [2, 5], [3, 6]])

@@ -22,7 +22,11 @@ describe("deepbox/preprocess - Scalers Extra", () => {
     const XScaled = scaler.fitTransform(X);
     expect(XScaled.shape).toEqual([3, 2]);
     const XInv = scaler.inverseTransform(XScaled);
-    expect(XInv.toArray()).toEqual(X.toArray());
+    // float32 input gives float32 output, so the round trip is exact only to float32 precision.
+    expect(XInv.dtype).toBe("float32");
+    const expected = (X.toArray() as number[][]).flat();
+    const actual = (XInv.toArray() as number[][]).flat();
+    for (const [i, value] of expected.entries()) expect(actual[i]).toBeCloseTo(value, 5);
   });
 
   it("MinMaxScaler scales to feature range", () => {

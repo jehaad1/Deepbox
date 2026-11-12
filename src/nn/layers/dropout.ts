@@ -184,6 +184,9 @@ export class Dropout extends Module {
  *
  * @example
  * ```ts
+ * import { Dropout2d } from 'deepbox/nn';
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const dropout2d = new Dropout2d(0.5);
  * const input = tensor([[[[1,2],[3,4]], [[5,6],[7,8]]]]);
  * dropout2d.train();
@@ -319,14 +322,14 @@ export class Dropout2d extends Module {
  *
  * @example
  * ```ts
- * import { AlphaDropout, SELU, Linear, Sequential } from 'deepbox/nn';
+ * import { AlphaDropout, Linear, SELU, Sequential } from 'deepbox/nn';
  *
- * const model = new Sequential([
+ * const model = new Sequential(
  *   new Linear(784, 256),
  *   new SELU(),
  *   new AlphaDropout(0.1),
- *   new Linear(256, 10),
- * ]);
+ *   new Linear(256, 10)
+ * );
  * ```
  *
  * References:

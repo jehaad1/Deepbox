@@ -359,6 +359,32 @@ export function euclideanDistance(
 }
 
 /**
+ * Order two strings by Unicode code point, the order NumPy, scikit-learn and Python's `sorted`
+ * use for strings. JavaScript's `<` compares UTF-16 code units instead, which puts an astral
+ * character (a surrogate pair, such as an emoji) before U+E000..U+FFFF. `localeCompare` is
+ * locale dependent and puts "a" before "B". Used wherever labels or categories are ordered.
+ *
+ * @internal
+ */
+export function compareCodePoints(a: string, b: string): number {
+  if (a === b) return 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    let ca = a.charCodeAt(i);
+    let cb = b.charCodeAt(i);
+    if (ca !== cb) {
+      // UTF-16 surrogates (astral code points) must sort above U+E000..U+FFFF.
+      if (ca >= 0xd800 && cb >= 0xd800) {
+        ca += ca >= 0xe000 ? -0x800 : 0x2000;
+        cb += cb >= 0xe000 ? -0x800 : 0x2000;
+      }
+      return ca - cb;
+    }
+  }
+  return a.length - b.length;
+}
+
+/**
  * Per-sample weights accepted by the metrics: a numeric tensor (1D or a column
  * vector) or any array-like of numbers, with one value per sample.
  *

@@ -104,7 +104,7 @@ function completeOrthonormalColumns(
 }
 
 /**
- * Golub–Reinsch core: Householder bidiagonalization followed by implicit-shift
+ * Golub-Reinsch core: Householder bidiagonalization followed by implicit-shift
  * QR on the bidiagonal. Requires `m >= n`.
  *
  * On exit `w` holds the (unsorted, non-negative) singular values. With
@@ -351,7 +351,7 @@ function golubReinschCore(
 }
 
 /**
- * Golub–Reinsch SVD (Householder bidiagonalization + implicit-shift QR).
+ * Golub-Reinsch SVD (Householder bidiagonalization + implicit-shift QR).
  *
  * Runs in O(n³) with a small constant. Requires `m >= n`.
  *
@@ -384,7 +384,7 @@ function golubReinschSVD(
 }
 
 /**
- * Singular values only (no U/V) via Golub–Reinsch, skipping the O(n³)
+ * Singular values only (no U/V) via Golub-Reinsch, skipping the O(n³)
  * left/right transformation accumulation. Requires `m >= n`. Returns n values in
  * descending order.
  *
@@ -492,7 +492,7 @@ function emptySvd(m: number, n: number, fullMatrices: boolean): [Tensor, Tensor,
 }
 
 /**
- * Assemble the [U, s, Vᵀ] tensors from a Golub–Reinsch result.
+ * Assemble the [U, s, Vᵀ] tensors from a Golub-Reinsch result.
  *
  * When `transposed` is true, the decomposition was computed on Aᵀ (tall) for a
  * wide input A, so the roles of the left and right factors are swapped.
@@ -556,7 +556,7 @@ function buildSvdFromGR(
  *
  * Factorizes matrix A into three matrices: A = U * Σ * V^T
  *
- * **Algorithm**: Golub–Reinsch. Householder reflections reduce A to bidiagonal form,
+ * **Algorithm**: Golub-Reinsch. Householder reflections reduce A to bidiagonal form,
  * then implicit-shift QR iteration diagonalizes the bidiagonal matrix. Wide
  * matrices (M < N) are handled by decomposing Aᵀ and swapping the factors.
  *

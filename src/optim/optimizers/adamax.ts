@@ -60,7 +60,10 @@ type AdamaxState = {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
  * import { Adamax } from 'deepbox/optim';
+ *
+ * const model = new Linear(2, 1);
  *
  * const optimizer = new Adamax(model.parameters(), { lr: 0.002 });
  * ```

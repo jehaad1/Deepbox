@@ -243,8 +243,8 @@ function gradOperand(t: AnyTensor, dtype: "float32" | "float64"): GradTensor {
  *
  * @example
  * ```ts
- * import { mseLoss } from 'deepbox/nn/losses';
  * import { tensor } from 'deepbox/ndarray';
+ * import { mseLoss } from 'deepbox/nn';
  *
  * const predictions = tensor([2.5, 0.0, 2.1, 7.8]);
  * const targets = tensor([3.0, -0.5, 2.0, 8.0]);

@@ -22,6 +22,8 @@ import type { Axis } from "../types/common";
  *
  * @example
  * ```ts
+ * import { normalizeAxis } from 'deepbox/core';
+ *
  * normalizeAxis(-1, 3);        // 2
  * normalizeAxis("columns", 2); // 1
  * ```

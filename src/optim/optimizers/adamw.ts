@@ -81,7 +81,14 @@ type AdamWState = {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { Linear, mseLoss } from 'deepbox/nn';
  * import { AdamW } from 'deepbox/optim';
+ *
+ * const model = new Linear(2, 1);
+ * const input = tensor([[1, 2], [3, 4]]);
+ * const target = tensor([[1], [2]]);
+ * const numEpochs = 3;
  *
  * const optimizer = new AdamW(model.parameters(), {
  *   lr: 0.001,
@@ -93,7 +100,8 @@ type AdamWState = {
  * // Training loop
  * for (let epoch = 0; epoch < numEpochs; epoch++) {
  *   optimizer.zeroGrad();
- *   // ...
+ *   const loss = mseLoss(model.forward(input), target);
+ *   loss.backward();
  *   optimizer.step();
  * }
  * ```

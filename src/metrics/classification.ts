@@ -4,6 +4,7 @@ import { radixArgsortF64 } from "../ndarray/ops/radix";
 import {
   assertSameSizeVectors,
   assertVectorLike,
+  compareCodePoints,
   compensatedSum,
   type DenseLabels,
   denseLabels,
@@ -14,9 +15,9 @@ import {
 } from "./_internal";
 
 type Label = number | string | bigint;
-type Average = "binary" | "micro" | "macro" | "weighted";
+type Average = "binary" | "micro" | "macro" | "weighted" | "samples";
 
-const AVERAGE_MODES: readonly string[] = ["binary", "micro", "macro", "weighted"];
+const AVERAGE_MODES: readonly string[] = ["binary", "micro", "macro", "weighted", "samples"];
 
 /** Below this many samples a comparator sort beats the radix argsort's fixed setup cost. */
 const SMALL_SORT_THRESHOLD = 256;
@@ -37,10 +38,12 @@ const SMALL_SORT_THRESHOLD = 256;
  */
 export type AveragedMetricOptions = {
   /**
-   * Averaging strategy: `"binary"` (positive class 1), `"micro"`, `"macro"`,
-   * `"weighted"` (by support) or `null` for one value per class in label order.
+   * Averaging strategy: `"binary"` (positive class `posLabel`, default 1), `"micro"`, `"macro"`,
+   * `"weighted"` (by support), `"samples"` (multilabel targets only: the mean of the per-sample
+   * scores) or `null` for one value per class in label order.
    * When omitted, `"binary"` is used for at most two distinct labels and `"weighted"`
-   * otherwise; with `labels` given and no `average`, `"weighted"` is used.
+   * otherwise; with `labels` given and no `average`, `"weighted"` is used. A 2-D indicator
+   * target (several labels per sample) defaults to `"weighted"` and rejects `"binary"`.
    */
   readonly average?: Average | null;
   /**
@@ -48,7 +51,8 @@ export type AveragedMetricOptions = {
    * true or predicted label is not listed still count as errors of the listed classes,
    * but unlisted classes are not scored. Ignored with `average: "binary"`. Defaults to
    * the sorted union of the labels in yTrue and yPred. For int64 tensors plain integers
-   * are converted to bigint.
+   * are converted to bigint. For a 2-D indicator target these are the column indices to
+   * score (default: all columns).
    */
   readonly labels?: ReadonlyArray<number | string | bigint>;
   /**
@@ -61,6 +65,13 @@ export type AveragedMetricOptions = {
   readonly zeroDivision?: number | "warn";
   /** One weight per sample; every count and support is a weighted sum. */
   readonly sampleWeight?: SampleWeightInput;
+  /**
+   * The class that `"binary"` scores as positive (default `1`). It must be one of the labels
+   * when yTrue and yPred together hold two labels, which makes string labels and labels such
+   * as `{-1, 1}` or `{1, 2}` work: pass the positive class here. It is ignored by the other
+   * averages. For int64 tensors a plain integer is converted to bigint.
+   */
+  readonly posLabel?: number | string | bigint;
 };
 
 type AveragedArg = Average | null | AveragedMetricOptions | undefined;
@@ -86,7 +97,7 @@ function assertComparableLabelTypes(yTrue: Tensor, yPred: Tensor): LabelKind {
 
 function compareLabels(a: Label, b: Label): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
-  if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === "string" && typeof b === "string") return compareCodePoints(a, b);
   if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
   return 0;
 }
@@ -193,7 +204,6 @@ function hasMoreThanTwoClasses(a: DenseLabels, b: DenseLabels): boolean {
 }
 
 function isMulticlass(yTrue: Tensor, yPred: Tensor): boolean {
-  if (yTrue.dtype === "string" || yPred.dtype === "string") return true;
   const { trueLabels, predLabels } = readLabelPair(yTrue, yPred);
   return hasMoreThanTwoClasses(trueLabels, predLabels);
 }
@@ -280,6 +290,8 @@ type ClassCounts = {
   totalTp: number;
   totalFp: number;
   totalFn: number;
+  /** Whether some sample has a true or predicted label that is not in `classes`. */
+  hasUnlisted: boolean;
 };
 
 /**
@@ -298,10 +310,12 @@ function classCounts(
   const fp = new Float64Array(k);
   const fn = new Float64Array(k);
   const support = new Float64Array(k);
+  let hasUnlisted = false;
   for (let i = 0; i < trueIdx.length; i++) {
     const a = trueIdx[i] as number;
     const b = predIdx[i] as number;
     const w = weights === undefined ? 1 : (weights[i] as number);
+    if (a < 0 || b < 0) hasUnlisted = true;
     if (a >= 0) support[a] = (support[a] as number) + w;
     if (a === b) {
       if (a >= 0) tp[a] = (tp[a] as number) + w;
@@ -318,27 +332,72 @@ function classCounts(
     totalFp += fp[c] as number;
     totalFn += fn[c] as number;
   }
-  return { classes, tp, fp, fn, support, totalTp, totalFp, totalFn };
+  return { classes, tp, fp, fn, support, totalTp, totalFp, totalFn, hasUnlisted };
 }
 
-/** Confusion counts for validated 0/1 labels (positive class = 1). */
+/** Label as scikit-learn prints it in error messages: strings quoted, numbers as they are. */
+function describeLabel(label: unknown): string {
+  return typeof label === "string" ? `'${label}'` : String(label);
+}
+
+/**
+ * Express the positive class on the same footing as the label arrays of `kind`. Returns
+ * `undefined` when it cannot be a label of that kind (a string for numbers, a fraction for
+ * int64 labels, and so on), so it matches no sample.
+ */
+function positiveLabelOfKind(posLabel: Label, kind: LabelKind): Label | undefined {
+  if (kind === "string") return typeof posLabel === "string" ? posLabel : undefined;
+  if (typeof posLabel === "string") return undefined;
+  if (kind === "int64") {
+    if (typeof posLabel === "bigint") return posLabel;
+    return Number.isSafeInteger(posLabel) ? BigInt(posLabel) : undefined;
+  }
+  if (typeof posLabel === "number") return posLabel;
+  return Number.isSafeInteger(Number(posLabel)) ? Number(posLabel) : undefined;
+}
+
+/**
+ * Confusion counts of the positive class `posLabel`. Like scikit-learn, the binary average
+ * needs at most two distinct labels, and `posLabel` must be one of them when there are two.
+ */
 function binaryCounts(
   yTrue: Tensor,
   yPred: Tensor,
-  weights?: Float64Array
+  weights: Float64Array | undefined,
+  posLabel: Label
 ): { tp: number; fp: number; fn: number; tn: number } {
-  const t = binaryLabels(yTrue, "yTrue");
-  const p = binaryLabels(yPred, "yPred");
+  const { kind, trueLabels: t, predLabels: p } = readLabelPair(yTrue, yPred);
+  const present = new Set<Label>();
+  for (let i = 0; i < t.length; i++) {
+    present.add(t[i] as Label);
+    present.add(p[i] as Label);
+  }
+  if (present.size > 2) {
+    throw new InvalidParameterError(
+      "Target is multiclass but average='binary'. Please choose another average setting, one of [null, 'micro', 'macro', 'weighted'].",
+      "average",
+      "binary"
+    );
+  }
+  const positive = positiveLabelOfKind(posLabel, kind);
+  if (present.size === 2 && (positive === undefined || !present.has(positive))) {
+    const sorted = [...present].sort(compareLabels);
+    throw new InvalidParameterError(
+      `posLabel=${describeLabel(posLabel)} is not a valid label. It should be one of [${sorted.map(describeLabel).join(" ")}] when average is 'binary'`,
+      "posLabel",
+      posLabel
+    );
+  }
   let tp = 0;
   let fp = 0;
   let fn = 0;
   let tn = 0;
   for (let i = 0; i < t.length; i++) {
     const w = weights === undefined ? 1 : (weights[i] as number);
-    if (t[i] === 1) {
-      if (p[i] === 1) tp += w;
+    if (t[i] === positive) {
+      if (p[i] === positive) tp += w;
       else fn += w;
-    } else if (p[i] === 1) fp += w;
+    } else if (p[i] === positive) fp += w;
     else tn += w;
   }
   return { tp, fp, fn, tn };
@@ -352,6 +411,164 @@ function countMatches(yTrue: Tensor, yPred: Tensor): number {
     if (t[i] === p[i]) matches++;
   }
   return matches;
+}
+
+type MultilabelPair = { nSamples: number; nLabels: number; t: Uint8Array; p: Uint8Array };
+
+/**
+ * Indicator matrices of a multilabel target: two 2-D tensors of equal shape with more than one
+ * column and values 0 or 1. Returns `null` when neither tensor has several columns (a
+ * single-label target), and throws when only one of them does.
+ */
+function readMultilabel(yTrue: Tensor, yPred: Tensor): MultilabelPair | null {
+  const wide = (t: Tensor): boolean => t.ndim === 2 && (t.shape[1] ?? 0) > 1;
+  if (!wide(yTrue) && !wide(yPred)) return null;
+  if (
+    yTrue.ndim !== 2 ||
+    yPred.ndim !== 2 ||
+    yTrue.shape[0] !== yPred.shape[0] ||
+    yTrue.shape[1] !== yPred.shape[1]
+  ) {
+    throw new ShapeError(
+      `A multilabel target needs yTrue and yPred of the same 2D shape; got [${yTrue.shape.join(", ")}] and [${yPred.shape.join(", ")}]`
+    );
+  }
+  return {
+    nSamples: yTrue.shape[0] as number,
+    nLabels: yTrue.shape[1] as number,
+    t: indicatorMatrix(yTrue, "yTrue"),
+    p: indicatorMatrix(yPred, "yPred"),
+  };
+}
+
+function indicatorMatrix(t: Tensor, name: string): Uint8Array {
+  if (t.dtype === "string") {
+    throw new DTypeError(`${name} must hold 0/1 indicators for a multilabel target, not strings`);
+  }
+  const values = denseLabels(t, name);
+  const out = new Uint8Array(values.length);
+  for (let i = 0; i < out.length; i++) {
+    const v = values[i] as number | bigint;
+    if (v === 1 || v === 1n) out[i] = 1;
+    else if (v !== 0 && v !== 0n) {
+      throw new InvalidParameterError(
+        `${name} must contain only 0 and 1 for a multilabel target; found ${String(v)} at index ${i}`,
+        name,
+        v
+      );
+    }
+  }
+  return out;
+}
+
+/** The columns of a multilabel target to score: `labels` as column indices, or all columns. */
+function multilabelColumns(
+  labels: ReadonlyArray<number | string | bigint> | undefined,
+  nLabels: number
+): number[] {
+  if (labels === undefined) return Array.from({ length: nLabels }, (_, j) => j);
+  if (labels.length === 0) {
+    throw new InvalidParameterError("labels must contain at least one column", "labels", labels);
+  }
+  const seen = new Set<number>();
+  for (const label of labels) {
+    if (typeof label !== "number" || !Number.isInteger(label) || label < 0 || label >= nLabels) {
+      throw new InvalidParameterError(
+        `labels must be column indices in [0, ${nLabels - 1}] for a multilabel target; found ${String(label)}`,
+        "labels",
+        label
+      );
+    }
+    if (seen.has(label)) {
+      throw new InvalidParameterError(
+        `labels must be unique; found ${label} more than once`,
+        "labels",
+        labels
+      );
+    }
+    seen.add(label);
+  }
+  return [...labels] as number[];
+}
+
+/** Precision, recall, F-beta or Jaccard of a multilabel target for any average. */
+function multilabelScore(
+  pair: MultilabelPair,
+  weights: Float64Array | undefined,
+  options: AveragedMetricOptions,
+  score: CountScore,
+  zeroDivision: number
+): number | number[] {
+  const { nSamples, nLabels, t, p } = pair;
+  const mode = options.average === undefined ? "weighted" : options.average;
+  if (mode !== null && !AVERAGE_MODES.includes(mode)) {
+    throw new InvalidParameterError(
+      `Invalid average parameter: ${String(mode)}. Must be one of: 'micro', 'macro', 'weighted', 'samples', or null`,
+      "average",
+      mode
+    );
+  }
+  if (mode === "binary") {
+    throw new InvalidParameterError(
+      "Target is multilabel-indicator but average='binary'. Please choose another average setting, one of [null, 'micro', 'macro', 'weighted', 'samples'].",
+      "average",
+      mode
+    );
+  }
+  const columns = multilabelColumns(options.labels, nLabels);
+  const defined = (value: number): number => (Number.isNaN(value) ? zeroDivision : value);
+
+  if (mode === "samples") {
+    const total = weights === undefined ? nSamples : nonZeroWeightSum(weights);
+    if (nSamples === 0) return zeroDivision;
+    let sum = 0;
+    for (let i = 0; i < nSamples; i++) {
+      let tp = 0;
+      let fp = 0;
+      let fn = 0;
+      for (const j of columns) {
+        const truth = t[i * nLabels + j];
+        const predicted = p[i * nLabels + j];
+        if (truth === 1 && predicted === 1) tp++;
+        else if (predicted === 1) fp++;
+        else if (truth === 1) fn++;
+      }
+      sum += defined(score(tp, fp, fn)) * (weights === undefined ? 1 : (weights[i] as number));
+    }
+    return sum / total;
+  }
+
+  const k = columns.length;
+  const tp = new Float64Array(k);
+  const fp = new Float64Array(k);
+  const fn = new Float64Array(k);
+  const support = new Float64Array(k);
+  for (let i = 0; i < nSamples; i++) {
+    const w = weights === undefined ? 1 : (weights[i] as number);
+    for (let c = 0; c < k; c++) {
+      const j = columns[c] as number;
+      const truth = t[i * nLabels + j];
+      const predicted = p[i * nLabels + j];
+      if (truth === 1) support[c] = (support[c] as number) + w;
+      if (truth === 1 && predicted === 1) tp[c] = (tp[c] as number) + w;
+      else if (predicted === 1) fp[c] = (fp[c] as number) + w;
+      else if (truth === 1) fn[c] = (fn[c] as number) + w;
+    }
+  }
+  if (mode === "micro") {
+    return defined(score(sumOf(tp), sumOf(fp), sumOf(fn)));
+  }
+  const perLabel = Array.from({ length: k }, (_, c) =>
+    defined(score(tp[c] as number, fp[c] as number, fn[c] as number))
+  );
+  if (mode === null) return perLabel;
+  return averagePerClass(perLabel, support, mode, zeroDivision);
+}
+
+function sumOf(values: Float64Array): number {
+  let total = 0;
+  for (let i = 0; i < values.length; i++) total += values[i] as number;
+  return total;
 }
 
 /**
@@ -374,10 +591,6 @@ function fbetaFromCounts(betaSq: number): CountScore {
     const denominator = (1 + betaSq) * tp + betaSq * fn + fp;
     return denominator === 0 ? Number.NaN : ((1 + betaSq) * tp) / denominator;
   };
-}
-
-function definedOrZero(value: number): number {
-  return Number.isNaN(value) ? 0 : value;
 }
 
 function parseAveragedArg(arg: AveragedArg): AveragedMetricOptions {
@@ -405,9 +618,16 @@ function resolveAverage(
   yPred: Tensor,
   average: Average | null | undefined,
   hasLabels: boolean
-): Average | null {
+): Exclude<Average, "samples"> | null {
   if (average === undefined) {
     return hasLabels || isMulticlass(yTrue, yPred) ? "weighted" : "binary";
+  }
+  if (average === "samples") {
+    throw new InvalidParameterError(
+      "Samplewise metrics are not available outside of multilabel classification (a 2D indicator target)",
+      "average",
+      average
+    );
   }
   if (average !== null && !AVERAGE_MODES.includes(average)) {
     throw new InvalidParameterError(
@@ -433,10 +653,27 @@ function averagedScore(
   defaultZeroDivision: number
 ): number | number[] {
   const options = parseAveragedArg(arg);
-  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
   const zeroDivision = resolveZeroDivision(options.zeroDivision, defaultZeroDivision);
+  const multilabel = readMultilabel(yTrue, yPred);
+  if (multilabel !== null) {
+    const multilabelWeights = readSampleWeight(options.sampleWeight, multilabel.nSamples);
+    return multilabelScore(multilabel, multilabelWeights, options, score, zeroDivision);
+  }
+  assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
   const mode = resolveAverage(yTrue, yPred, options.average, options.labels !== undefined);
   const weights = readSampleWeight(options.sampleWeight, yTrue.size);
+  const posLabel = options.posLabel ?? 1;
+  if (
+    typeof posLabel !== "number" &&
+    typeof posLabel !== "string" &&
+    typeof posLabel !== "bigint"
+  ) {
+    throw new InvalidParameterError(
+      "posLabel must be a number, a string or a bigint",
+      "posLabel",
+      posLabel
+    );
+  }
   const defined = (value: number): number => (Number.isNaN(value) ? zeroDivision : value);
 
   if (yTrue.size === 0 && options.labels === undefined) {
@@ -444,14 +681,7 @@ function averagedScore(
   }
 
   if (mode === "binary") {
-    if (yTrue.dtype === "string" || yPred.dtype === "string") {
-      throw new InvalidParameterError(
-        "Binary average requires numeric labels (0/1). Use 'macro', 'micro', or 'weighted' for string labels.",
-        "average",
-        mode
-      );
-    }
-    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights);
+    const { tp, fp, fn } = binaryCounts(yTrue, yPred, weights, posLabel);
     return defined(score(tp, fp, fn));
   }
 
@@ -470,14 +700,26 @@ function averagedScore(
     );
   }
   if (mode === null) return perClass;
+  return averagePerClass(perClass, counts.support, mode, zeroDivision);
+}
 
-  if (k === 0) return zeroDivision;
+/**
+ * Macro (plain) or weighted (by support) mean of per-class scores. NaN scores are left out.
+ * Without any usable class the macro mean is NaN and the weighted mean is `zeroDivision`.
+ */
+function averagePerClass(
+  perClass: readonly number[],
+  support: Float64Array,
+  mode: "macro" | "weighted",
+  zeroDivision: number
+): number {
+  if (perClass.length === 0) return zeroDivision;
   let sum = 0;
   let totalWeight = 0;
-  for (let i = 0; i < k; i++) {
+  for (let i = 0; i < perClass.length; i++) {
     const value = perClass[i] as number;
     if (Number.isNaN(value)) continue;
-    const weight = mode === "macro" ? 1 : (counts.support[i] as number);
+    const weight = mode === "macro" ? 1 : (support[i] as number);
     sum += value * weight;
     totalWeight += weight;
   }
@@ -501,6 +743,9 @@ function averagedScore(
  * Σ w_i * [y_i == p_i] / Σ w_i.
  *
  * int64 labels may be compared with integer-valued numeric labels.
+ *
+ * For a multilabel target (2-D 0/1 indicator matrices with several columns) this is the subset
+ * accuracy: a sample counts as correct only when all of its labels match.
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated targets as returned by a classifier
@@ -531,6 +776,20 @@ export function accuracy(
   yPred: Tensor,
   options: WeightedMetricOptions = {}
 ): number {
+  const multilabel = readMultilabel(yTrue, yPred);
+  if (multilabel !== null) {
+    const { nSamples, nLabels, t, p } = multilabel;
+    const w = readSampleWeight(options.sampleWeight, nSamples);
+    if (nSamples === 0) return 0;
+    const total = w === undefined ? nSamples : nonZeroWeightSum(w);
+    let matched = 0;
+    for (let i = 0; i < nSamples; i++) {
+      let same = true;
+      for (let j = 0; j < nLabels && same; j++) same = t[i * nLabels + j] === p[i * nLabels + j];
+      if (same) matched += w === undefined ? 1 : (w[i] as number);
+    }
+    return matched / total;
+  }
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
   const weights = readSampleWeight(options.sampleWeight, yTrue.size);
   if (yTrue.size === 0) return 0;
@@ -556,28 +815,36 @@ export function accuracy(
  *
  * When a class is never predicted (TP + FP = 0) its precision is reported as 0.
  *
+ * **Multilabel targets**: yTrue and yPred may be 2-D 0/1 indicator matrices of shape
+ * `[nSamples, nLabels]` with several columns. Every column is a class, 'binary' is rejected, the
+ * default average is 'weighted', and `labels` selects columns by index. The same holds for
+ * {@link recall}, {@link f1Score}, {@link fbetaScore} and {@link jaccardScore}.
+ *
  * **Time Complexity**: O(n) for binary, O(n + k) for multiclass where k is the number of classes
  * **Space Complexity**: O(n + k)
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated targets as returned by a classifier
- * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
+ * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', 'samples' or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
- *   - 'binary': Calculate metrics for the positive class (label 1) only; labels must be 0 or 1
+ *   - 'binary': Calculate metrics for the positive class `posLabel` (default 1) only. yTrue and
+ *     yPred may hold at most two distinct labels, and `posLabel` must be one of them when they
+ *     hold two. String labels, and labels such as {-1, 1}, need `posLabel`, as in scikit-learn
  *   - 'micro': Calculate metrics globally by counting total TP, FP, FN
  *   - 'macro': Calculate metrics for each class, return unweighted mean
  *   - 'weighted': Calculate metrics for each class, return mean weighted by support
+ *   - 'samples': Multilabel targets only. Score every sample, then take the mean
  *   - null: Return array of scores for each class, in ascending label order
  *
  *   Instead of the string an options object {@link AveragedMetricOptions} can be passed:
- *   `{ average, labels, zeroDivision, sampleWeight }`.
+ *   `{ average, labels, zeroDivision, sampleWeight, posLabel }`.
  * @returns Precision score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -594,6 +861,9 @@ export function accuracy(
  * const yPredMulti = tensor([0, 2, 1, 0, 0, 1]);
  * const precMacro = precision(yTrueMulti, yPredMulti, 'macro');
  *
+ * // Two labels other than 0/1: name the positive class
+ * precision(tensor(["spam", "ham", "spam"]), tensor(["spam", "spam", "ham"]), { posLabel: "spam" });
+ *
  * // Options object: classes to score, zero-division value and sample weights
  * const perClass = precision(yTrueMulti, yPredMulti, {
  *   average: null,
@@ -606,11 +876,7 @@ export function accuracy(
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function precision(yTrue: Tensor, yPred: Tensor): number;
-export function precision(
-  yTrue: Tensor,
-  yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted"
-): number;
+export function precision(yTrue: Tensor, yPred: Tensor, average: Average): number;
 export function precision(yTrue: Tensor, yPred: Tensor, average: null): number[];
 export function precision(
   yTrue: Tensor,
@@ -651,18 +917,18 @@ export function precision(
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated targets as returned by a classifier
- * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
+ * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', 'samples' or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
  *   See {@link precision} for the meaning of each mode. An options object
- *   {@link AveragedMetricOptions} (`{ average, labels, zeroDivision, sampleWeight }`) is
+ *   {@link AveragedMetricOptions} (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is
  *   accepted as well.
  * @returns Recall score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -677,11 +943,7 @@ export function precision(
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function recall(yTrue: Tensor, yPred: Tensor): number;
-export function recall(
-  yTrue: Tensor,
-  yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted"
-): number;
+export function recall(yTrue: Tensor, yPred: Tensor, average: Average): number;
 export function recall(yTrue: Tensor, yPred: Tensor, average: null): number[];
 export function recall(
   yTrue: Tensor,
@@ -724,17 +986,17 @@ export function recall(
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated targets as returned by a classifier
- * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
+ * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', 'samples' or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise.
  *   An options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`) is also accepted.
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is also accepted.
  * @returns F1 score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -749,11 +1011,7 @@ export function recall(
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function f1Score(yTrue: Tensor, yPred: Tensor): number;
-export function f1Score(
-  yTrue: Tensor,
-  yPred: Tensor,
-  average: "binary" | "micro" | "macro" | "weighted"
-): number;
+export function f1Score(yTrue: Tensor, yPred: Tensor, average: Average): number;
 export function f1Score(yTrue: Tensor, yPred: Tensor, average: null): number[];
 export function f1Score(
   yTrue: Tensor,
@@ -798,17 +1056,17 @@ export function f1Score(
  * @param yPred - Estimated targets as returned by a classifier
  * @param beta - Weight of recall vs precision (beta > 1 favors recall, beta < 1 favors precision).
  *   Must be a non-negative finite number.
- * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', or null.
+ * @param average - Averaging strategy: 'binary', 'micro', 'macro', 'weighted', 'samples' or null.
  *   When omitted, 'binary' is used for at most two distinct labels and 'weighted' otherwise,
  *   the same rule as {@link f1Score}. An options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`) is accepted as well.
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`) is accepted as well.
  * @returns F-beta score(s) in range [0, 1]
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If beta or average is invalid, or 'binary' is used with labels
- *   other than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If beta or average is invalid, 'binary' is used with more than
+ *   two labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -824,12 +1082,7 @@ export function f1Score(
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
 export function fbetaScore(yTrue: Tensor, yPred: Tensor, beta: number): number;
-export function fbetaScore(
-  yTrue: Tensor,
-  yPred: Tensor,
-  beta: number,
-  average: "binary" | "micro" | "macro" | "weighted"
-): number;
+export function fbetaScore(yTrue: Tensor, yPred: Tensor, beta: number, average: Average): number;
 export function fbetaScore(yTrue: Tensor, yPred: Tensor, beta: number, average: null): number[];
 export function fbetaScore(
   yTrue: Tensor,
@@ -946,7 +1199,7 @@ function normalizeLabelList(
  * A confusion matrix is a table showing the counts of correct and incorrect
  * predictions broken down by each class. Rows represent true labels,
  * columns represent predicted labels. Classes are listed in ascending order
- * (strings by code unit, like NumPy), unless `options.labels` fixes the order.
+ * (strings by Unicode code point, like NumPy), unless `options.labels` fixes the order.
  *
  * **Time Complexity**: O(n + k²) where n is number of samples, k is number of classes
  * **Space Complexity**: O(n + k²)
@@ -1056,22 +1309,52 @@ export function confusionMatrix(
 }
 
 /**
+ * Options for {@link classificationReport}.
+ */
+export type ClassificationReportOptions = {
+  /**
+   * Classes to report, in the order given. Samples whose true or predicted label is not
+   * listed still count as errors of the listed classes. When the list leaves out a label
+   * that occurs in the data, the accuracy row is replaced by a micro average over the
+   * listed classes, as in scikit-learn. Defaults to the sorted union of the labels in
+   * yTrue and yPred.
+   */
+  readonly labels?: ReadonlyArray<number | string | bigint>;
+  /** Display names of the classes, one per class in report order. Defaults to the labels. */
+  readonly targetNames?: ReadonlyArray<string>;
+  /** Number of decimals of the scores (an integer from 0 to 20). Default: 4. */
+  readonly digits?: number;
+  /**
+   * Value used for a score whose denominator is zero: `0`, `1`, `NaN` (left out of the
+   * macro and weighted averages) or `"warn"`, which acts as `0`. Default: `0`.
+   */
+  readonly zeroDivision?: number | "warn";
+  /** One weight per sample; every count and support is a weighted sum. */
+  readonly sampleWeight?: SampleWeightInput;
+};
+
+/**
  * Generates a text classification report showing main classification metrics.
  *
  * The report lists precision, recall, F1-score and support for each class,
- * followed by accuracy and the macro and weighted averages. Only binary
- * labels (0 or 1) are supported. int64 labels may be paired with numeric labels.
+ * followed by accuracy and the macro and weighted averages. Labels can be numbers,
+ * strings or int64 values with any number of classes. The numbers equal the output of
+ * scikit-learn's `classification_report`. int64 labels may be paired with numeric labels.
  *
- * **Time Complexity**: O(n)
- * **Space Complexity**: O(n)
+ * **Time Complexity**: O(n + k log k) where k is the number of classes
+ * **Space Complexity**: O(n + k)
  *
- * @param yTrue - Ground truth (correct) binary target values (0 or 1)
- * @param yPred - Estimated binary targets as returned by a classifier (0 or 1)
+ * @param yTrue - Ground truth (correct) target values
+ * @param yPred - Estimated targets as returned by a classifier
+ * @param options - Optional `labels`, `targetNames`, `digits`, `zeroDivision` and `sampleWeight`
  * @returns Formatted string report with per-class and aggregate classification metrics
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
+ * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If labels contain NaN or infinite values
- * @throws {InvalidParameterError} If labels are strings or are not binary (0 or 1)
+ * @throws {InvalidParameterError} If `labels` is empty or has duplicates, `targetNames` does not
+ *   have one name per class, or `digits` or `zeroDivision` is invalid
  *
  * @example
  * ```ts
@@ -1090,33 +1373,65 @@ export function confusionMatrix(
  * // Accuracy                              0.8000      5
  * // Macro Avg     0.8333      0.8333      0.8000      5
  * // Weighted Avg  0.8667      0.8000      0.8000      5
+ *
+ * // String labels and display names
+ * classificationReport(tensor(["cat", "dog", "cat"]), tensor(["cat", "cat", "cat"]), {
+ *   targetNames: ["feline", "canine"],
+ * });
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
-export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
+export function classificationReport(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: ClassificationReportOptions = {}
+): string {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
+  const digits = options.digits ?? 4;
+  if (!Number.isInteger(digits) || digits < 0 || digits > 20) {
+    throw new InvalidParameterError("digits must be an integer from 0 to 20", "digits", digits);
+  }
+  const zeroDivision = resolveZeroDivision(options.zeroDivision, 0);
+  const weights = readSampleWeight(options.sampleWeight, yTrue.size);
+  const fixed =
+    options.labels === undefined
+      ? undefined
+      : normalizeLabelList(options.labels, assertComparableLabelTypes(yTrue, yPred));
 
-  if (yTrue.size === 0) return "Classification Report:\n  (empty)";
+  if (yTrue.size === 0 && fixed === undefined) return "Classification Report:\n  (empty)";
 
-  if (yTrue.dtype === "string" || yPred.dtype === "string") {
+  const counts = classCounts(yTrue, yPred, weights, fixed);
+  const classes = counts.classes;
+  const names = options.targetNames;
+  if (names !== undefined && names.length !== classes.length) {
     throw new InvalidParameterError(
-      "classificationReport requires binary numeric labels (0 or 1)",
-      "yTrue"
+      `targetNames has ${names.length} names but the report has ${classes.length} classes`,
+      "targetNames",
+      names
     );
   }
-  // Validates that every label is 0 or 1.
-  binaryLabels(yTrue, "yTrue");
-  binaryLabels(yPred, "yPred");
-
-  const counts = classCounts(yTrue, yPred);
-  const classes = counts.classes;
-  const n = yTrue.size;
   const f1FromCounts = fbetaFromCounts(1);
-  const acc = counts.totalTp / n;
+  const defined = (value: number): number => (Number.isNaN(value) ? zeroDivision : value);
+  const fmt = (value: number): string => value.toFixed(digits);
 
+  const precisionPerClass: number[] = [];
+  const recallPerClass: number[] = [];
+  const f1PerClass: number[] = [];
+  let totalSupport = 0;
+  for (let i = 0; i < classes.length; i++) {
+    const tp = counts.tp[i] as number;
+    const fp = counts.fp[i] as number;
+    const fn = counts.fn[i] as number;
+    precisionPerClass.push(defined(precisionFromCounts(tp, fp, fn)));
+    recallPerClass.push(defined(recallFromCounts(tp, fp, fn)));
+    f1PerClass.push(defined(f1FromCounts(tp, fp, fn)));
+    totalSupport += counts.support[i] as number;
+  }
+
+  const labelsOf = names ?? classes.map((c) => String(c));
   // The label column must also fit the summary rows ("Weighted Avg" is the longest).
-  const maxLabelLen = Math.max(...classes.map((c) => String(c).length), "Weighted Avg".length);
+  const maxLabelLen = Math.max(...labelsOf.map((c) => c.length), "Weighted Avg".length);
   const colWidth = maxLabelLen + 2;
 
   let report = "Classification Report:\n";
@@ -1128,71 +1443,47 @@ export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
     "Support\n";
   report += `${"-".repeat(colWidth + 36 + 7)}\n`;
 
-  let totalSupport = 0;
-  let weightedPrec = 0;
-  let weightedRec = 0;
-  let weightedF1 = 0;
-  let macroPrec = 0;
-  let macroRec = 0;
-  let macroF1 = 0;
-
   for (let i = 0; i < classes.length; i++) {
-    const tp = counts.tp[i] as number;
-    const fp = counts.fp[i] as number;
-    const fn = counts.fn[i] as number;
-    const s = counts.support[i] as number;
-    // An undefined score (zero denominator) is reported as 0.
-    const p = definedOrZero(precisionFromCounts(tp, fp, fn));
-    const r = definedOrZero(recallFromCounts(tp, fp, fn));
-    const f1 = definedOrZero(f1FromCounts(tp, fp, fn));
-
-    totalSupport += s;
-    weightedPrec += p * s;
-    weightedRec += r * s;
-    weightedF1 += f1 * s;
-    macroPrec += p;
-    macroRec += r;
-    macroF1 += f1;
-
     report +=
-      String(classes[i]).padEnd(colWidth) +
-      p.toFixed(4).padEnd(12) +
-      r.toFixed(4).padEnd(12) +
-      f1.toFixed(4).padEnd(12) +
-      String(s) +
+      (labelsOf[i] as string).padEnd(colWidth) +
+      fmt(precisionPerClass[i] as number).padEnd(12) +
+      fmt(recallPerClass[i] as number).padEnd(12) +
+      fmt(f1PerClass[i] as number).padEnd(12) +
+      String(counts.support[i]) +
       "\n";
   }
 
   report += "\n";
 
-  const nClasses = classes.length;
-  macroPrec /= nClasses;
-  macroRec /= nClasses;
-  macroF1 /= nClasses;
-  weightedPrec = totalSupport === 0 ? 0 : weightedPrec / totalSupport;
-  weightedRec = totalSupport === 0 ? 0 : weightedRec / totalSupport;
-  weightedF1 = totalSupport === 0 ? 0 : weightedF1 / totalSupport;
-
-  report +=
-    "Accuracy".padEnd(colWidth) +
-    "".padEnd(12) +
-    "".padEnd(12) +
-    acc.toFixed(4).padEnd(12) +
-    String(totalSupport) +
-    "\n";
-  report +=
-    "Macro Avg".padEnd(colWidth) +
-    macroPrec.toFixed(4).padEnd(12) +
-    macroRec.toFixed(4).padEnd(12) +
-    macroF1.toFixed(4).padEnd(12) +
-    String(totalSupport) +
-    "\n";
-  report +=
-    "Weighted Avg".padEnd(colWidth) +
-    weightedPrec.toFixed(4).padEnd(12) +
-    weightedRec.toFixed(4).padEnd(12) +
-    weightedF1.toFixed(4).padEnd(12) +
+  const row = (label: string, p: number, r: number, f: number): string =>
+    label.padEnd(colWidth) +
+    fmt(p).padEnd(12) +
+    fmt(r).padEnd(12) +
+    fmt(f).padEnd(12) +
     String(totalSupport);
+
+  if (counts.hasUnlisted) {
+    report += `${row(
+      "Micro Avg",
+      defined(precisionFromCounts(counts.totalTp, counts.totalFp, counts.totalFn)),
+      defined(recallFromCounts(counts.totalTp, counts.totalFp, counts.totalFn)),
+      defined(f1FromCounts(counts.totalTp, counts.totalFp, counts.totalFn))
+    )}\n`;
+  } else {
+    const accuracyScore = totalSupport === 0 ? Number.NaN : counts.totalTp / totalSupport;
+    report += `${"Accuracy".padEnd(colWidth) + "".padEnd(12) + "".padEnd(12) + fmt(accuracyScore).padEnd(12) + String(totalSupport)}\n`;
+  }
+  const macro = (scores: readonly number[]): number =>
+    averagePerClass(scores, counts.support, "macro", zeroDivision);
+  const weighted = (scores: readonly number[]): number =>
+    averagePerClass(scores, counts.support, "weighted", zeroDivision);
+  report += `${row("Macro Avg", macro(precisionPerClass), macro(recallPerClass), macro(f1PerClass))}\n`;
+  report += row(
+    "Weighted Avg",
+    weighted(precisionPerClass),
+    weighted(recallPerClass),
+    weighted(f1PerClass)
+  );
 
   return report;
 }
@@ -2062,6 +2353,10 @@ export function logLoss(yTrue: Tensor, yPred: Tensor, options: LogLossOptions = 
  *
  * **Formula**: hamming_loss = (incorrect predictions) / (total predictions)
  *
+ * For a multilabel target (2-D 0/1 indicator matrices with several columns) every sample
+ * contributes the fraction of its labels that are wrong. With `options.sampleWeight` the
+ * average over samples is weighted.
+ *
  * **Range**: [0, 1], where 0 is perfect.
  *
  * **Time Complexity**: O(n)
@@ -2069,6 +2364,7 @@ export function logLoss(yTrue: Tensor, yPred: Tensor, options: LogLossOptions = 
  *
  * @param yTrue - Ground truth target values
  * @param yPred - Estimated targets as returned by a classifier
+ * @param options - Optional `sampleWeight`, one weight per sample
  * @returns Hamming loss in range [0, 1]. Returns 0 for empty input.
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
@@ -2087,10 +2383,34 @@ export function logLoss(yTrue: Tensor, yPred: Tensor, options: LogLossOptions = 
  *
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
-export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
+export function hammingLoss(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: WeightedMetricOptions = {}
+): number {
+  const multilabel = readMultilabel(yTrue, yPred);
+  if (multilabel !== null) {
+    const { nSamples, nLabels, t, p } = multilabel;
+    const w = readSampleWeight(options.sampleWeight, nSamples);
+    if (nSamples === 0) return 0;
+    const total = w === undefined ? nSamples : nonZeroWeightSum(w);
+    let sum = 0;
+    for (let i = 0; i < nSamples; i++) {
+      let wrong = 0;
+      for (let j = 0; j < nLabels; j++) if (t[i * nLabels + j] !== p[i * nLabels + j]) wrong++;
+      sum += (wrong / nLabels) * (w === undefined ? 1 : (w[i] as number));
+    }
+    return sum / total;
+  }
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
+  const w = readSampleWeight(options.sampleWeight, yTrue.size);
   if (yTrue.size === 0) return 0;
-  return (yTrue.size - countMatches(yTrue, yPred)) / yTrue.size;
+  if (w === undefined) return (yTrue.size - countMatches(yTrue, yPred)) / yTrue.size;
+  const { trueLabels: t, predLabels: p } = readLabelPair(yTrue, yPred);
+  const total = nonZeroWeightSum(w);
+  let wrong = 0;
+  for (let i = 0; i < t.length; i++) if (t[i] !== p[i]) wrong += w[i] as number;
+  return wrong / total;
 }
 
 /**
@@ -2101,7 +2421,7 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
  *
  * **Formula**: jaccard = TP / (TP + FP + FN)
  *
- * Averaging works as for {@link f1Score}: 'binary' scores the positive class 1,
+ * Averaging works as for {@link f1Score}: 'binary' scores the positive class `posLabel` (default 1),
  * 'micro' pools the counts, 'macro' and 'weighted' average the per-class scores and
  * null returns one score per class. When `average` is omitted, 'binary' is used for at
  * most two distinct labels and 'weighted' otherwise.
@@ -2118,16 +2438,16 @@ export function hammingLoss(yTrue: Tensor, yPred: Tensor): number {
  *
  * @param yTrue - Ground truth labels
  * @param yPred - Predicted labels
- * @param average - Averaging strategy ('binary', 'micro', 'macro', 'weighted' or null), or an
+ * @param average - Averaging strategy ('binary', 'micro', 'macro', 'weighted', 'samples' or null), or an
  *   options object {@link AveragedMetricOptions}
- *   (`{ average, labels, zeroDivision, sampleWeight }`)
+ *   (`{ average, labels, zeroDivision, sampleWeight, posLabel }`)
  * @returns Jaccard score in range [0, 1], or one score per class with `average: null`
  *
  * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If average is invalid, or 'binary' is used with labels other
- *   than 0/1 (including string labels)
+ * @throws {InvalidParameterError} If average is invalid, 'binary' is used with more than two
+ *   labels, or `posLabel` is not one of the two labels (string labels always need `posLabel`)
  *
  * @example
  * ```ts
@@ -2279,6 +2599,17 @@ export function matthewsCorrcoef(
 }
 
 /**
+ * Options object accepted by {@link cohenKappaScore} in place of the class weights.
+ */
+export type CohenKappaOptions = WeightedMetricOptions & {
+  /**
+   * Disagreement weighting of the classes in ascending label order: `"linear"` (|i - j|),
+   * `"quadratic"` ((i - j)²) or `null` (default, all disagreements count the same).
+   */
+  readonly weights?: "linear" | "quadratic" | null;
+};
+
+/**
  * Cohen's kappa score.
  *
  * Computes Cohen's kappa, a statistic that measures inter-annotator agreement.
@@ -2297,15 +2628,21 @@ export function matthewsCorrcoef(
  * **Time Complexity**: O(n) unweighted, O(n + k²) weighted
  * **Space Complexity**: O(n + k) unweighted, O(n + k²) weighted
  *
+ * With `sampleWeight` every sample counts with its weight in the confusion matrix, as in
+ * scikit-learn.
+ *
  * @param yTrue - Ground truth labels (numeric, int64 or string)
  * @param yPred - Predicted labels (same label type as yTrue)
- * @param weights - Optional disagreement weighting: `"linear"`, `"quadratic"` or null (default)
+ * @param weights - Optional disagreement weighting: `"linear"`, `"quadratic"` or null (default),
+ *   or an options object {@link CohenKappaOptions} `{ weights, sampleWeight }`
  * @returns Kappa score in range [-1, 1]
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If weights is not 'linear', 'quadratic' or null
+ * @throws {InvalidParameterError} If weights is not 'linear', 'quadratic' or null, or
+ *   `sampleWeight` sums to zero
  *
  * @example
  * ```ts
@@ -2322,33 +2659,39 @@ export function matthewsCorrcoef(
 export function cohenKappaScore(
   yTrue: Tensor,
   yPred: Tensor,
-  weights: "linear" | "quadratic" | null = null
+  weights: "linear" | "quadratic" | null | CohenKappaOptions = null
 ): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  if (weights !== null && weights !== "linear" && weights !== "quadratic") {
+  const options: CohenKappaOptions =
+    weights !== null && typeof weights === "object" ? weights : { weights };
+  const kind = options.weights ?? null;
+  if (kind !== null && kind !== "linear" && kind !== "quadratic") {
+    const shown = typeof kind === "string" ? `'${kind}'` : JSON.stringify(kind);
     throw new InvalidParameterError(
-      `Invalid weights parameter: ${String(weights)}. Must be one of: 'linear', 'quadratic', or null`,
+      `Invalid weights parameter: ${shown}. Must be one of: 'linear', 'quadratic', or null`,
       "weights",
-      weights
+      kind
     );
   }
+  const sampleWeight = readSampleWeight(options.sampleWeight, yTrue.size);
 
-  const n = yTrue.size;
-  if (n === 0) return 0;
+  if (yTrue.size === 0) return 0;
+  const n = sampleWeight === undefined ? yTrue.size : nonZeroWeightSum(sampleWeight);
 
   const { classes, trueIdx, predIdx } = encodeLabels(yTrue, yPred);
   const k = classes.length;
   const trueCount = new Float64Array(k);
   const predCount = new Float64Array(k);
 
-  if (weights === null) {
+  if (kind === null) {
     let agree = 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < trueIdx.length; i++) {
       const a = trueIdx[i] as number;
       const b = predIdx[i] as number;
-      if (a === b) agree++;
-      trueCount[a] = (trueCount[a] as number) + 1;
-      predCount[b] = (predCount[b] as number) + 1;
+      const w = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+      if (a === b) agree += w;
+      trueCount[a] = (trueCount[a] as number) + w;
+      predCount[b] = (predCount[b] as number) + w;
     }
     const po = agree / n;
     let pe = 0;
@@ -2361,19 +2704,20 @@ export function cohenKappaScore(
   }
 
   const observed = new Float64Array(k * k);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < trueIdx.length; i++) {
     const a = trueIdx[i] as number;
     const b = predIdx[i] as number;
-    observed[a * k + b] = (observed[a * k + b] as number) + 1;
-    trueCount[a] = (trueCount[a] as number) + 1;
-    predCount[b] = (predCount[b] as number) + 1;
+    const w = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+    observed[a * k + b] = (observed[a * k + b] as number) + w;
+    trueCount[a] = (trueCount[a] as number) + w;
+    predCount[b] = (predCount[b] as number) + w;
   }
   let weightedObserved = 0;
   let weightedExpected = 0;
   for (let a = 0; a < k; a++) {
     for (let b = 0; b < k; b++) {
       const distance = Math.abs(a - b);
-      const w = weights === "linear" ? distance : distance * distance;
+      const w = kind === "linear" ? distance : distance * distance;
       weightedObserved += w * (observed[a * k + b] as number);
       weightedExpected += (w * (trueCount[a] as number) * (predCount[b] as number)) / n;
     }

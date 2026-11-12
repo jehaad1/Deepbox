@@ -10,7 +10,7 @@ import { schur } from "../decomposition/schur";
 /**
  * Solve the continuous Sylvester equation AX + XB = C.
  *
- * Uses the Bartels–Stewart algorithm:
+ * Uses the Bartels-Stewart algorithm:
  * 1. Compute real Schur decompositions A = U*Ta*U^T and B = V*Tb*V^T
  * 2. Transform to U^T*C*V = Ta*Y + Y*Tb where Y = U^T*X*V
  * 3. Solve the quasi-triangular system column by column

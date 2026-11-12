@@ -39,7 +39,7 @@ export type Plot3DOptions = {
   readonly size?: number;
   /** Camera elevation above the xy plane in degrees (default 30). */
   readonly elevation?: number;
-  /** Camera azimuth in degrees, measured from the +x axis towards +y (default -60). */
+  /** Camera azimuth in degrees, measured from the +x axis toward +y (default -60). */
   readonly azimuth?: number;
   /** Opacity from 0 to 1. Defaults to 0.8 for surfaces; other 3D plots are opaque by default. */
   readonly alpha?: number;
@@ -85,7 +85,7 @@ function resolvePositive(value: number | undefined, fallback: number, name: stri
 /**
  * Projected, depth-annotated points shared by the three drawables.
  *
- * `right`/`up` are the orthographic screen coordinates (up is positive), `depth` grows towards
+ * `right`/`up` are the orthographic screen coordinates (up is positive), `depth` grows toward
  * the viewer, and `valid` is 0 for points with a non-finite coordinate.
  */
 type Cloud = {

@@ -45,7 +45,7 @@ function assertSquare(A: Tensor, name: string): number {
   return m;
 }
 
-/** Copy a 2-D tensor into a dense row-major Float64Array, honouring strides and offset. */
+/** Copy a 2-D tensor into a dense row-major Float64Array, honoring strides and offset. */
 function readDense(A: Tensor): Float64Array {
   const rows = A.shape[0] ?? 0;
   const cols = A.shape[1] ?? 0;
@@ -298,7 +298,7 @@ export function kron(A: Tensor, B: Tensor): Tensor {
   const rows = m * p;
   const cols = n * q;
 
-  // Densify both operands once (honouring strides/offset), then run the
+  // Densify both operands once (honoring strides/offset), then run the
   // quadruple loop over monomorphic Float64Arrays into a typed output. The old
   // per-element Number() reads plus a number[] → tensor() re-validation
   // made this about 20x slower.
@@ -452,7 +452,7 @@ function expmDense(a: Float64Array, m: number): Float64Array {
     }
   }
 
-  // R = D^{-1} N, solved with one LU factorisation of D.
+  // R = D^{-1} N, solved with one LU factorization of D.
   const { lu, piv } = luFactorSquare(D, m);
   luSolveInPlace(lu, piv, m, N, m);
   let R: Float64Array = N;
@@ -518,7 +518,7 @@ function symmetricMatrixFunction(
   n: number,
   fn: (lambda: number, maxAbs: number) => number
 ): Float64Array {
-  // Symmetrise so eigh() sees an exactly symmetric input.
+  // Symmetrize so eigh() sees an exactly symmetric input.
   const sym = new Float64Array(a.length);
   for (let i = 0; i < n; i++) {
     sym[i * n + i] = a[i * n + i] as number;

@@ -7,8 +7,17 @@ import {
   NotFittedError,
   ShapeError,
 } from "../core";
+import { compareCodePoints } from "../metrics/_internal";
 import { CSRMatrix, empty, type Tensor, Tensor as TensorImpl, tensor, zeros } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStride1D, getStrides2D } from "./_internal";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  definedEntries,
+  getShape2D,
+  getStride1D,
+  getStrides2D,
+} from "./_internal";
 
 /**
  * Input type accepted by 1D encoder methods (LabelEncoder, LabelBinarizer).
@@ -167,6 +176,26 @@ type CategoriesOption = "auto" | ReadonlyArray<ReadonlyArray<Category>>;
 
 type DropOption = "first" | "if_binary" | null;
 
+/**
+ * Merge `params` into the `current` constructor options for `setParams`. An `undefined` value
+ * keeps the current one, and `sparseOutput` replaces `sparse` instead of conflicting with it.
+ */
+function mergeParams(
+  current: Record<string, unknown>,
+  params: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...current, ...definedEntries(params) };
+  if (params["sparseOutput"] !== undefined && params["sparse"] === undefined) {
+    delete merged["sparse"];
+  }
+  return merged;
+}
+
+/** Copy a `categories` option so that the stored value cannot be changed from outside. */
+function copyCategoriesOption(option: CategoriesOption): CategoriesOption {
+  return option === "auto" ? "auto" : option.map((c) => c.slice());
+}
+
 function getStringData(t: Tensor): string[] {
   if (t.dtype !== "string") {
     throw new DTypeError("Expected string tensor");
@@ -219,29 +248,6 @@ function inferCategoryType(values: Category[], paramName: string): CategoryType 
   if (hasString) return "string";
   if (hasBigInt) return "bigint";
   return "number";
-}
-
-/**
- * Order two strings by Unicode code point, the order NumPy and scikit-learn
- * use for string categories. `localeCompare` is locale dependent and puts
- * "a" before "B", which would make class order differ between machines.
- */
-function compareCodePoints(a: string, b: string): number {
-  if (a === b) return 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    let ca = a.charCodeAt(i);
-    let cb = b.charCodeAt(i);
-    if (ca !== cb) {
-      // UTF-16 surrogates (astral code points) must sort above U+E000..U+FFFF.
-      if (ca >= 0xd800 && cb >= 0xd800) {
-        ca += ca >= 0xe000 ? -0x800 : 0x2000;
-        cb += cb >= 0xe000 ? -0x800 : 0x2000;
-      }
-      return ca - cb;
-    }
-  }
-  return a.length - b.length;
 }
 
 function sortCategories(values: Iterable<Category>, paramName: string): Category[] {
@@ -836,6 +842,25 @@ export class LabelEncoder {
     // Return tensor with appropriate dtype
     return toCategoryVectorTensor(result, "y");
   }
+  /** The encoder has no parameters; the returned object is empty. */
+  getParams(): Record<string, unknown> {
+    return {};
+  }
+
+  /**
+   * The encoder has no parameters, so only an empty object is accepted. The fitted classes are kept.
+   *
+   * @throws {InvalidParameterError} On any parameter
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, [], "LabelEncoder");
+    return this;
+  }
+
+  /** Create an unfitted encoder. */
+  clone(): LabelEncoder {
+    return new LabelEncoder();
+  }
 }
 
 /**
@@ -1199,6 +1224,45 @@ export class OneHotEncoder {
 
     return toCategoryMatrixTensor(result, "X");
   }
+  /** Constructor options of this encoder. */
+  getParams(): Record<string, unknown> {
+    return {
+      sparse: this.sparse,
+      handleUnknown: this.handleUnknown,
+      drop: this.drop,
+      categories: copyCategoriesOption(this.categoriesOption),
+    };
+  }
+
+  /**
+   * Update parameters. The learned categories are discarded, so call `fit` again.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the encoder is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(
+      params,
+      ["sparse", "sparseOutput", "handleUnknown", "drop", "categories"],
+      "OneHotEncoder"
+    );
+    const next = new OneHotEncoder(
+      mergeParams(this.getParams(), params) as ConstructorParameters<typeof OneHotEncoder>[0]
+    );
+    this.sparse = next.sparse;
+    this.handleUnknown = next.handleUnknown;
+    this.drop = next.drop;
+    this.categoriesOption = next.categoriesOption;
+    this.fitted = false;
+    delete this.categories_;
+    delete this.categoryToIndex_;
+    delete this.dropIndices_;
+    return this;
+  }
+
+  /** Create an unfitted encoder with the same parameters. */
+  clone(): OneHotEncoder {
+    return new OneHotEncoder(this.getParams() as ConstructorParameters<typeof OneHotEncoder>[0]);
+  }
 }
 
 /**
@@ -1482,6 +1546,38 @@ export class OrdinalEncoder {
 
     return toCategoryMatrixTensor(result, "X");
   }
+  /** Constructor options of this encoder. */
+  getParams(): Record<string, unknown> {
+    return {
+      handleUnknown: this.handleUnknown,
+      unknownValue: this.unknownValue,
+      categories: copyCategoriesOption(this.categoriesOption),
+    };
+  }
+
+  /**
+   * Update parameters. The learned categories are discarded, so call `fit` again.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the encoder is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["handleUnknown", "unknownValue", "categories"], "OrdinalEncoder");
+    const next = new OrdinalEncoder(
+      mergeParams(this.getParams(), params) as ConstructorParameters<typeof OrdinalEncoder>[0]
+    );
+    this.handleUnknown = next.handleUnknown;
+    this.unknownValue = next.unknownValue;
+    this.categoriesOption = next.categoriesOption;
+    this.fitted = false;
+    delete this.categories_;
+    delete this.categoryToIndex_;
+    return this;
+  }
+
+  /** Create an unfitted encoder with the same parameters. */
+  clone(): OrdinalEncoder {
+    return new OrdinalEncoder(this.getParams() as ConstructorParameters<typeof OrdinalEncoder>[0]);
+  }
 }
 
 /**
@@ -1714,14 +1810,29 @@ export class LabelBinarizer {
    * Transform binary matrix back to labels.
    * Finds the column with maximum value for each row.
    *
-   * @param Y - Binary matrix (2D tensor or CSRMatrix)
+   * With two classes `Y` may also be a single column (or a 1-D tensor), the form that
+   * scikit-learn's `LabelBinarizer.transform` returns: a value above `threshold` selects the
+   * second class and any other value the first.
+   *
+   * @param Y - Binary matrix (2D tensor or CSRMatrix) with one column per class, or one column
+   *   for two classes
+   * @param threshold - Cut-off of the single-column form. Default `(posLabel + negLabel) / 2`
    * @returns Original labels (1D tensor)
    * @throws {NotFittedError} If binarizer is not fitted
-   * @throws {InvalidParameterError} If Y has invalid shape
+   * @throws {InvalidParameterError} If Y has invalid shape or `threshold` is not a finite number
    */
-  inverseTransform(Y: Tensor | CSRMatrix): Tensor {
+  inverseTransform(Y: Tensor | CSRMatrix, threshold?: number): Tensor {
     if (!this.fitted) {
       throw new NotFittedError("LabelBinarizer must be fitted before inverse_transform");
+    }
+    if (threshold !== undefined && !Number.isFinite(threshold)) {
+      throw new InvalidParameterError("threshold must be a finite number", "threshold", threshold);
+    }
+    if (this.classes_?.length === 2) {
+      const dense = Y instanceof CSRMatrix ? Y.toDense() : Y;
+      if (dense.ndim === 1 || (dense.ndim === 2 && dense.shape[1] === 1)) {
+        return this.inverseTransformColumn(dense, threshold ?? (this.posLabel + this.negLabel) / 2);
+      }
     }
     if (Y instanceof CSRMatrix) {
       if (this.negLabel !== 0) {
@@ -1831,6 +1942,56 @@ export class LabelBinarizer {
 
     // Return tensor with appropriate dtype
     return toCategoryVectorTensor(result, "y");
+  }
+
+  /** Decode one score per sample for two classes: above `threshold` is the second class. */
+  private inverseTransformColumn(Y: Tensor, threshold: number): Tensor {
+    assertNumericTensor(Y, "Y");
+    const classes = this.classes_;
+    if (!classes) {
+      throw new DeepboxError("LabelBinarizer internal error: missing fitted classes");
+    }
+    const nSamples = Y.shape[0] ?? 0;
+    if (nSamples === 0) return emptyCategoryVectorFromClasses(classes, "y");
+    const readNum = makeNumberReader2D(Y.ndim === 1 ? Y.reshape([nSamples, 1]) : Y);
+    const result = new Array<Category>(nSamples);
+    for (let i = 0; i < nSamples; i++) {
+      result[i] = categoryValueAt(
+        classes,
+        readNum(i, 0) > threshold ? 1 : 0,
+        "LabelBinarizer.inverseTransform"
+      );
+    }
+    return toCategoryVectorTensor(result, "y");
+  }
+
+  /** Constructor options of this binarizer. */
+  getParams(): Record<string, unknown> {
+    return { posLabel: this.posLabel, negLabel: this.negLabel, sparse: this.sparse };
+  }
+
+  /**
+   * Update parameters. The learned classes are discarded, so call `fit` again.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the binarizer is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["posLabel", "negLabel", "sparse", "sparseOutput"], "LabelBinarizer");
+    const next = new LabelBinarizer(
+      mergeParams(this.getParams(), params) as ConstructorParameters<typeof LabelBinarizer>[0]
+    );
+    this.posLabel = next.posLabel;
+    this.negLabel = next.negLabel;
+    this.sparse = next.sparse;
+    this.fitted = false;
+    delete this.classes_;
+    delete this.classToIndex_;
+    return this;
+  }
+
+  /** Create an unfitted binarizer with the same parameters. */
+  clone(): LabelBinarizer {
+    return new LabelBinarizer(this.getParams() as ConstructorParameters<typeof LabelBinarizer>[0]);
   }
 }
 
@@ -2161,6 +2322,41 @@ export class MultiLabelBinarizer {
 
     return result;
   }
+  /** Constructor options of this binarizer. `classes` is present only when it was given. */
+  getParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = { sparse: this.sparse };
+    if (this.classesOption !== undefined) params["classes"] = this.classesOption.slice();
+    return params;
+  }
+
+  /**
+   * Update parameters. The learned classes are discarded, so call `fit` again. Passing
+   * `classes: undefined` returns to sorted classes.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the binarizer is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["sparse", "sparseOutput", "classes"], "MultiLabelBinarizer");
+    const merged = mergeParams(this.getParams(), params);
+    if ("classes" in params) merged["classes"] = params["classes"];
+    const next = new MultiLabelBinarizer(
+      merged as ConstructorParameters<typeof MultiLabelBinarizer>[0]
+    );
+    this.sparse = next.sparse;
+    if (next.classesOption === undefined) delete this.classesOption;
+    else this.classesOption = next.classesOption;
+    this.fitted = false;
+    delete this.classes_;
+    delete this.classToIndex_;
+    return this;
+  }
+
+  /** Create an unfitted binarizer with the same parameters. */
+  clone(): MultiLabelBinarizer {
+    return new MultiLabelBinarizer(
+      this.getParams() as ConstructorParameters<typeof MultiLabelBinarizer>[0]
+    );
+  }
 }
 
 /**
@@ -2442,5 +2638,34 @@ export class TargetEncoder {
       dtype: "float64",
       device: getConfig().defaultDevice,
     });
+  }
+  /** Constructor options of this encoder. */
+  getParams(): Record<string, unknown> {
+    return { smooth: this._smooth, cv: this._cv };
+  }
+
+  /**
+   * Update parameters. The learned encodings are discarded, so call `fit` again.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the encoder is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["smooth", "cv"], "TargetEncoder");
+    const next = new TargetEncoder({
+      ...this.getParams(),
+      ...definedEntries(params),
+    } as ConstructorParameters<typeof TargetEncoder>[0]);
+    this._smooth = next._smooth;
+    this._cv = next._cv;
+    this._encodings = [];
+    this._globalMean = 0;
+    this._nFeatures = 0;
+    this._fitted = false;
+    return this;
+  }
+
+  /** Create an unfitted encoder with the same parameters. */
+  clone(): TargetEncoder {
+    return new TargetEncoder(this.getParams() as ConstructorParameters<typeof TargetEncoder>[0]);
   }
 }

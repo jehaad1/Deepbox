@@ -10,16 +10,22 @@
 
 import {
   DataValidationError,
+  DTypeError,
   getDevice,
   getDtype,
   InvalidParameterError,
   MemoryError,
   NotFittedError,
+  ShapeError,
 } from "../core";
 import { resolveLosslessDType } from "../core/utils/dtype_utils";
+import { compareCodePoints } from "../metrics/_internal";
 import { type Tensor, Tensor as TensorClass, tensor } from "../ndarray";
 
 type TokenPattern = RegExp;
+
+/** Documents as an array of strings, a 1-D string tensor or a single-column string tensor. */
+type TextInput = readonly string[] | Tensor;
 
 /** Options shared by every vectorizer. */
 type TextOptions = {
@@ -111,12 +117,6 @@ const ENGLISH_STOP_WORDS: readonly string[] = (
 
 function defaultTokenPattern(): RegExp {
   return /[\p{L}\p{N}_]{2,}/gu;
-}
-
-/** Compare strings by UTF-16 code units (locale independent, like Python's `sorted`). */
-function compareStrings(a: string, b: string): number {
-  if (a < b) return -1;
-  return a > b ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +313,28 @@ function validateDocuments(documents: readonly string[]): void {
   }
 }
 
+/**
+ * Documents of a `fit`, `transform` or `fitTransform` call. A tensor must hold strings in one
+ * dimension, or in one column of a 2-D tensor (the form `crossValScore` and `GridSearchCV`
+ * accept); an array is returned as given and validated by the caller.
+ */
+function toDocuments(input: TextInput, what: string): readonly string[] {
+  if (Array.isArray(input) || !(input instanceof TensorClass)) {
+    return input as readonly string[];
+  }
+  if (input.dtype !== "string") {
+    throw new DTypeError(`${what} needs a string tensor of documents; received ${input.dtype}`);
+  }
+  const isColumn = input.ndim === 2 && input.shape[1] === 1;
+  if (input.ndim !== 1 && !isColumn) {
+    throw new ShapeError(
+      `${what} needs a 1-D tensor or a single column with one document per element; received shape [${input.shape.join(", ")}]`
+    );
+  }
+  const values = input.toArray() as string[] | string[][];
+  return isColumn ? (values as string[][]).map((row) => row[0] as string) : (values as string[]);
+}
+
 // ---------------------------------------------------------------------------
 // Tokenization and output helpers
 // ---------------------------------------------------------------------------
@@ -332,8 +354,10 @@ function tokenize(doc: string, opts: ResolvedTextOptions): string[] {
     return rawTokens;
   }
 
+  // No n-gram is longer than the document, so a large maxN costs nothing extra.
   const ngrams: string[] = [];
-  for (let n = minN; n <= maxN; n++) {
+  const longest = Math.min(maxN, rawTokens.length);
+  for (let n = minN; n <= longest; n++) {
     for (let i = 0; i <= rawTokens.length - n; i++) {
       ngrams.push(n === 1 ? (rawTokens[i] as string) : rawTokens.slice(i, i + n).join(" "));
     }
@@ -416,8 +440,7 @@ function normalizeRows(data: Float64Array, nRows: number, nCols: number, norm: "
  *
  * Implements the bag-of-words model: each document becomes a vector of
  * word counts. The vocabulary is learned from the training data and sorted
- * alphabetically by UTF-16 code unit, which is scikit-learn's order except for
- * rare characters outside the Basic Multilingual Plane. Features whose
+ * alphabetically by Unicode code point, which is scikit-learn's order. Features whose
  * document frequency is outside `[minDf, maxDf]` are dropped, then at most
  * `maxFeatures` of the most frequent terms are kept. Fitting throws a
  * `DataValidationError` when no term survives.
@@ -505,7 +528,7 @@ export class CountVectorizer {
 
     if (maxFeatures !== undefined && candidates.length > maxFeatures) {
       // Most frequent terms first; alphabetical order breaks ties.
-      candidates.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : compareStrings(a[0], b[0])));
+      candidates.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : compareCodePoints(a[0], b[0])));
       candidates = candidates.slice(0, maxFeatures);
     }
 
@@ -517,7 +540,7 @@ export class CountVectorizer {
     }
 
     // Final vocabulary order is alphabetical (scikit-learn convention).
-    candidates.sort((a, b) => compareStrings(a[0], b[0]));
+    candidates.sort((a, b) => compareCodePoints(a[0], b[0]));
 
     const vocabulary = new Map<string, number>();
     const featureNames: string[] = [];
@@ -599,6 +622,49 @@ export class CountVectorizer {
   fitTransformText(documents: readonly string[]): Tensor {
     this.fitText(documents);
     return this.transformText(documents);
+  }
+
+  /**
+   * Learn the vocabulary from documents given as an array of strings or a string tensor.
+   * Same as {@link CountVectorizer.fitText}; the name lets a vectorizer be a Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "CountVectorizer.fit"));
+  }
+
+  /**
+   * Document-term matrix of documents given as an array of strings or a string tensor.
+   * Same as {@link CountVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "CountVectorizer.transform"));
+  }
+
+  /**
+   * Learn the vocabulary and return the document-term matrix. Same as
+   * {@link CountVectorizer.fitTransformText}.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.fitTransformText(toDocuments(X, "CountVectorizer.fitTransform"));
+  }
+
+  /** Create an unfitted vectorizer with the same parameters. */
+  clone(): CountVectorizer {
+    return new CountVectorizer(this.getParams() as CountVectorizerOptions);
   }
 
   /** The learned vocabulary mapping each term to its index */
@@ -776,6 +842,50 @@ export class TfidfVectorizer {
     return toFloatTensor(data, documents.length, nFeatures);
   }
 
+  /**
+   * Learn the vocabulary and IDF weights from documents given as an array of strings or a 1-D
+   * string tensor. Same as {@link TfidfVectorizer.fitText}; the name lets a vectorizer be a
+   * Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "TfidfVectorizer.fit"));
+  }
+
+  /**
+   * TF-IDF matrix of documents given as an array of strings or a string tensor. Same as
+   * {@link TfidfVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "TfidfVectorizer.transform"));
+  }
+
+  /**
+   * Learn the vocabulary and IDF and return the TF-IDF matrix. Same as
+   * {@link TfidfVectorizer.fitTransformText}.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.fitTransformText(toDocuments(X, "TfidfVectorizer.fitTransform"));
+  }
+
+  /** Create an unfitted vectorizer with the same parameters. */
+  clone(): TfidfVectorizer {
+    return new TfidfVectorizer(this.getParams() as TfidfVectorizerOptions);
+  }
+
   /** The learned vocabulary mapping each term to its index */
   get vocabulary(): ReadonlyMap<string, number> {
     if (!this.fitted) throw new NotFittedError("TfidfVectorizer must be fitted first");
@@ -848,20 +958,60 @@ export class TfidfVectorizer {
 // HashingVectorizer
 // ---------------------------------------------------------------------------
 
+const UTF8_ENCODER = new TextEncoder();
+let utf8Scratch = new Uint8Array(256);
+
 /**
- * FNV-1a 32-bit hash function.
+ * MurmurHash3 (x86, 32 bit, seed 0) of the UTF-8 bytes of `str`, as a signed 32-bit integer.
  *
- * Deterministic, fast, and provides reasonable distribution for feature hashing.
- * It hashes the UTF-16 code units of the token, so bucket assignments differ from
- * scikit-learn's MurmurHash3 over UTF-8.
+ * This is the hash that scikit-learn's `HashingVectorizer` and `FeatureHasher` use
+ * (`murmurhash3_bytes_s32`), so a token lands in the same column as in scikit-learn.
  */
-function fnv1a(str: string): number {
-  let hash = 0x811c9dc5; // FNV offset basis
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193); // FNV prime
+function murmurHash3(str: string): number {
+  const maxBytes = str.length * 3;
+  if (utf8Scratch.length < maxBytes) {
+    utf8Scratch = new Uint8Array(Math.max(maxBytes, utf8Scratch.length * 2));
   }
-  return hash >>> 0; // ensure unsigned
+  const bytes = utf8Scratch;
+  const length = UTF8_ENCODER.encodeInto(str, bytes).written;
+
+  let h = 0;
+  const nBlocks = length >> 2;
+  for (let i = 0; i < nBlocks; i++) {
+    const j = i << 2;
+    let k =
+      (bytes[j] as number) |
+      ((bytes[j + 1] as number) << 8) |
+      ((bytes[j + 2] as number) << 16) |
+      ((bytes[j + 3] as number) << 24);
+    k = Math.imul(k, 0xcc9e2d51);
+    k = (k << 15) | (k >>> 17);
+    k = Math.imul(k, 0x1b873593);
+    h ^= k;
+    h = (h << 13) | (h >>> 19);
+    h = (Math.imul(h, 5) + 0xe6546b64) | 0;
+  }
+
+  const tail = nBlocks << 2;
+  const remaining = length & 3;
+  if (remaining > 0) {
+    let k = 0;
+    if (remaining === 3) k ^= (bytes[tail + 2] as number) << 16;
+    if (remaining >= 2) k ^= (bytes[tail + 1] as number) << 8;
+    k ^= bytes[tail] as number;
+    k = Math.imul(k, 0xcc9e2d51);
+    k = (k << 15) | (k >>> 17);
+    k = Math.imul(k, 0x1b873593);
+    h ^= k;
+  }
+
+  h ^= length;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h | 0;
 }
 
 type ResolvedHashingOptions = ResolvedTextOptions & {
@@ -893,6 +1043,10 @@ function resolveHashingOptions(raw: OptionBag): ResolvedHashingOptions {
  * Unlike CountVectorizer and TfidfVectorizer, HashingVectorizer does not need
  * to build a vocabulary, making it suitable for large-scale or streaming data.
  * Features are token hashes mapped to a fixed number of buckets.
+ *
+ * The hash is MurmurHash3 (32 bit, seed 0) of the UTF-8 bytes of each token. The column is
+ * `abs(hash) % nFeatures` and the sign is the sign of the hash, as in scikit-learn, so the
+ * output equals scikit-learn's `HashingVectorizer` for the same options and tokens.
  *
  * Trade-offs:
  * - No need to fit (stateless transform)
@@ -947,7 +1101,6 @@ export class HashingVectorizer {
     const nF = this.opts.nFeatures;
     const data = allocateDense(nDocs, nF, "HashingVectorizer.transformText");
     const { binary, alternateSign, norm } = this.opts;
-    const hiMod = 2147483648 % nF;
 
     // Generation-stamped touch tracking: `touchStamp[idx] === i` marks column
     // `idx` as written by doc `i`, so normalization sweeps only the (few)
@@ -962,18 +1115,18 @@ export class HashingVectorizer {
       const rowStart = i * nF;
       if (touchStamp) touched.length = 0;
       for (const token of tokens) {
-        const hash = fnv1a(token);
-        // Modulo in the SMI domain: `%` on uint32 values >= 2^31 takes
-        // V8's slow float64 path.
-        const idx =
-          hash < 2147483648 ? (hash | 0) % nF : ((((hash - 2147483648) | 0) % nF) + hiMod) % nF;
+        // Column abs(hash) % nFeatures and the sign of the hash, as in scikit-learn. The modulo
+        // stays in the small-integer domain: abs(hash) is below 2^31 except for the single
+        // value -2^31.
+        const hash = murmurHash3(token);
+        const magnitude = hash < 0 ? -hash : hash;
+        const idx = magnitude < 2147483648 ? (magnitude | 0) % nF : 2147483648 % nF;
         const pos = rowStart + idx;
 
         if (binary) {
           data[pos] = 1;
         } else if (alternateSign) {
-          const sign = (hash & 0x80000000) !== 0 ? -1 : 1;
-          data[pos] = (data[pos] as number) + sign;
+          data[pos] = (data[pos] as number) + (hash < 0 ? -1 : 1);
         } else {
           data[pos] = (data[pos] as number) + 1;
         }
@@ -1019,6 +1172,47 @@ export class HashingVectorizer {
    */
   fitTransformText(documents: readonly string[]): Tensor {
     return this.transformText(documents);
+  }
+
+  /**
+   * Validate documents given as an array of strings or a string tensor. Nothing is learned;
+   * the name lets a vectorizer be a Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "HashingVectorizer.fit"));
+  }
+
+  /**
+   * Hash matrix of documents given as an array of strings or a string tensor. Same as
+   * {@link HashingVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, nFeatures]
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "HashingVectorizer.transform"));
+  }
+
+  /**
+   * Same as {@link HashingVectorizer.transform}; no fitting is needed.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, nFeatures]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.transform(X);
+  }
+
+  /** Create a vectorizer with the same parameters. */
+  clone(): HashingVectorizer {
+    return new HashingVectorizer(this.getParams() as HashingVectorizerOptions);
   }
 
   /** Current parameters. Pass them to `setParams` or the constructor to rebuild a vectorizer. */

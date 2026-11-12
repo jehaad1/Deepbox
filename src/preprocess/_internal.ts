@@ -9,8 +9,43 @@
  */
 
 import { DeepboxError, DTypeError, InvalidParameterError, ShapeError } from "../core/errors";
-import type { Tensor } from "../ndarray";
+import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { __randomBelow, __SeededRandom } from "../random/random";
+
+/**
+ * Throw unless `params` only contains names from `known`.
+ *
+ * @internal
+ */
+export function assertKnownParams(
+  params: Record<string, unknown>,
+  known: readonly string[],
+  who: string
+): void {
+  for (const key of Object.keys(params)) {
+    if (!known.includes(key)) {
+      throw new InvalidParameterError(
+        `Invalid parameter '${key}' for ${who}; valid parameters are ${known.join(", ")}`,
+        key,
+        params[key]
+      );
+    }
+  }
+}
+
+/**
+ * Copy of `params` without the entries whose value is `undefined`, so they do not override
+ * existing values when merged.
+ *
+ * @internal
+ */
+export function definedEntries(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Assert that a tensor has a real numeric dtype (not string or complex).
@@ -35,6 +70,36 @@ export function assert2D(X: Tensor, name: string): void {
   if (X.ndim !== 2) {
     throw new ShapeError(`${name} must be a 2D tensor, got ${X.ndim}D`);
   }
+}
+
+/**
+ * Float dtype of a transform result: `float32` input stays `float32`, every other dtype gives
+ * `float64`, as in scikit-learn. Computation may use float64 internally.
+ *
+ * @internal
+ */
+export function floatOutputDType(X: Tensor): "float32" | "float64" {
+  return X.dtype === "float32" ? "float32" : "float64";
+}
+
+/**
+ * Wrap a row-major float64 buffer as a 2D tensor of `dtype` (rounding to float32 when asked).
+ *
+ * @internal
+ */
+export function floatMatrix(
+  data: Float64Array,
+  nRows: number,
+  nCols: number,
+  device: Tensor["device"],
+  dtype: "float32" | "float64"
+): Tensor {
+  return TensorClass.fromTypedArray({
+    data: dtype === "float32" ? new Float32Array(data) : data,
+    shape: [nRows, nCols],
+    dtype,
+    device,
+  });
 }
 
 /**

@@ -50,7 +50,10 @@ type LionState = {
  *
  * @example
  * ```ts
+ * import { Linear } from 'deepbox/nn';
  * import { Lion } from 'deepbox/optim';
+ *
+ * const model = new Linear(2, 1);
  *
  * const optimizer = new Lion(model.parameters(), {
  *   lr: 3e-4,

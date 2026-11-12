@@ -11,8 +11,15 @@ import { DeepboxError } from "./base";
  *
  * @example
  * ```ts
- * if (!Array.isArray(data)) {
- *   throw new DataValidationError('Expected array input');
+ * import { DataValidationError } from 'deepbox/core';
+ *
+ * const data: unknown = 'not an array';
+ * try {
+ *   if (!Array.isArray(data)) {
+ *     throw new DataValidationError('Expected array input');
+ *   }
+ * } catch (error) {
+ *   console.log((error as Error).message); // Expected array input
  * }
  * ```
  */

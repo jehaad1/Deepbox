@@ -5,7 +5,7 @@
  * @see {@link https://deepbox.dev/docs/stats-descriptive | Deepbox Correlations}
  */
 
-import { InvalidParameterError, ShapeError } from "../core";
+import { InvalidParameterError, ShapeError, warn } from "../core";
 import { Tensor } from "../ndarray";
 import { isContiguous } from "../ndarray/tensor/strides";
 import {
@@ -108,6 +108,23 @@ function correlationPValueFor(r: number, df: number, alternative: CorrelationAlt
   return inDirection ? twoSided / 2 : 1 - twoSided / 2;
 }
 
+/** The result of a correlation of constant input: an error, or a warning and NaN. */
+function undefinedForConstant(fnName: string, onConstant: "throw" | "nan"): number {
+  if (onConstant === "nan") {
+    warn(
+      "An input array is constant; the correlation coefficient is not defined.",
+      "UserWarning",
+      fnName
+    );
+    return Number.NaN;
+  }
+  throw new InvalidParameterError(
+    `${fnName}() is undefined for constant input`,
+    "input",
+    "constant"
+  );
+}
+
 /**
  * Computes Pearson correlation coefficient from two dense arrays.
  *
@@ -117,11 +134,18 @@ function correlationPValueFor(r: number, df: number, alternative: CorrelationAlt
  *
  * @param x - First array
  * @param y - Second array (must have same length as x)
- * @param fnName - Public function name used in error messages
+ * @param fnName - Public function name used in error messages and warnings
+ * @param onConstant - What to do when either array is constant (zero variance): `"throw"`
+ *   (default) raises an error, `"nan"` emits a warning and returns NaN as `scipy.stats` does
  * @returns Pearson correlation coefficient in [-1, 1]; NaN if any value is NaN or infinite
- * @throws {InvalidParameterError} If either array has constant values (zero variance)
+ * @throws {InvalidParameterError} If either array has constant values and `onConstant` is `"throw"`
  */
-function pearsonFromDense(x: Float64Array, y: Float64Array, fnName: string): number {
+function pearsonFromDense(
+  x: Float64Array,
+  y: Float64Array,
+  fnName: string,
+  onConstant: "throw" | "nan" = "throw"
+): number {
   const n = x.length;
   const x0 = x[0] as number;
   const y0 = y[0] as number;
@@ -142,13 +166,7 @@ function pearsonFromDense(x: Float64Array, y: Float64Array, fnName: string): num
   }
   // An exact equality test: a mean-based test would flag e.g. [0.1, 0.1, 0.1]
   // as varying because its computed mean is off by one ulp.
-  if (constX || constY) {
-    throw new InvalidParameterError(
-      `${fnName}() is undefined for constant input`,
-      "input",
-      "constant"
-    );
-  }
+  if (constX || constY) return undefinedForConstant(fnName, onConstant);
   const sx = maxX > SCALE_HIGH || maxX < SCALE_LOW ? 1 / maxX : 1;
   const sy = maxY > SCALE_HIGH || maxY < SCALE_LOW ? 1 / maxY : 1;
 
@@ -176,13 +194,7 @@ function pearsonFromDense(x: Float64Array, y: Float64Array, fnName: string): num
 
   // After the optional rescale denX * denY can neither overflow nor underflow.
   const den = Math.sqrt(denX * denY);
-  if (den === 0) {
-    throw new InvalidParameterError(
-      `${fnName}() is undefined for constant input`,
-      "input",
-      "constant"
-    );
-  }
+  if (den === 0) return undefinedForConstant(fnName, onConstant);
   const r = num / den;
   return r > 1 ? 1 : r < -1 ? -1 : r;
 }
@@ -195,8 +207,9 @@ function pearsonFromDense(x: Float64Array, y: Float64Array, fnName: string): num
  * @param x - First tensor
  * @param y - Second tensor (must have same size as x)
  * @param options - `alternative` hypothesis of the test (default `"two-sided"`)
- * @returns Tuple of [correlation coefficient in [-1, 1], p-value]
- * @throws {InvalidParameterError} If tensors have different sizes, < 2 samples, constant input,
+ * @returns Tuple of [correlation coefficient in [-1, 1], p-value]. `[NaN, NaN]` when either
+ *   input is constant (a warning is emitted, as `scipy.stats.pearsonr` does)
+ * @throws {InvalidParameterError} If tensors have different sizes, < 2 samples,
  *   or an invalid `alternative`
  *
  * @example
@@ -234,7 +247,7 @@ export function pearsonr(
 
   const xd = toDenseFlatArray(x);
   const yd = toDenseFlatArray(y);
-  const r = pearsonFromDense(xd, yd, "pearsonr");
+  const r = pearsonFromDense(xd, yd, "pearsonr", "nan");
 
   // Under H0: rho = 0, the test statistic t = r*sqrt((n-2)/(1-r^2)) follows t(n-2)
   if (n === 2) {
@@ -256,8 +269,9 @@ export function pearsonr(
  * @param x - First tensor
  * @param y - Second tensor (must have same size as x)
  * @param options - `alternative` hypothesis of the test (default `"two-sided"`)
- * @returns Tuple of [correlation coefficient, p-value]
- * @throws {InvalidParameterError} If tensors have different sizes, < 2 samples, constant input,
+ * @returns Tuple of [correlation coefficient, p-value]. `[NaN, NaN]` when either input is
+ *   constant (a warning is emitted, as `scipy.stats.spearmanr` does)
+ * @throws {InvalidParameterError} If tensors have different sizes, < 2 samples,
  *   or an invalid `alternative`
  *
  * @example
@@ -296,7 +310,7 @@ export function spearmanr(
   const rankY = rankData(yd).ranks;
 
   // Compute Pearson correlation of ranks
-  const rho = pearsonFromDense(rankX, rankY, "spearmanr");
+  const rho = pearsonFromDense(rankX, rankY, "spearmanr", "nan");
   // Test statistic follows t-distribution under H0: rho = 0
   const df = n - 2;
   return [rho, df > 0 ? correlationPValueFor(rho, df, alternative) : Number.NaN];

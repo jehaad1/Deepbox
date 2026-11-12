@@ -34,6 +34,8 @@ function assertMetric(metric: unknown): asserts metric is number {
  * import { EarlyStopping } from 'deepbox/nn';
  *
  * const es = new EarlyStopping({ patience: 5, minDelta: 0.001 });
+ * const maxEpochs = 100;
+ * const trainOneEpoch = () => 1.0; // validation loss that stops improving
  *
  * for (let epoch = 0; epoch < maxEpochs; epoch++) {
  *   const valLoss = trainOneEpoch();
@@ -174,8 +176,15 @@ export class EarlyStopping {
  *
  * @example
  * ```ts
- * import { GradientAccumulator } from 'deepbox/nn';
+ * import { tensor } from 'deepbox/ndarray';
+ * import { GradientAccumulator, Linear, mseLoss } from 'deepbox/nn';
+ * import { SGD } from 'deepbox/optim';
  *
+ * const model = new Linear(2, 1);
+ * const optimizer = new SGD(model.parameters(), { lr: 0.01 });
+ * const dataLoader = [tensor([[1, 2]]), tensor([[3, 4]]), tensor([[5, 6]]), tensor([[7, 8]])];
+ * const forward = (batch) => mseLoss(model.forward(batch), tensor([[0]]));
+ * const backward = (loss) => loss.backward();
  * const accumulator = new GradientAccumulator(4); // accumulate over 4 steps
  *
  * for (const batch of dataLoader) {
@@ -275,12 +284,16 @@ export class GradientAccumulator {
  *
  * @example
  * ```ts
- * import { ModelCheckpoint } from 'deepbox/nn';
+ * import { Linear, ModelCheckpoint } from 'deepbox/nn';
  *
+ * const model = new Linear(2, 1);
  * const checkpoint = new ModelCheckpoint({ mode: 'min' });
+ * const maxEpochs = 3;
+ * const losses = [0.9, 0.5, 0.7];
+ * const trainOneEpoch = (epoch) => losses[epoch];
  *
  * for (let epoch = 0; epoch < maxEpochs; epoch++) {
- *   const valLoss = trainOneEpoch();
+ *   const valLoss = trainOneEpoch(epoch);
  *   checkpoint.step(model, valLoss);
  * }
  *

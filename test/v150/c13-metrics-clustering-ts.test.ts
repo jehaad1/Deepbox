@@ -907,10 +907,11 @@ describe("v1.5.0 metrics: review fixes", () => {
         [0, 0],
         [0, 0],
         [1, 1],
+        [1, 1],
       ],
       f64
     );
-    expect(daviesBouldinScore(X, tensor([0, 1, 2], i32))).toBe(0);
+    expect(daviesBouldinScore(X, tensor([0, 1, 2, 2], i32))).toBe(0);
     // Clusters with scatter on top of each other are infinitely hard to separate.
     const overlap = tensor([[-1], [1], [-2], [2]], f64);
     expect(daviesBouldinScore(overlap, tensor([0, 0, 1, 1], i32))).toBe(Number.POSITIVE_INFINITY);

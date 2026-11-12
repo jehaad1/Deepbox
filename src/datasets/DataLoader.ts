@@ -200,14 +200,20 @@ export type StreamingDataLoaderOptions = {
  *
  * @example
  * ```ts
+ * import { DataLoader } from 'deepbox/datasets';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16]]);
+ *
  * // Inference without labels
  * const testLoader = new DataLoader(X, undefined, {
- * batchSize: 4,
- * shuffle: false
+ *   batchSize: 4,
+ *   shuffle: false
  * });
  *
  * for (const [xBatch] of testLoader) {
- * // Make predictions
+ *   // Make predictions
+ *   console.log(xBatch.shape); // [4, 2]
  * }
  * ```
  *
