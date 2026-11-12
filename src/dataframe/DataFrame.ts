@@ -3,7 +3,7 @@ import { DataValidationError, IndexError, InvalidParameterError } from "../core/
 import { reshape, type Tensor, tensor } from "../ndarray/index";
 import { Generator } from "../random/Generator";
 import { __random, __randomBelow } from "../random/random";
-import { correlate, averageRanks as correlationRanks } from "./correlation";
+import { correlate, averageRanks as correlationRanks, pearsonFromSums } from "./correlation";
 import {
   type ParquetReadOptions,
   type ParquetWriteOptions,
@@ -212,9 +212,6 @@ const quantileSorted = (sorted: ArrayLike<number>, q: number): number => {
   const diff = b - a;
   return weight >= 0.5 ? b - diff * (1 - weight) : a + diff * weight;
 };
-
-/** Rounding can push a correlation a hair past +-1; keep it inside the valid range. */
-const clampCorrelation = (r: number): number => (r > 1 ? 1 : r < -1 ? -1 : r);
 
 /** Round half to even (IEEE "banker's" rounding), as NumPy and pandas do. */
 const roundHalfEven = (x: number): number => {
@@ -2110,13 +2107,11 @@ export class DataFrame {
       allValid && kind === "spearman" ? columns.map((col) => correlationRanks(col)) : columns;
     const pairKind: CorrelationMethod = allValid && kind === "spearman" ? "pearson" : kind;
     const centered: Float64Array[] = [];
-    const norms: number[] = [];
+    const squares: number[] = [];
     if (allValid && pairKind === "pearson" && nRows >= need) {
       for (const col of ranked) {
         const shifted = new Float64Array(nRows);
-        let mean = 0;
-        for (let i = 0; i < nRows; i++) mean += col[i] as number;
-        mean /= nRows;
+        const mean = compensatedSum(col) / nRows;
         let ss = 0;
         for (let i = 0; i < nRows; i++) {
           const d = (col[i] as number) - mean;
@@ -2124,7 +2119,7 @@ export class DataFrame {
           ss += d * d;
         }
         centered.push(shifted);
-        norms.push(Math.sqrt(ss));
+        squares.push(ss);
       }
     }
 
@@ -2155,14 +2150,14 @@ export class DataFrame {
         if (allValid) {
           if (nRows >= need) {
             if (pairKind === "pearson") {
-              const normA = norms[a] as number;
-              const normB = norms[b] as number;
-              if (normA !== 0 && normB !== 0) {
+              const ssA = squares[a] as number;
+              const ssB = squares[b] as number;
+              if (ssA !== 0 && ssB !== 0) {
                 const ca = centered[a] as Float64Array;
                 const cb = centered[b] as Float64Array;
                 let dot = 0;
                 for (let i = 0; i < nRows; i++) dot += (ca[i] as number) * (cb[i] as number);
-                r = clampCorrelation(dot / (normA * normB));
+                r = pearsonFromSums(dot, ssA, ssB);
               }
             } else {
               r = correlate(pairKind, ranked[a] as Float64Array, ranked[b] as Float64Array);
@@ -7767,8 +7762,7 @@ export class Rolling {
         d1 += diff1 * diff1;
         d2 += diff2 * diff2;
       }
-      result[i] =
-        d1 === 0 || d2 === 0 ? NaN : clampCorrelation(num / (Math.sqrt(d1) * Math.sqrt(d2)));
+      result[i] = d1 === 0 || d2 === 0 ? NaN : pearsonFromSums(num, d1, d2);
     }
 
     return new DataFrame({ [label]: result }, { index: this.df.index, copy: false });

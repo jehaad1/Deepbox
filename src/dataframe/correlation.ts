@@ -10,6 +10,20 @@ import { compensatedSum } from "./utils";
 const clamp = (r: number): number => (r > 1 ? 1 : r < -1 ? -1 : r);
 
 /**
+ * Pearson coefficient from the sums of centered products: `cross / sqrt(ssX * ssY)`, kept inside
+ * [-1, 1]. Taking one square root of the product (as pandas does) instead of the product of two
+ * roots makes identical or perfectly linear columns come out as exactly +-1 far more often,
+ * because `sqrt(s * s)` is exactly `s` whenever `s * s` is representable. The product can overflow
+ * or underflow for extreme magnitudes; then the two roots are taken separately.
+ */
+export const pearsonFromSums = (cross: number, ssX: number, ssY: number): number => {
+  const product = ssX * ssY;
+  const denom =
+    product > 0 && Number.isFinite(product) ? Math.sqrt(product) : Math.sqrt(ssX) * Math.sqrt(ssY);
+  return clamp(cross / denom);
+};
+
+/**
  * Pearson correlation of two equally long samples. NaN for fewer than two
  * observations or when either sample is constant.
  */
@@ -29,7 +43,7 @@ export const pearson = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
     sy += dy * dy;
   }
   if (sx === 0 || sy === 0) return Number.NaN;
-  return clamp(num / (Math.sqrt(sx) * Math.sqrt(sy)));
+  return pearsonFromSums(num, sx, sy);
 };
 
 /** Index of the first element of the ascending `sorted` that is not less than `v`. */
