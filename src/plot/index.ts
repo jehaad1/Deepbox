@@ -44,7 +44,7 @@ export type {
 // Color palettes
 export { getPalette, getPaletteColor, listPalettes } from "./utils/colors";
 
-import { InvalidParameterError, ShapeError } from "../core";
+import { DeviceError, InvalidParameterError, ShapeError } from "../core";
 // Global plotting functions
 import { type Tensor, tensor } from "../ndarray";
 import { gaussianKde } from "../stats/kde";
@@ -145,6 +145,8 @@ export function show(
  * @param options - Optional figure (default: the current figure) and format
  * @throws {InvalidParameterError} If the path is empty, the format is unknown,
  *   or the file extension does not match the format.
+ * @throws {DeviceError} If the runtime has no file system (a browser). Use
+ *   `figure.renderSVG()` or `figure.renderPNG()` there instead.
  */
 export async function saveFig(
   path: string,
@@ -181,7 +183,16 @@ export async function saveFig(
     );
   }
   const fig = options.figure ?? gca().fig;
-  const { writeFile } = await import("node:fs/promises");
+  let writeFile: typeof import("node:fs/promises").writeFile;
+  try {
+    // The magic comments keep Vite and webpack from resolving the module at build time.
+    ({ writeFile } = await import(/* @vite-ignore */ /* webpackIgnore: true */ "node:fs/promises"));
+  } catch {
+    throw new DeviceError(
+      "saveFig writes to the file system and needs Node.js. In a browser, use " +
+        "figure.renderSVG() or await figure.renderPNG() and save the result yourself."
+    );
+  }
   if (fmt === "png") {
     const png = await fig.renderPNG();
     await writeFile(path, png.bytes);

@@ -103,11 +103,13 @@ export async function readKaggleCredentials(): Promise<KaggleCredentials | undef
   }
 
   try {
-    const [{ readFile }, { join }, { homedir }] = await Promise.all([
-      import("node:fs/promises"),
-      import("node:path"),
-      import("node:os"),
-    ]);
+    // Awaited one by one inside the try block: bundlers for browsers accept an unresolvable
+    // import there, and the magic comments keep Vite and webpack from resolving the module.
+    const { readFile } = await import(
+      /* @vite-ignore */ /* webpackIgnore: true */ "node:fs/promises"
+    );
+    const { join } = await import(/* @vite-ignore */ /* webpackIgnore: true */ "node:path");
+    const { homedir } = await import(/* @vite-ignore */ /* webpackIgnore: true */ "node:os");
     const configDir = env?.["KAGGLE_CONFIG_DIR"] || join(homedir(), ".kaggle");
     const kagglePath = join(configDir, "kaggle.json");
     const content = await readFile(kagglePath, "utf-8");
