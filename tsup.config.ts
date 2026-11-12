@@ -1,8 +1,9 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
+  // The root entry (dist/index.js and dist/index.cjs) is written by
+  // scripts/write-root-entry.mjs as re-exports of these subpath builds.
   entry: {
-    index: "src/index.ts",
     "core/index": "src/core/index.ts",
     "ndarray/index": "src/ndarray/index.ts",
     "linalg/index": "src/linalg/index.ts",

@@ -19,7 +19,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup && tsc --emitDeclarationOnly && node scripts/fix-declarations.mjs",
+    "build": "tsup && node scripts/write-root-entry.mjs && tsc --emitDeclarationOnly && node scripts/fix-declarations.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
