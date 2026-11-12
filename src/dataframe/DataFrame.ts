@@ -179,21 +179,44 @@ const DEFAULT_CSV_NA_VALUES: readonly string[] = [
  * overflow to Infinity, and unsigned-part leading-zero tokens such as 007 or
  * -007 stay text.
  */
-const parseCsvCell = (value: string | undefined, naValues: ReadonlySet<string>): unknown => {
+const parseCsvCell = (
+  value: string | undefined,
+  naValues: ReadonlySet<string>,
+  naHasNumbers: boolean,
+  naFirstChars: Uint8Array
+): unknown => {
   const trimmed = value === undefined ? "" : value.trim();
-  if (trimmed === "" || naValues.has(trimmed)) return null;
-  if (trimmed === "NaN" || trimmed === "nan") return NaN;
-  if (trimmed === "true" || trimmed === "True" || trimmed === "TRUE") return true;
-  if (trimmed === "false" || trimmed === "False" || trimmed === "FALSE") return false;
+  if (trimmed === "") return null;
   const parsed = Number(trimmed);
-  if (Number.isNaN(parsed)) return value;
-  const unsigned = trimmed.startsWith("-") || trimmed.startsWith("+") ? trimmed.slice(1) : trimmed;
-  // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
-  if (unsigned !== "0" && unsigned.startsWith("0") && !unsigned.startsWith("0.")) return value;
-  if (!Number.isFinite(parsed)) {
-    return unsigned === "Infinity" ? parsed : value;
+  if (Number.isNaN(parsed)) {
+    // Text: missing markers, NaN, booleans, or the original string. The first-character table
+    // skips the set lookup for text that cannot be a marker.
+    const code = trimmed.charCodeAt(0);
+    if ((code >= 128 || naFirstChars[code] === 1) && naValues.has(trimmed)) return null;
+    if (trimmed === "NaN" || trimmed === "nan") return NaN;
+    if (trimmed === "true" || trimmed === "True" || trimmed === "TRUE") return true;
+    if (trimmed === "false" || trimmed === "False" || trimmed === "FALSE") return false;
+    return value;
   }
-  if (!Number.isSafeInteger(parsed) && /^[+-]?\d+$/.test(trimmed)) return value;
+  // A numeric cell can only be a missing marker when `naValues` lists a number.
+  if (naHasNumbers && naValues.has(trimmed)) return null;
+  // Index of the first character after an optional sign.
+  const first = trimmed.charCodeAt(0);
+  const start = first === 45 /* - */ || first === 43 /* + */ ? 1 : 0;
+  // Preserve leading-zero strings like "007", "01", "-007" or "0x10" (but keep "0", "0.5" and "-0.5").
+  if (
+    trimmed.charCodeAt(start) === 48 /* 0 */ &&
+    start + 1 < trimmed.length &&
+    trimmed.charCodeAt(start + 1) !== 46 /* . */
+  ) {
+    return value;
+  }
+  if (!Number.isFinite(parsed)) {
+    return trimmed.length - start === 8 && trimmed.endsWith("Infinity") ? parsed : value;
+  }
+  if (Number.isInteger(parsed) && !Number.isSafeInteger(parsed) && /^[+-]?\d+$/.test(trimmed)) {
+    return value;
+  }
   return parsed;
 };
 
@@ -2546,6 +2569,14 @@ export class DataFrame {
       );
     }
     const naSet: ReadonlySet<string> = new Set(naValues.map((v) => v.trim()));
+    // Whether a numeric-looking cell must be checked against the missing markers.
+    const naHasNumbers = [...naSet].some((v) => v !== "" && !Number.isNaN(Number(v)));
+    // naFirstChars[c] is 1 when some missing marker starts with the ASCII character c.
+    const naFirstChars = new Uint8Array(128);
+    for (const v of naSet) {
+      const c = v.charCodeAt(0);
+      if (c < 128) naFirstChars[c] = 1;
+    }
 
     // Strip a leading UTF-8 BOM (common in Excel-exported CSVs); otherwise the
     // first column name becomes "﻿<name>" and lookups fail.
@@ -2658,9 +2689,16 @@ export class DataFrame {
     const data: DataFrameData = newColumnMap();
     for (let colIdx = 0; colIdx < columns.length; colIdx++) {
       const colName = columns[colIdx] as string;
-      const colData: unknown[] = [];
+      const colData: unknown[] = new Array(dataRows.length);
       // Empty or whitespace-only cells are missing (null), NOT numeric 0; short rows read as null.
-      for (const row of dataRows) colData.push(parseCsvCell(row[colIdx], naSet));
+      for (let r = 0; r < dataRows.length; r++) {
+        colData[r] = parseCsvCell(
+          (dataRows[r] as string[])[colIdx],
+          naSet,
+          naHasNumbers,
+          naFirstChars
+        );
+      }
       data[colName] = colData;
     }
 

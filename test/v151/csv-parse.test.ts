@@ -92,3 +92,13 @@ describe("fromCsvString missing values, booleans, headers and short rows (DF-18)
     expect(() => DataFrame.fromCsvString("a,b\n1,2,3\n")).toThrow(/Row 2 has 3 fields, expected 2/);
   });
 });
+
+describe("CSV naValues that look like numbers", () => {
+  it("reads a numeric missing marker as null and keeps other numbers", () => {
+    const df = DataFrame.fromCsvString("a,b\n-999,1\n2,-999\n", { naValues: ["-999"] });
+    expect(df.toArray()).toEqual([
+      [null, 1],
+      [2, null],
+    ]);
+  });
+});
