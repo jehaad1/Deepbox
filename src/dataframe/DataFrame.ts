@@ -7030,12 +7030,15 @@ export class DataFrameGroupBy {
   }
 
   /**
-   * Helper to identify numeric columns (excluding grouping columns).
+   * Helper to identify numeric columns (excluding grouping columns). An empty DataFrame keeps all of them.
    * @private
    */
   private getNumericColumns(): string[] {
     const groupByCols = Array.isArray(this.by) ? this.by : [this.by];
     const otherCols = this.df.columns.filter((c) => !groupByCols.includes(c));
+    // Without rows there is no cell to inspect, so every column stays (pandas keeps the
+    // value columns of an empty frame).
+    if (this.df.shape[0] === 0) return otherCols;
     return otherCols.filter((col) => {
       // efficient check: look for at least one valid number
       return this.df.getColumnData(col).some(isOrderedNumber);
