@@ -5,6 +5,110 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Proposed version: 1.6.0. A finalization pass over 1.5.0: every module was audited
+against NumPy, SciPy, scikit-learn, pandas and PyTorch, and every finding has a
+regression test in `test/v151`. No export was removed or renamed except the
+undocumented internal `dropoutMask`. Behavior that changes for existing code is
+listed under "Upgrading from 1.5".
+
+### Upgrading from 1.5
+
+- **Invalid conversions throw.** Converting NaN, Infinity or an out-of-range value
+  to `int32` or `uint8` throws `DTypeError`, as `int64` already did. Strings convert
+  to integers only when they are plain decimal integers (`"0x10"`, `""` and
+  `"3.9"` throw), and to `bool` only from `true`/`false` (any case) or `1`/`0`.
+- **CSV reading follows pandas.** `NA`, `N/A`, `NULL`, `None`, `#N/A` and the other
+  pandas markers become `null` by default (pass `naValues` to change the list).
+  A quote inside an unquoted field is kept literally. Integers beyond 2^53 stay
+  strings instead of being rounded. Duplicate headers become `a`, `a.1`, and short
+  rows are padded with `null`. `NaN` and `nan` still read as the number NaN.
+- **DataFrame and Series.** An empty `Series` sums to 0 and its other statistics
+  are NaN instead of throwing; booleans count in `sum` and `mean`. `pctChange`
+  returns Infinity for a zero base. `dt.isoformat()` formats the wall-clock fields
+  without a `Z`. `astype` parses numbers and booleans strictly (hex strings become
+  NaN) and takes `errors: "raise" | "coerce"`. `valueCounts` counts null, undefined
+  and NaN as one missing key. Sorting a mixed-type column uses a fixed type order.
+- **Metrics.** Binary averaging compares against `posLabel` (default 1) instead of
+  requiring 0/1 labels, so two string labels without `posLabel` now throw instead
+  of silently returning a weighted average. `daviesBouldinScore` and
+  `calinskiHarabaszScore` throw for fewer than two clusters. 2-D regression
+  targets are scored per column, and 2-D indicator targets are multilabel.
+- **Statistics.** `pearsonr` and `spearmanr` on constant input return `[NaN, NaN]`
+  with a warning, as SciPy does, instead of throwing.
+- **Preprocessing.** Scalers, imputers and feature transformers keep float32 input
+  as float32. `HashingVectorizer` uses MurmurHash3 like scikit-learn, so its column
+  indices differ from 1.5.0. String labels are ordered by code point, which
+  changes the order only for characters outside the Basic Multilingual Plane.
+- **Machine learning.** Estimator constructors reject unknown options (with a
+  hint, for example `n_clusters` suggests `nClusters`). LDA and QDA use the same
+  covariance divisors as scikit-learn, so their probabilities and transforms
+  change. Estimators that cannot use `sampleWeight` throw instead of ignoring it.
+- **Neural networks and optimizers.** `crossEntropyLoss` and `nllLoss` ignore
+  target `-100` by default (PyTorch `ignore_index`). `OneCycleLR` and `CyclicLR`
+  cycle momentum by default, as in PyTorch. `Trainer.fit` throws when the loss is
+  not connected to the model, an optimizer throws for an empty parameter list, and
+  `registerBackend("cpu", ...)` throws.
+- **Datasets.** `makeClassification` assigns balanced class counts like
+  scikit-learn, so a given seed produces different data. `mapDataset` keeps the
+  trailing dimensions and `images`.
+
+### Added
+
+- `eig` and `eigvals` take `{ complex: true }` and return real and imaginary parts
+  for matrices with complex eigenvalues.
+- `shuffle`, `permutation` and `choice` take `{ axis }` to work on whole slices.
+- `matmul` follows `numpy.matmul` for 1-D and batched inputs.
+- String tensors support `equal`, `notEqual`, `where`, `unique`, `sort`, `argsort`,
+  `flip`, `roll`, boolean and fancy indexing and the set operations.
+- `crossValScore`, `crossValidate`, `GridSearchCV` and `RandomizedSearchCV` accept
+  splitter objects (`KFold`, `TimeSeriesSplit`, `GroupKFold`, ...), `groups`,
+  `shuffle` and `randomState`, and run on 1-D string tensors of documents.
+- `sampleWeight` for LinearRegression, Ridge, Lasso, ElasticNet,
+  LogisticRegression, BayesianRidge, HuberRegressor, KernelRidge, LinearSVR, the
+  SGD models, the naive Bayes models, QuantileRegressor, RANSAC, AdaBoost,
+  Bagging and MLP.
+- Text vectorizers, encoders and `KBinsDiscretizer` have `fit`, `transform`,
+  `getParams`, `setParams` and `clone`, so they work as Pipeline steps.
+- `classificationReport` for any labels; `posLabel` on precision, recall, F1,
+  F-beta and Jaccard; multioutput regression metrics; multilabel classification
+  metrics; `sampleWeight` for `cohenKappaScore` and `hammingLoss`.
+- `merge` and `join` on several key columns, `concat` with an array,
+  `Expanding.median`, negative `periods` in `diff` and `pctChange`, `skipna` for
+  groupBy `first` and `last`, and `naValues` for CSV reading.
+- `readXlsx` option `maxCells`; dataset download options `maxBytes`,
+  `maxDecompressedBytes`, `timeout` and a SHA-256 `checksum`.
+- Losses `gaussianNLLLoss`, `poissonNLLLoss`, `cosineEmbeddingLoss` and `ctcLoss`
+  are differentiable. `crossEntropyLoss` and `nllLoss` accept `(N, C, d1, ...)`
+  and unbatched input. Conv2d `paddingMode`, ConvTranspose2d `groups`, dropout
+  between RNN layers, `TransformerDecoderLayer` option `causal`, unbatched
+  `(C, H, W)` input to Conv2d and the 2-D pools, non-persistent buffers, and
+  `TaskTimeoutError` from `deepbox/core`.
+
+### Fixed
+
+- `readXlsx` could be made to use unbounded memory (a 233 KB file crashed Node)
+  or quadratic time (a 1.2 MB file took 43 s) by hostile input; it now rejects
+  such files in milliseconds.
+- Type declarations resolve under `moduleResolution` `node16` and `nodenext` for
+  both `import` and `require`.
+- Importing one subpath no longer pulls in every module: a minified browser bundle
+  of `tensor` alone went from 342,456 to 127,321 bytes.
+- `deepbox/plot` and `deepbox/datasets` bundle for browsers.
+- `Ridge` with more features than samples solves the dual problem (p = 3000,
+  n = 100: 17.2 s to 19 ms). LDA and QDA use a symmetric eigensolver (1000 x 400:
+  18.5 s to 2.7 s for LDA).
+- Many smaller fixes listed in `docs/FINALIZATION-2026-11-12.md`, each with a
+  regression test.
+
+### Changed
+
+- Node.js 22.12 or newer is supported (`engines` was `>=24.13.0`).
+- Every JSDoc `@example` runs as written and is checked by `npm run jsdoc:examples`.
+- The release workflow builds and tests with read-only permissions and publishes
+  only the verified tarball.
+
 ## [1.5.0] - 2026-10-03
 
 A quality release. Every source file was reviewed line by line, and the results
