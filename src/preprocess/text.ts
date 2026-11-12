@@ -10,16 +10,21 @@
 
 import {
   DataValidationError,
+  DTypeError,
   getDevice,
   getDtype,
   InvalidParameterError,
   MemoryError,
   NotFittedError,
+  ShapeError,
 } from "../core";
 import { resolveLosslessDType } from "../core/utils/dtype_utils";
 import { type Tensor, Tensor as TensorClass, tensor } from "../ndarray";
 
 type TokenPattern = RegExp;
+
+/** Documents as an array of strings, a 1-D string tensor or a single-column string tensor. */
+type TextInput = readonly string[] | Tensor;
 
 /** Options shared by every vectorizer. */
 type TextOptions = {
@@ -313,6 +318,28 @@ function validateDocuments(documents: readonly string[]): void {
   }
 }
 
+/**
+ * Documents of a `fit`, `transform` or `fitTransform` call. A tensor must hold strings in one
+ * dimension, or in one column of a 2-D tensor (the form `crossValScore` and `GridSearchCV`
+ * accept); an array is returned as given and validated by the caller.
+ */
+function toDocuments(input: TextInput, what: string): readonly string[] {
+  if (Array.isArray(input) || !(input instanceof TensorClass)) {
+    return input as readonly string[];
+  }
+  if (input.dtype !== "string") {
+    throw new DTypeError(`${what} needs a string tensor of documents; received ${input.dtype}`);
+  }
+  const isColumn = input.ndim === 2 && input.shape[1] === 1;
+  if (input.ndim !== 1 && !isColumn) {
+    throw new ShapeError(
+      `${what} needs a 1-D tensor or a single column with one document per element; received shape [${input.shape.join(", ")}]`
+    );
+  }
+  const values = input.toArray() as string[] | string[][];
+  return isColumn ? (values as string[][]).map((row) => row[0] as string) : (values as string[]);
+}
+
 // ---------------------------------------------------------------------------
 // Tokenization and output helpers
 // ---------------------------------------------------------------------------
@@ -603,6 +630,49 @@ export class CountVectorizer {
     return this.transformText(documents);
   }
 
+  /**
+   * Learn the vocabulary from documents given as an array of strings or a string tensor.
+   * Same as {@link CountVectorizer.fitText}; the name lets a vectorizer be a Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "CountVectorizer.fit"));
+  }
+
+  /**
+   * Document-term matrix of documents given as an array of strings or a string tensor.
+   * Same as {@link CountVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "CountVectorizer.transform"));
+  }
+
+  /**
+   * Learn the vocabulary and return the document-term matrix. Same as
+   * {@link CountVectorizer.fitTransformText}.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.fitTransformText(toDocuments(X, "CountVectorizer.fitTransform"));
+  }
+
+  /** Create an unfitted vectorizer with the same parameters. */
+  clone(): CountVectorizer {
+    return new CountVectorizer(this.getParams() as CountVectorizerOptions);
+  }
+
   /** The learned vocabulary mapping each term to its index */
   get vocabulary(): ReadonlyMap<string, number> {
     if (!this.fitted) throw new NotFittedError("CountVectorizer must be fitted first");
@@ -776,6 +846,50 @@ export class TfidfVectorizer {
     const nFeatures = this.idf_.length;
     this.weigh(data, documents.length, nFeatures);
     return toFloatTensor(data, documents.length, nFeatures);
+  }
+
+  /**
+   * Learn the vocabulary and IDF weights from documents given as an array of strings or a 1-D
+   * string tensor. Same as {@link TfidfVectorizer.fitText}; the name lets a vectorizer be a
+   * Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "TfidfVectorizer.fit"));
+  }
+
+  /**
+   * TF-IDF matrix of documents given as an array of strings or a string tensor. Same as
+   * {@link TfidfVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   * @throws {NotFittedError} If the vectorizer has not been fitted
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "TfidfVectorizer.transform"));
+  }
+
+  /**
+   * Learn the vocabulary and IDF and return the TF-IDF matrix. Same as
+   * {@link TfidfVectorizer.fitTransformText}.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, n_features]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.fitTransformText(toDocuments(X, "TfidfVectorizer.fitTransform"));
+  }
+
+  /** Create an unfitted vectorizer with the same parameters. */
+  clone(): TfidfVectorizer {
+    return new TfidfVectorizer(this.getParams() as TfidfVectorizerOptions);
   }
 
   /** The learned vocabulary mapping each term to its index */
@@ -1021,6 +1135,47 @@ export class HashingVectorizer {
    */
   fitTransformText(documents: readonly string[]): Tensor {
     return this.transformText(documents);
+  }
+
+  /**
+   * Validate documents given as an array of strings or a string tensor. Nothing is learned;
+   * the name lets a vectorizer be a Pipeline step.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns this
+   * @throws {DTypeError} If a tensor is not of dtype string
+   * @throws {ShapeError} If a tensor is not 1-D
+   */
+  fit(X: TextInput, _y?: Tensor): this {
+    return this.fitText(toDocuments(X, "HashingVectorizer.fit"));
+  }
+
+  /**
+   * Hash matrix of documents given as an array of strings or a string tensor. Same as
+   * {@link HashingVectorizer.transformText}.
+   *
+   * @param X - Documents
+   * @returns 2D Tensor of shape [n_documents, nFeatures]
+   */
+  transform(X: TextInput): Tensor {
+    return this.transformText(toDocuments(X, "HashingVectorizer.transform"));
+  }
+
+  /**
+   * Same as {@link HashingVectorizer.transform}; no fitting is needed.
+   *
+   * @param X - Documents
+   * @param _y - Ignored
+   * @returns 2D Tensor of shape [n_documents, nFeatures]
+   */
+  fitTransform(X: TextInput, _y?: Tensor): Tensor {
+    return this.transform(X);
+  }
+
+  /** Create a vectorizer with the same parameters. */
+  clone(): HashingVectorizer {
+    return new HashingVectorizer(this.getParams() as HashingVectorizerOptions);
   }
 
   /** Current parameters. Pass them to `setParams` or the constructor to rebuild a vectorizer. */

@@ -66,6 +66,9 @@ const cases: Record<string, Case> = {
   SelectKBest: { make: () => new P.SelectKBest({ k: 2 }), nonDefault: { k: 3 } },
   SelectFromModel: { make: () => new P.SelectFromModel({ estimator: new LinearRegression() }) },
   RFE: { make: () => new P.RFE({ estimator: new LinearRegression() }) },
+  CountVectorizer: { make: () => new P.CountVectorizer(), nonDefault: { lowercase: false } },
+  TfidfVectorizer: { make: () => new P.TfidfVectorizer(), nonDefault: { lowercase: false } },
+  HashingVectorizer: { make: () => new P.HashingVectorizer(), nonDefault: { nFeatures: 64 } },
   RFECV: { make: () => new P.RFECV({ estimator: new LinearRegression() }) },
 };
 
