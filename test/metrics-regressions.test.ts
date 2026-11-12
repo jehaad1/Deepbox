@@ -32,7 +32,8 @@ describe("metrics regression contracts", () => {
     expect(() => recall(tensor([0, 2]), tensor([0, 1]), "binary")).toThrow(/binary/i);
     expect(() => f1Score(tensor([0, 2]), tensor([0, 1]), "binary")).toThrow(/binary/i);
     expect(() => fbetaScore(tensor([0, 2]), tensor([0, 1]), 1, "binary")).toThrow(/binary/i);
-    expect(() => classificationReport(tensor([0, 2]), tensor([0, 1]))).toThrow(/binary/i);
+    // classificationReport accepts any labels since 1.5.1.
+    expect(classificationReport(tensor([0, 2]), tensor([0, 1]))).toContain("Macro Avg");
   });
 
   it("uses only non-zero targets in mape denominator", () => {
@@ -58,7 +59,7 @@ describe("metrics regression contracts", () => {
     expect(() => explainedVarianceScore(empty, empty)).toThrow(/at least one sample/i);
   });
 
-  it("rejects non-vector shapes for classification metrics", () => {
+  it("treats 2D indicator targets as multilabel and rejects other shapes", () => {
     const yTrue = tensor([
       [0, 1],
       [1, 0],
@@ -68,11 +69,18 @@ describe("metrics regression contracts", () => {
       [1, 0],
     ]);
 
-    expect(() => accuracy(yTrue, yPred)).toThrow(/column vector|1D/i);
-    expect(() => precision(yTrue, yPred, "binary")).toThrow(/column vector|1D/i);
+    // Several columns form a multilabel target since 1.5.1.
+    expect(accuracy(yTrue, yPred)).toBe(1);
+    expect(() => precision(yTrue, yPred, "binary")).toThrow(/multilabel-indicator/);
+    const cube = tensor([
+      [[0], [1]],
+      [[1], [0]],
+    ]);
+    expect(() => accuracy(cube, cube)).toThrow(/column vector|1D/i);
+    expect(() => precision(cube, cube, "binary")).toThrow(/column vector|1D/i);
   });
 
-  it("rejects non-vector shapes for regression metrics", () => {
+  it("scores 2D regression targets per output and rejects other shapes", () => {
     const yTrue = tensor([
       [1, 2],
       [3, 4],
@@ -82,7 +90,14 @@ describe("metrics regression contracts", () => {
       [3, 4],
     ]);
 
-    expect(() => mse(yTrue, yPred)).toThrow(/column vector|1D/i);
-    expect(() => r2Score(yTrue, yPred)).toThrow(/column vector|1D/i);
+    // Two outputs of equal shape are scored per column since 1.5.1.
+    expect(mse(yTrue, yPred)).toBe(0);
+    expect(r2Score(yTrue, yPred)).toBe(1);
+    const cube = tensor([
+      [[1], [2]],
+      [[3], [4]],
+    ]);
+    expect(() => mse(cube, cube)).toThrow(/column vectors|2D/i);
+    expect(() => r2Score(cube, cube)).toThrow(/column vectors|2D/i);
   });
 });

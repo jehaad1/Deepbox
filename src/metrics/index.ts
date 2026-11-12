@@ -5,6 +5,8 @@
 export type { SampleWeightInput, WeightedMetricOptions } from "./_internal";
 export type {
   AveragedMetricOptions,
+  ClassificationReportOptions,
+  CohenKappaOptions,
   ConfusionMatrixOptions,
   LogLossOptions,
   RocAucOptions,
@@ -68,6 +70,12 @@ export {
   pairwiseManhattan,
   reciprocalRank,
 } from "./pairwise";
+export type {
+  RegressionMetricOptions,
+  RegressionMultioutput,
+  VarianceMetricOptions,
+  VarianceMultioutput,
+} from "./regression";
 export {
   adjustedR2Score,
   explainedVarianceScore,

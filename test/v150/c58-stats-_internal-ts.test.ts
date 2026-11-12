@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InvalidParameterError } from "../../src/core";
+import { catchWarnings, InvalidParameterError } from "../../src/core";
 import { tensor as makeTensor, reshape, Tensor, transpose } from "../../src/ndarray";
 import {
   chiSquareCdf,
@@ -343,8 +343,14 @@ describe("c58 stats/correlation", () => {
   });
 
   it("pearsonr detects constant input exactly (0.1 + 0.1 + 0.1 != 3 * 0.1)", () => {
-    expect(() => pearsonr(tensor([0.1, 0.1, 0.1]), tensor([1, 2, 3]))).toThrow(/constant/);
-    expect(() => pearsonr(tensor([1, 2, 3]), tensor([0.7, 0.7, 0.7]))).toThrow(/constant/);
+    // Constant input gives NaN and a warning since 1.5.1, as in scipy.
+    const results: number[] = [];
+    const warnings = catchWarnings(() => {
+      results.push(pearsonr(tensor([0.1, 0.1, 0.1]), tensor([1, 2, 3]))[0]);
+      results.push(pearsonr(tensor([1, 2, 3]), tensor([0.7, 0.7, 0.7]))[0]);
+    });
+    expect(results.every(Number.isNaN)).toBe(true);
+    expect(warnings.length).toBe(2);
   });
 
   it("pearsonr NaN / Infinity input gives NaN statistic and NaN p-value", () => {
@@ -394,7 +400,10 @@ describe("c58 stats/correlation", () => {
   });
 
   it("spearmanr reports its own name for constant input", () => {
-    expect(() => spearmanr(tensor([1, 1, 1]), tensor([1, 2, 3]))).toThrow(/spearmanr\(\)/);
+    const warnings = catchWarnings(() => {
+      expect(spearmanr(tensor([1, 1, 1]), tensor([1, 2, 3]))[0]).toBeNaN();
+    });
+    expect(warnings[0]?.source).toBe("spearmanr");
   });
 
   it("kendalltau uses the exact p-value for small untied samples (scipy 'auto')", () => {

@@ -7,7 +7,14 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../core";
 import { type Tensor, Tensor as TensorClass } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  definedEntries,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 type Strategy = "uniform" | "quantile";
 type Encode = "ordinal" | "onehot-dense";
@@ -68,9 +75,9 @@ function readColumnSorted(
  * ```
  */
 export class KBinsDiscretizer {
-  private readonly nBins: number | readonly number[];
-  private readonly strategy: Strategy;
-  private readonly encode: Encode;
+  private nBins: number | readonly number[];
+  private strategy: Strategy;
+  private encode: Encode;
   private binEdges_: number[][] | null = null;
 
   /**
@@ -290,6 +297,40 @@ export class KBinsDiscretizer {
   /** Fit to X and return its binned representation. */
   fitTransform(X: Tensor): Tensor {
     return this.fit(X).transform(X);
+  }
+
+  /** Constructor options of this discretizer. */
+  getParams(): Record<string, unknown> {
+    return {
+      nBins: typeof this.nBins === "number" ? this.nBins : [...this.nBins],
+      strategy: this.strategy,
+      encode: this.encode,
+    };
+  }
+
+  /**
+   * Update parameters. The learned bin edges are discarded, so call `fit` again.
+   *
+   * @throws {InvalidParameterError} On an unknown parameter or invalid value; the discretizer is left unchanged
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["nBins", "strategy", "encode"], "KBinsDiscretizer");
+    const next = new KBinsDiscretizer({
+      ...this.getParams(),
+      ...definedEntries(params),
+    } as ConstructorParameters<typeof KBinsDiscretizer>[0]);
+    this.nBins = next.nBins;
+    this.strategy = next.strategy;
+    this.encode = next.encode;
+    this.binEdges_ = null;
+    return this;
+  }
+
+  /** Create an unfitted discretizer with the same parameters. */
+  clone(): KBinsDiscretizer {
+    return new KBinsDiscretizer(
+      this.getParams() as ConstructorParameters<typeof KBinsDiscretizer>[0]
+    );
   }
 
   /**

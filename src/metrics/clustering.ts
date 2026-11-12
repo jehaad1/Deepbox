@@ -818,12 +818,25 @@ function clusterCentroids(
 }
 
 /**
+ * Throw unless 2 <= `nClusters` <= `nSamples - 1`, the range for which the Davies-Bouldin and
+ * Calinski-Harabasz indices are defined (scikit-learn's `check_number_of_labels`).
+ */
+function assertClusterCount(nClusters: number, nSamples: number): void {
+  if (nClusters < 2 || nClusters > nSamples - 1) {
+    throw new InvalidParameterError(
+      `Number of labels is ${nClusters}. Valid values are 2 to n_samples - 1 (inclusive)`,
+      "labels",
+      nClusters
+    );
+  }
+}
+
+/**
  * Computes the Davies-Bouldin index.
  *
  * The Davies-Bouldin index measures the average similarity ratio of each cluster
  * with its most similar cluster. Lower values indicate better clustering.
- * Returns 0 when k < 2 or n_samples == 0. Returns Infinity when two clusters
- * with non-zero scatter share the same centroid.
+ * Returns Infinity when two clusters with non-zero scatter share the same centroid.
  *
  * **Time Complexity**: O(n * d + k² * d) where n is samples, d is features, k is clusters
  * **Space Complexity**: O(n * d)
@@ -835,13 +848,14 @@ function clusterCentroids(
  * @throws {ShapeError} If labels length doesn't match samples, or X shape is invalid
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
+ * @throws {InvalidParameterError} If the number of distinct labels is below 2 or above
+ *   `n_samples - 1` (also for empty input), as in scikit-learn
  *
  * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
   const layout = getFeatureLayout(X);
   const { nSamples, nFeatures: d } = layout;
-  if (nSamples === 0) return 0;
 
   if (labels.size !== nSamples) {
     throw new ShapeError("labels length must match number of samples");
@@ -849,7 +863,7 @@ export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
 
   const dense = toDenseFeatures(X, layout, null);
   const { codes, nClusters: k } = encodeLabels(labels, "labels");
-  if (k < 2) return 0;
+  assertClusterCount(k, nSamples);
 
   const { centroids, sizes } = clusterCentroids(dense, codes, k, nSamples, d);
 
@@ -886,7 +900,7 @@ export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
  *
  * The score is the ratio of between-cluster dispersion to within-cluster
  * dispersion. Higher values indicate better-defined clusters.
- * Returns 0 when k < 2, n_samples == 0, or within-group sum of squares is 0.
+ * Returns 0 when the within-group sum of squares is 0.
  *
  * **Time Complexity**: O(n * d) where n is samples and d is features
  * **Space Complexity**: O(n * d)
@@ -898,13 +912,14 @@ export function daviesBouldinScore(X: Tensor, labels: Tensor): number {
  * @throws {ShapeError} If labels length doesn't match samples, or X shape is invalid
  * @throws {DTypeError} If labels are string or X is non-numeric
  * @throws {DataValidationError} If X contains non-finite values
+ * @throws {InvalidParameterError} If the number of distinct labels is below 2 or above
+ *   `n_samples - 1` (also for empty input), as in scikit-learn
  *
  * @see {@link https://deepbox.dev/docs/metrics-clustering | Deepbox Clustering Metrics}
  */
 export function calinskiHarabaszScore(X: Tensor, labels: Tensor): number {
   const layout = getFeatureLayout(X);
   const { nSamples, nFeatures: d } = layout;
-  if (nSamples === 0) return 0;
 
   if (labels.size !== nSamples) {
     throw new ShapeError("labels length must match number of samples");
@@ -913,6 +928,7 @@ export function calinskiHarabaszScore(X: Tensor, labels: Tensor): number {
   const dense = toDenseFeatures(X, layout, null);
   scaleIntoSafeRange(dense);
   const { codes, nClusters: k } = encodeLabels(labels, "labels");
+  assertClusterCount(k, nSamples);
 
   const overallMean = new Float64Array(d);
   for (let i = 0; i < nSamples; i++) {
@@ -945,7 +961,7 @@ export function calinskiHarabaszScore(X: Tensor, labels: Tensor): number {
     }
   }
 
-  if (k < 2 || wgss === 0) return 0;
+  if (wgss === 0) return 0;
   return bgss / (k - 1) / (wgss / (nSamples - k));
 }
 

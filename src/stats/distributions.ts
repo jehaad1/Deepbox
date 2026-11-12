@@ -129,6 +129,13 @@ function requirePositive(name: string, value: number): void {
   }
 }
 
+/** Throws unless `value` is a finite number >= 0. */
+function requireNonNegative(name: string, value: number): void {
+  if (!(value >= 0) || !Number.isFinite(value)) {
+    throw new InvalidParameterError(`${name} must be a finite number >= 0`, name, value);
+  }
+}
+
 /** Throws unless `value` is a finite number. */
 function requireFinite(name: string, value: number): void {
   if (!Number.isFinite(value)) {
@@ -1193,12 +1200,14 @@ class BinomialDist extends DiscreteBase {
 class PoissonDist extends DiscreteBase {
   constructor(private mu: number) {
     super();
-    requirePositive("mu", mu);
+    requireNonNegative("mu", mu);
   }
 
   pmf(k: number): number {
     if (Number.isNaN(k)) return Number.NaN;
     if (!Number.isInteger(k) || k < 0) return 0;
+    // mu = 0 is the point mass at 0.
+    if (this.mu === 0) return k === 0 ? 1 : 0;
     return Math.exp(logPoissonRaw(k, this.mu));
   }
 
@@ -1206,7 +1215,7 @@ class PoissonDist extends DiscreteBase {
     if (Number.isNaN(x)) return Number.NaN;
     const k = Math.floor(x);
     if (k < 0) return 0;
-    if (!Number.isFinite(2 * (k + 1))) return 1;
+    if (this.mu === 0 || !Number.isFinite(2 * (k + 1))) return 1;
     // P(X <= k) = Q(k+1, mu), the regularized upper incomplete gamma function.
     return chiSquareSf(2 * this.mu, 2 * (k + 1));
   }
@@ -1223,6 +1232,7 @@ class PoissonDist extends DiscreteBase {
 
   /** Quantile for the lower-tail probability `p` and its complement `q = 1 - p`. */
   private quantile(p: number, q: number): number {
+    if (this.mu === 0) return p === 0 ? 0 : q === 0 ? Number.POSITIVE_INFINITY : 0;
     return discreteQuantile(
       (k) => this.cdf(k),
       (k) => this.sf(k),
@@ -1238,7 +1248,7 @@ class PoissonDist extends DiscreteBase {
     if (Number.isNaN(x)) return Number.NaN;
     const k = Math.floor(x);
     if (k < 0) return 1;
-    if (!Number.isFinite(2 * (k + 1))) return 0;
+    if (this.mu === 0 || !Number.isFinite(2 * (k + 1))) return 0;
     // P(X > k) = P(k+1, mu), the regularized lower incomplete gamma function.
     return chiSquareCdf(2 * this.mu, 2 * (k + 1));
   }
@@ -1436,9 +1446,11 @@ export function binom(n: number, p: number): DiscreteDistribution {
  *
  * Matches `scipy.stats.poisson(mu)`.
  *
- * @param mu - Expected number of events (rate parameter λ), must be a finite number > 0
+ * With `mu = 0` the distribution is the point mass at 0.
+ *
+ * @param mu - Expected number of events (rate parameter λ), must be a finite number >= 0
  * @returns Distribution object
- * @throws {InvalidParameterError} If `mu` is not a finite number > 0
+ * @throws {InvalidParameterError} If `mu` is not a finite number >= 0
  *
  * @example
  * ```ts

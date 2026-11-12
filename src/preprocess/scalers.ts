@@ -10,8 +10,11 @@ import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { __random } from "../random/random";
 import {
   assert2D,
+  assertKnownParams,
   assertNumericTensor,
   createRandomStream,
+  floatMatrix,
+  floatOutputDType,
   getShape2D,
   getStrides2D,
   shuffleIndicesInPlace,
@@ -110,14 +113,10 @@ function makeMatrix(
   data: Float64Array,
   nSamples: number,
   nFeatures: number,
-  device: Tensor["device"]
+  device: Tensor["device"],
+  dtype: "float32" | "float64" = "float64"
 ): Tensor {
-  return TensorClass.fromTypedArray({
-    data,
-    shape: [nSamples, nFeatures],
-    dtype: "float64",
-    device,
-  });
+  return floatMatrix(data, nSamples, nFeatures, device, dtype);
 }
 
 /** Copy a fitted per-feature array into a fresh 1-D float64 tensor. */
@@ -477,7 +476,7 @@ export class StandardScaler {
    * Center and scale X with the fitted statistics.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -502,7 +501,7 @@ export class StandardScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -548,7 +547,7 @@ export class StandardScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -559,15 +558,15 @@ export class StandardScaler {
   /**
    * Change options. Fitted statistics are kept; they cover both options.
    *
-   * @throws {InvalidParameterError} If a recognised option is not a boolean
+   * @throws {InvalidParameterError} On an unknown option or an option that is not a boolean; the scaler is left unchanged
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["withMean"] !== undefined) {
-      this.withMean = parseBooleanOption(params["withMean"], "withMean", this.withMean);
-    }
-    if (params["withStd"] !== undefined) {
-      this.withStd = parseBooleanOption(params["withStd"], "withStd", this.withStd);
-    }
+    assertKnownParams(params, ["withMean", "withStd", "copy"], "StandardScaler");
+    parseBooleanOption(params["copy"], "copy", true);
+    const withMean = parseBooleanOption(params["withMean"], "withMean", this.withMean);
+    const withStd = parseBooleanOption(params["withStd"], "withStd", this.withStd);
+    this.withMean = withMean;
+    this.withStd = withStd;
     return this;
   }
 
@@ -743,7 +742,7 @@ export class MinMaxScaler {
    * Map X into the feature range using the fitted minimum and maximum.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -780,7 +779,7 @@ export class MinMaxScaler {
         data[pos++] = scaled;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -829,7 +828,7 @@ export class MinMaxScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -843,12 +842,15 @@ export class MinMaxScaler {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["featureRange"] !== undefined) {
-      this.featureRange = validateFeatureRange(params["featureRange"]);
-    }
-    if (params["clip"] !== undefined) {
-      this.clip = parseBooleanOption(params["clip"], "clip", this.clip);
-    }
+    assertKnownParams(params, ["featureRange", "clip", "copy"], "MinMaxScaler");
+    parseBooleanOption(params["copy"], "copy", true);
+    const featureRange =
+      params["featureRange"] !== undefined
+        ? validateFeatureRange(params["featureRange"])
+        : this.featureRange;
+    const clip = parseBooleanOption(params["clip"], "clip", this.clip);
+    this.featureRange = featureRange;
+    this.clip = clip;
     return this;
   }
 
@@ -989,7 +991,7 @@ export class MaxAbsScaler {
    * Divide each feature by its fitted maximum absolute value.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1012,7 +1014,7 @@ export class MaxAbsScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1052,7 +1054,7 @@ export class MaxAbsScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -1060,8 +1062,15 @@ export class MaxAbsScaler {
     return {};
   }
 
-  /** This scaler has no options; present for API consistency. */
-  setParams(_params: Record<string, unknown>): this {
+  /**
+   * This scaler has no options besides `copy`, which is accepted for API parity. Fitted
+   * statistics are kept.
+   *
+   * @throws {InvalidParameterError} On an unknown option or a `copy` that is not a boolean
+   */
+  setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["copy"], "MaxAbsScaler");
+    parseBooleanOption(params["copy"], "copy", true);
     return this;
   }
 
@@ -1213,7 +1222,7 @@ export class RobustScaler {
    * Remove the median and divide by the quantile range.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1240,7 +1249,7 @@ export class RobustScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1284,7 +1293,7 @@ export class RobustScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -1304,6 +1313,12 @@ export class RobustScaler {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(
+      params,
+      ["withCentering", "withScaling", "quantileRange", "unitVariance", "copy"],
+      "RobustScaler"
+    );
+    parseBooleanOption(params["copy"], "copy", true);
     const withCentering = parseBooleanOption(
       params["withCentering"],
       "withCentering",
@@ -1402,7 +1417,7 @@ export class Normalizer {
    * Divide each row by its norm.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {ShapeError} If X is not 2-D
    * @throws {DataValidationError} If X contains NaN or Infinity
    */
@@ -1444,7 +1459,7 @@ export class Normalizer {
       }
     }
 
-    return makeMatrix(out, nSamples, nFeatures, X.device);
+    return makeMatrix(out, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1469,6 +1484,8 @@ export class Normalizer {
    * @throws {InvalidParameterError} If `norm` is not one of the supported values
    */
   setParams(params: Record<string, unknown>): this {
+    assertKnownParams(params, ["norm", "copy"], "Normalizer");
+    parseBooleanOption(params["copy"], "copy", true);
     if (params["norm"] !== undefined) {
       this.norm = parseNorm(params["norm"]);
     }
@@ -1650,7 +1667,7 @@ export class QuantileTransformer {
    * Map X to the output distribution.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the transformer has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1684,7 +1701,7 @@ export class QuantileTransformer {
           : u;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1744,7 +1761,7 @@ export class QuantileTransformer {
         }
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this transformer. */
@@ -1766,30 +1783,36 @@ export class QuantileTransformer {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    let changed = false;
-    if (params["nQuantiles"] !== undefined) {
-      const v = parseNQuantiles(params["nQuantiles"]);
-      changed ||= v !== this.nQuantiles;
-      this.nQuantiles = v;
-    }
-    if (params["outputDistribution"] !== undefined) {
-      const v = parseOutputDistribution(params["outputDistribution"]);
-      changed ||= v !== this.outputDistribution;
-      this.outputDistribution = v;
-    }
-    if ("subsample" in params) {
-      const v = parseSubsample(params["subsample"]);
-      changed ||= v !== this.subsample;
-      this.subsample = v;
-    }
+    assertKnownParams(
+      params,
+      ["nQuantiles", "outputDistribution", "subsample", "randomState", "copy"],
+      "QuantileTransformer"
+    );
+    parseBooleanOption(params["copy"], "copy", true);
+    const nQuantiles =
+      params["nQuantiles"] !== undefined ? parseNQuantiles(params["nQuantiles"]) : this.nQuantiles;
+    const outputDistribution =
+      params["outputDistribution"] !== undefined
+        ? parseOutputDistribution(params["outputDistribution"])
+        : this.outputDistribution;
+    const subsample = "subsample" in params ? parseSubsample(params["subsample"]) : this.subsample;
+    let randomState = this.randomState;
     if ("randomState" in params) {
       const v = params["randomState"];
       if (v !== undefined && typeof v !== "number") {
         throw new InvalidParameterError("randomState must be a number", "randomState", v);
       }
-      changed ||= v !== this.randomState;
-      this.randomState = v;
+      randomState = v;
     }
+    const changed =
+      nQuantiles !== this.nQuantiles ||
+      outputDistribution !== this.outputDistribution ||
+      subsample !== this.subsample ||
+      randomState !== this.randomState;
+    this.nQuantiles = nQuantiles;
+    this.outputDistribution = outputDistribution;
+    this.subsample = subsample;
+    this.randomState = randomState;
     if (changed) {
       this.quantiles_ = undefined;
       this.references_ = undefined;
@@ -2077,7 +2100,7 @@ export class PowerTransformer {
    * Apply the fitted power transform.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the transformer has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -2114,7 +2137,7 @@ export class PowerTransformer {
         data[pos++] = t;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -2149,7 +2172,7 @@ export class PowerTransformer {
         data[pos++] = boxcox ? boxCoxInverse(val, lambda) : yeoJohnsonInverse(val, lambda);
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -2175,19 +2198,19 @@ export class PowerTransformer {
    * @throws {InvalidParameterError} If a recognised option is invalid
    */
   setParams(params: Record<string, unknown>): this {
-    if (params["method"] !== undefined) {
-      const method = parsePowerMethod(params["method"]);
-      if (method !== this.method) {
-        this.method = method;
-        this.lambdas_ = undefined;
-        this.mean_ = undefined;
-        this.scale_ = undefined;
-        this.nFeaturesIn_ = 0;
-      }
+    assertKnownParams(params, ["method", "standardize", "copy"], "PowerTransformer");
+    parseBooleanOption(params["copy"], "copy", true);
+    const method =
+      params["method"] !== undefined ? parsePowerMethod(params["method"]) : this.method;
+    const standardize = parseBooleanOption(params["standardize"], "standardize", this.standardize);
+    if (method !== this.method) {
+      this.method = method;
+      this.lambdas_ = undefined;
+      this.mean_ = undefined;
+      this.scale_ = undefined;
+      this.nFeaturesIn_ = 0;
     }
-    if (params["standardize"] !== undefined) {
-      this.standardize = parseBooleanOption(params["standardize"], "standardize", this.standardize);
-    }
+    this.standardize = standardize;
     return this;
   }
 

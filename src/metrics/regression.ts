@@ -1,7 +1,8 @@
 import { isNumericTypedArray, isTypedArray } from "../core";
-import { DTypeError, InvalidParameterError } from "../core/errors";
+import { DTypeError, InvalidParameterError, ShapeError } from "../core/errors";
 import type { Tensor } from "../ndarray";
 import {
+  assertSameSize,
   assertSameSizeVectors,
   compensatedSum,
   denseFloat64,
@@ -95,9 +96,167 @@ function averageTerms(terms: Float64Array, w: Float64Array | undefined): number 
 }
 
 /**
- * Validate a (yTrue, yPred) pair and return private Float64 copies. The copies are
- * owned by the caller, so metrics may overwrite them with intermediate terms.
+ * How the scores of the outputs of a 2-D target `[nSamples, nOutputs]` are combined, as in
+ * scikit-learn's `multioutput`: `"uniformAverage"` (default) is the mean over the outputs,
+ * `"rawValues"` returns one score per output, and a number array gives the weight of every
+ * output in a weighted mean.
  */
+export type RegressionMultioutput = "uniformAverage" | "rawValues" | readonly number[];
+
+/** Options of the regression metrics that accept sample weights and a 2-D target. */
+export type RegressionMetricOptions = WeightedMetricOptions & {
+  /** How to combine the scores of several outputs. Default: `"uniformAverage"`. */
+  readonly multioutput?: RegressionMultioutput;
+};
+
+/**
+ * Like {@link RegressionMultioutput}, plus `"varianceWeighted"`: the mean over the outputs
+ * weighted by the variance of each true output. Accepted by {@link r2Score} and
+ * {@link explainedVarianceScore}.
+ */
+export type VarianceMultioutput = RegressionMultioutput | "varianceWeighted";
+
+/** Options of {@link r2Score} and {@link explainedVarianceScore}. */
+export type VarianceMetricOptions = WeightedMetricOptions & {
+  /** How to combine the scores of several outputs. Default: `"uniformAverage"`. */
+  readonly multioutput?: VarianceMultioutput;
+};
+
+/** The columns of a (yTrue, yPred) pair, each a private Float64 copy a metric may overwrite. */
+type OutputPair = {
+  readonly t: Float64Array[];
+  readonly p: Float64Array[];
+  readonly w: Float64Array | undefined;
+};
+
+const MULTIOUTPUT_MODES: readonly string[] = ["uniformAverage", "rawValues"];
+
+function assertMultioutput(multioutput: unknown, nOutputs: number, allowVariance: boolean): void {
+  if (Array.isArray(multioutput)) {
+    if (multioutput.length !== nOutputs) {
+      throw new InvalidParameterError(
+        `multioutput must have one weight per output; got ${multioutput.length} weights for ${nOutputs} outputs`,
+        "multioutput",
+        multioutput
+      );
+    }
+    for (const weight of multioutput) {
+      if (typeof weight !== "number" || !Number.isFinite(weight)) {
+        throw new InvalidParameterError(
+          "multioutput weights must be finite numbers",
+          "multioutput",
+          weight
+        );
+      }
+    }
+    return;
+  }
+  if (
+    typeof multioutput === "string" &&
+    (MULTIOUTPUT_MODES.includes(multioutput) ||
+      (allowVariance && multioutput === "varianceWeighted"))
+  ) {
+    return;
+  }
+  throw new InvalidParameterError(
+    `Invalid multioutput: ${String(multioutput)}. Must be 'uniformAverage', 'rawValues'${allowVariance ? ", 'varianceWeighted'" : ""} or an array of weights`,
+    "multioutput",
+    multioutput
+  );
+}
+
+/**
+ * Validate a (yTrue, yPred) pair and return private Float64 copies, one per output.
+ *
+ * A 1-D tensor or a column vector is a single output. A 2-D pair of equal shape
+ * `[nSamples, nOutputs]` has one output per column.
+ */
+function readOutputs(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: { readonly sampleWeight?: WeightedMetricOptions["sampleWeight"] },
+  multioutput: unknown,
+  allowVariance = false
+): OutputPair {
+  assertSameSize(yTrue, yPred, "yTrue", "yPred");
+  assertNumericRegressionTensor(yTrue, "yTrue");
+  assertNumericRegressionTensor(yPred, "yPred");
+  const columnLike = (t: Tensor) => t.ndim <= 1 || (t.ndim === 2 && t.shape[1] === 1);
+  let nSamples = yTrue.size;
+  let nOutputs = 1;
+  if (!(columnLike(yTrue) && columnLike(yPred))) {
+    const sameShape =
+      yTrue.ndim === 2 &&
+      yPred.ndim === 2 &&
+      yTrue.shape[0] === yPred.shape[0] &&
+      yTrue.shape[1] === yPred.shape[1];
+    if (!sameShape) {
+      throw new ShapeError(
+        `yTrue and yPred must be 1D, column vectors, or 2D with the same shape; got [${yTrue.shape.join(", ")}] and [${yPred.shape.join(", ")}]`
+      );
+    }
+    nSamples = yTrue.shape[0] as number;
+    nOutputs = yTrue.shape[1] as number;
+  }
+  assertMultioutput(multioutput, nOutputs, allowVariance);
+  const w = readSampleWeight(options.sampleWeight, nSamples);
+  return {
+    t: splitColumns(readVector(yTrue, "yTrue"), nSamples, nOutputs),
+    p: splitColumns(readVector(yPred, "yPred"), nSamples, nOutputs),
+    w,
+  };
+}
+
+/** The columns of a row-major `[nSamples, nOutputs]` buffer as separate arrays. */
+function splitColumns(flat: Float64Array, nSamples: number, nOutputs: number): Float64Array[] {
+  if (nOutputs === 1) return [flat];
+  const columns: Float64Array[] = [];
+  for (let j = 0; j < nOutputs; j++) {
+    const column = new Float64Array(nSamples);
+    for (let i = 0; i < nSamples; i++) column[i] = flat[i * nOutputs + j] as number;
+    columns.push(column);
+  }
+  return columns;
+}
+
+/**
+ * Combine per-output scores. `varianceWeights` are the weights of `"varianceWeighted"`; when
+ * all of them are zero the plain mean is used, as scikit-learn does.
+ */
+function combineOutputs(
+  scores: readonly number[],
+  multioutput: unknown,
+  varianceWeights?: readonly number[]
+): number | number[] {
+  if (multioutput === "rawValues") return [...scores];
+  let weights: readonly number[] | undefined;
+  if (Array.isArray(multioutput)) weights = multioutput as readonly number[];
+  else if (multioutput === "varianceWeighted") {
+    weights = varianceWeights?.some((v) => v !== 0) ? varianceWeights : undefined;
+  }
+  if (weights === undefined) return compensatedSum(scores) / scores.length;
+  const total = compensatedSum(weights);
+  if (total === 0) {
+    throw new InvalidParameterError(
+      "multioutput weights must not sum to zero (the weighted average is undefined)",
+      "multioutput",
+      weights
+    );
+  }
+  return compensatedSum(scores.map((score, j) => score * (weights?.[j] as number))) / total;
+}
+
+/** Score every output with `score` and combine the results. */
+function scoreOutputs(
+  pair: OutputPair,
+  multioutput: unknown,
+  score: (t: Float64Array, p: Float64Array, w: Float64Array | undefined) => number
+): number | number[] {
+  const scores = pair.t.map((t, j) => score(t, pair.p[j] as Float64Array, pair.w));
+  return combineOutputs(scores, multioutput);
+}
+
+/** Validate a single-output (yTrue, yPred) pair and return private Float64 copies. */
 function readPair(
   yTrue: Tensor,
   yPred: Tensor,
@@ -123,13 +282,19 @@ function readPair(
  *
  * With `options.sampleWeight` the mean is weighted: Σ w_i * (y_i - p_i)² / Σ w_i.
  *
+ * A 2-D target `[nSamples, nOutputs]` is scored per column. `options.multioutput` is
+ * `"uniformAverage"` (default, the mean of the column scores), `"rawValues"` (an array with
+ * one score per column) or an array of weights for a weighted mean, as in scikit-learn.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns MSE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -147,11 +312,35 @@ function readPair(
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function mse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
-  const { t, p, w } = readPair(yTrue, yPred, options);
+export function mse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function mse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[];
+  }
+): number;
+export function mse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions
+): number | number[];
+export function mse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  return scoreOutputs(readOutputs(yTrue, yPred, options, multioutput), multioutput, mseColumn);
+}
+
+function mseColumn(t: Float64Array, p: Float64Array, w: Float64Array | undefined): number {
   const n = t.length;
   if (n === 0) return 0;
-
   for (let i = 0; i < n; i++) {
     const diff = (t[i] as number) - (p[i] as number);
     p[i] = diff * diff;
@@ -174,11 +363,13 @@ export function mse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns RMSE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -195,8 +386,32 @@ export function mse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function rmse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
-  return Math.sqrt(mse(yTrue, yPred, options));
+export function rmse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function rmse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[];
+  }
+): number;
+export function rmse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions
+): number | number[];
+export function rmse(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  return scoreOutputs(readOutputs(yTrue, yPred, options, multioutput), multioutput, (t, p, w) =>
+    Math.sqrt(mseColumn(t, p, w))
+  );
 }
 
 /**
@@ -214,11 +429,13 @@ export function rmse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOption
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns MAE value (always non-negative, 0 is perfect)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -236,15 +453,35 @@ export function rmse(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOption
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function mae(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
-  const { t, p, w } = readPair(yTrue, yPred, options);
-  const n = t.length;
-  if (n === 0) return 0;
-
-  for (let i = 0; i < n; i++) {
-    p[i] = Math.abs((t[i] as number) - (p[i] as number));
+export function mae(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function mae(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[];
   }
-  return averageTerms(p, w);
+): number;
+export function mae(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions
+): number | number[];
+export function mae(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  return scoreOutputs(readOutputs(yTrue, yPred, options, multioutput), multioutput, (t, p, w) => {
+    const n = t.length;
+    if (n === 0) return 0;
+    for (let i = 0; i < n; i++) p[i] = Math.abs((t[i] as number) - (p[i] as number));
+    return averageTerms(p, w);
+  });
 }
 
 /**
@@ -265,13 +502,19 @@ export function mae(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions
  * With `options.sampleWeight` both sums are weighted and SS_tot is taken around the
  * weighted mean of y_true.
  *
+ * A 2-D target `[nSamples, nOutputs]` is scored per column. `options.multioutput` is as for
+ * {@link mse}, plus `"varianceWeighted"`: the mean of the column scores weighted by the
+ * variance of each true column.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns R² score (1 is perfect, 0 is baseline, negative is worse than baseline)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If inputs are empty or `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -289,8 +532,44 @@ export function mae(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function r2Score(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOptions = {}): number {
-  const { t, p, w } = readPair(yTrue, yPred, options);
+export function r2Score(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: VarianceMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function r2Score(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: VarianceMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[] | "varianceWeighted";
+  }
+): number;
+export function r2Score(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: VarianceMetricOptions
+): number | number[];
+export function r2Score(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: VarianceMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  const pair = readOutputs(yTrue, yPred, options, multioutput, true);
+  const totals: number[] = [];
+  const scores = pair.t.map((t, j) => {
+    const { score, ssTot } = r2Column(t, pair.p[j] as Float64Array, pair.w);
+    totals.push(ssTot);
+    return score;
+  });
+  return combineOutputs(scores, multioutput, totals);
+}
+
+function r2Column(
+  t: Float64Array,
+  p: Float64Array,
+  w: Float64Array | undefined
+): { score: number; ssTot: number } {
   const n = t.length;
   if (n === 0) {
     throw new InvalidParameterError("r2Score requires at least one sample", "yTrue", n);
@@ -308,10 +587,10 @@ export function r2Score(yTrue: Tensor, yPred: Tensor, options: WeightedMetricOpt
   // Constant targets (ssTot = 0): there is no variance to explain, so a perfect
   // fit scores 1 and anything else 0 (scikit-learn's force_finite behavior).
   if (ssTot === 0) {
-    return ssRes === 0 ? 1.0 : 0.0;
+    return { score: ssRes === 0 ? 1.0 : 0.0, ssTot };
   }
 
-  return 1 - ssRes / ssTot;
+  return { score: 1 - ssRes / ssTot, ssTot };
 }
 
 /**
@@ -456,11 +735,13 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
  *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns MAPE as a fraction (0 is perfect). Returns 0 for empty input.
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -480,17 +761,35 @@ export function mape(yTrue: Tensor, yPred: Tensor): number {
 export function meanAbsolutePercentageError(
   yTrue: Tensor,
   yPred: Tensor,
-  options: WeightedMetricOptions = {}
-): number {
-  const { t, p, w } = readPair(yTrue, yPred, options);
-  const n = t.length;
-  if (n === 0) return 0;
-
-  for (let i = 0; i < n; i++) {
-    const trueVal = t[i] as number;
-    p[i] = Math.abs((p[i] as number) - trueVal) / Math.max(Math.abs(trueVal), Number.EPSILON);
+  options: RegressionMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function meanAbsolutePercentageError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[];
   }
-  return averageTerms(p, w);
+): number;
+export function meanAbsolutePercentageError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: RegressionMetricOptions
+): number | number[];
+export function meanAbsolutePercentageError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: RegressionMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  return scoreOutputs(readOutputs(yTrue, yPred, options, multioutput), multioutput, (t, p, w) => {
+    const n = t.length;
+    if (n === 0) return 0;
+    for (let i = 0; i < n; i++) {
+      const trueVal = t[i] as number;
+      p[i] = Math.abs((p[i] as number) - trueVal) / Math.max(Math.abs(trueVal), Number.EPSILON);
+    }
+    return averageTerms(p, w);
+  });
 }
 
 /**
@@ -504,11 +803,18 @@ export function meanAbsolutePercentageError(
  * **Time Complexity**: O(n log n) due to sorting for median calculation
  * **Space Complexity**: O(n) for storing error array
  *
+ * A 2-D target `[nSamples, nOutputs]` is scored per column; see {@link mse} for `multioutput`.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @returns Median absolute error (always non-negative, 0 is perfect)
+ * @param options - Optional `multioutput`, how the scores of the columns of a 2-D target are
+ *   combined (default the mean)
+ * @returns Median absolute error (always non-negative, 0 is perfect), or one value per column
+ *   with `multioutput: "rawValues"`
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D, column vectors or
+ *   2D arrays of equal shape
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {DataValidationError} If inputs contain NaN or infinite values
  *
@@ -524,30 +830,51 @@ export function meanAbsolutePercentageError(
  *
  * @see {@link https://deepbox.dev/docs/metrics-regression | Deepbox Regression Metrics}
  */
-export function medianAbsoluteError(yTrue: Tensor, yPred: Tensor): number {
-  const { t, p: errors } = readPair(yTrue, yPred);
-  const n = t.length;
-  if (n === 0) return 0;
+export function medianAbsoluteError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: { readonly multioutput: "rawValues" }
+): number[];
+export function medianAbsoluteError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: { readonly multioutput?: "uniformAverage" | readonly number[] }
+): number;
+export function medianAbsoluteError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: { readonly multioutput?: RegressionMultioutput }
+): number | number[];
+export function medianAbsoluteError(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: { readonly multioutput?: RegressionMultioutput } = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  return scoreOutputs(readOutputs(yTrue, yPred, {}, multioutput), multioutput, (t, errors) => {
+    const n = t.length;
+    if (n === 0) return 0;
 
-  for (let i = 0; i < n; i++) {
-    errors[i] = Math.abs((t[i] as number) - (errors[i] as number));
-  }
+    for (let i = 0; i < n; i++) {
+      errors[i] = Math.abs((t[i] as number) - (errors[i] as number));
+    }
 
-  // The median needs only the middle order statistic(s), so quickselect
-  // (O(n) average) beats a full O(n log n) sort. quickselectF64 partially
-  // partitions `errors` in place around the requested rank.
-  const mid = n >> 1;
-  if (n % 2 !== 0) {
-    return quickselectF64(errors, mid);
-  }
-  const hi = quickselectF64(errors, mid);
-  // The lower median is the max of the left partition, now in [0, mid).
-  let lo = errors[0] as number;
-  for (let i = 1; i < mid; i++) {
-    const v = errors[i] as number;
-    if (v > lo) lo = v;
-  }
-  return lo + (hi - lo) / 2;
+    // The median needs only the middle order statistic(s), so quickselect
+    // (O(n) average) beats a full O(n log n) sort. quickselectF64 partially
+    // partitions `errors` in place around the requested rank.
+    const mid = n >> 1;
+    if (n % 2 !== 0) {
+      return quickselectF64(errors, mid);
+    }
+    const hi = quickselectF64(errors, mid);
+    // The lower median is the max of the left partition, now in [0, mid).
+    let lo = errors[0] as number;
+    for (let i = 1; i < mid; i++) {
+      const v = errors[i] as number;
+      if (v > lo) lo = v;
+    }
+    return lo + (hi - lo) / 2;
+  });
 }
 
 /**
@@ -644,13 +971,17 @@ export function maxError(yTrue: Tensor, yPred: Tensor): number {
  * With `options.sampleWeight` both variances are weighted (weighted means and
  * weighted sums of squares).
  *
+ * A 2-D target is scored per column; `options.multioutput` is as for {@link r2Score}.
+ *
  * @param yTrue - Ground truth (correct) target values
  * @param yPred - Estimated target values
- * @param options - Optional `sampleWeight`, one weight per sample
+ * @param options - Optional `sampleWeight` (one weight per sample) and `multioutput` (how the
+ *   scores of the columns of a 2-D target are combined, default the mean)
  * @returns Explained variance score (1.0 is perfect, lower is worse)
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
- *   `sampleWeight` has the wrong length
+ * @throws {ShapeError} If yTrue and yPred have different sizes, are not 1D, column vectors or 2D
+ *   arrays of equal shape, or `sampleWeight` has the wrong length
+ * @throws {InvalidParameterError} If `multioutput` is invalid or a weight array has the wrong length
  * @throws {DTypeError} If yTrue or yPred is non-numeric or int64
  * @throws {InvalidParameterError} If inputs are empty or `sampleWeight` sums to zero
  * @throws {DataValidationError} If inputs contain NaN or infinite values
@@ -671,9 +1002,41 @@ export function maxError(yTrue: Tensor, yPred: Tensor): number {
 export function explainedVarianceScore(
   yTrue: Tensor,
   yPred: Tensor,
-  options: WeightedMetricOptions = {}
-): number {
-  const { t, p, w } = readPair(yTrue, yPred, options);
+  options: VarianceMetricOptions & { readonly multioutput: "rawValues" }
+): number[];
+export function explainedVarianceScore(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: VarianceMetricOptions & {
+    readonly multioutput?: "uniformAverage" | readonly number[] | "varianceWeighted";
+  }
+): number;
+export function explainedVarianceScore(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options?: VarianceMetricOptions
+): number | number[];
+export function explainedVarianceScore(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: VarianceMetricOptions = {}
+): number | number[] {
+  const multioutput = options.multioutput ?? "uniformAverage";
+  const pair = readOutputs(yTrue, yPred, options, multioutput, true);
+  const totals: number[] = [];
+  const scores = pair.t.map((t, j) => {
+    const { score, varTrue } = explainedVarianceColumn(t, pair.p[j] as Float64Array, pair.w);
+    totals.push(varTrue);
+    return score;
+  });
+  return combineOutputs(scores, multioutput, totals);
+}
+
+function explainedVarianceColumn(
+  t: Float64Array,
+  p: Float64Array,
+  w: Float64Array | undefined
+): { score: number; varTrue: number } {
   const n = t.length;
   if (n === 0) {
     throw new InvalidParameterError(
@@ -698,10 +1061,10 @@ export function explainedVarianceScore(
 
   // Constant targets (varTrue = 0): a perfect fit scores 1, anything else 0.
   if (varTrue === 0) {
-    return varResidual === 0 ? 1.0 : 0.0;
+    return { score: varResidual === 0 ? 1.0 : 0.0, varTrue };
   }
 
-  return 1 - varResidual / varTrue;
+  return { score: 1 - varResidual / varTrue, varTrue };
 }
 
 /**

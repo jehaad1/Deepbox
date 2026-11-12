@@ -7,36 +7,21 @@
 
 import { DataValidationError, DTypeError, InvalidParameterError, NotFittedError } from "../core";
 import type { Transformer } from "../ml/base";
-import { type Tensor, Tensor as TensorClass } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import type { Tensor } from "../ndarray";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  definedEntries,
+  floatMatrix,
+  floatOutputDType,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-function assertKnownParams(
-  params: Record<string, unknown>,
-  known: readonly string[],
-  who: string
-): void {
-  for (const key of Object.keys(params)) {
-    if (!known.includes(key)) {
-      throw new InvalidParameterError(
-        `Invalid parameter '${key}' for ${who}; valid parameters are ${known.join(", ")}`,
-        key,
-        params[key]
-      );
-    }
-  }
-}
-
-function definedEntries(params: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
-}
 
 function validateMissingValues(value: number): void {
   if (typeof value !== "number") {
@@ -93,13 +78,14 @@ function readDense(
   return { data, nSamples, nFeatures };
 }
 
-function toTensor(data: Float64Array, nSamples: number, nCols: number, X: Tensor): Tensor {
-  return TensorClass.fromTypedArray({
-    data,
-    shape: [nSamples, nCols],
-    dtype: "float64",
-    device: X.device,
-  });
+function toTensor(
+  data: Float64Array,
+  nSamples: number,
+  nCols: number,
+  X: Tensor,
+  dtype: "float32" | "float64" = "float64"
+): Tensor {
+  return floatMatrix(data, nSamples, nCols, X.device, dtype);
 }
 
 /** Keep the listed columns of a dense row-major matrix. */
@@ -153,7 +139,7 @@ type ImputeStrategy = "mean" | "median" | "most_frequent" | "constant";
  * Replaces missing values (NaN, or the value given by `missingValues`) using a
  * statistic of each feature column (mean, median, most frequent value) or a
  * constant. The statistics ignore missing entries. For `most_frequent`, ties are
- * broken towards the smallest value. The output is always float64.
+ * broken towards the smallest value. The output is float32 for float32 input and float64 otherwise.
  *
  * A column without any observed value gets 0 for `mean`, `median` and
  * `most_frequent` when `keepEmptyFeatures` is true (the default), and is
@@ -297,7 +283,7 @@ export class SimpleImputer implements Transformer {
    * Impute missing values in X using the fitted statistics.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of shape (n_samples, n_kept_features); equal to the
+   * @returns Tensor of shape (n_samples, n_kept_features), float32 for float32 input and otherwise float64; equal to the
    *   input shape unless columns were dropped (`keepEmptyFeatures: false`)
    */
   transform(X: Tensor): Tensor {
@@ -316,8 +302,15 @@ export class SimpleImputer implements Transformer {
       }
     }
 
-    if (kept.length === nFeatures) return toTensor(data, nSamples, nFeatures, X);
-    return toTensor(projectColumns(data, nSamples, nFeatures, kept), nSamples, kept.length, X);
+    const dtype = floatOutputDType(X);
+    if (kept.length === nFeatures) return toTensor(data, nSamples, nFeatures, X, dtype);
+    return toTensor(
+      projectColumns(data, nSamples, nFeatures, kept),
+      nSamples,
+      kept.length,
+      X,
+      dtype
+    );
   }
 
   /**
@@ -396,7 +389,7 @@ export class SimpleImputer implements Transformer {
  * distance-weighted mean for `weights: 'distance'`; if a donor is at distance 0
  * only the donors at distance 0 are used). When no donor exists, the training
  * column mean is used (0 if the column has no observed value). The output is
- * always float64.
+ * float32 for float32 input and float64 otherwise.
  *
  * @example
  * ```ts
@@ -511,7 +504,7 @@ export class KNNImputer implements Transformer {
    * Impute the missing values of X from the training data.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of shape (n_samples, n_kept_features); equal to the
+   * @returns Tensor of shape (n_samples, n_kept_features), float32 for float32 input and otherwise float64; equal to the
    *   input shape unless columns were dropped (`keepEmptyFeatures: false`)
    */
   transform(X: Tensor): Tensor {
@@ -593,8 +586,15 @@ export class KNNImputer implements Transformer {
       }
     }
 
-    if (kept.length === nFeatures) return toTensor(out, nSamples, nFeatures, X);
-    return toTensor(projectColumns(out, nSamples, nFeatures, kept), nSamples, kept.length, X);
+    const dtype = floatOutputDType(X);
+    if (kept.length === nFeatures) return toTensor(out, nSamples, nFeatures, X, dtype);
+    return toTensor(
+      projectColumns(out, nSamples, nFeatures, kept),
+      nSamples,
+      kept.length,
+      X,
+      dtype
+    );
   }
 
   fitTransform(X: Tensor): Tensor {

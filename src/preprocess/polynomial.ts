@@ -14,7 +14,16 @@ import {
 } from "../core";
 import type { Transformer } from "../ml/base";
 import { type Tensor, Tensor as TensorClass } from "../ndarray";
-import { assert2D, assertNumericTensor, getShape2D, getStrides2D } from "./_internal";
+import {
+  assert2D,
+  assertKnownParams,
+  assertNumericTensor,
+  definedEntries,
+  floatMatrix,
+  floatOutputDType,
+  getShape2D,
+  getStrides2D,
+} from "./_internal";
 
 /** Largest number of output columns PolynomialFeatures will generate. */
 const MAX_OUTPUT_FEATURES = 2 ** 24;
@@ -22,30 +31,6 @@ const MAX_OUTPUT_FEATURES = 2 ** 24;
 const MAX_COMBINATION_ENTRIES = 2 ** 27;
 /** Largest number of output elements (rows x columns) PolynomialFeatures will allocate. */
 const MAX_OUTPUT_ELEMENTS = 2 ** 31 - 1;
-
-function assertKnownParams(
-  params: Record<string, unknown>,
-  known: readonly string[],
-  who: string
-): void {
-  for (const key of Object.keys(params)) {
-    if (!known.includes(key)) {
-      throw new InvalidParameterError(
-        `Invalid parameter '${key}' for ${who}; valid parameters are ${known.join(", ")}`,
-        key,
-        params[key]
-      );
-    }
-  }
-}
-
-function definedEntries(params: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
-}
 
 function assertNumeric(X: Tensor, who: string): void {
   if (X.dtype === "string") {
@@ -172,7 +157,7 @@ function buildColumnDefinitions(
  * - interactionOnly=false: [1, a, b, a², ab, b²]
  * - interactionOnly=true:  [1, a, b, ab]
  *
- * The output is always float64. The number of output columns grows quickly with
+ * The output is float32 for float32 input and float64 otherwise. The number of output columns grows quickly with
  * the degree and the number of features; very large requests throw a
  * `MemoryError` instead of exhausting memory.
  *
@@ -258,7 +243,7 @@ export class PolynomialFeatures implements Transformer {
    * Expand X into polynomial features.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of shape (n_samples, n_output_features)
+   * @returns Tensor of shape (n_samples, n_output_features): float32 for float32 input, otherwise float64
    * @throws {MemoryError} If the output would be too large
    */
   transform(X: Tensor): Tensor {
@@ -314,12 +299,7 @@ export class PolynomialFeatures implements Transformer {
       }
     }
 
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [nSamples, nOutputFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return floatMatrix(result, nSamples, nOutputFeatures, X.device, floatOutputDType(X));
   }
 
   fitTransform(X: Tensor): Tensor {
