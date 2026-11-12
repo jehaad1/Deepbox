@@ -86,7 +86,7 @@ export class BallTree {
   private readonly root: BallNode | null;
 
   /**
-   * @param data - Row-major points, at least `nSamples * nDims` values
+   * @param data - Row-major points, at least `nSamples * nDims` values; the first `nSamples * nDims` values are copied
    * @param nSamples - Number of points (rows) to index
    * @param nDims - Number of coordinates per point (>= 1)
    * @param leafSize - Largest number of points stored in a leaf (integer >= 1, default 40)
@@ -130,7 +130,8 @@ export class BallTree {
 
     this.nSamples = nSamples;
     this.nDims = nDims;
-    this.data = data;
+    // The tree keeps its own copy, so later changes to the caller's buffer cannot corrupt it.
+    this.data = data.slice(0, total);
     this.leafSize = leafSize;
 
     this.order = new Uint32Array(nSamples);
