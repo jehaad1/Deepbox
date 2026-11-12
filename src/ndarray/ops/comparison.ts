@@ -34,6 +34,7 @@ import {
   getBroadcastShape,
   isScalar,
 } from "./broadcast";
+import { encodeStrings } from "./string_codes";
 
 type CompareOp = "eq" | "neq" | "gt" | "ge" | "lt" | "le";
 
@@ -165,6 +166,11 @@ function sameShape(a: Tensor, b: Tensor): boolean {
 }
 
 function runComparison(a: Tensor, b: Tensor, op: CompareOp): Tensor {
+  if (a.dtype === "string" && b.dtype === "string" && (op === "eq" || op === "neq")) {
+    // Equal strings share one rank, so comparing ranks compares the strings.
+    const { codes } = encodeStrings([a, b]);
+    return runComparison(codes[0] as Tensor, codes[1] as Tensor, op);
+  }
   if (a.dtype === "string" || b.dtype === "string") {
     throw new DTypeError(`${op} for string dtype is not implemented`);
   }
@@ -265,12 +271,12 @@ function runComparison(a: Tensor, b: Tensor, op: CompareOp): Tensor {
  * Element-wise equality.
  *
  * NaN is not equal to anything, including itself. int64 tensors compare
- * exactly against any numeric dtype.
+ * exactly against any numeric dtype. Two string tensors compare element by element.
  *
  * @param a - First input tensor
  * @param b - Second input tensor
  * @returns `bool` tensor with the broadcast shape
- * @throws {DTypeError} For `string` tensors
+ * @throws {DTypeError} If only one of the tensors has `string` dtype
  * @throws {ShapeError} If the shapes do not broadcast
  */
 export function equal(a: Tensor, b: Tensor): Tensor {
@@ -282,12 +288,13 @@ export function equal(a: Tensor, b: Tensor): Tensor {
  *
  * Returns a boolean tensor where each element is true (1) if the
  * corresponding elements in a and b are not equal, false (0) otherwise.
- * NaN is unequal to everything, including itself.
+ * NaN is unequal to everything, including itself. Two string tensors compare
+ * element by element.
  *
  * @param a - First input tensor
  * @param b - Second input tensor
  * @returns `bool` tensor with the broadcast shape
- * @throws {DTypeError} For `string` tensors
+ * @throws {DTypeError} If only one of the tensors has `string` dtype
  * @throws {ShapeError} If the shapes do not broadcast
  */
 export function notEqual(a: Tensor, b: Tensor): Tensor {

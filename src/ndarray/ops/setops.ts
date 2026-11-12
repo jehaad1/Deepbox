@@ -14,6 +14,7 @@
 import { DataValidationError, DTypeError, InvalidParameterError } from "../../core";
 import { Tensor } from "../tensor/Tensor";
 import { broadcastApply, getBroadcastShape } from "./broadcast";
+import { decodeStrings, encodeStrings } from "./string_codes";
 
 // ---- Internal helpers ----
 
@@ -152,7 +153,7 @@ function integerBinary(
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of GCD values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *
@@ -178,7 +179,7 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of LCM values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *
@@ -270,6 +271,19 @@ function toSortedTensor(values: Iterable<number | bigint>, exact: boolean, a: Te
 }
 
 /**
+ * Run a set operation on two string tensors through their shared ranks. The numeric result is
+ * a sorted list of ranks, which maps back to strings in code point order.
+ */
+function stringSetOperation(
+  a: Tensor,
+  b: Tensor,
+  operation: (ra: Tensor, rb: Tensor) => Tensor
+): Tensor {
+  const { codes, table } = encodeStrings([a, b]);
+  return decodeStrings(operation(codes[0] as Tensor, codes[1] as Tensor), table);
+}
+
+/**
  * Compute the sorted, unique union of two 1D tensors.
  *
  * NaN values collapse into a single NaN that sorts last, as in NumPy. The
@@ -279,7 +293,7 @@ function toSortedTensor(values: Iterable<number | bigint>, exact: boolean, a: Te
  * @param a - First 1D tensor
  * @param b - Second 1D tensor
  * @returns Sorted 1D tensor containing the unique union of elements
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  * @throws {InvalidParameterError} If an input is not 1D
  *
  * @example
@@ -288,6 +302,9 @@ function toSortedTensor(values: Iterable<number | bigint>, exact: boolean, a: Te
  * ```
  */
 export function union1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, union1d);
+  }
   const [va, vb] = readOperands(a, b, "union1d");
   const exact = va instanceof BigInt64Array;
   const combined = new Set<number | bigint>(va);
@@ -305,7 +322,7 @@ export function union1d(a: Tensor, b: Tensor): Tensor {
  * @param a - First 1D tensor
  * @param b - Second 1D tensor
  * @returns Sorted 1D tensor containing the unique intersection of elements
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  * @throws {InvalidParameterError} If an input is not 1D
  *
  * @example
@@ -314,6 +331,9 @@ export function union1d(a: Tensor, b: Tensor): Tensor {
  * ```
  */
 export function intersect1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, intersect1d);
+  }
   const [va, vb] = readOperands(a, b, "intersect1d");
   const exact = va instanceof BigInt64Array;
   const inB = new Set<number | bigint>(vb);
@@ -334,7 +354,7 @@ export function intersect1d(a: Tensor, b: Tensor): Tensor {
  * @param a - First 1D tensor
  * @param b - Second 1D tensor
  * @returns Sorted 1D tensor of unique elements in `a` not in `b`
- * @throws {DTypeError} If an input has string or complex dtype
+ * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
  * @throws {InvalidParameterError} If an input is not 1D
  *
  * @example
@@ -343,6 +363,9 @@ export function intersect1d(a: Tensor, b: Tensor): Tensor {
  * ```
  */
 export function setdiff1d(a: Tensor, b: Tensor): Tensor {
+  if (a.dtype === "string" && b.dtype === "string") {
+    return stringSetOperation(a, b, setdiff1d);
+  }
   const [va, vb] = readOperands(a, b, "setdiff1d");
   const exact = va instanceof BigInt64Array;
   const inB = new Set<number | bigint>(vb);

@@ -59,6 +59,7 @@ import {
 } from "./_internal";
 import { dispatchTernary } from "./device_dispatch";
 import { RADIX_SORT_THRESHOLD, radixArgsortF64 } from "./radix";
+import { decodeStrings, encodeStrings } from "./string_codes";
 
 // ─── Internal type-safe helpers ─────────────────────────────────────────────
 
@@ -477,7 +478,7 @@ function broadcastStrides(
  *
  * All three tensors must be broadcastable to a common shape. The condition is
  * evaluated as boolean: 0 is false, every other value (including NaN) is true.
- * `x` and `y` must have the same dtype.
+ * `x` and `y` must have the same dtype; both may be string tensors.
  *
  * **Complexity**: O(n) where n is the number of elements in the output
  *
@@ -485,7 +486,7 @@ function broadcastStrides(
  * @param x - Values where condition is true
  * @param y - Values where condition is false
  * @returns Tensor with selected elements
- * @throws {DTypeError} If any input has string dtype, or `x` and `y` differ in dtype
+ * @throws {DTypeError} If `condition` has string dtype, or `x` and `y` differ in dtype
  * @throws {ShapeError} If the shapes cannot be broadcast together
  *
  * @example
@@ -500,8 +501,14 @@ export function where(condition: Tensor, x: Tensor, y: Tensor): Tensor {
   if (condition.dtype === "string") {
     throw new DTypeError("where condition must be a numeric tensor, not string");
   }
+  if (x.dtype === "string" && y.dtype === "string") {
+    const { codes, table } = encodeStrings([x, y]);
+    return decodeStrings(where(condition, codes[0] as Tensor, codes[1] as Tensor), table);
+  }
   if (x.dtype === "string" || y.dtype === "string") {
-    throw new DTypeError("where does not support string dtype for x or y");
+    throw new DTypeError(
+      `where requires x and y to have the same dtype; got ${x.dtype} and ${y.dtype}`
+    );
   }
   if (x.dtype !== y.dtype) {
     throw new DTypeError(
@@ -1066,7 +1073,8 @@ export function tril(t: Tensor, k = 0): Tensor {
  */
 export function flip(t: Tensor, axes?: Axis | readonly Axis[]): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("flip is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(flip(codes[0] as Tensor, axes), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
   const ndim = t.ndim;
@@ -1200,7 +1208,8 @@ export function roll(
   axis?: Axis | readonly Axis[]
 ): Tensor {
   if (t.dtype === "string") {
-    throw new DTypeError("roll is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(roll(codes[0] as Tensor, shift, axis), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
   const shifts: readonly number[] = typeof shift === "number" ? [shift] : shift;
@@ -2191,8 +2200,8 @@ function uniqueAlongAxis(
  *
  * @param t - Input tensor
  * @param returnCountsOrOptions - `true` to also return float64 counts, or an options object
- * @returns Object with `values` and the requested extra tensors
- * @throws {DTypeError} If `t` has string dtype
+ * @returns Object with `values` and the requested extra tensors. A string tensor gives string
+ *   `values` in code point order
  * @throws {InvalidParameterError} If `axis` is out of range for `t`
  *
  * @example
@@ -2210,7 +2219,12 @@ export function unique(t: Tensor, returnCounts?: boolean): { values: Tensor; cou
 export function unique<const O extends UniqueOptions>(t: Tensor, options: O): UniqueOutput<O>;
 export function unique(t: Tensor, returnCountsOrOptions?: boolean | UniqueOptions): UniqueResult {
   if (t.dtype === "string") {
-    throw new DTypeError("unique is not defined for string dtype");
+    const { codes, table } = encodeStrings([t]);
+    const r =
+      typeof returnCountsOrOptions === "object" && returnCountsOrOptions !== null
+        ? unique(codes[0] as Tensor, returnCountsOrOptions)
+        : unique(codes[0] as Tensor, returnCountsOrOptions === true);
+    return { ...r, values: decodeStrings(r.values, table) };
   }
   const dtype = ensureNonStringDType(t.dtype);
   const options: UniqueOptions =
@@ -2695,11 +2709,12 @@ export function bincount(t: Tensor, minlength = 0, weights?: Tensor): Tensor {
  * ```
  */
 export function booleanIndex(t: Tensor, mask: Tensor): Tensor {
-  if (t.dtype === "string") {
-    throw new DTypeError("booleanIndex is not defined for string dtype");
-  }
   if (mask.dtype === "string") {
     throw new DTypeError("booleanIndex mask must be numeric");
+  }
+  if (t.dtype === "string") {
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(booleanIndex(codes[0] as Tensor, mask), table);
   }
   if (t.size !== mask.size) {
     throw new ShapeError(`Tensor size ${t.size} does not match mask size ${mask.size}`);
@@ -2750,14 +2765,15 @@ export function booleanIndex(t: Tensor, mask: Tensor): Tensor {
  * @throws {DTypeError} If `indices` has bool dtype
  */
 export function fancyIndex(t: Tensor, indices: Tensor, axis: Axis = 0): Tensor {
-  if (t.dtype === "string") {
-    throw new DTypeError("fancyIndex is not defined for string dtype");
-  }
   if (indices.dtype === "string") {
     throw new DTypeError("fancyIndex indices must be numeric");
   }
   if (indices.dtype === "bool") {
     throw new DTypeError("fancyIndex indices must be integers; use booleanIndex for boolean masks");
+  }
+  if (t.dtype === "string") {
+    const { codes, table } = encodeStrings([t]);
+    return decodeStrings(fancyIndex(codes[0] as Tensor, indices, axis), table);
   }
   const dtype = ensureNonStringDType(t.dtype);
 

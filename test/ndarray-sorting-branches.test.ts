@@ -26,8 +26,8 @@ describe("ndarray sorting branch coverage", () => {
 
   it("throws for unsupported sort cases", () => {
     const s = tensor(["b", "a"]);
-    expect(() => sort(s)).toThrow(/string/i);
-    expect(() => argsort(s)).toThrow(/string/i);
+    expect(sort(s).toArray()).toEqual(["a", "b"]);
+    expect(argsort(s).toArray()).toEqual([1, 0]);
 
     // N-D sort is now supported
     const t2d = tensor([
