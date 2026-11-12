@@ -27,6 +27,8 @@ import {
 import {
   asDtype,
   classIndexLoss,
+  DEFAULT_IGNORE_INDEX,
+  flattenClassLayout,
   type LossReduction,
   numbersOf,
   numericDtype,
@@ -54,7 +56,10 @@ export interface NllLossOptions {
    * divided by the sum of the target classes' weights, as in PyTorch.
    */
   readonly weight?: Tensor | readonly number[];
-  /** Class index to skip: such samples add no loss and are not counted by `"mean"`. */
+  /**
+   * Class index to skip: such samples add no loss and are not counted by `"mean"`
+   * (default: -100, as in PyTorch).
+   */
   readonly ignoreIndex?: number;
 }
 
@@ -545,8 +550,12 @@ export function huberLoss(
  * instead of N, as in PyTorch. Passing a GradTensor as `logProbs` returns a GradTensor
  * that supports `.backward()`.
  *
- * @param logProbs - Log-probabilities of shape (N, C) where C = number of classes
- * @param targets - Class indices of shape (N,): integers in [0, C)
+ * Besides `(N, C)` log-probabilities with `(N,)` targets, the input may be `(N, C, d1, ...)` with
+ * `(N, d1, ...)` targets, or an unbatched `(C)` vector with a scalar target, as in PyTorch.
+ * Targets equal to `ignoreIndex` (default -100) are skipped.
+ *
+ * @param logProbs - Log-probabilities of shape (N, C), (N, C, d1, ...) or (C), where C = number of classes
+ * @param targets - Class indices: integers in [0, C) of shape (N,), (N, d1, ...) or a scalar
  * @param reductionOrOptions - Reduction (`"mean"` default) or an options object with
  *   `reduction`, per-class `weight` and `ignoreIndex`
  * @throws {InvalidParameterError} If a target is not an integer in [0, C)
@@ -577,8 +586,8 @@ export function nllLoss(
     typeof reductionOrOptions === "string" ? { reduction: reductionOrOptions } : reductionOrOptions;
   const reduction = options.reduction ?? "mean";
   validateReduction(reduction, "nllLoss");
-  const ignoreIndex = options.ignoreIndex;
-  if (ignoreIndex !== undefined && !Number.isInteger(ignoreIndex)) {
+  const ignoreIndex = options.ignoreIndex ?? DEFAULT_IGNORE_INDEX;
+  if (!Number.isInteger(ignoreIndex)) {
     throw new InvalidParameterError(
       `ignoreIndex must be an integer; got ${String(ignoreIndex)}`,
       "ignoreIndex",
@@ -586,21 +595,23 @@ export function nllLoss(
     );
   }
 
-  const lp = GradTensor.isGradTensor(logProbs) ? logProbs : GradTensor.fromTensor(logProbs);
-  const tgt = toTensor(targets);
+  const layout = flattenClassLayout(
+    GradTensor.isGradTensor(logProbs) ? logProbs : GradTensor.fromTensor(logProbs),
+    GradTensor.fromTensor(toTensor(targets)),
+    "nllLoss",
+    false
+  );
+  const lp = layout.input;
+  const tgt = layout.target.tensor;
   numericDtype(lp, "nllLoss");
   ensureNumeric(tgt, "nllLoss");
-
-  if (lp.ndim !== 2) {
-    throw new ShapeError(`nllLoss expects 2D log-probabilities; got ${lp.ndim}D`);
-  }
-  if (tgt.ndim !== 1) {
-    throw new ShapeError(`nllLoss expects 1D targets; got ${tgt.ndim}D`);
-  }
 
   const N = lp.shape[0] ?? 0;
   const C = lp.shape[1] ?? 0;
 
+  if (tgt.ndim !== 1) {
+    throw new ShapeError(`nllLoss expects 1D targets; got ${tgt.ndim}D`);
+  }
   if ((tgt.shape[0] ?? 0) !== N) {
     throw new ShapeError(`targets length ${tgt.shape[0]} doesn't match batch size ${N}`);
   }
@@ -614,7 +625,10 @@ export function nllLoss(
     ignoreIndex,
     labelSmoothing: 0,
   });
-  return GradTensor.isGradTensor(logProbs) || GradTensor.isGradTensor(targets) ? loss : loss.tensor;
+  const shaped = reduction === "none" ? loss.reshape([...layout.outShape]) : loss;
+  return GradTensor.isGradTensor(logProbs) || GradTensor.isGradTensor(targets)
+    ? shaped
+    : shaped.tensor;
 }
 
 /**
