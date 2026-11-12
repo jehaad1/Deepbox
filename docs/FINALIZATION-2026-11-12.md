@@ -84,29 +84,29 @@ Format: id, priority, area, evidence, status.
 | DF-24 | P3 | dataframe | `StyleAccessor.toANSI` passes control characters; CJK width wrong. | fixed 131f567 |
 | DF-25 | P3 | dataframe | `Categorical` not integrated with DataFrame/Series. | deferred: needs its own design (construction, astype, groupBy, sort) |
 | DF-26 | P3 | dataframe | `sample({replace:true})` resets row labels. | documented 96dd247 |
-| NN-1 | P1 | nn | `Trainer` with a loss that is a plain Tensor trains nothing and reports a constant loss. Verified. `Trainer.ts:379`. | open |
-| NN-2 | P1 | nn | `gaussianNLLLoss`, `poissonNLLLoss`, `cosineEmbeddingLoss`, `ctcLoss` return non-differentiable Tensors for GradTensor inputs. Verified. | open |
-| NN-3 | P1 | nn | `crossEntropyLoss`/`nllLoss` have no default `ignoreIndex` (torch: -100); padded batches throw. Verified. | open |
-| NN-4 | P2 | nn | `stateDict()` loses a parameter named `__proto__`. | open |
-| CORE-1 | P2 | core | `unregisterBackend()` leaves `defaultDevice` on the removed backend; `registerBackend("cpu", x)` accepted. | open |
-| NN-6 | P2 | nn | `crossEntropyLoss`/`binaryCrossEntropyWithLogitsLoss` return a JS number for plain Tensors; other losses return Tensors. | open |
-| NN-7 | P2 | nn | `binaryCrossEntropyLoss` clips out-of-range predictions silently; log clamp differs from torch (-100). | open |
-| NN-8 | P2 | nn | `crossEntropyLoss`/`nllLoss` reject `(N,C,d1...)` and unbatched `(C)` inputs. | open |
-| NN-9 | P2 | nn | `TransformerDecoderLayer` always applies a causal mask; no way to disable. | open |
-| NN-10 | P2 | nn | Unknown or unsupported constructor options silently ignored (LSTM `dropout`/`projSize`, Conv2d `paddingMode`, ConvTranspose2d `groups`). | open |
-| NN-11 | P3 | optim | `MultiStepLR` rejects duplicate milestones (torch applies gamma twice). | open |
-| NN-12 | P3 | optim | `OneCycleLR`/`CyclicLR` do not cycle momentum. | open |
-| NN-13 | P3 | nn | Dropout rejects `p = 1`. | open |
-| NN-14 | P3 | nn | `Module.train(mode)` does not validate `mode`. | open |
-| NN-15 | P3 | nn | `loadStateDict(null)` throws raw TypeError. | open |
-| NN-16 | P3 | optim | Optimizers accept an empty parameter list. | open |
-| NN-17 | P3 | nn | `Trainer` leaves model mode inconsistent after `fit`; verbose output bypasses `setLogHandler`. | open |
-| NN-18 | P3 | nn | LSTM `forwardWithState(x, hx)` without `cx` silently zeroes cell state. | open |
-| NN-19 | P3 | nn | RNN layers cannot consume `PackedSequence`. | open |
-| NN-20 | P3 | nn | `PositionalEncoding` stores a 5000x512 float64 buffer in every `stateDict` (73 MB JSON). | open |
-| NN-21 | P3 | core | `WorkerPool` is sequential; `taskTimeout` stored but not enforced. | open |
-| NN-22 | P3 | core | `SerializedEstimator` unused; `save()` not atomic; checkpoints pretty-printed. | open |
-| NN-23 | P3 | nn | Conv2d and pooling reject unbatched `(C,H,W)` input. | open |
+| NN-1 | P1 | nn | `Trainer` with a loss that is a plain Tensor trains nothing and reports a constant loss. Verified. `Trainer.ts:379`. | fixed d3ef700 (behavior change: throws) |
+| NN-2 | P1 | nn | `gaussianNLLLoss`, `poissonNLLLoss`, `cosineEmbeddingLoss`, `ctcLoss` return non-differentiable Tensors for GradTensor inputs. Verified. | fixed 9619307 |
+| NN-3 | P1 | nn | `crossEntropyLoss`/`nllLoss` have no default `ignoreIndex` (torch: -100); padded batches throw. Verified. | fixed d08f0c8 (behavior change: -100 ignored) |
+| NN-4 | P2 | nn | `stateDict()` loses a parameter named `__proto__`. | fixed a94bf71 |
+| CORE-1 | P2 | core | `unregisterBackend()` leaves `defaultDevice` on the removed backend; `registerBackend("cpu", x)` accepted. | fixed 9241cd7 |
+| NN-6 | P2 | nn | `crossEntropyLoss`/`binaryCrossEntropyWithLogitsLoss` return a JS number for plain Tensors; other losses return Tensors. | owner decision: return 0-d Tensor instead of number (breaking) |
+| NN-7 | P2 | nn | `binaryCrossEntropyLoss` clips out-of-range predictions silently; log clamp differs from torch (-100). | fixed 67aa3f5 |
+| NN-8 | P2 | nn | `crossEntropyLoss`/`nllLoss` reject `(N,C,d1...)` and unbatched `(C)` inputs. | fixed d08f0c8 |
+| NN-9 | P2 | nn | `TransformerDecoderLayer` always applies a causal mask; no way to disable. | fixed 50eef96 |
+| NN-10 | P2 | nn | Unknown or unsupported constructor options silently ignored (LSTM `dropout`/`projSize`, Conv2d `paddingMode`, ConvTranspose2d `groups`). | fixed 71e7a3e, e6ad6fd |
+| NN-11 | P3 | optim | `MultiStepLR` rejects duplicate milestones (torch applies gamma twice). | fixed 0a59f17 |
+| NN-12 | P3 | optim | `OneCycleLR`/`CyclicLR` do not cycle momentum. | fixed 0a59f17 (behavior change: momentum cycles by default, torch parity) |
+| NN-13 | P3 | nn | Dropout rejects `p = 1`. | fixed ee72e03 |
+| NN-14 | P3 | nn | `Module.train(mode)` does not validate `mode`. | fixed a94bf71 |
+| NN-15 | P3 | nn | `loadStateDict(null)` throws raw TypeError. | fixed a94bf71 |
+| NN-16 | P3 | optim | Optimizers accept an empty parameter list. | fixed 4188e2d (behavior change: throws) |
+| NN-17 | P3 | nn | `Trainer` leaves model mode inconsistent after `fit`; verbose output bypasses `setLogHandler`. | fixed 9776715 |
+| NN-18 | P3 | nn | LSTM `forwardWithState(x, hx)` without `cx` silently zeroes cell state. | fixed 71e7a3e |
+| NN-19 | P3 | nn | RNN layers cannot consume `PackedSequence`. | deferred: needs PackedSequence.data to carry gradients (API widening) |
+| NN-20 | P3 | nn | `PositionalEncoding` stores a 5000x512 float64 buffer in every `stateDict` (73 MB JSON). | fixed a94bf71 |
+| NN-21 | P3 | core | `WorkerPool` is sequential; `taskTimeout` stored but not enforced. | fixed cb5c615 |
+| NN-22 | P3 | core | `SerializedEstimator` unused; `save()` not atomic; checkpoints pretty-printed. | fixed 6a741a2 |
+| NN-23 | P3 | nn | Conv2d and pooling reject unbatched `(C,H,W)` input. | fixed 63d599d |
 | ND-1 | P1 | linalg | `eig`/`eigvals` throw for complex eigenvalues: 91 of 100 random 4x4 matrices. Verified. Documented limitation. | open (additive option; default is owner decision) |
 | ND-2 | P1 | random | `shuffle`/`permutation`/`choice` on N-D tensors work over flattened elements and scramble rows (numpy/torch use axis 0). Verified. Documented, so changing the default is breaking. | owner decision; additive `axis` option |
 | ND-3 | P2 | ndarray | `matmul` accepts 2-D only; `dot` is batched. | open |
