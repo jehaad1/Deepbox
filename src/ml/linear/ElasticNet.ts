@@ -531,18 +531,15 @@ export class ElasticNet implements Regressor {
    * @param options.positive - Force coefficients to be non-negative (default: false)
    * @param options.selection - Coordinate order: 'cyclic' or 'random' (default: 'cyclic')
    * @param options.randomState - Seed for the random coordinate order
-   * @throws {InvalidParameterError} If `randomState` is not a finite number
+   * @throws {InvalidParameterError} If an option is outside its valid range (the same checks as `setParams`)
    */
   constructor(options: ElasticNetOptions = {}) {
     assertKnownOptions("ElasticNet", options, ELASTIC_NET_OPTION_KEYS);
-    this.options = { ...options };
-    if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
-      throw new InvalidParameterError(
-        `randomState must be a finite number; received ${String(this.options.randomState)}`,
-        "randomState",
-        this.options.randomState
-      );
+    const validated: ElasticNetOptions = {};
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) applyCoordinateDescentParam(validated, key, value, true);
     }
+    this.options = validated;
   }
 
   /**

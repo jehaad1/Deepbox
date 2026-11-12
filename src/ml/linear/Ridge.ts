@@ -283,6 +283,64 @@ function accelerated(
   return { x: w, nIter, converged };
 }
 
+/**
+ * Validate one Ridge hyper-parameter, by type and range.
+ *
+ * @throws {InvalidParameterError} If the name is unknown or the value is invalid
+ */
+function checkRidgeOption(key: string, value: unknown): void {
+  switch (key) {
+    case "alpha":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError(
+          `alpha must be >= 0 and finite; received ${String(value)}`,
+          "alpha",
+          value
+        );
+      }
+      return;
+    case "maxIter":
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+        throw new InvalidParameterError(
+          `maxIter must be a positive integer; received ${String(value)}`,
+          "maxIter",
+          value
+        );
+      }
+      return;
+    case "tol":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new InvalidParameterError(
+          `tol must be a finite number >= 0; received ${String(value)}`,
+          "tol",
+          value
+        );
+      }
+      return;
+    case "fitIntercept":
+    case "normalize":
+      if (typeof value !== "boolean") {
+        throw new InvalidParameterError(
+          `${key} must be a boolean; received ${String(value)}`,
+          key,
+          value
+        );
+      }
+      return;
+    case "solver":
+      if (typeof value !== "string" || !RIDGE_SOLVERS.includes(value as RidgeSolver)) {
+        throw new InvalidParameterError(
+          `solver must be one of ${RIDGE_SOLVERS.map((x) => `'${x}'`).join(", ")}; received ${String(value)}`,
+          "solver",
+          value
+        );
+      }
+      return;
+    default:
+      throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
+  }
+}
+
 const RIDGE_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Ridge>[0]>>({
   alpha: true,
   fitIntercept: true,
@@ -369,6 +427,9 @@ export class Ridge implements Regressor {
     } = {}
   ) {
     assertKnownOptions("Ridge", options, RIDGE_OPTION_KEYS);
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) checkRidgeOption(key, value);
+    }
     this.options = { ...options };
   }
 
@@ -409,37 +470,9 @@ export class Ridge implements Regressor {
     validateFitInputs(X, y);
 
     const alpha = this.options.alpha ?? 1.0;
-    if (typeof alpha !== "number" || !Number.isFinite(alpha) || alpha < 0) {
-      throw new InvalidParameterError(
-        `alpha must be >= 0 and finite; received ${String(alpha)}`,
-        "alpha",
-        alpha
-      );
-    }
     const solver = this.options.solver ?? "auto";
-    if (!RIDGE_SOLVERS.includes(solver)) {
-      throw new InvalidParameterError(
-        `solver must be one of ${RIDGE_SOLVERS.map((s) => `'${s}'`).join(", ")}; received ${String(solver)}`,
-        "solver",
-        solver
-      );
-    }
     const maxIter = this.options.maxIter ?? 1000;
-    if (!Number.isInteger(maxIter) || maxIter < 1) {
-      throw new InvalidParameterError(
-        `maxIter must be a positive integer; received ${String(maxIter)}`,
-        "maxIter",
-        maxIter
-      );
-    }
     const tol = this.options.tol ?? 1e-4;
-    if (!Number.isFinite(tol) || tol < 0) {
-      throw new InvalidParameterError(
-        `tol must be a finite number >= 0; received ${String(tol)}`,
-        "tol",
-        tol
-      );
-    }
     const fitIntercept = this.options.fitIntercept ?? true;
     const normalize = this.options.normalize ?? false;
 
@@ -751,81 +784,16 @@ export class Ridge implements Regressor {
    * Set the parameters of this estimator.
    *
    * Changing parameters does not alter a fitted model; call `fit` again.
-   * Range checks (for example `alpha >= 0`) run at `fit`.
+   * Types and ranges are checked here, as in the constructor, and nothing is changed if any entry is invalid.
    *
    * @param params - Dictionary of parameters to set
    * @returns this - The estimator for method chaining
    * @throws {InvalidParameterError} If a parameter name is unknown or its value has the wrong type
    */
   setParams(params: Record<string, unknown>): this {
-    for (const [key, value] of Object.entries(params)) {
-      switch (key) {
-        case "alpha":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `alpha must be a finite number; received ${String(value)}`,
-              "alpha",
-              value
-            );
-          }
-          this.options.alpha = value;
-          break;
-
-        case "maxIter":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `maxIter must be a finite number; received ${String(value)}`,
-              "maxIter",
-              value
-            );
-          }
-          this.options.maxIter = value;
-          break;
-
-        case "tol":
-          if (typeof value !== "number" || !Number.isFinite(value)) {
-            throw new InvalidParameterError(
-              `tol must be a finite number; received ${String(value)}`,
-              "tol",
-              value
-            );
-          }
-          this.options.tol = value;
-          break;
-
-        case "fitIntercept":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError(
-              `fitIntercept must be a boolean; received ${String(value)}`,
-              "fitIntercept",
-              value
-            );
-          }
-          this.options.fitIntercept = value;
-          break;
-
-        case "normalize":
-          if (typeof value !== "boolean") {
-            throw new InvalidParameterError(
-              `normalize must be a boolean; received ${String(value)}`,
-              "normalize",
-              value
-            );
-          }
-          this.options.normalize = value;
-          break;
-
-        case "solver":
-          if (typeof value !== "string" || !RIDGE_SOLVERS.includes(value as RidgeSolver)) {
-            throw new InvalidParameterError(`Invalid solver: ${String(value)}`, "solver", value);
-          }
-          this.options.solver = value as RidgeSolver;
-          break;
-
-        default:
-          throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
-      }
-    }
+    // Validate everything first so that a bad entry leaves the estimator unchanged.
+    for (const [key, value] of Object.entries(params)) checkRidgeOption(key, value);
+    this.options = { ...this.options, ...params } as typeof this.options;
     return this;
   }
 

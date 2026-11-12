@@ -159,12 +159,12 @@ describe("Ridge (v1.5.0)", () => {
     );
   });
 
-  it("keeps the previous fit when a later fit fails", () => {
+  it("keeps the previous fit when setParams rejects a value", () => {
     const model = new Ridge({ alpha: 0.5 }).fit(X, y);
     const before = vals(model.coef);
-    model.setParams({ alpha: -2 });
-    expect(() => model.fit(X, y)).toThrow(InvalidParameterError);
-    expectClose(vals(model.coef), before, 0);
+    expect(() => model.setParams({ alpha: -2 })).toThrow(InvalidParameterError);
+    expect(model.getParams()["alpha"]).toBe(0.5);
+    expectClose(vals(model.fit(X, y).coef), before, 0);
   });
 
   it("getParams reports effective defaults and round-trips through the constructor", () => {
@@ -1246,8 +1246,7 @@ describe("c21 review additions", () => {
     const model = new Ridge({ solver: "lsqr", tol: 1e-12 }).fit(X, y);
     const iters = model.nIter;
     expect(iters).toBeGreaterThan(0);
-    model.setParams({ alpha: -1 });
-    expect(() => model.fit(X, y)).toThrow(InvalidParameterError);
+    expect(() => model.fit(X, f64([[1], [2], [3]]))).toThrow();
     expect(model.nIter).toBe(iters);
   });
 });

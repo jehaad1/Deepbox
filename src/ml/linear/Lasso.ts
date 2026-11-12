@@ -5,7 +5,7 @@
  * @see {@link https://deepbox.dev/docs/ml-linear | Deepbox documentation}
  */
 
-import { InvalidParameterError, NotFittedError } from "../../core";
+import { NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
@@ -127,18 +127,15 @@ export class Lasso implements Regressor {
    * @param options.positive - Whether to force coefficients to be non-negative (default: false)
    * @param options.selection - Coordinate order: 'cyclic' (default) or 'random'
    * @param options.randomState - Seed for the random coordinate order
-   * @throws {InvalidParameterError} If `randomState` is not a finite number
+   * @throws {InvalidParameterError} If an option is outside its valid range (the same checks as `setParams`)
    */
   constructor(options: LassoOptions = {}) {
     assertKnownOptions("Lasso", options, LASSO_OPTION_KEYS);
-    this.options = { ...options };
-    if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
-      throw new InvalidParameterError(
-        `randomState must be a finite number; received ${String(this.options.randomState)}`,
-        "randomState",
-        this.options.randomState
-      );
+    const validated: LassoOptions = {};
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined) applyCoordinateDescentParam(validated, key, value, false);
     }
+    this.options = validated;
   }
 
   /**
