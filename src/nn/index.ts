@@ -101,6 +101,7 @@ export {
   AvgPool3d,
   Conv1d,
   Conv2d,
+  type Conv2dPaddingMode,
   Conv3d,
   ConvTranspose1d,
   ConvTranspose2d,
