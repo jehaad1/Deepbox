@@ -5,6 +5,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { svd } from "../../linalg/decomposition/svd";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -281,6 +282,15 @@ function accelerated(
   return { x: w, nIter, converged };
 }
 
+const RIDGE_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Ridge>[0]>>({
+  alpha: true,
+  fitIntercept: true,
+  normalize: true,
+  solver: true,
+  maxIter: true,
+  tol: true,
+});
+
 /**
  * Ridge Regression (L2 Regularized Linear Regression).
  *
@@ -357,6 +367,7 @@ export class Ridge implements Regressor {
       readonly tol?: number;
     } = {}
   ) {
+    assertKnownOptions("Ridge", options, RIDGE_OPTION_KEYS);
     this.options = { ...options };
   }
 

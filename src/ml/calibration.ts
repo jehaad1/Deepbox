@@ -11,7 +11,12 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { cloneEstimator } from "./_internal";
+import {
+  assertKnownOptions,
+  assertUnchangedEstimators,
+  cloneEstimator,
+  optionKeys,
+} from "./_internal";
 import {
   assertContiguous,
   percentileSorted,
@@ -207,6 +212,10 @@ function interpolate(xs: Float64Array, ys: Float64Array, x: number): number {
   return y0 + ((x - x0) / (x1 - x0)) * (y1 - y0);
 }
 
+const CALIBRATED_CLASSIFIER_CV_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof CalibratedClassifierCV>[0]>
+>({ estimator: true, method: true, cv: true });
+
 /**
  * Calibrated Classifier with Cross-Validation.
  *
@@ -261,6 +270,7 @@ export class CalibratedClassifierCV implements Classifier {
     readonly method?: "sigmoid" | "isotonic";
     readonly cv?: number;
   }) {
+    assertKnownOptions("CalibratedClassifierCV", options, CALIBRATED_CLASSIFIER_CV_OPTION_KEYS);
     const method = options.method ?? "sigmoid";
     const cv = options.cv ?? 5;
     if (method !== "sigmoid" && method !== "isotonic") {
@@ -503,7 +513,7 @@ export class CalibratedClassifierCV implements Classifier {
   /**
    * Set `method` or `cv`. All values are validated before any is applied.
    *
-   * @throws {InvalidParameterError} If a name is unknown, a value is invalid, or `estimator` is passed
+   * @throws {InvalidParameterError} If a name is unknown, a value is invalid, or `estimator` is not the one in use
    */
   setParams(params: Record<string, unknown>): this {
     for (const [key, value] of Object.entries(params)) {
@@ -528,11 +538,8 @@ export class CalibratedClassifierCV implements Classifier {
           break;
         case "estimator":
           // The wrapped estimator is fixed at construction time.
-          throw new InvalidParameterError(
-            "estimator cannot be changed via setParams; construct a new CalibratedClassifierCV",
-            "estimator",
-            value
-          );
+          assertUnchangedEstimators("CalibratedClassifierCV", key, value, this.estimator);
+          break;
         default:
           throw new InvalidParameterError(`Unknown parameter: ${key}`, key, value);
       }

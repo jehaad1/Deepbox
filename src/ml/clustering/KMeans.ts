@@ -1,6 +1,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -28,6 +29,17 @@ function createRng(seed: number | undefined): () => number {
   const gen = new __SeededRandom(__seedToUint64(seed));
   return () => gen.next();
 }
+
+const KMEANS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof KMeans>[0]>>({
+  nClusters: true,
+  maxIter: true,
+  tol: true,
+  init: true,
+  nInit: true,
+  warmStart: true,
+  randomState: true,
+  algorithm: true,
+});
 
 /**
  * K-Means clustering algorithm.
@@ -112,6 +124,7 @@ export class KMeans implements Clusterer {
       readonly algorithm?: "lloyd" | "elkan" | "auto";
     } = {}
   ) {
+    assertKnownOptions("KMeans", options, KMEANS_OPTION_KEYS);
     this.nClusters = options.nClusters ?? 8;
     this.maxIter = options.maxIter ?? 300;
     this.tol = options.tol ?? 1e-4;

@@ -1,11 +1,18 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
   validateUnsupervisedFitInputs,
 } from "../_validation";
 import type { Clusterer } from "../base";
+
+const DBSCAN_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof DBSCAN>[0]>>({
+  eps: true,
+  minSamples: true,
+  metric: true,
+});
 
 /**
  * DBSCAN (Density-Based Spatial Clustering of Applications with Noise).
@@ -73,6 +80,7 @@ export class DBSCAN implements Clusterer {
       readonly metric?: "euclidean" | "manhattan";
     } = {}
   ) {
+    assertKnownOptions("DBSCAN", options, DBSCAN_OPTION_KEYS);
     this.eps = options.eps ?? 0.5;
     this.minSamples = options.minSamples ?? 5;
     this.metric = options.metric ?? "euclidean";

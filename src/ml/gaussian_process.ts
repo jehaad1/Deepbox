@@ -13,7 +13,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { r2Score } from "./_internal";
+import { assertKnownOptions, optionKeys, r2Score } from "./_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -265,6 +265,10 @@ type GprModel = {
   readonly logMarginalLikelihood: number;
 };
 
+const GAUSSIAN_PROCESS_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GaussianProcessRegressor>[0]>
+>({ alpha: true, lengthScale: true, kernelVariance: true, normalizeY: true });
+
 /**
  * Gaussian Process Regressor with RBF kernel.
  *
@@ -301,6 +305,7 @@ export class GaussianProcessRegressor implements Regressor {
    * @throws {InvalidParameterError} If `alpha` is negative or a kernel parameter is not a positive finite number
    */
   constructor(options: GaussianProcessRegressorOptions = {}) {
+    assertKnownOptions("GaussianProcessRegressor", options, GAUSSIAN_PROCESS_REGRESSOR_OPTION_KEYS);
     this.alpha = validateAlpha(options.alpha ?? 1e-10);
     this.lengthScale = validateKernelParam("lengthScale", options.lengthScale ?? 1.0);
     this.kernelVariance = validateKernelParam("kernelVariance", options.kernelVariance ?? 1.0);
@@ -580,6 +585,10 @@ type GpcModel = {
   readonly integerLabels: boolean;
 };
 
+const GAUSSIAN_PROCESS_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GaussianProcessClassifier>[0]>
+>({ alpha: true, lengthScale: true, kernelVariance: true, maxLaplaceIter: true });
+
 /**
  * Gaussian Process Classifier with RBF kernel.
  *
@@ -620,6 +629,11 @@ export class GaussianProcessClassifier implements Classifier {
    * @throws {InvalidParameterError} If a parameter is out of range
    */
   constructor(options: GaussianProcessClassifierOptions = {}) {
+    assertKnownOptions(
+      "GaussianProcessClassifier",
+      options,
+      GAUSSIAN_PROCESS_CLASSIFIER_OPTION_KEYS
+    );
     this.alpha = validateAlpha(options.alpha ?? 1e-5);
     this.lengthScale = validateKernelParam("lengthScale", options.lengthScale ?? 1.0);
     this.kernelVariance = validateKernelParam("kernelVariance", options.kernelVariance ?? 1.0);

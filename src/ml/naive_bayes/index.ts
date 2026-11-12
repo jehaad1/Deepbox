@@ -1,5 +1,6 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -274,6 +275,10 @@ export function nbValidateScoreTarget(y: Tensor): void {
   }
 }
 
+const GAUSSIAN_NB_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GaussianNB>[0]>
+>({ varSmoothing: true, priors: true });
+
 /**
  * Gaussian Naive Bayes classifier.
  *
@@ -336,6 +341,7 @@ export class GaussianNB implements Classifier {
       readonly priors?: readonly number[] | null;
     } = {}
   ) {
+    assertKnownOptions("GaussianNB", options, GAUSSIAN_NB_OPTION_KEYS);
     this.varSmoothing = options.varSmoothing ?? 1e-9;
     if (!Number.isFinite(this.varSmoothing) || this.varSmoothing < 0) {
       throw new InvalidParameterError(

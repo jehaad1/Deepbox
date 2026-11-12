@@ -7,7 +7,7 @@
 
 import { InvalidParameterError, NotFittedError, ShapeError } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { cloneEstimator } from "./_internal";
+import { assertKnownOptions, cloneEstimator, optionKeys } from "./_internal";
 import { toFloat64View } from "./_validation";
 import {
   type Classifier,
@@ -770,6 +770,10 @@ type ColumnSpec = {
   resolved: number[];
 };
 
+const COLUMN_TRANSFORMER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof ColumnTransformer>[1]>
+>({ remainder: true });
+
 /**
  * ColumnTransformer applies transformers to specific column subsets of the data.
  *
@@ -810,6 +814,7 @@ export class ColumnTransformer {
     transformers: ReadonlyArray<readonly [string, Transformer | "passthrough" | "drop", number[]]>,
     options: { readonly remainder?: "drop" | "passthrough" } = {}
   ) {
+    assertKnownOptions("ColumnTransformer", options, COLUMN_TRANSFORMER_OPTION_KEYS);
     if (transformers.length === 0) {
       throw new InvalidParameterError(
         "ColumnTransformer requires at least one transformer spec",

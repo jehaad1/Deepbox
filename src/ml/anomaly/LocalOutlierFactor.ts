@@ -4,6 +4,7 @@
 
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   percentileSorted,
   toFloat64View,
@@ -66,6 +67,10 @@ function kSmallest(dist: Float64Array, k: number, skip: number): Int32Array {
   }
   return idx;
 }
+
+const LOCAL_OUTLIER_FACTOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LocalOutlierFactor>[0]>
+>({ nNeighbors: true, contamination: true });
 
 /**
  * Local Outlier Factor (LOF) for anomaly detection.
@@ -132,6 +137,7 @@ export class LocalOutlierFactor implements OutlierDetector {
       readonly contamination?: number | "auto";
     } = {}
   ) {
+    assertKnownOptions("LocalOutlierFactor", options, LOCAL_OUTLIER_FACTOR_OPTION_KEYS);
     const nNeighbors = options.nNeighbors ?? 20;
     const contamination = options.contamination ?? "auto";
     if (!Number.isInteger(nNeighbors) || nNeighbors < 1) throw nNeighborsError(nNeighbors);

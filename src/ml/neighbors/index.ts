@@ -7,6 +7,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -90,6 +91,10 @@ export function labelTensor(values: ArrayLike<number>, classes: readonly number[
   return integral ? tensor(Int32Array.from(values)) : tensor(Float64Array.from(values));
 }
 
+const KNEIGHBORS_BASE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof KNeighborsBase>[0]>
+>({ nNeighbors: true, weights: true, metric: true });
+
 /**
  * K-Nearest Neighbors base class.
  */
@@ -111,6 +116,7 @@ abstract class KNeighborsBase {
       readonly metric?: NeighborMetric;
     } = {}
   ) {
+    assertKnownOptions(new.target.name, options, KNEIGHBORS_BASE_OPTION_KEYS);
     this.nNeighbors = options.nNeighbors ?? 5;
     this.weights = options.weights ?? "uniform";
     this.metric = options.metric ?? "euclidean";
@@ -669,6 +675,10 @@ export class KNeighborsRegressor extends KNeighborsBase implements Regressor {
   }
 }
 
+const NEAREST_NEIGHBORS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof NearestNeighbors>[0]>
+>({ nNeighbors: true, radius: true, metric: true });
+
 /**
  * Unsupervised nearest-neighbor search.
  *
@@ -703,6 +713,7 @@ export class NearestNeighbors extends KNeighborsBase {
       readonly metric?: NeighborMetric;
     } = {}
   ) {
+    assertKnownOptions("NearestNeighbors", options, NEAREST_NEIGHBORS_OPTION_KEYS);
     const baseOptions: {
       readonly nNeighbors?: number;
       readonly metric?: NeighborMetric;

@@ -11,6 +11,7 @@
 
 import { InvalidParameterError, NotFittedError, ShapeError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -200,6 +201,12 @@ function splitNode(node: CFNode, d: number): [CFSubcluster, CFSubcluster] {
   return [first, second];
 }
 
+const BIRCH_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Birch>[0]>>({
+  nClusters: true,
+  threshold: true,
+  branchingFactor: true,
+});
+
 /**
  * BIRCH clustering algorithm.
  *
@@ -263,6 +270,7 @@ export class Birch implements Clusterer {
       readonly branchingFactor?: number;
     } = {}
   ) {
+    assertKnownOptions("Birch", options, BIRCH_OPTION_KEYS);
     this.nClusters = options.nClusters === undefined ? 3 : options.nClusters;
     this.threshold = options.threshold ?? 0.5;
     this.branchingFactor = options.branchingFactor ?? 50;

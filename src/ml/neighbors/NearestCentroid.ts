@@ -16,6 +16,7 @@ import {
   warn,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
 
@@ -31,6 +32,10 @@ function median(values: number[]): number {
     ? (sorted[mid] as number)
     : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
+
+const NEAREST_CENTROID_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof NearestCentroid>[0]>
+>({ metric: true, shrinkThreshold: true, priors: true });
 
 /**
  * Nearest Centroid classifier.
@@ -89,6 +94,7 @@ export class NearestCentroid implements Classifier {
       readonly priors?: CentroidPriors;
     } = {}
   ) {
+    assertKnownOptions("NearestCentroid", options, NEAREST_CENTROID_OPTION_KEYS);
     this.metric = NearestCentroid.checkMetric(options.metric ?? "euclidean");
     this.shrinkThreshold = NearestCentroid.checkShrink(options.shrinkThreshold);
     this.priors = NearestCentroid.checkPriors(options.priors ?? "uniform");

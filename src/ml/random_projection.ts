@@ -8,6 +8,7 @@
 import { InvalidParameterError, NotFittedError, warn } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { __fillNormal, __SeededRandom, __seedToUint64 } from "../random/random";
+import { assertKnownOptions, optionKeys } from "./_internal";
 import { toFloat64View, validatePredictInputs, validateUnsupervisedFitInputs } from "./_validation";
 import type { Transformer } from "./base";
 
@@ -82,6 +83,10 @@ function checkRandomState(value: unknown, name: string): number | null {
   return value;
 }
 
+const GAUSSIAN_RANDOM_PROJECTION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GaussianRandomProjection>[0]>
+>({ nComponents: true, eps: true, randomState: true, seed: true });
+
 /**
  * Gaussian Random Projection.
  *
@@ -131,6 +136,7 @@ export class GaussianRandomProjection implements Transformer {
       readonly seed?: number | null;
     } = {}
   ) {
+    assertKnownOptions("GaussianRandomProjection", options, GAUSSIAN_RANDOM_PROJECTION_OPTION_KEYS);
     const randomState = options.randomState ?? options.seed ?? null;
     if (
       options.randomState !== undefined &&

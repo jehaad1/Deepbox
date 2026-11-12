@@ -11,8 +11,14 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { fromDenseMatrix2D } from "../../linalg/_internal";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateUnsupervisedFitInputs } from "../_validation";
 import { classicalMDSDecompose, pairwiseEuclidean } from "./Isomap";
+
+const MDS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof MDS>[0]>>({
+  nComponents: true,
+  dissimilarity: true,
+});
 
 /**
  * Classical (Torgerson) multidimensional scaling.
@@ -57,6 +63,7 @@ export class MDS {
       readonly dissimilarity?: "euclidean" | "precomputed";
     } = {}
   ) {
+    assertKnownOptions("MDS", options, MDS_OPTION_KEYS);
     this.nComponents = options.nComponents ?? 2;
     this.dissimilarity = options.dissimilarity ?? "euclidean";
     this.validateParams();

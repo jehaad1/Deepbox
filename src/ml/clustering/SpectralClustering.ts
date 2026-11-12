@@ -25,7 +25,7 @@ import {
 } from "../../core";
 import { eigh } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
-import { kthSmallest } from "../_internal";
+import { assertKnownOptions, kthSmallest, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -93,6 +93,18 @@ function checkNComponents(value: unknown): number | undefined {
   return value;
 }
 
+const SPECTRAL_CLUSTERING_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SpectralClustering>[0]>
+>({
+  nClusters: true,
+  affinity: true,
+  gamma: true,
+  nNeighbors: true,
+  randomState: true,
+  nInit: true,
+  nComponents: true,
+});
+
 /**
  * Spectral Clustering using graph Laplacian eigenvectors.
  *
@@ -158,6 +170,7 @@ export class SpectralClustering implements Clusterer {
       readonly nComponents?: number;
     } = {}
   ) {
+    assertKnownOptions("SpectralClustering", options, SPECTRAL_CLUSTERING_OPTION_KEYS);
     this.nClusters = checkNClusters(options.nClusters ?? 8);
     this.affinity = checkAffinity(options.affinity ?? "rbf");
     this.gamma = checkGamma(options.gamma ?? 1.0);

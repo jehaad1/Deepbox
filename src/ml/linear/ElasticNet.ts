@@ -11,6 +11,7 @@
 import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { createTreeRng } from "../tree/DecisionTree";
@@ -431,6 +432,21 @@ function elasticNetDualGap(
   return gap + l1Reg * l1Norm - scale * ry + 0.5 * l2Reg * (1 + scale * scale) * wNorm2;
 }
 
+const ELASTIC_NET_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof ElasticNet>[0]>
+>({
+  alpha: true,
+  l1Ratio: true,
+  fitIntercept: true,
+  normalize: true,
+  maxIter: true,
+  tol: true,
+  warmStart: true,
+  positive: true,
+  selection: true,
+  randomState: true,
+});
+
 /**
  * Elastic Net Regression (L1 + L2 Regularized Linear Regression).
  *
@@ -502,6 +518,7 @@ export class ElasticNet implements Regressor {
    * @throws {InvalidParameterError} If `randomState` is not a finite number
    */
   constructor(options: ElasticNetOptions = {}) {
+    assertKnownOptions("ElasticNet", options, ELASTIC_NET_OPTION_KEYS);
     this.options = { ...options };
     if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
       throw new InvalidParameterError(

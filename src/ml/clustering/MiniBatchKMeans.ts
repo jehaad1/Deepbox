@@ -8,6 +8,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -66,6 +67,19 @@ function checkMaxNoImprovement(value: unknown): number {
   if (value === Infinity) return value;
   return checkPositiveInt("maxNoImprovement", value);
 }
+
+const MINI_BATCH_KMEANS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MiniBatchKMeans>[0]>
+>({
+  nClusters: true,
+  maxIter: true,
+  batchSize: true,
+  tol: true,
+  nInit: true,
+  init: true,
+  randomState: true,
+  maxNoImprovement: true,
+});
 
 /**
  * Mini-Batch K-Means clustering.
@@ -139,6 +153,7 @@ export class MiniBatchKMeans implements Clusterer {
       readonly maxNoImprovement?: number;
     } = {}
   ) {
+    assertKnownOptions("MiniBatchKMeans", options, MINI_BATCH_KMEANS_OPTION_KEYS);
     this.nClusters = checkPositiveInt("nClusters", options.nClusters ?? 8);
     this.maxIter = checkPositiveInt("maxIter", options.maxIter ?? 100);
     this.batchSize = checkPositiveInt("batchSize", options.batchSize ?? 100);

@@ -14,7 +14,7 @@ import {
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../random/random";
-import { cloneEstimator } from "./_internal";
+import { assertKnownOptions, cloneEstimator, optionKeys } from "./_internal";
 import { type Classifier, type Estimator, getEstimatorTags, type Regressor } from "./base";
 
 /** Scoring callback: higher is better. */
@@ -704,6 +704,10 @@ function searchCandidates(
   return { results, bestIndex, bestEstimator };
 }
 
+const GRID_SEARCH_CV_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GridSearchCV>[2]>
+>({ cv: true, shuffle: true, randomState: true, scoring: true });
+
 /**
  * Exhaustive search over specified parameter values for an estimator.
  *
@@ -754,6 +758,7 @@ export class GridSearchCV {
     paramGrid: Record<string, unknown[]>,
     options: { cv?: CvSpec; shuffle?: boolean; randomState?: number; scoring?: Scorer } = {}
   ) {
+    assertKnownOptions("GridSearchCV", options, GRID_SEARCH_CV_OPTION_KEYS);
     this.paramGrid = validateParamSpace(paramGrid, "paramGrid");
     this.cv = options.cv ?? 5;
     this.shuffle = options.shuffle;
@@ -902,6 +907,10 @@ function sampleDistinct(total: number, count: number, rng: () => number): number
   return chosen;
 }
 
+const RANDOMIZED_SEARCH_CV_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RandomizedSearchCV>[2]>
+>({ nIter: true, cv: true, shuffle: true, cvRandomState: true, randomState: true, scoring: true });
+
 /**
  * Randomized search over parameter distributions.
  *
@@ -966,6 +975,7 @@ export class RandomizedSearchCV {
       scoring?: Scorer;
     } = {}
   ) {
+    assertKnownOptions("RandomizedSearchCV", options, RANDOMIZED_SEARCH_CV_OPTION_KEYS);
     this.paramDistributions = validateParamSpace(paramDistributions, "paramDistributions");
     this.nIter = options.nIter ?? 10;
     this.cv = options.cv ?? 5;

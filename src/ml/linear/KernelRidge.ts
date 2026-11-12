@@ -9,6 +9,7 @@ import { DataValidationError, InvalidParameterError, NotFittedError, warn } from
 import { lstsq } from "../../linalg";
 import { solve } from "../../linalg/solvers/solve";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -109,6 +110,10 @@ function makeKernel(o: Options): KernelFn {
   }
 }
 
+const KERNEL_RIDGE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof KernelRidge>[0]>
+>({ alpha: true, kernel: true, gamma: true, degree: true, coef0: true });
+
 /**
  * Kernel Ridge Regression.
  *
@@ -155,6 +160,7 @@ export class KernelRidge implements Regressor {
    * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(options: KernelRidgeOptions = {}) {
+    assertKnownOptions("KernelRidge", options, KERNEL_RIDGE_OPTION_KEYS);
     this.options = resolveOptions(options);
   }
 

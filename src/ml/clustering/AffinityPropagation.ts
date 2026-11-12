@@ -19,6 +19,7 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -51,6 +52,17 @@ function isValidDamping(value: unknown): value is number {
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
+
+const AFFINITY_PROPAGATION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AffinityPropagation>[0]>
+>({
+  damping: true,
+  maxIter: true,
+  convergenceIter: true,
+  preference: true,
+  affinity: true,
+  randomState: true,
+});
 
 /**
  * Affinity Propagation clustering algorithm.
@@ -116,6 +128,7 @@ export class AffinityPropagation implements Clusterer {
       readonly randomState?: number;
     } = {}
   ) {
+    assertKnownOptions("AffinityPropagation", options, AFFINITY_PROPAGATION_OPTION_KEYS);
     this.damping = options.damping ?? 0.5;
     this.maxIter = options.maxIter ?? 200;
     this.convergenceIter = options.convergenceIter ?? 15;

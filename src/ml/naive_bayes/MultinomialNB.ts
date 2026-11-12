@@ -4,6 +4,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError } from "../../core";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
 import {
@@ -20,6 +21,10 @@ import {
   nbValidatePriors,
   nbValidateScoreTarget,
 } from "./index";
+
+const MULTINOMIAL_NB_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MultinomialNB>[0]>
+>({ alpha: true, fitPrior: true, classPrior: true });
 
 /**
  * Multinomial Naive Bayes classifier.
@@ -72,6 +77,7 @@ export class MultinomialNB implements Classifier {
       readonly classPrior?: readonly number[] | null;
     } = {}
   ) {
+    assertKnownOptions("MultinomialNB", options, MULTINOMIAL_NB_OPTION_KEYS);
     this.alpha = nbValidateAlpha(options.alpha ?? 1.0);
     this.fitPrior = nbValidateBoolean("fitPrior", options.fitPrior ?? true);
     this.classPrior = nbValidatePriors("classPrior", options.classPrior);

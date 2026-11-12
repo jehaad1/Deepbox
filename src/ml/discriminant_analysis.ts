@@ -18,7 +18,7 @@ import {
   warn,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { jacobiEigenSymmetric } from "./_internal";
+import { assertKnownOptions, jacobiEigenSymmetric, optionKeys } from "./_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -215,6 +215,10 @@ function ledoitWolfShrinkage(Z: Float64Array, n: number, f: number): number {
   return Math.min(1, beta / delta);
 }
 
+const LINEAR_DISCRIMINANT_ANALYSIS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LinearDiscriminantAnalysis>[0]>
+>({ nComponents: true, shrinkage: true, priors: true });
+
 /**
  * Linear Discriminant Analysis (LDA).
  *
@@ -279,6 +283,11 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
       readonly priors?: readonly number[];
     } = {}
   ) {
+    assertKnownOptions(
+      "LinearDiscriminantAnalysis",
+      options,
+      LINEAR_DISCRIMINANT_ANALYSIS_OPTION_KEYS
+    );
     if (options.nComponents !== undefined) {
       this.nComponents = LinearDiscriminantAnalysis.checkNComponents(options.nComponents);
     }
@@ -790,6 +799,10 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
   }
 }
 
+const QUADRATIC_DISCRIMINANT_ANALYSIS_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof QuadraticDiscriminantAnalysis>[0]>
+>({ regParam: true, priors: true });
+
 /**
  * Quadratic Discriminant Analysis (QDA).
  *
@@ -842,6 +855,11 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
       readonly priors?: readonly number[];
     } = {}
   ) {
+    assertKnownOptions(
+      "QuadraticDiscriminantAnalysis",
+      options,
+      QUADRATIC_DISCRIMINANT_ANALYSIS_OPTION_KEYS
+    );
     this.regParam = QuadraticDiscriminantAnalysis.checkRegParam(options.regParam ?? 0);
     if (options.priors !== undefined) {
       checkPriorValues(options.priors);

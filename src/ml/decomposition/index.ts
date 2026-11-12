@@ -20,7 +20,7 @@ import { svd } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
 import { Generator } from "../../random/Generator";
 import { __random } from "../../random/random";
-import { digamma, jacobiEigenSymmetric } from "../_internal";
+import { assertKnownOptions, digamma, jacobiEigenSymmetric, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -231,6 +231,14 @@ function readLatentInput(X: Tensor, nColumns: number, what: string): Float64Arra
 // PCA
 // ---------------------------------------------------------------------------
 
+const PCA_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof PCA>[0]>>({
+  nComponents: true,
+  whiten: true,
+  svdSolver: true,
+  nOversamples: true,
+  randomState: true,
+});
+
 /**
  * Principal Component Analysis (PCA).
  *
@@ -300,6 +308,7 @@ export class PCA implements Transformer {
       readonly randomState?: number;
     } = {}
   ) {
+    assertKnownOptions("PCA", options, PCA_OPTION_KEYS);
     if (options.nComponents !== undefined) {
       this.nComponents = PCA.checkNComponents(options.nComponents);
     }
@@ -766,6 +775,10 @@ export class PCA implements Transformer {
 // TruncatedSVD
 // ---------------------------------------------------------------------------
 
+const TRUNCATED_SVD_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof TruncatedSVD>[0]>
+>({ nComponents: true });
+
 /**
  * Truncated SVD (aka LSA: Latent Semantic Analysis).
  *
@@ -814,6 +827,7 @@ export class TruncatedSVD implements Transformer {
       readonly nComponents?: number;
     } = {}
   ) {
+    assertKnownOptions("TruncatedSVD", options, TRUNCATED_SVD_OPTION_KEYS);
     this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
   }
 
@@ -1077,6 +1091,14 @@ function validateNmfInit(value: unknown): NmfInit {
   return value;
 }
 
+const NMF_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof NMF>[0]>>({
+  nComponents: true,
+  maxIter: true,
+  tol: true,
+  randomState: true,
+  init: true,
+});
+
 /**
  * Non-negative Matrix Factorization (NMF).
  *
@@ -1137,6 +1159,7 @@ export class NMF implements Transformer {
       readonly init?: NmfInit;
     } = {}
   ) {
+    assertKnownOptions("NMF", options, NMF_OPTION_KEYS);
     this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
     this.maxIter = validatePositiveInt(options.maxIter ?? 200, "maxIter");
     this.tol = validateTolValue(options.tol ?? 1e-4);
@@ -1559,6 +1582,15 @@ function validateIcaFun(value: unknown): IcaFun {
   return value;
 }
 
+const FAST_ICA_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof FastICA>[0]>>({
+  nComponents: true,
+  maxIter: true,
+  tol: true,
+  fun: true,
+  whiten: true,
+  randomState: true,
+});
+
 /**
  * FastICA: Independent Component Analysis using the fast fixed-point algorithm.
  *
@@ -1621,6 +1653,7 @@ export class FastICA implements Transformer {
       readonly randomState?: number;
     } = {}
   ) {
+    assertKnownOptions("FastICA", options, FAST_ICA_OPTION_KEYS);
     this.nComponents = validatePositiveInt(options.nComponents ?? 2, "nComponents");
     this.maxIter = validatePositiveInt(options.maxIter ?? 200, "maxIter");
     this.tol = validateTolValue(options.tol ?? 1e-4);
@@ -2068,6 +2101,17 @@ export class FastICA implements Transformer {
 // LatentDirichletAllocation
 // ---------------------------------------------------------------------------
 
+const LATENT_DIRICHLET_ALLOCATION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LatentDirichletAllocation>[0]>
+>({
+  nComponents: true,
+  maxIter: true,
+  tol: true,
+  docTopicPrior: true,
+  topicWordPrior: true,
+  randomState: true,
+});
+
 /**
  * Latent Dirichlet Allocation (LDA) for topic modeling.
  *
@@ -2123,6 +2167,11 @@ export class LatentDirichletAllocation implements Transformer {
       readonly randomState?: number;
     } = {}
   ) {
+    assertKnownOptions(
+      "LatentDirichletAllocation",
+      options,
+      LATENT_DIRICHLET_ALLOCATION_OPTION_KEYS
+    );
     this.nComponents = validatePositiveInt(options.nComponents ?? 10, "nComponents");
     this.maxIter = validatePositiveInt(options.maxIter ?? 10, "maxIter");
     this.tol = validateTolValue(options.tol ?? 1e-3);

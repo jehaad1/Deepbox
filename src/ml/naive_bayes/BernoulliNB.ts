@@ -4,6 +4,7 @@
 
 import { InvalidParameterError, NotFittedError } from "../../core";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
 import {
@@ -32,6 +33,10 @@ function validateBinarize(value: unknown): number | null {
   }
   return value;
 }
+
+const BERNOULLI_NB_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof BernoulliNB>[0]>
+>({ alpha: true, binarize: true, fitPrior: true, classPrior: true });
 
 /**
  * Bernoulli Naive Bayes classifier.
@@ -85,6 +90,7 @@ export class BernoulliNB implements Classifier {
       readonly classPrior?: readonly number[] | null;
     } = {}
   ) {
+    assertKnownOptions("BernoulliNB", options, BERNOULLI_NB_OPTION_KEYS);
     this.alpha = nbValidateAlpha(options.alpha ?? 1.0);
     this.binarize = validateBinarize(options.binarize === undefined ? 0.0 : options.binarize);
     this.fitPrior = nbValidateBoolean("fitPrior", options.fitPrior ?? true);

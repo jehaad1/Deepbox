@@ -5,6 +5,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
@@ -560,6 +561,23 @@ function checkScoreSizes(predicted: number, actual: number): void {
 // ExtraTreesClassifier
 // ═════════════════════════════════════════════════════════════════════
 
+const EXTRA_TREES_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof ExtraTreesClassifier>[0]>
+>({
+  nEstimators: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  bootstrap: true,
+  randomState: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+  criterion: true,
+  classWeight: true,
+});
+
 /**
  * Extremely Randomized Trees Classifier.
  *
@@ -598,6 +616,7 @@ export class ExtraTreesClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: ExtraTreesClassifierOptions = {}) {
+    assertKnownOptions("ExtraTreesClassifier", options, EXTRA_TREES_CLASSIFIER_OPTION_KEYS);
     this.params = resolveOptions(options, "sqrt");
     this.criterion = checkTreeCriterion(options.criterion ?? "gini");
     this.classWeight = checkClassWeight(options.classWeight, true);
@@ -876,6 +895,21 @@ export class ExtraTreesClassifier implements Classifier {
 // ExtraTreesRegressor
 // ═════════════════════════════════════════════════════════════════════
 
+const EXTRA_TREES_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof ExtraTreesRegressor>[0]>
+>({
+  nEstimators: true,
+  maxDepth: true,
+  minSamplesSplit: true,
+  minSamplesLeaf: true,
+  maxFeatures: true,
+  bootstrap: true,
+  randomState: true,
+  minImpurityDecrease: true,
+  maxLeafNodes: true,
+  ccpAlpha: true,
+});
+
 /**
  * Extremely Randomized Trees Regressor.
  *
@@ -905,6 +939,7 @@ export class ExtraTreesRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: ExtraTreesOptions = {}) {
+    assertKnownOptions("ExtraTreesRegressor", options, EXTRA_TREES_REGRESSOR_OPTION_KEYS);
     this.params = resolveOptions(options, undefined);
   }
 

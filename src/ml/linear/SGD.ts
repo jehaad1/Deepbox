@@ -20,6 +20,7 @@ import {
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -635,6 +636,25 @@ function ovrWeights(
   return sw;
 }
 
+const SGDCLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SGDClassifier>[0]>
+>({
+  penalty: true,
+  alpha: true,
+  l1Ratio: true,
+  fitIntercept: true,
+  maxIter: true,
+  tol: true,
+  shuffle: true,
+  randomState: true,
+  learningRate: true,
+  eta0: true,
+  powerT: true,
+  nIterNoChange: true,
+  loss: true,
+  classWeight: true,
+});
+
 /**
  * SGD Classifier: linear classifiers trained with stochastic gradient descent.
  *
@@ -698,6 +718,7 @@ export class SGDClassifier implements Classifier {
       readonly classWeight?: ClassWeight;
     } = {}
   ) {
+    assertKnownOptions("SGDClassifier", options, SGDCLASSIFIER_OPTION_KEYS);
     this.p = defaultParams(options, options.loss ?? "hinge", "optimal", 0.5);
     validateParams(this.p, CLASSIFIER_LOSSES);
     if (options.classWeight !== undefined) {
@@ -1248,6 +1269,25 @@ export class SGDClassifier implements Classifier {
   }
 }
 
+const SGDREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SGDRegressor>[0]>
+>({
+  penalty: true,
+  alpha: true,
+  l1Ratio: true,
+  fitIntercept: true,
+  maxIter: true,
+  tol: true,
+  shuffle: true,
+  randomState: true,
+  learningRate: true,
+  eta0: true,
+  powerT: true,
+  nIterNoChange: true,
+  loss: true,
+  epsilon: true,
+});
+
 /**
  * SGD Regressor: linear regressor trained with stochastic gradient descent.
  *
@@ -1305,6 +1345,7 @@ export class SGDRegressor implements Regressor {
       readonly epsilon?: number;
     } = {}
   ) {
+    assertKnownOptions("SGDRegressor", options, SGDREGRESSOR_OPTION_KEYS);
     this.p = defaultParams(options, options.loss ?? "squared_error", "invscaling", 0.25);
     validateParams(this.p, REGRESSION_LOSSES);
   }

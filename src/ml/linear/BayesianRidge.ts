@@ -12,6 +12,7 @@
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { svd } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -114,6 +115,21 @@ function resolveOptions(options: BayesianRidgeOptions): ResolvedOptions {
   return resolved;
 }
 
+const BAYESIAN_RIDGE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof BayesianRidge>[0]>
+>({
+  maxIter: true,
+  tol: true,
+  fitIntercept: true,
+  alphaInit: true,
+  lambdaInit: true,
+  alpha1: true,
+  alpha2: true,
+  lambda1: true,
+  lambda2: true,
+  computeScore: true,
+});
+
 /**
  * Bayesian Ridge Regression with automatic regularization.
  *
@@ -160,6 +176,7 @@ export class BayesianRidge implements Regressor {
    * @throws {InvalidParameterError} If an option is outside its valid range
    */
   constructor(options: BayesianRidgeOptions = {}) {
+    assertKnownOptions("BayesianRidge", options, BAYESIAN_RIDGE_OPTION_KEYS);
     this.opts = resolveOptions(options);
   }
 

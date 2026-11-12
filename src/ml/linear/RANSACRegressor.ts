@@ -12,6 +12,7 @@
 import { ConvergenceError, InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { createTreeRng } from "../tree/DecisionTree";
@@ -61,6 +62,20 @@ function dynamicMaxTrials(
   if (denom === 1) return Infinity;
   return Math.abs(Math.ceil(Math.log(nom) / Math.log(denom)));
 }
+
+const RANSACREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RANSACRegressor>[0]>
+>({
+  estimator: true,
+  minSamples: true,
+  residualThreshold: true,
+  maxTrials: true,
+  stopNInliers: true,
+  stopScore: true,
+  stopProbability: true,
+  loss: true,
+  randomState: true,
+});
 
 /**
  * RANSAC (Random Sample Consensus) Regressor.
@@ -122,6 +137,7 @@ export class RANSACRegressor implements Regressor {
    * @throws {InvalidParameterError} If any option is out of range
    */
   constructor(options: RANSACOptions = {}) {
+    assertKnownOptions("RANSACRegressor", options, RANSACREGRESSOR_OPTION_KEYS);
     this.estimator_ = options.estimator;
     this.minSamples = options.minSamples;
     this.residualThreshold = options.residualThreshold;

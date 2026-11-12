@@ -4,6 +4,7 @@
 
 import { InvalidParameterError, MemoryError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -256,6 +257,10 @@ function cutDendrogram(nClusters: number, children: Int32Array, nLeaves: number)
   return labels;
 }
 
+const AGGLOMERATIVE_CLUSTERING_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AgglomerativeClustering>[0]>
+>({ nClusters: true, linkage: true, distanceThreshold: true });
+
 /**
  * Agglomerative (hierarchical) clustering.
  *
@@ -318,6 +323,7 @@ export class AgglomerativeClustering implements Clusterer {
       readonly distanceThreshold?: number;
     } = {}
   ) {
+    assertKnownOptions("AgglomerativeClustering", options, AGGLOMERATIVE_CLUSTERING_OPTION_KEYS);
     this.distanceThreshold = options.distanceThreshold;
     this.nClustersParam =
       options.nClusters === undefined

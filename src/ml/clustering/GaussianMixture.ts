@@ -5,6 +5,7 @@
 import { ConvergenceError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -67,6 +68,19 @@ function choleskyInPlace(a: Float64Array, offset: number, d: number): boolean {
   }
   return true;
 }
+
+const GAUSSIAN_MIXTURE_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof GaussianMixture>[0]>
+>({
+  nComponents: true,
+  maxIter: true,
+  tol: true,
+  nInit: true,
+  regCovar: true,
+  randomState: true,
+  covarianceType: true,
+  initParams: true,
+});
 
 /**
  * Gaussian Mixture Model (GMM).
@@ -140,6 +154,7 @@ export class GaussianMixture implements Clusterer {
       readonly initParams?: InitParams;
     } = {}
   ) {
+    assertKnownOptions("GaussianMixture", options, GAUSSIAN_MIXTURE_OPTION_KEYS);
     this.nComponents = options.nComponents ?? 1;
     this.maxIter = options.maxIter ?? 100;
     this.tol = options.tol ?? 1e-3;

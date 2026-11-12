@@ -12,7 +12,12 @@ import { DataValidationError, InvalidParameterError, NotFittedError } from "../.
 import { fromDenseMatrix2D } from "../../linalg/_internal";
 import { eigh } from "../../linalg/decomposition/eig";
 import type { Tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateUnsupervisedFitInputs } from "../_validation";
+
+const SPECTRAL_EMBEDDING_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof SpectralEmbedding>[0]>
+>({ nComponents: true, gamma: true });
 
 /**
  * Laplacian eigenmaps with a fully connected RBF affinity graph.
@@ -54,6 +59,7 @@ export class SpectralEmbedding {
       readonly gamma?: number;
     } = {}
   ) {
+    assertKnownOptions("SpectralEmbedding", options, SPECTRAL_EMBEDDING_OPTION_KEYS);
     this.nComponents = options.nComponents ?? 2;
     this.gamma = options.gamma ?? 1;
     this.validateParams();

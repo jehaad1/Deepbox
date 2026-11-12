@@ -19,7 +19,7 @@
 
 import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
-import { kthSmallest } from "../_internal";
+import { assertKnownOptions, kthSmallest, optionKeys } from "../_internal";
 import {
   toFloat64View,
   validatePredictInputs,
@@ -83,6 +83,15 @@ function checkMinBinFreq(value: unknown): number {
   return value;
 }
 
+const MEAN_SHIFT_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof MeanShift>[0]>>({
+  bandwidth: true,
+  maxIter: true,
+  tol: true,
+  binSeeding: true,
+  minBinFreq: true,
+  clusterAll: true,
+});
+
 /**
  * Mean Shift clustering with a flat kernel.
  *
@@ -142,6 +151,7 @@ export class MeanShift implements Clusterer {
       readonly clusterAll?: boolean;
     } = {}
   ) {
+    assertKnownOptions("MeanShift", options, MEAN_SHIFT_OPTION_KEYS);
     this.bandwidth = checkBandwidth(options.bandwidth ?? "auto");
     this.maxIter = checkMaxIter(options.maxIter ?? 300);
     this.tol = checkTol(options.tol ?? 1e-3);

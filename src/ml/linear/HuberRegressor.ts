@@ -12,6 +12,7 @@
 import { InvalidParameterError, NotFittedError, warn } from "../../core";
 import { lstsq } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -134,6 +135,10 @@ function solveScale(absResid: Float64Array, epsilon: number): number {
   return Math.max(MIN_SCALE, 0.5 * (lo + hi));
 }
 
+const HUBER_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof HuberRegressor>[0]>
+>({ epsilon: true, alpha: true, maxIter: true, tol: true, fitIntercept: true, learningRate: true });
+
 /**
  * Linear regression with Huber loss, which limits the influence of outliers.
  *
@@ -177,6 +182,7 @@ export class HuberRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is outside its valid range
    */
   constructor(options: HuberRegressorOptions = {}) {
+    assertKnownOptions("HuberRegressor", options, HUBER_REGRESSOR_OPTION_KEYS);
     this.opts = resolveOptions(options);
   }
 

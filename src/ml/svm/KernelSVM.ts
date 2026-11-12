@@ -18,6 +18,7 @@ import {
   warn,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 
@@ -1487,6 +1488,18 @@ function normalizeSvcConfig(o: Record<string, unknown>): SvcConfig {
   };
 }
 
+const SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof SVC>[0]>>({
+  C: true,
+  kernel: true,
+  gamma: true,
+  coef0: true,
+  degree: true,
+  maxIter: true,
+  tol: true,
+  classWeight: true,
+  cacheSize: true,
+});
+
 /**
  * Support Vector Classification with the kernel trick.
  *
@@ -1522,6 +1535,7 @@ export class SVC implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: SVCOptions = {}) {
+    assertKnownOptions("SVC", options, SVC_OPTION_KEYS);
     this.cfg = normalizeSvcConfig(options as Record<string, unknown>);
   }
 
@@ -1821,6 +1835,18 @@ export function expansionPredict(model: KernelExpansion, X: Tensor, name: string
   return tensor(f, { dtype: "float64" });
 }
 
+const SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof SVR>[0]>>({
+  C: true,
+  kernel: true,
+  gamma: true,
+  coef0: true,
+  degree: true,
+  epsilon: true,
+  maxIter: true,
+  tol: true,
+  cacheSize: true,
+});
+
 /**
  * Epsilon-Support Vector Regression with the kernel trick.
  *
@@ -1852,6 +1878,7 @@ export class SVR implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: SVROptions = {}) {
+    assertKnownOptions("SVR", options, SVR_OPTION_KEYS);
     this.cfg = normalizeSvrConfig(options as Record<string, unknown>);
   }
 

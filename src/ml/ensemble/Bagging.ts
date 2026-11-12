@@ -5,6 +5,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -215,6 +216,17 @@ function definedOptions(params: Record<string, unknown>): BaggingOptions {
   return out as BaggingOptions;
 }
 
+const BAGGING_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof BaggingClassifier>[0]>
+>({
+  nEstimators: true,
+  maxSamples: true,
+  maxFeatures: true,
+  bootstrap: true,
+  maxDepth: true,
+  randomState: true,
+});
+
 /**
  * Bagging Classifier (Bootstrap Aggregating).
  *
@@ -263,6 +275,7 @@ export class BaggingClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: BaggingOptions = {}) {
+    assertKnownOptions("BaggingClassifier", options, BAGGING_CLASSIFIER_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 10);
     this.maxSamples = checkFraction("maxSamples", options.maxSamples ?? 1.0);
     this.maxFeatures = checkFraction("maxFeatures", options.maxFeatures ?? 1.0);
@@ -485,6 +498,17 @@ export class BaggingClassifier implements Classifier {
   }
 }
 
+const BAGGING_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof BaggingRegressor>[0]>
+>({
+  nEstimators: true,
+  maxSamples: true,
+  maxFeatures: true,
+  bootstrap: true,
+  maxDepth: true,
+  randomState: true,
+});
+
 /**
  * Bagging Regressor (Bootstrap Aggregating for Regression).
  *
@@ -521,6 +545,7 @@ export class BaggingRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: BaggingOptions = {}) {
+    assertKnownOptions("BaggingRegressor", options, BAGGING_REGRESSOR_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 10);
     this.maxSamples = checkFraction("maxSamples", options.maxSamples ?? 1.0);
     this.maxFeatures = checkFraction("maxFeatures", options.maxFeatures ?? 1.0);

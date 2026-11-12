@@ -17,7 +17,7 @@ import {
   ShapeError,
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
-import { cloneEstimator } from "./_internal";
+import { assertKnownOptions, cloneEstimator, optionKeys } from "./_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "./_validation";
 import type { Classifier } from "./base";
 import { nbAccuracy, nbLabelTensor, nbMatrixTensor, nbValidateScoreTarget } from "./naive_bayes";
@@ -108,6 +108,10 @@ function binaryConfidence(clf: Classifier, X: Tensor, nSamples: number): Float64
   return null;
 }
 
+const ONE_VS_REST_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof OneVsRestClassifier>[0]>
+>({ estimator: true });
+
 /**
  * One-vs-Rest (OvR) multiclass strategy.
  *
@@ -139,6 +143,7 @@ export class OneVsRestClassifier implements Classifier {
    * @throws {InvalidParameterError} If `estimator` is missing or lacks `fit`, `predict` or `getParams`
    */
   constructor(options: BinaryEstimatorOptions) {
+    assertKnownOptions("OneVsRestClassifier", options, ONE_VS_REST_CLASSIFIER_OPTION_KEYS);
     this.estimator = validateEstimator(options?.estimator, "OneVsRestClassifier");
   }
 
@@ -339,6 +344,10 @@ export class OneVsRestClassifier implements Classifier {
   }
 }
 
+const ONE_VS_ONE_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof OneVsOneClassifier>[0]>
+>({ estimator: true });
+
 /**
  * One-vs-One (OvO) multiclass strategy.
  *
@@ -369,6 +378,7 @@ export class OneVsOneClassifier implements Classifier {
    * @throws {InvalidParameterError} If `estimator` is missing or lacks `fit`, `predict` or `getParams`
    */
   constructor(options: BinaryEstimatorOptions) {
+    assertKnownOptions("OneVsOneClassifier", options, ONE_VS_ONE_CLASSIFIER_OPTION_KEYS);
     this.estimator = validateEstimator(options?.estimator, "OneVsOneClassifier");
   }
 

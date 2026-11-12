@@ -4,6 +4,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -204,6 +205,10 @@ function definedOptions<T>(params: Record<string, unknown>): T {
   return out as T;
 }
 
+const ADA_BOOST_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AdaBoostClassifier>[0]>
+>({ nEstimators: true, learningRate: true, maxDepth: true, randomState: true });
+
 /**
  * AdaBoost Classifier (Adaptive Boosting).
  *
@@ -251,6 +256,7 @@ export class AdaBoostClassifier implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: AdaBoostClassifierOptions = {}) {
+    assertKnownOptions("AdaBoostClassifier", options, ADA_BOOST_CLASSIFIER_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 50);
     this.learningRate = checkLearningRate(options.learningRate ?? 1.0);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 1);
@@ -577,6 +583,10 @@ export class AdaBoostClassifier implements Classifier {
   }
 }
 
+const ADA_BOOST_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof AdaBoostRegressor>[0]>
+>({ nEstimators: true, learningRate: true, maxDepth: true, randomState: true, loss: true });
+
 /**
  * AdaBoost Regressor (Adaptive Boosting for Regression).
  *
@@ -620,6 +630,7 @@ export class AdaBoostRegressor implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: AdaBoostRegressorOptions = {}) {
+    assertKnownOptions("AdaBoostRegressor", options, ADA_BOOST_REGRESSOR_OPTION_KEYS);
     this.nEstimators = checkNEstimators(options.nEstimators ?? 50);
     this.learningRate = checkLearningRate(options.learningRate ?? 1.0);
     this.maxDepth = checkMaxDepth(options.maxDepth ?? 3);

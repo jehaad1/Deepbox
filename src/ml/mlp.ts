@@ -16,7 +16,7 @@ import {
 } from "../core";
 import { type Tensor, tensor } from "../ndarray";
 import { __random, __randomBelow, __SeededRandom, __seedToUint64 } from "../random/random";
-import { r2Score } from "./_internal";
+import { assertKnownOptions, optionKeys, r2Score } from "./_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -458,6 +458,20 @@ function buildLayers(
   return layers;
 }
 
+const MLPCLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MLPClassifier>[0]>
+>({
+  hiddenLayerSizes: true,
+  activation: true,
+  learningRate: true,
+  maxIter: true,
+  tol: true,
+  alpha: true,
+  shuffle: true,
+  randomState: true,
+  nIterNoChange: true,
+});
+
 /**
  * Multi-layer Perceptron Classifier.
  *
@@ -507,6 +521,7 @@ export class MLPClassifier implements Classifier {
    * @param options.nIterNoChange - Epochs without improvement tolerated before stopping (default: 10)
    */
   constructor(options: MLPOptions = {}) {
+    assertKnownOptions("MLPClassifier", options, MLPCLASSIFIER_OPTION_KEYS);
     this.opts = resolveOptions(options);
     validateOptions(this.opts);
   }
@@ -752,6 +767,20 @@ export class MLPClassifier implements Classifier {
   }
 }
 
+const MLPREGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof MLPRegressor>[0]>
+>({
+  hiddenLayerSizes: true,
+  activation: true,
+  learningRate: true,
+  maxIter: true,
+  tol: true,
+  alpha: true,
+  shuffle: true,
+  randomState: true,
+  nIterNoChange: true,
+});
+
 /**
  * Multi-layer Perceptron Regressor.
  *
@@ -800,6 +829,7 @@ export class MLPRegressor implements Regressor {
    * @param options.nIterNoChange - Epochs without improvement tolerated before stopping (default: 10)
    */
   constructor(options: MLPOptions = {}) {
+    assertKnownOptions("MLPRegressor", options, MLPREGRESSOR_OPTION_KEYS);
     this.opts = resolveOptions(options);
     validateOptions(this.opts);
   }

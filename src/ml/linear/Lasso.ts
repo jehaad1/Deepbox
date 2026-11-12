@@ -7,6 +7,7 @@
 
 import { InvalidParameterError, NotFittedError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Regressor } from "../base";
 import {
@@ -37,6 +38,18 @@ export type LassoOptions = {
   /** Seed for `selection: "random"`; the global generator is used when omitted. */
   readonly randomState?: number;
 };
+
+const LASSO_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Lasso>[0]>>({
+  alpha: true,
+  fitIntercept: true,
+  normalize: true,
+  maxIter: true,
+  tol: true,
+  warmStart: true,
+  positive: true,
+  selection: true,
+  randomState: true,
+});
 
 /**
  * Lasso Regression (L1 Regularized Linear Regression).
@@ -116,6 +129,7 @@ export class Lasso implements Regressor {
    * @throws {InvalidParameterError} If `randomState` is not a finite number
    */
   constructor(options: LassoOptions = {}) {
+    assertKnownOptions("Lasso", options, LASSO_OPTION_KEYS);
     this.options = { ...options };
     if (this.options.randomState !== undefined && !Number.isFinite(this.options.randomState)) {
       throw new InvalidParameterError(

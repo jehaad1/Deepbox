@@ -11,6 +11,7 @@ import {
   warn,
 } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -321,6 +322,20 @@ function proximalGradient(
   return { theta: x, nIter, converged };
 }
 
+const LOGISTIC_REGRESSION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LogisticRegression>[0]>
+>({
+  penalty: true,
+  tol: true,
+  C: true,
+  fitIntercept: true,
+  maxIter: true,
+  learningRate: true,
+  multiClass: true,
+  classWeight: true,
+  solver: true,
+});
+
 /**
  * Logistic Regression (Binary and Multiclass Classification).
  *
@@ -406,6 +421,7 @@ export class LogisticRegression implements Classifier {
       readonly solver?: Solver;
     } = {}
   ) {
+    assertKnownOptions("LogisticRegression", options, LOGISTIC_REGRESSION_OPTION_KEYS);
     this.options = { ...options };
     if (options.classWeight !== undefined && typeof options.classWeight === "object") {
       this.options.classWeight = { ...options.classWeight };

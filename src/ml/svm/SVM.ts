@@ -13,6 +13,7 @@
 import { InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
 import { __random, __randomBelow } from "../../random/random";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
@@ -361,6 +362,17 @@ type LinearSvcModel = {
   readonly nIter: number;
 };
 
+const LINEAR_SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof LinearSVC>[0]>>({
+  C: true,
+  loss: true,
+  fitIntercept: true,
+  interceptScaling: true,
+  maxIter: true,
+  tol: true,
+  classWeight: true,
+  randomState: true,
+});
+
 /**
  * Support Vector Machine classifier with a linear kernel.
  *
@@ -394,6 +406,7 @@ export class LinearSVC implements Classifier {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: LinearSVCOptions = {}) {
+    assertKnownOptions("LinearSVC", options, LINEAR_SVC_OPTION_KEYS);
     this.cfg = normalizeLinearSvcConfig(options as Record<string, unknown>);
   }
 
@@ -741,6 +754,17 @@ function normalizeLinearSvrConfig(o: Record<string, unknown>): LinearSvrConfig {
   };
 }
 
+const LINEAR_SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof LinearSVR>[0]>>({
+  C: true,
+  epsilon: true,
+  loss: true,
+  fitIntercept: true,
+  interceptScaling: true,
+  maxIter: true,
+  tol: true,
+  randomState: true,
+});
+
 /**
  * Support Vector Regression with a linear kernel.
  *
@@ -774,6 +798,7 @@ export class LinearSVR implements Regressor {
    * @throws {InvalidParameterError} If an option is out of range
    */
   constructor(options: LinearSVROptions = {}) {
+    assertKnownOptions("LinearSVR", options, LINEAR_SVR_OPTION_KEYS);
     this.cfg = normalizeLinearSvrConfig(options as Record<string, unknown>);
   }
 

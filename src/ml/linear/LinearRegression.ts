@@ -8,6 +8,7 @@
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { lstsq } from "../../linalg";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import {
   assertContiguous,
   toFloat64View,
@@ -67,6 +68,10 @@ export function r2ScoreOf(y: Tensor, predict: () => Tensor): number {
   if (ssTot === 0) return ssRes === 0 ? 1.0 : 0.0;
   return 1 - ssRes / ssTot;
 }
+
+const LINEAR_REGRESSION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof LinearRegression>[0]>
+>({ fitIntercept: true, normalize: true, copyX: true });
 
 /**
  * Ordinary Least Squares Linear Regression.
@@ -141,6 +146,7 @@ export class LinearRegression implements Regressor {
       readonly copyX?: boolean;
     } = {}
   ) {
+    assertKnownOptions("LinearRegression", options, LINEAR_REGRESSION_OPTION_KEYS);
     this.options = { ...options };
   }
 

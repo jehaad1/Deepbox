@@ -8,6 +8,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, ShapeError } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { assertContiguous, toFloat64View } from "../_validation";
 import type { Regressor } from "../base";
 import { r2ScoreOf } from "./LinearRegression";
@@ -128,6 +129,10 @@ function spearmanNonNegative(x: Float64Array, y: Float64Array): boolean {
   return sxy / Math.sqrt(sxx * syy) >= 0;
 }
 
+const ISOTONIC_REGRESSION_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof IsotonicRegression>[0]>
+>({ increasing: true, outOfBounds: true, yMin: true, yMax: true });
+
 /**
  * Isotonic Regression.
  *
@@ -169,6 +174,7 @@ export class IsotonicRegression implements Regressor {
    * @throws {InvalidParameterError} If an option is invalid
    */
   constructor(options: IsotonicRegressionOptions = {}) {
+    assertKnownOptions("IsotonicRegression", options, ISOTONIC_REGRESSION_OPTION_KEYS);
     this.options = resolveOptions(options);
   }
 

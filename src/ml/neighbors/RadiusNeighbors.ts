@@ -9,6 +9,7 @@
 
 import { DataValidationError, InvalidParameterError, NotFittedError, warn } from "../../core";
 import { type Tensor, tensor } from "../../ndarray";
+import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier, Regressor } from "../base";
 import {
@@ -82,6 +83,10 @@ function describeSamples(rows: readonly number[]): string {
   return rows.length > 5 ? `${shown}, ... (${rows.length} in total)` : shown;
 }
 
+const RADIUS_NEIGHBORS_CLASSIFIER_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RadiusNeighborsClassifier>[0]>
+>({ radius: true, weights: true, outlierLabel: true });
+
 /**
  * Classifier that votes among all training samples within a fixed radius.
  *
@@ -127,6 +132,11 @@ export class RadiusNeighborsClassifier implements Classifier {
       readonly outlierLabel?: OutlierLabel;
     } = {}
   ) {
+    assertKnownOptions(
+      "RadiusNeighborsClassifier",
+      options,
+      RADIUS_NEIGHBORS_CLASSIFIER_OPTION_KEYS
+    );
     this.radius = checkRadius(options.radius ?? 1.0);
     this.weights = checkWeights(options.weights ?? "uniform");
     this.outlierLabel = checkOutlierLabel(options.outlierLabel ?? null);
@@ -367,6 +377,10 @@ export class RadiusNeighborsClassifier implements Classifier {
   }
 }
 
+const RADIUS_NEIGHBORS_REGRESSOR_OPTION_KEYS = optionKeys<
+  NonNullable<ConstructorParameters<typeof RadiusNeighborsRegressor>[0]>
+>({ radius: true, weights: true });
+
 /**
  * Regressor that averages the targets of all training samples within a fixed radius.
  *
@@ -399,6 +413,7 @@ export class RadiusNeighborsRegressor implements Regressor {
    * @param options.weights - "uniform" (default) or "distance" (inverse-distance weighted mean)
    */
   constructor(options: { readonly radius?: number; readonly weights?: RadiusWeights } = {}) {
+    assertKnownOptions("RadiusNeighborsRegressor", options, RADIUS_NEIGHBORS_REGRESSOR_OPTION_KEYS);
     this.radius = checkRadius(options.radius ?? 1.0);
     this.weights = checkWeights(options.weights ?? "uniform");
   }

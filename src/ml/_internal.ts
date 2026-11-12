@@ -57,6 +57,144 @@ export function cloneEstimator<T extends CloneableEstimator>(
 }
 
 /**
+ * Names of the options of an estimator constructor, checked at compile time: every key of `T`
+ * must be listed, and no other key may be. Use the result with {@link assertKnownOptions}.
+ *
+ * @internal
+ */
+export function optionKeys<T extends object>(
+  keys: { readonly [K in keyof Required<T>]: true }
+): readonly string[] {
+  return Object.keys(keys);
+}
+
+/** Levenshtein distance of two short strings. */
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row.push(
+        Math.min(
+          (prev[j] as number) + 1,
+          (row[j - 1] as number) + 1,
+          (prev[j - 1] as number) + cost
+        )
+      );
+    }
+    prev = row;
+  }
+  return prev[b.length] as number;
+}
+
+/** The allowed option closest to an unknown key: its camelCase form, or a near miss. */
+function suggestOption(key: string, allowed: readonly string[]): string | undefined {
+  const camel = key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+  if (allowed.includes(camel)) return camel;
+  const lower = key.toLowerCase();
+  let best: string | undefined;
+  let bestDistance = Math.min(2, Math.floor(key.length / 3));
+  for (const candidate of allowed) {
+    const d = editDistance(lower, candidate.toLowerCase());
+    if (d <= bestDistance) {
+      best = candidate;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * Reject constructor options that the estimator does not have. A misspelled or snake_case option
+ * would otherwise be dropped silently and the estimator would run with its default.
+ *
+ * @param owner - Name of the estimator, used in the message
+ * @param options - Options object given to the constructor
+ * @param allowed - Option names the estimator accepts, from {@link optionKeys}
+ * @throws {InvalidParameterError} On the first key that is not in `allowed`
+ *
+ * @internal
+ */
+export function assertKnownOptions(
+  owner: string,
+  options: object | null | undefined,
+  allowed: readonly string[]
+): void {
+  if (options === null || options === undefined) return;
+  for (const key of Object.keys(options)) {
+    if (allowed.includes(key)) continue;
+    const suggestion = suggestOption(key, allowed);
+    throw new InvalidParameterError(
+      suggestion === undefined
+        ? `${owner}: unknown option "${key}"; valid options are ${allowed.join(", ")}`
+        : `${owner}: unknown option "${key}"; did you mean "${suggestion}"?`,
+      key,
+      (options as Record<string, unknown>)[key]
+    );
+  }
+}
+
+/**
+ * Accept the wrapped estimator(s) in `setParams` only when they are the ones already in use.
+ * Meta-estimators fix their members at construction, but `setParams(getParams())` must still work.
+ *
+ * @param owner - Name of the meta-estimator, used in the message
+ * @param key - Parameter name (`estimator`, `estimators`, `finalEstimator`)
+ * @param value - Value passed to `setParams`
+ * @param current - Estimator, or array of estimators, currently in use
+ * @throws {InvalidParameterError} If `value` is not the very same object (or the same objects in the same order)
+ *
+ * @internal
+ */
+export function assertUnchangedEstimators(
+  owner: string,
+  key: string,
+  value: unknown,
+  current: unknown
+): void {
+  const same =
+    Array.isArray(value) && Array.isArray(current)
+      ? value.length === current.length && value.every((v, i) => v === current[i])
+      : value === current;
+  if (!same) {
+    throw new InvalidParameterError(
+      `${key} cannot be changed via setParams; construct a new ${owner}`,
+      key,
+      value
+    );
+  }
+}
+
+/**
+ * Accept a read-only parameter in `setParams` only when it equals the current value.
+ * `getParams()` of a meta-estimator reports derived values such as `nEstimators`, and
+ * `setParams(getParams())` must keep working.
+ *
+ * @param owner - Name of the meta-estimator, used in the message
+ * @param key - Parameter name
+ * @param value - Value passed to `setParams`
+ * @param current - Current value
+ * @throws {InvalidParameterError} If `value` differs from `current`
+ *
+ * @internal
+ */
+export function assertReadOnlyParam(
+  owner: string,
+  key: string,
+  value: unknown,
+  current: unknown
+): void {
+  if (value !== current) {
+    throw new InvalidParameterError(
+      `${key} is derived from the estimators of ${owner} and cannot be set; it is ${String(current)}`,
+      key,
+      value
+    );
+  }
+}
+
+/**
  * Value of rank `k` (0-based) in `a`. Partially reorders `a` in place.
  * Average O(n); `a` must not contain NaN.
  *
