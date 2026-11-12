@@ -843,7 +843,8 @@ export class DataFrame {
    * Filter rows based on a boolean predicate function.
    *
    * The row object passed to `predicate` is reused between calls to avoid one
-   * allocation per row, so copy it (`{ ...row }`) if you need to keep it.
+   * allocation per row, so copy it (`{ ...row }`) if you need to keep it. It has
+   * no prototype, so a column named `__proto__` or `toString` is an ordinary field.
    *
    * @param predicate - Function that returns true for rows to keep
    * @returns New DataFrame with filtered rows
@@ -869,10 +870,10 @@ export class DataFrame {
     // First pass: find matching row indices using a reusable row object
     const matchIndices: number[] = [];
     // biome-ignore lint/suspicious/noExplicitAny: DataFrame rows are dynamically typed
-    const row: Record<string, any> = {};
+    const row: Record<string, any> = Object.create(null);
     for (let i = 0; i < nRows; i++) {
       for (let c = 0; c < nCols; c++) {
-        row[this._columns[c] as string] = (colArrays[c] as unknown[])[i];
+        setField(row, this._columns[c] as string, (colArrays[c] as unknown[])[i]);
       }
       if (predicate(row)) {
         matchIndices.push(i);
@@ -5103,7 +5104,8 @@ export class DataFrame {
    * Add or modify columns functionally.
    *
    * Each value can be an array (one entry per row), a function that receives a
-   * row object and the row position and returns the cell value, or a scalar that
+   * row object (without a prototype, so any column name is an ordinary field) and
+   * the row position and returns the cell value, or a scalar that
    * is repeated for every row. Functions see the columns of the original
    * DataFrame, not columns assigned earlier in the same call.
    *
@@ -5135,9 +5137,9 @@ export class DataFrame {
       if (typeof valueOrFn === "function") {
         const arr: unknown[] = new Array(nRows);
         for (let i = 0; i < nRows; i++) {
-          const row: Record<string, unknown> = {};
+          const row: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
           for (let c = 0; c < this._columns.length; c++) {
-            row[this._columns[c] as string] = (sources[c] as unknown[])[i];
+            setField(row, this._columns[c] as string, (sources[c] as unknown[])[i]);
           }
           arr[i] = valueOrFn(row, i);
         }
