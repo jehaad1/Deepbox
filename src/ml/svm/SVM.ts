@@ -385,6 +385,8 @@ const LINEAR_SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<type
  * `predictProba` returns a monotone squashing of the decision values, not calibrated
  * probabilities.
  *
+ * Default differs from scikit-learn: `loss` is "hinge" (scikit-learn: "squared_hinge").
+ *
  * @example
  * ```ts
  * import { LinearSVC } from 'deepbox/ml';
@@ -773,6 +775,8 @@ const LINEAR_SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<type
  *
  * Minimizes `0.5 ||w||^2 + C * sum_i loss(|y_i - w.x_i - b| - epsilon)` with dual coordinate
  * descent (the LIBLINEAR algorithm).
+ *
+ * Default differs from scikit-learn: `epsilon` is 0.1 (scikit-learn: 0.0).
  *
  * @example
  * ```ts

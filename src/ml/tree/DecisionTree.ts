@@ -789,6 +789,8 @@ const DECISION_TREE_CLASSIFIER_OPTION_KEYS = optionKeys<
  * Class labels may be any finite numbers. `predict` and `classes` are `int32` when all labels
  * are integers and `float64` otherwise.
  *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
+ *
  * @example
  * ```ts
  * import { DecisionTreeClassifier } from 'deepbox/ml';
@@ -1391,6 +1393,8 @@ const DECISION_TREE_REGRESSOR_OPTION_KEYS = optionKeys<
  *
  * Uses MSE reduction to find optimal splits for regression tasks. Leaves predict the mean
  * target of their training samples; `predict` returns `float64`.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts

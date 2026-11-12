@@ -1511,6 +1511,8 @@ const SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof SVC>
  * probabilities. Wrap the classifier in `CalibratedClassifierCV` when calibrated
  * probabilities matter.
  *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
+ *
  * @example
  * ```ts
  * import { SVC } from 'deepbox/ml';
@@ -1853,6 +1855,8 @@ const SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof SVR>
  * Solves the epsilon-SVR dual with the LIBSVM working-set SMO algorithm, so the result
  * agrees with scikit-learn's `SVR` up to the solver tolerance. Supports RBF, polynomial,
  * sigmoid and linear kernels.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
  *
  * @example
  * ```ts

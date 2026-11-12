@@ -292,6 +292,8 @@ const OPTICS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof O
  * Distances are computed on the fly, so memory use is linear in the number of samples;
  * run time is quadratic.
  *
+ * Default differs from scikit-learn: `clusterMethod` is "dbscan" (scikit-learn: "xi").
+ *
  * @example
  * ```ts
  * import { OPTICS } from 'deepbox/ml';

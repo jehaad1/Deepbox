@@ -144,6 +144,8 @@ const ISOTONIC_REGRESSION_OPTION_KEYS = optionKeys<
  * Unlike most regressors, IsotonicRegression takes 1-D X and y (a single-column 2-D X is also
  * accepted).
  *
+ * Default differs from scikit-learn: `outOfBounds` is "clip" (scikit-learn: "nan").
+ *
  * @example
  * ```ts
  * import { IsotonicRegression } from 'deepbox/ml';

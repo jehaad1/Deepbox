@@ -100,6 +100,8 @@ const GAUSSIAN_RANDOM_PROJECTION_OPTION_KEYS = optionKeys<
  * Without `randomState` the matrix is drawn from the global generator, so `setSeed()`
  * makes it reproducible; with `randomState` it comes from a private stream.
  *
+ * Default differs from scikit-learn: `nComponents` is 2 (scikit-learn: "auto", from the Johnson-Lindenstrauss bound).
+ *
  * @example
  * ```ts
  * import { GaussianRandomProjection } from 'deepbox/ml';

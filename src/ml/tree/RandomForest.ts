@@ -542,6 +542,8 @@ const RANDOM_FOREST_CLASSIFIER_OPTION_KEYS = optionKeys<
  * Differences from scikit-learn defaults: `maxDepth` defaults to 10 (not unlimited); pass
  * `Infinity` to grow full trees.
  *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
+ *
  * @example
  * ```ts
  * import { RandomForestClassifier } from 'deepbox/ml';
@@ -1110,6 +1112,8 @@ const RANDOM_FOREST_REGRESSOR_OPTION_KEYS = optionKeys<
  * tell apart from the float 1.0 that scikit-learn uses for "all features"; `null` states it
  * explicitly). To examine fewer, pass `"sqrt"`, `"log2"`, an integer >= 2, or a fraction in
  * (0, 1). `maxDepth` defaults to 10 (not unlimited); pass `Infinity` to grow full trees.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts

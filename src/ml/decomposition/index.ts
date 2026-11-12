@@ -1116,6 +1116,8 @@ const NMF_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof NMF>
  *
  * Useful for topic modeling, recommendation systems, and signal separation.
  *
+ * Default differs from scikit-learn: `nComponents` is 2 (scikit-learn: `None`, all features) and `init` is "random" (scikit-learn: `None`, which picks "nndsvda" when possible).
+ *
  * @example
  * ```ts
  * import { NMF } from 'deepbox/ml';
@@ -1603,6 +1605,8 @@ const FAST_ICA_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof
  * (n_components, n_features) so that `transform(X) = (X - mean) @ componentsᵀ`, and
  * `mixingMatrix` is its pseudo-inverse of shape (n_features, n_components).
  * Independent components are only defined up to sign, scale and order.
+ *
+ * Default differs from scikit-learn: `nComponents` is 2 (scikit-learn: `None`, all features).
  *
  * @example
  * ```ts
@@ -2120,6 +2124,8 @@ const LATENT_DIRICHLET_ALLOCATION_OPTION_KEYS = optionKeys<
  * model, not Linear Discriminant Analysis (see `LinearDiscriminantAnalysis`).
  *
  * Input X should be a non-negative matrix (e.g., from CountVectorizer).
+ *
+ * Default differs from scikit-learn: `docTopicPrior` and `topicWordPrior` are 0.1 (scikit-learn: `None`, meaning `1 / n_components`).
  *
  * @example
  * ```ts

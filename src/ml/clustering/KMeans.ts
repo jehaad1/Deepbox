@@ -65,6 +65,8 @@ const KMEANS_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof K
  * - i = number of iterations
  * - d = number of features
  *
+ * Default differs from scikit-learn: `nInit` is 10 (scikit-learn: "auto", which runs one k-means++ initialization).
+ *
  * @example
  * ```ts
  * import { KMeans } from 'deepbox/ml';

@@ -215,6 +215,8 @@ const TSNE_PARAM_NAMES: ReadonlySet<string> = new Set(TSNE_OPTION_KEYS);
  * t-SNE is non-parametric: it embeds exactly the samples it was fitted on and cannot
  * project new data.
  *
+ * Default differs from scikit-learn: `method` is "exact" (scikit-learn: "barnes_hut").
+ *
  * @example
  * ```ts
  * import { TSNE } from 'deepbox/ml';

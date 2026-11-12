@@ -77,6 +77,8 @@ const AFFINITY_PROPAGATION_OPTION_KEYS = optionKeys<
  * the number of samples. If no exemplar emerges, all labels are -1 and a
  * `ConvergenceWarning` is issued.
  *
+ * Default differs from scikit-learn: `randomState` is 0 (scikit-learn: `None`).
+ *
  * @example
  * ```ts
  * import { AffinityPropagation } from 'deepbox/ml';

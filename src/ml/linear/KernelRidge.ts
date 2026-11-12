@@ -124,9 +124,10 @@ const KERNEL_RIDGE_OPTION_KEYS = optionKeys<
  *
  * Solves: (K + alpha * I) * dual_coef = y
  *
- * and predicts `K(X_test, X_train) @ dual_coef`. The defaults differ from scikit-learn's
- * (`kernel: "rbf"` and `gamma: 1.0` here, `"linear"` and `1 / n_features` there), so pass them
- * explicitly when comparing the two.
+ * and predicts `K(X_test, X_train) @ dual_coef`.
+ *
+ * Default differs from scikit-learn: `kernel` is "rbf" (scikit-learn: "linear") and `gamma` is 1.0 (scikit-learn: `None`, meaning `1 / n_features`).
+ * Pass `kernel` and `gamma` explicitly when comparing the two libraries.
  *
  * @example
  * ```ts

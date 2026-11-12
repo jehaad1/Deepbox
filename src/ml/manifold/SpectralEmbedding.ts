@@ -29,6 +29,8 @@ const SPECTRAL_EMBEDDING_OPTION_KEYS = optionKeys<
  * the trivial first one, mapped back with `D^-1/2`. This is the construction of
  * scikit-learn's `SpectralEmbedding(affinity="rbf")`.
  *
+ * Default differs from scikit-learn: `gamma` is 1.0 (scikit-learn: `None`, meaning `1 / n_features`).
+ *
  * @example
  * ```ts
  * import { SpectralEmbedding } from 'deepbox/ml';

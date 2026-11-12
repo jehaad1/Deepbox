@@ -97,6 +97,8 @@ const GAUSSIAN_MIXTURE_OPTION_KEYS = optionKeys<
  * Iteration stops when the change of the mean log-likelihood per sample falls
  * below `tol`. The run with the best log-likelihood out of `nInit` starts is kept.
  *
+ * Default differs from scikit-learn: `covarianceType` is "diag" (scikit-learn: "full").
+ *
  * @example
  * ```ts
  * import { GaussianMixture } from 'deepbox/ml';

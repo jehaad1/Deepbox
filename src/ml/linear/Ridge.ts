@@ -362,6 +362,8 @@ const RIDGE_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof Ri
  * before the penalty is applied, and the coefficients are mapped back to the
  * original feature scale afterwards.
  *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: `None`, the solver default).
+ *
  * @example
  * ```ts
  * import { Ridge } from 'deepbox/ml';

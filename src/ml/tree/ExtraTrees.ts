@@ -590,6 +590,8 @@ const EXTRA_TREES_CLASSIFIER_OPTION_KEYS = optionKeys<
  * weighted impurity is used. `predictProba` averages the leaf class frequencies of all trees and
  * `predict` returns the class with the highest average (ties go to the smallest label).
  *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
+ *
  * @example
  * ```ts
  * import { ExtraTreesClassifier } from 'deepbox/ml';
@@ -916,6 +918,8 @@ const EXTRA_TREES_REGRESSOR_OPTION_KEYS = optionKeys<
  * Like Random Forest Regressor, but uses random split thresholds and
  * by default does not bootstrap. Predictions are averaged across trees.
  * Every split considers all features unless `maxFeatures` says otherwise.
+ *
+ * Default differs from scikit-learn: `maxDepth` is 10 (scikit-learn: `None`, unlimited depth).
  *
  * @example
  * ```ts

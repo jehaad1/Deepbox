@@ -139,6 +139,8 @@ const NU_SVC_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof N
  * `predictProba` returns a monotone squashing of the decision values, not calibrated
  * probabilities.
  *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
+ *
  * @example
  * ```ts
  * import { NuSVC } from 'deepbox/ml';
@@ -447,6 +449,8 @@ const NU_SVR_OPTION_KEYS = optionKeys<NonNullable<ConstructorParameters<typeof N
  * Like {@link SVR} but `nu` in (0, 1] controls the fraction of support vectors and the
  * width of the insensitive tube is found by the solver instead of being given.
  *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
+ *
  * @example
  * ```ts
  * import { NuSVR } from 'deepbox/ml';
@@ -649,6 +653,8 @@ const ONE_CLASS_SVM_OPTION_KEYS = optionKeys<
  * `scoreSamples` returns the raw kernel expansion `sum_i alpha_i K(sv_i, x)`,
  * `decisionFunction` returns `scoreSamples(X) - offset`, and `predict` returns +1 where the
  * decision function is `>= 0` and -1 elsewhere.
+ *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: -1, no limit).
  *
  * @example
  * ```ts

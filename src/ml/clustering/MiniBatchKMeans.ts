@@ -98,6 +98,8 @@ const MINI_BATCH_KMEANS_OPTION_KEYS = optionKeys<
  * With `nInit > 1` the whole procedure is repeated and the run with the lowest inertia
  * on the full data is kept.
  *
+ * Default differs from scikit-learn: `batchSize` is 100 (scikit-learn: 1024) and `nInit` is 3 (scikit-learn: "auto").
+ *
  * @example
  * ```ts
  * import { MiniBatchKMeans } from 'deepbox/ml';

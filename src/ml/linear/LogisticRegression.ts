@@ -362,6 +362,8 @@ const LOGISTIC_REGRESSION_OPTION_KEYS = optionKeys<
  * balances each binary problem (class k against the rest), while a weight
  * dictionary applies the weight of each sample's original class.
  *
+ * Default differs from scikit-learn: `maxIter` is 1000 (scikit-learn: 100).
+ *
  * @example
  * ```ts
  * import { LogisticRegression } from 'deepbox/ml';
