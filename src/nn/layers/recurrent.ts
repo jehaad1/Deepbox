@@ -12,6 +12,7 @@ import { DTypeError, InvalidParameterError, ShapeError } from "../../core";
 import {
   type AnyTensor,
   concatGrad,
+  dropoutGrad,
   GradTensor,
   parameter,
   stackGrad,
@@ -19,7 +20,7 @@ import {
   zeros,
 } from "../../ndarray";
 import { Module } from "../module/Module";
-import { allPlain, resolveLayerDtype, settle, uniformTensor } from "./_shared";
+import { allPlain, resolveLayerDtype, settle, uniformTensor, zeroed } from "./_shared";
 
 function validatePositiveInt(name: string, value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
@@ -32,6 +33,25 @@ function validateDtype(dtype: "float32" | "float64" | undefined): void {
   if (value !== undefined && value !== "float32" && value !== "float64") {
     throw new InvalidParameterError("dtype must be 'float32' or 'float64'", "dtype", dtype);
   }
+}
+
+function validateDropout(dropout: number): void {
+  if (typeof dropout !== "number" || !Number.isFinite(dropout) || dropout < 0 || dropout > 1) {
+    throw new InvalidParameterError(
+      `dropout must be a number in [0, 1]; got ${String(dropout)}`,
+      "dropout",
+      dropout
+    );
+  }
+}
+
+/**
+ * Dropout applied to the output of a layer before it feeds the next one: active in training
+ * mode only. `p = 1` zeroes the output (the plain dropout op needs `p < 1`).
+ */
+function interLayerDropout(x: GradTensor, p: number, training: boolean): GradTensor {
+  if (!training || p === 0) return x;
+  return p === 1 ? zeroed(x) : dropoutGrad(x, p, true);
 }
 
 function asGrad(x: AnyTensor): GradTensor {
@@ -167,6 +187,8 @@ export class RNN extends Module {
   readonly batchFirst: boolean;
   /** Whether each layer also runs over the sequence backwards. */
   readonly bidirectional: boolean;
+  /** Dropout rate applied to the output of every layer except the last in training mode. */
+  readonly dropout: number;
 
   /**
    * @param inputSize - Number of input features
@@ -176,6 +198,8 @@ export class RNN extends Module {
    * @param options.bias - Learn input and hidden biases (default: true)
    * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
    * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dropout - Dropout rate in [0, 1] applied to the output of every layer except the last,
+   *   in training mode only (default: 0)
    * @param options.dtype - Dtype of the parameters (default: the global default dtype)
    */
   constructor(
@@ -187,6 +211,7 @@ export class RNN extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dropout?: number;
       readonly dtype?: "float32" | "float64";
     } = {}
   ) {
@@ -196,6 +221,8 @@ export class RNN extends Module {
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
     validateDtype(options.dtype);
+    const dropout = options.dropout ?? 0;
+    validateDropout(dropout);
     const nonlinearity: string = options.nonlinearity ?? "tanh";
     if (nonlinearity !== "tanh" && nonlinearity !== "relu") {
       throw new InvalidParameterError(
@@ -212,6 +239,7 @@ export class RNN extends Module {
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
     this.bidirectional = options.bidirectional ?? false;
+    this.dropout = dropout;
 
     initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
       gateMul: 1,
@@ -276,6 +304,9 @@ export class RNN extends Module {
         finalStates[stateIdx] = hCur;
       }
       layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
+      if (layer < this.numLayers - 1) {
+        layerInput = interLayerDropout(layerInput, this.dropout, this.training);
+      }
     }
 
     const output = restoreOutput(layerInput, this.batchFirst, norm.isUnbatched);
@@ -357,6 +388,8 @@ export class LSTM extends Module {
   readonly batchFirst: boolean;
   /** Whether each layer also runs over the sequence backwards. */
   readonly bidirectional: boolean;
+  /** Dropout rate applied to the output of every layer except the last in training mode. */
+  readonly dropout: number;
 
   /**
    * @param inputSize - Number of input features
@@ -365,7 +398,12 @@ export class LSTM extends Module {
    * @param options.bias - Learn input and hidden biases (default: true)
    * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
    * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dropout - Dropout rate in [0, 1] applied to the output of every layer except the last,
+   *   in training mode only (default: 0)
+   * @param options.projSize - Hidden-state projection of PyTorch's LSTM. Not supported: any value
+   *   other than 0 throws
    * @param options.dtype - Dtype of the parameters (default: the global default dtype)
+   * @throws {InvalidParameterError} If an option is invalid or `projSize` is not 0
    */
   constructor(
     inputSize: number,
@@ -375,6 +413,8 @@ export class LSTM extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dropout?: number;
+      readonly projSize?: number;
       readonly dtype?: "float32" | "float64";
     } = {}
   ) {
@@ -384,6 +424,15 @@ export class LSTM extends Module {
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
     validateDtype(options.dtype);
+    if (options.projSize !== undefined && options.projSize !== 0) {
+      throw new InvalidParameterError(
+        `LSTM projSize is not supported; got ${String(options.projSize)}. Omit it or pass 0`,
+        "projSize",
+        options.projSize
+      );
+    }
+    const dropout = options.dropout ?? 0;
+    validateDropout(dropout);
 
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
@@ -391,6 +440,7 @@ export class LSTM extends Module {
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
     this.bidirectional = options.bidirectional ?? false;
+    this.dropout = dropout;
 
     initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
       gateMul: 4,
@@ -430,6 +480,13 @@ export class LSTM extends Module {
     cx?: GradTensor
   ): { output: GradTensor; h: GradTensor; c: GradTensor } {
     ensureNumericInput(input, "LSTM");
+    if ((hx === undefined) !== (cx === undefined)) {
+      throw new InvalidParameterError(
+        "LSTM needs both the hidden state hx and the cell state cx, or neither",
+        hx === undefined ? "hx" : "cx",
+        undefined
+      );
+    }
     const norm = normalizeSeqInput(input, this.batchFirst);
     if (norm.feat !== this.inputSize) {
       throw new ShapeError(`Expected input size ${this.inputSize}, got ${norm.feat}`);
@@ -471,6 +528,9 @@ export class LSTM extends Module {
         finalC[stateIdx] = cCur;
       }
       layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
+      if (layer < this.numLayers - 1) {
+        layerInput = interLayerDropout(layerInput, this.dropout, this.training);
+      }
     }
 
     return {
@@ -509,8 +569,9 @@ export class LSTM extends Module {
    *
    * @param input - Input sequence
    * @param hx - Optional initial hidden state `(layers * directions, batch, hidden)`
-   * @param cx - Optional initial cell state, same shape as `hx`
+   * @param cx - Optional initial cell state, same shape as `hx`. Required when `hx` is given
    * @returns `[output, [hN, cN]]`
+   * @throws {InvalidParameterError} If only one of `hx` and `cx` is given
    */
   forwardWithState(
     input: GradTensor,
@@ -581,6 +642,8 @@ export class GRU extends Module {
   readonly batchFirst: boolean;
   /** Whether each layer also runs over the sequence backwards. */
   readonly bidirectional: boolean;
+  /** Dropout rate applied to the output of every layer except the last in training mode. */
+  readonly dropout: number;
 
   /**
    * @param inputSize - Number of input features
@@ -589,6 +652,8 @@ export class GRU extends Module {
    * @param options.bias - Learn input and hidden biases (default: true)
    * @param options.batchFirst - Use `(batch, seq, feature)` layout (default: true)
    * @param options.bidirectional - Add a backward pass over the sequence (default: false)
+   * @param options.dropout - Dropout rate in [0, 1] applied to the output of every layer except the last,
+   *   in training mode only (default: 0)
    * @param options.dtype - Dtype of the parameters (default: the global default dtype)
    */
   constructor(
@@ -599,6 +664,7 @@ export class GRU extends Module {
       readonly bias?: boolean;
       readonly batchFirst?: boolean;
       readonly bidirectional?: boolean;
+      readonly dropout?: number;
       readonly dtype?: "float32" | "float64";
     } = {}
   ) {
@@ -608,6 +674,8 @@ export class GRU extends Module {
     const numLayers = options.numLayers ?? 1;
     validatePositiveInt("numLayers", numLayers);
     validateDtype(options.dtype);
+    const dropout = options.dropout ?? 0;
+    validateDropout(dropout);
 
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
@@ -615,6 +683,7 @@ export class GRU extends Module {
     this.bias = options.bias ?? true;
     this.batchFirst = options.batchFirst ?? true;
     this.bidirectional = options.bidirectional ?? false;
+    this.dropout = dropout;
 
     initRecurrentParams((n, pr) => this.registerParameter(n, pr), {
       gateMul: 3,
@@ -696,6 +765,9 @@ export class GRU extends Module {
         finalStates[stateIdx] = hCur;
       }
       layerInput = numDir === 1 ? dirOutputs[0]! : concatGrad(dirOutputs, 2);
+      if (layer < this.numLayers - 1) {
+        layerInput = interLayerDropout(layerInput, this.dropout, this.training);
+      }
     }
 
     return {
