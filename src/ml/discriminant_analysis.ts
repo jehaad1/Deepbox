@@ -231,7 +231,7 @@ const LINEAR_DISCRIMINANT_ANALYSIS_OPTION_KEYS = optionKeys<
  * data to the most discriminant directions.
  *
  * **Algorithm** (same as scikit-learn's default `svd` solver):
- * 1. Compute class means and the pooled within-class covariance (divided by n - n_classes)
+ * 1. Compute class means and the pooled within-class covariance (divided by n, as scikit-learn does)
  * 2. Whiten the pooled covariance; directions with a numerically zero variance are dropped
  * 3. Take the eigenvectors of the between-class scatter in the whitened space as
  *    discriminant directions, so projected data has identity within-class covariance
@@ -379,7 +379,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
       }
     }
 
-    // Within-class centered data and pooled covariance Sigma = Sw / (n - K)
+    // Within-class centered data and pooled covariance Sigma = Sw / n (scikit-learn's SVD solver)
     const centered = new Float64Array(nSamples * f);
     const sigma = new Float64Array(f * f);
     for (let i = 0; i < nSamples; i++) {
@@ -397,7 +397,7 @@ export class LinearDiscriminantAnalysis implements Classifier, Transformer {
         }
       }
     }
-    const denom = nSamples - K;
+    const denom = nSamples;
     for (let p = 0; p < f; p++) {
       for (let q = p; q < f; q++) {
         const v = (sigma[p * f + q] ?? 0) / denom;
@@ -923,7 +923,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
       for (let j = 0; j < f; j++) means[c * f + j] = (means[c * f + j] ?? 0) / (counts[c] ?? 1);
     }
 
-    // Per-class covariance (n_c - 1 denominator) and its eigen-decomposition
+    // Per-class covariance (n_c denominator, as scikit-learn) and its eigen-decomposition
     const covs: Float64Array[] = Array.from({ length: K }, () => new Float64Array(f * f));
     for (let i = 0; i < nSamples; i++) {
       const c = index[i] ?? 0;
@@ -944,7 +944,7 @@ export class QuadraticDiscriminantAnalysis implements Classifier {
     let collinear = false;
     for (let c = 0; c < K; c++) {
       const cov = covs[c] ?? new Float64Array(f * f);
-      const denom = Math.max((counts[c] ?? 1) - 1, 1);
+      const denom = counts[c] ?? 1;
       for (let p = 0; p < f; p++) {
         for (let q = p; q < f; q++) {
           const v = (cov[p * f + q] ?? 0) / denom;
