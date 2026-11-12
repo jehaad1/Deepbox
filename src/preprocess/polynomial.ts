@@ -19,6 +19,8 @@ import {
   assertKnownParams,
   assertNumericTensor,
   definedEntries,
+  floatMatrix,
+  floatOutputDType,
   getShape2D,
   getStrides2D,
 } from "./_internal";
@@ -155,7 +157,7 @@ function buildColumnDefinitions(
  * - interactionOnly=false: [1, a, b, a², ab, b²]
  * - interactionOnly=true:  [1, a, b, ab]
  *
- * The output is always float64. The number of output columns grows quickly with
+ * The output is float32 for float32 input and float64 otherwise. The number of output columns grows quickly with
  * the degree and the number of features; very large requests throw a
  * `MemoryError` instead of exhausting memory.
  *
@@ -241,7 +243,7 @@ export class PolynomialFeatures implements Transformer {
    * Expand X into polynomial features.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of shape (n_samples, n_output_features)
+   * @returns Tensor of shape (n_samples, n_output_features): float32 for float32 input, otherwise float64
    * @throws {MemoryError} If the output would be too large
    */
   transform(X: Tensor): Tensor {
@@ -297,12 +299,7 @@ export class PolynomialFeatures implements Transformer {
       }
     }
 
-    return TensorClass.fromTypedArray({
-      data: result,
-      shape: [nSamples, nOutputFeatures],
-      dtype: "float64",
-      device: X.device,
-    });
+    return floatMatrix(result, nSamples, nOutputFeatures, X.device, floatOutputDType(X));
   }
 
   fitTransform(X: Tensor): Tensor {

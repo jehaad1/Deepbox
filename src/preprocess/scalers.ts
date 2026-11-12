@@ -13,6 +13,8 @@ import {
   assertKnownParams,
   assertNumericTensor,
   createRandomStream,
+  floatMatrix,
+  floatOutputDType,
   getShape2D,
   getStrides2D,
   shuffleIndicesInPlace,
@@ -111,14 +113,10 @@ function makeMatrix(
   data: Float64Array,
   nSamples: number,
   nFeatures: number,
-  device: Tensor["device"]
+  device: Tensor["device"],
+  dtype: "float32" | "float64" = "float64"
 ): Tensor {
-  return TensorClass.fromTypedArray({
-    data,
-    shape: [nSamples, nFeatures],
-    dtype: "float64",
-    device,
-  });
+  return floatMatrix(data, nSamples, nFeatures, device, dtype);
 }
 
 /** Copy a fitted per-feature array into a fresh 1-D float64 tensor. */
@@ -478,7 +476,7 @@ export class StandardScaler {
    * Center and scale X with the fitted statistics.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -503,7 +501,7 @@ export class StandardScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -549,7 +547,7 @@ export class StandardScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -744,7 +742,7 @@ export class MinMaxScaler {
    * Map X into the feature range using the fitted minimum and maximum.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -781,7 +779,7 @@ export class MinMaxScaler {
         data[pos++] = scaled;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -830,7 +828,7 @@ export class MinMaxScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -993,7 +991,7 @@ export class MaxAbsScaler {
    * Divide each feature by its fitted maximum absolute value.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1016,7 +1014,7 @@ export class MaxAbsScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1056,7 +1054,7 @@ export class MaxAbsScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -1224,7 +1222,7 @@ export class RobustScaler {
    * Remove the median and divide by the quantile range.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the scaler has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1251,7 +1249,7 @@ export class RobustScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1295,7 +1293,7 @@ export class RobustScaler {
         pos++;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this scaler. */
@@ -1419,7 +1417,7 @@ export class Normalizer {
    * Divide each row by its norm.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {ShapeError} If X is not 2-D
    * @throws {DataValidationError} If X contains NaN or Infinity
    */
@@ -1461,7 +1459,7 @@ export class Normalizer {
       }
     }
 
-    return makeMatrix(out, nSamples, nFeatures, X.device);
+    return makeMatrix(out, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1669,7 +1667,7 @@ export class QuantileTransformer {
    * Map X to the output distribution.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the transformer has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -1703,7 +1701,7 @@ export class QuantileTransformer {
           : u;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -1763,7 +1761,7 @@ export class QuantileTransformer {
         }
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /** Constructor options of this transformer. */
@@ -2102,7 +2100,7 @@ export class PowerTransformer {
    * Apply the fitted power transform.
    *
    * @param X - Data of shape (n_samples, n_features)
-   * @returns Float64 tensor of the same shape
+   * @returns Tensor of the same shape: float32 for float32 input, otherwise float64
    * @throws {NotFittedError} If the transformer has not been fitted
    * @throws {ShapeError} If the number of features differs from the fit
    * @throws {DataValidationError} If X contains NaN or Infinity
@@ -2139,7 +2137,7 @@ export class PowerTransformer {
         data[pos++] = t;
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**
@@ -2174,7 +2172,7 @@ export class PowerTransformer {
         data[pos++] = boxcox ? boxCoxInverse(val, lambda) : yeoJohnsonInverse(val, lambda);
       }
     }
-    return makeMatrix(data, nSamples, nFeatures, X.device);
+    return makeMatrix(data, nSamples, nFeatures, X.device, floatOutputDType(X));
   }
 
   /**

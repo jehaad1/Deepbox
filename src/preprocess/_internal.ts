@@ -9,7 +9,7 @@
  */
 
 import { DeepboxError, DTypeError, InvalidParameterError, ShapeError } from "../core/errors";
-import type { Tensor } from "../ndarray";
+import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { __randomBelow, __SeededRandom } from "../random/random";
 
 /**
@@ -70,6 +70,36 @@ export function assert2D(X: Tensor, name: string): void {
   if (X.ndim !== 2) {
     throw new ShapeError(`${name} must be a 2D tensor, got ${X.ndim}D`);
   }
+}
+
+/**
+ * Float dtype of a transform result: `float32` input stays `float32`, every other dtype gives
+ * `float64`, as in scikit-learn. Computation may use float64 internally.
+ *
+ * @internal
+ */
+export function floatOutputDType(X: Tensor): "float32" | "float64" {
+  return X.dtype === "float32" ? "float32" : "float64";
+}
+
+/**
+ * Wrap a row-major float64 buffer as a 2D tensor of `dtype` (rounding to float32 when asked).
+ *
+ * @internal
+ */
+export function floatMatrix(
+  data: Float64Array,
+  nRows: number,
+  nCols: number,
+  device: Tensor["device"],
+  dtype: "float32" | "float64"
+): Tensor {
+  return TensorClass.fromTypedArray({
+    data: dtype === "float32" ? new Float32Array(data) : data,
+    shape: [nRows, nCols],
+    dtype,
+    device,
+  });
 }
 
 /**
