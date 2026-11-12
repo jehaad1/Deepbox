@@ -7,6 +7,7 @@ import type { Tensor } from "../../ndarray";
 import { assertKnownOptions, optionKeys } from "../_internal";
 import { toFloat64View, validateFitInputs, validatePredictInputs } from "../_validation";
 import type { Classifier } from "../base";
+import { readSampleWeight } from "../tree/_growth";
 import {
   nbAccuracy,
   nbArgmaxRows,
@@ -20,6 +21,7 @@ import {
   nbValidateBoolean,
   nbValidatePriors,
   nbValidateScoreTarget,
+  nbWeightedClassCounts,
 } from "./index";
 
 function validateBinarize(value: unknown): number | null {
@@ -102,35 +104,41 @@ export class BernoulliNB implements Classifier {
    *
    * @param X - Training samples of shape (n_samples, n_features)
    * @param y - Class labels of shape (n_samples,)
+   * @param sampleWeight - Optional per-sample weights of shape (n_samples,); counts and class priors are weighted
    * @returns this
-   * @throws {ShapeError} If X is not 2-D, y is not 1-D or their lengths differ
+   * @throws {ShapeError} If X is not 2-D, y is not 1-D, their lengths differ, or `sampleWeight` does not have one entry per sample
+   * @throws {DataValidationError} If a weight is negative or not finite, or all weights are zero
    * @throws {InvalidParameterError} If `classPrior` does not have one entry per class
    */
-  fit(X: Tensor, y: Tensor): this {
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` keeps this compatible with Estimator.fit(X, y, params)
+  fit(X: Tensor, y: Tensor, sampleWeightArg?: Tensor | void): this {
     validateFitInputs(X, y);
     const nSamples = X.shape[0] ?? 0;
     const nFeatures = X.shape[1] ?? 0;
     const xv = toFloat64View(X);
+    const sampleWeight = readSampleWeight(sampleWeightArg as Tensor | undefined, nSamples);
     const threshold = this.binarize ?? 0;
 
     const { classes, labelIndex, counts } = nbEncodeLabels(y);
     const nClasses = classes.length;
+    const { classWeight, totalWeight } = nbWeightedClassCounts(labelIndex, counts, sampleWeight);
 
     // featureCounts[c * nFeatures + j] = samples of class c in which feature j is present
     const featureCounts = new Float64Array(nClasses * nFeatures);
     for (let i = 0; i < nSamples; i++) {
       const base = (labelIndex[i] as number) * nFeatures;
       const row = i * nFeatures;
+      const wi = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
       for (let j = 0; j < nFeatures; j++) {
         if ((xv[row + j] as number) > threshold) {
-          featureCounts[base + j] = (featureCounts[base + j] as number) + 1;
+          featureCounts[base + j] = (featureCounts[base + j] as number) + wi;
         }
       }
     }
 
     const classLogPrior = nbClassLogPrior(
-      counts,
-      nSamples,
+      classWeight,
+      totalWeight,
       this.fitPrior,
       this.classPrior,
       "classPrior"
@@ -139,7 +147,7 @@ export class BernoulliNB implements Classifier {
     const featureLogProb = new Float64Array(nClasses * nFeatures);
     const featureLogCompProb = new Float64Array(nClasses * nFeatures);
     for (let c = 0; c < nClasses; c++) {
-      const nc = counts[c] as number;
+      const nc = classWeight[c] as number;
       const smoothedTotal = nc + 2 * this.alpha;
       for (let j = 0; j < nFeatures; j++) {
         const present = featureCounts[c * nFeatures + j] as number;
