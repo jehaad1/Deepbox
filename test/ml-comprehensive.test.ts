@@ -410,11 +410,7 @@ describe("deepbox/ml package tests", () => {
       });
 
       it("should reject negative alpha", () => {
-        const model = new Ridge({ alpha: -1.0 });
-        const X = tensor([[1], [2]]);
-        const y = tensor([1, 2]);
-
-        expect(() => model.fit(X, y)).toThrow("alpha must be >= 0");
+        expect(() => new Ridge({ alpha: -1.0 })).toThrow("alpha must be >= 0");
       });
 
       it("should handle very large alpha", () => {
@@ -736,11 +732,7 @@ describe("deepbox/ml package tests", () => {
       });
 
       it("should reject negative alpha", () => {
-        const model = new Lasso({ alpha: -1.0 });
-        const X = tensor([[1], [2]]);
-        const y = tensor([1, 2]);
-
-        expect(() => model.fit(X, y)).toThrow("alpha must be >= 0");
+        expect(() => new Lasso({ alpha: -1.0 })).toThrow(/alpha must be/);
       });
 
       it("should handle constant y", () => {

@@ -9,7 +9,7 @@ describe("ml linear extra branches", () => {
     const model = new Ridge();
     expect(() => model.setParams({ alpha: "bad" })).toThrow(/alpha must be/);
     expect(() => model.setParams({ fitIntercept: 1 })).toThrow(/fitIntercept must be a boolean/);
-    expect(() => model.setParams({ solver: "oops" })).toThrow(/Invalid solver/);
+    expect(() => model.setParams({ solver: "oops" })).toThrow(/solver must be one of/);
     expect(() => model.setParams({ unknown: 1 })).toThrow(/Unknown parameter/);
   });
 
