@@ -53,7 +53,7 @@ Format: id, priority, area, evidence, status.
 | DOC-1 | P2 | docs | Same as BASE-2; also `validate:fix` omits `prose:check`. | fixed 6b9f026, ce103a0 |
 | DOC-2 | P2 | repo | Five dead old-layout benchmark files (`benchmarks/0{2,3,5,6}-*/deepset.ts`, `benchmarks/07-scalability/deepbox.ts`) referenced nowhere. | fixed 6b9f026 |
 | DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | fixed da0e738 |
-| DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | open |
+| DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | fixed aceed4e |
 | DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | open |
 | DOC-6 | P3 | JSDoc | `src/ndarray/ops/radix.ts:21` links to a 404 docs page. | open |
 | DOC-7 | P3 | dataframe | `DataFrame.corr` returns `0.9999999999999998` for perfect correlation; pandas returns exactly 1. | fixed ae00f04 |
@@ -159,14 +159,14 @@ Format: id, priority, area, evidence, status.
 | DOCS-1 | P1 | docs site | `deepbox.dev` 307-redirects to `www`, but canonical, og:url, sitemap and robots use the apex. Verified. | fixed and live (Deepbox-Docs fc4a0ed) |
 | DOCS-2 | P1 | docs site | Example and project pages show a one-line README description in a "Console output" frame; 0 of 59 match real output. | fixed and live (d401649) |
 | DOCS-3 | P1 | docs site | "How to run" fails for 6 pages that use top-level await without `"type": "module"`. | fixed and live (2865ea3) |
-| DOCS-4 | P1 | JSDoc | Doc examples that throw: `partialcorr` (collinear data), `inv` (imports `matmul` from ndarray), random `choice` (imports `tensor` from random), `AlphaDropout` (`Sequential([...])`). | open (library JSDoc) |
-| DOCS-5 | P2 | JSDoc | 253 of 667 `@example` blocks do not run as pasted (195 have no import). | open (library JSDoc) |
+| DOCS-4 | P1 | JSDoc | Doc examples that throw: `partialcorr` (collinear data), `inv` (imports `matmul` from ndarray), random `choice` (imports `tensor` from random), `AlphaDropout` (`Sequential([...])`). | fixed (5d3d9c1, 3e2b49f) |
+| DOCS-5 | P2 | JSDoc | 253 of 667 `@example` blocks do not run as pasted (195 have no import). | checker added de220e4 (jsdoc:examples in validate:all); 690 of 690 pass outside ml, preprocess, stats; the rest in progress |
 | DOCS-6 | P2 | docs site | og/twitter tags missing or site-default on subpages; 10000x5000 image declared 512x512; 5000x5000 favicon. | fixed and live (3b5a439) |
 | DOCS-7 | P2 | docs site | No Content-Security-Policy; `/favicon.ico` 404; HTML sends `access-control-allow-origin: *`. | fixed and live (df86ce6); HSTS includeSubDomains withheld while bench.deepbox.dev has an expired certificate |
 | DOCS-8 | P2 | docs site | Sitemap lists a redirect (`/docs`) and request-time `lastmod`; robots has `Host:`. | fixed and live (7a27860) |
 | DOCS-9 | P2 | docs site | Search dialog swallows "/" (reads `event.currentTarget`). | fixed and live (6254588), verified in a browser |
-| DOCS-10 | P2 | JSDoc | British spellings in JSDoc (initialisation, neighbours, centres, materialised, recognised). | open (library JSDoc) |
-| DOCS-11 | P3 | JSDoc | En dashes in JSDoc names (Golub-Reinsch, Bartels-Stewart, BFGS, 0-9). | open (library JSDoc, prose check extended) |
+| DOCS-10 | P2 | JSDoc | British spellings in JSDoc (initialisation, neighbours, centres, materialised, recognised). | fixed 0d18e76 |
+| DOCS-11 | P3 | JSDoc | En dashes in JSDoc names (Golub-Reinsch, Bartels-Stewart, BFGS, 0-9). | fixed aceed4e (prose:check now flags en dashes) |
 | DOCS-12 | P3 | docs site | Home lacks canonical; markdown in meta descriptions; duplicate charset; case-variant paths return 200. | fixed and live (7ce7031); duplicate charset remains on dynamic 404 responses only |
 | DOCS-13 | P3 | docs site | No `llms.txt`; TTF fonts preloaded. | fixed and live (c7004f6) |
 | DOCS-14 | P3 | datasets | IMDB default URL refused from this network; figshare fine. | unverified (network) |
