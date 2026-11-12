@@ -193,39 +193,25 @@ describe("deepbox/optim - Numeric Verification Tests", () => {
   });
 
   describe("Empty Parameter List", () => {
-    it("should handle empty parameter list - SGD", () => {
-      const optimizer = new SGD([], { lr: 0.01 });
+    it("rejects an empty parameter list, like torch.optim", () => {
+      for (const make of [
+        () => new SGD([], { lr: 0.01 }),
+        () => new Adam([], { lr: 0.001 }),
+        () => new AdamW([], { lr: 0.001 }),
+        () => new RMSprop([], { lr: 0.01 }),
+        () => new Adagrad([], { lr: 0.01 }),
+      ]) {
+        expect(make).toThrow(/empty parameter list/);
+      }
+    });
+
+    it("steps and serializes an optimizer whose only group has no parameters", () => {
+      const optimizer = new SGD([{ params: [] }], { lr: 0.01 });
       expect(() => optimizer.step()).not.toThrow();
       expect(() => optimizer.zeroGrad()).not.toThrow();
       optimizer.step();
       expect(optimizer.stepCount).toBe(2);
-    });
-
-    it("should handle empty parameter list - Adam", () => {
-      const optimizer = new Adam([], { lr: 0.001 });
-      expect(() => optimizer.step()).not.toThrow();
-      expect(() => optimizer.zeroGrad()).not.toThrow();
-    });
-
-    it("should handle empty parameter list - AdamW", () => {
-      const optimizer = new AdamW([], { lr: 0.001 });
-      expect(() => optimizer.step()).not.toThrow();
-    });
-
-    it("should handle empty parameter list - RMSprop", () => {
-      const optimizer = new RMSprop([], { lr: 0.01 });
-      expect(() => optimizer.step()).not.toThrow();
-    });
-
-    it("should handle empty parameter list - Adagrad", () => {
-      const optimizer = new Adagrad([], { lr: 0.01 });
-      expect(() => optimizer.step()).not.toThrow();
-    });
-
-    it("should serialize/deserialize empty optimizer state", () => {
-      const optimizer = new SGD([], { lr: 0.01 });
-      const state = optimizer.stateDict();
-      expect(state.paramGroups).toHaveLength(0);
+      expect(optimizer.stateDict().paramGroups).toHaveLength(1);
     });
   });
 
