@@ -271,7 +271,7 @@ function strongWolfe(
 }
 
 /**
- * L-BFGS (Limited-memory Broyden–Fletcher–Goldfarb–Shanno) optimizer.
+ * L-BFGS (Limited-memory Broyden-Fletcher-Goldfarb-Shanno) optimizer.
  *
  * A quasi-Newton method that approximates the inverse Hessian using a limited
  * history of past updates. Unlike first-order methods (Adam, SGD), LBFGS can
