@@ -61,12 +61,15 @@ function absBig(x: bigint): bigint {
   return x < 0n ? -x : x;
 }
 
-/** Truncate a value toward zero, rejecting NaN and the infinities. */
+/** Absolute value of an integer-valued number, rejecting NaN, the infinities and fractions. */
 function toIntegerValue(x: number, name: string): number {
   if (!Number.isFinite(x)) {
     throw new DataValidationError(`${name} requires finite values; received ${String(x)}`);
   }
-  return Math.abs(Math.trunc(x));
+  if (!Number.isInteger(x)) {
+    throw new DTypeError(`${name} requires integer values; received ${String(x)}`);
+  }
+  return Math.abs(x);
 }
 
 function toBigIntValue(x: number | bigint, name: string): bigint {
@@ -77,7 +80,7 @@ function toBigIntValue(x: number | bigint, name: string): bigint {
 /**
  * Apply an integer binary function with NumPy broadcasting.
  *
- * Inputs are cast to integers (floats are truncated toward zero). If either
+ * Inputs must hold integer values (a fraction throws a DTypeError). If either
  * input is int64 the work is done in BigInt and the result is int64;
  * otherwise the result is int32. Results that do not fit the output dtype
  * throw instead of wrapping.
@@ -146,15 +149,15 @@ function integerBinary(
 /**
  * Element-wise greatest common divisor.
  *
- * Both inputs are cast to integers (floats are truncated toward zero) and the
- * result is always non-negative, with `gcd(0, 0) = 0`. Inputs broadcast
+ * Both inputs must hold integer values (a float dtype is fine when every value is a whole
+ * number) and the result is always non-negative, with `gcd(0, 0) = 0`. Inputs broadcast
  * against each other under NumPy rules. If either input is int64 the result is
  * int64, otherwise int32.
  *
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of GCD values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
+ * @throws {DTypeError} If an input has string or complex dtype, or a float value is not a whole number
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *
@@ -172,7 +175,8 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
 /**
  * Element-wise least common multiple.
  *
- * Both inputs are cast to integers (floats are truncated toward zero) and the
+ * Both inputs must hold integer values (a float dtype is fine when every value is a whole
+ * number) and the
  * result is always non-negative, with `lcm(x, 0) = 0`. Inputs broadcast
  * against each other under NumPy rules. If either input is int64 the result is
  * int64, otherwise int32.
@@ -180,7 +184,7 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
  * @param a - First tensor
  * @param b - Second tensor (broadcastable with `a`)
  * @returns Tensor of LCM values with dtype int32 (int64 if an input is int64)
- * @throws {DTypeError} If an input has complex dtype, or only one input has string dtype
+ * @throws {DTypeError} If an input has string or complex dtype, or a float value is not a whole number
  * @throws {ShapeError} If the shapes do not broadcast
  * @throws {DataValidationError} If an input is NaN or infinite, or a result does not fit the output dtype
  *

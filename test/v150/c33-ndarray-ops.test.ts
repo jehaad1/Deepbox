@@ -611,8 +611,9 @@ describe("gcd / lcm", () => {
     expect(() => lcm(max64, two)).toThrow(/int64/);
   });
 
-  it("truncate float inputs toward zero", () => {
-    expect(gcd(tensor([12.9, -15.5]), tensor([8.2, 10])).toArray()).toEqual([4, 5]);
+  it("accept whole-number floats and reject fractions", () => {
+    expect(gcd(tensor([12, -15], { dtype: "float64" }), tensor([8, 10])).toArray()).toEqual([4, 5]);
+    expect(() => gcd(tensor([12.9]), tensor([8]))).toThrow(DTypeError);
   });
 });
 

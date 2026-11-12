@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { InvalidParameterError, ShapeError } from "../../src/core";
+import { DTypeError, InvalidParameterError, ShapeError } from "../../src/core";
 import {
   all,
   any,
   arange,
+  argsort,
   diff,
   expandDims,
+  gcd,
   intersect1d,
+  lcm,
   max,
   min,
   prod,
   repeat,
   rot90,
   setdiff1d,
+  sort,
   sum,
   tensor,
   union1d,
@@ -193,5 +197,30 @@ describe("diff on bool", () => {
         0
       ).toArray()
     ).toEqual([[1, 0]]);
+  });
+});
+
+describe("gcd and lcm reject fractions", () => {
+  // numpy.gcd is only defined for integers: np.gcd(1.5, 3) raises TypeError.
+  it("throws a DTypeError for a non-integer float and accepts whole-number floats", () => {
+    expect(() => gcd(tensor([1.5]), tensor([3]))).toThrow(DTypeError);
+    expect(() => lcm(tensor([4]), tensor([2.25]))).toThrow(DTypeError);
+    expect(gcd(tensor([12, 18], { dtype: "float64" }), tensor([8, 27])).toArray()).toEqual([4, 9]);
+    expect(lcm(tensor([4, 6]), tensor([6, 8])).toArray()).toEqual([12, 24]);
+  });
+});
+
+describe("sort and argsort with an explicit undefined axis", () => {
+  it("treat undefined like the default axis -1", () => {
+    const m = tensor([
+      [3, 1, 2],
+      [9, 8, 7],
+    ]);
+    expect(sort(m, undefined).toArray()).toEqual(sort(m).toArray());
+    expect(argsort(m, undefined).toArray()).toEqual(argsort(m).toArray());
+    expect(sort(m, undefined, true).toArray()).toEqual([
+      [3, 2, 1],
+      [9, 8, 7],
+    ]);
   });
 });
