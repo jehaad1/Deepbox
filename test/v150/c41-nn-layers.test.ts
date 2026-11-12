@@ -746,7 +746,7 @@ describe("convolution validation", () => {
   it("rejects string tensors and wrong ranks", () => {
     expect(() => new Conv3d(1, 1, 1).forward(tensor([[[[["a"]]]]]))).toThrow(DTypeError);
     expect(() => new MaxPool2d(2).forward(tensor([["a"]]))).toThrow(DTypeError);
-    expect(() => new ConvTranspose2d(1, 1, 1).forward(zeros([1, 1, 2]))).toThrow(ShapeError);
+    expect(() => new ConvTranspose2d(1, 1, 1).forward(zeros([1, 2]))).toThrow(ShapeError);
   });
 
   it("exposes the bias parameter", () => {

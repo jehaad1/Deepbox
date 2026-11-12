@@ -518,6 +518,17 @@ type ConvPadding<T> = T | "same" | "valid";
 /** How {@link Conv2d} fills the padded border (PyTorch's `padding_mode`). */
 export type Conv2dPaddingMode = "zeros" | "reflect" | "replicate" | "circular";
 
+/**
+ * Run a layer that works on `(N, C, H, W)` input. An unbatched `(C, H, W)` input gets a batch
+ * axis of size 1 that is removed from the result again, as PyTorch does (gradients flow through
+ * the reshapes).
+ */
+function withBatchAxis(input: GradTensor, run: (batched: GradTensor) => GradTensor): GradTensor {
+  if (input.ndim !== 3) return run(input);
+  const out = run(input.reshape([1, ...input.shape]));
+  return out.reshape(out.shape.slice(1));
+}
+
 /** Check that `groups` is a positive integer dividing both channel counts. */
 function checkGroups(inChannels: number, outChannels: number, groups: number): number {
   checkInteger("groups", groups, 1);
@@ -1095,9 +1106,11 @@ export class Conv2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, inChannels, height, width)`
-   * @returns Output of shape `(batch, outChannels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D, its channel count does not match, or the
+   * @param x - Input of shape `(batch, inChannels, height, width)`, or `(inChannels, height, width)`
+   *   for a single sample
+   * @returns Output of shape `(batch, outChannels, outH, outW)` (without the batch axis for a
+   *   single sample)
+   * @throws {ShapeError} If the input is not 3-D or 4-D, its channel count does not match, or the
    *   (dilated) kernel does not fit the padded input
    * @throws {DTypeError} If the input has string dtype
    */
@@ -1109,13 +1122,15 @@ export class Conv2d extends Module {
   }
 
   private run(x: AnyTensor): GradTensor {
-    const input = toGradInput(x);
+    return withBatchAxis(toGradInput(x), (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "Conv2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `Conv2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `Conv2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1272,9 +1287,10 @@ export class MaxPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D or the kernel does not fit
+   * @throws {ShapeError} If the input is not 3-D or 4-D or the kernel does not fit
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -1286,12 +1302,15 @@ export class MaxPool2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "MaxPool2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `MaxPool2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `MaxPool2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1404,9 +1423,10 @@ export class AvgPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D or the kernel does not fit
+   * @throws {ShapeError} If the input is not 3-D or 4-D or the kernel does not fit
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -1418,12 +1438,15 @@ export class AvgPool2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = GradTensor.isGradTensor(x) ? x : GradTensor.fromTensor(x);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     rejectString(input.dtype, "AvgPool2d");
 
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `AvgPool2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `AvgPool2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1631,10 +1654,13 @@ export class ConvTranspose2d extends Module {
 
   private run(x: AnyTensor): GradTensor {
     const input = asDtype(requireNumeric(toGradInput(x), "ConvTranspose2d"), this.weight_.dtype);
+    return withBatchAxis(input, (batched) => this.runBatched(batched));
+  }
 
+  private runBatched(input: GradTensor): GradTensor {
     if (input.ndim !== 4) {
       throw new ShapeError(
-        `ConvTranspose2d expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+        `ConvTranspose2d expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
       );
     }
 
@@ -1863,9 +1889,12 @@ function adaptivePool2d(
   layer: string
 ): GradTensor {
   rejectString(input.dtype, layer);
+  if (input.ndim === 3) {
+    return withBatchAxis(input, (batched) => adaptivePool2d(batched, outputSize, mode, layer));
+  }
   if (input.ndim !== 4) {
     throw new ShapeError(
-      `${layer} expects 4D input (batch, channels, height, width), got ${input.ndim}D`
+      `${layer} expects 4D input (batch, channels, height, width) or 3D input (channels, height, width), got ${input.ndim}D`
     );
   }
 
@@ -1955,9 +1984,10 @@ export class AdaptiveAvgPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D
+   * @throws {ShapeError} If the input is not 3-D or 4-D
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
@@ -2006,9 +2036,10 @@ export class AdaptiveMaxPool2d extends Module {
   }
 
   /**
-   * @param x - Input of shape `(batch, channels, height, width)`
+   * @param x - Input of shape `(batch, channels, height, width)`, or `(channels, height, width)` for a
+   *   single sample
    * @returns Output of shape `(batch, channels, outH, outW)`
-   * @throws {ShapeError} If the input is not 4-D
+   * @throws {ShapeError} If the input is not 3-D or 4-D
    * @throws {DTypeError} If the input has string dtype
    */
   forward(x: GradTensor): GradTensor;
