@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // Tests that import a module tree with `await import()` can exceed the 5 s default
+    // when the machine is busy. A slow test is still visible in the timing report.
+    testTimeout: 30_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

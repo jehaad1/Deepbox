@@ -39,5 +39,5 @@ describe("PKG-5 saveFig without a file system", () => {
     const error = await saveFig("out.svg").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DeviceError);
     expect((error as Error).message).toMatch(/needs Node\.js/);
-  }, 60_000);
+  });
 });
