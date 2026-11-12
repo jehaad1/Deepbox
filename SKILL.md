@@ -13,7 +13,7 @@ Use it when generating Deepbox code, selecting modules, following the website do
 
 - Package: `deepbox`
 - Release line described by this file: `v1.5.0`
-- Runtime requirement: Node.js `>= 24.13.0`
+- Runtime requirement: Node.js `>= 22.12.0`
 - Package shape: ESM + CommonJS + `.d.ts`
 - Runtime dependencies: `0`
 - Root import behavior: `deepbox` exports namespaces, not direct named APIs

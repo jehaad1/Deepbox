@@ -28,7 +28,7 @@ npm install deepbox
 
 ## Requirements
 
-- Node.js `>= 24.13.0`, as declared in the `engines` field of `package.json`. Deepbox 1.x is built and tested on Node 24 with a TypeScript `ES2024` target. Older Node versions are not supported.
+- Node.js `>= 22.12.0`, as declared in the `engines` field of `package.json`. CI tests Node 22.12.0, 24.13.0 and the latest Node 24. The code targets `ES2024`.
 
 ## Import Model
 

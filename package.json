@@ -41,8 +41,8 @@
     "all": "npm run validate:all",
     "all:fix": "npm run validate:fix",
     "validate:runtime": "npm run build && npm run check:package && npm run test && npm run bench:ci && npm run examples:all && npm run projects:all && npm run test:coverage",
-    "validate:all": "npm run format:check && npm run prose:check && npm run lint:check && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
-    "validate:fix": "npm run format && npm run lint:fix && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
+    "validate:all": "npm run format:check && npm run prose:check && npm run lint:check && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run typecheck:bench && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
+    "validate:fix": "npm run format && npm run prose:check && npm run lint:fix && npm run typecheck && npm run typecheck:test && npm run typecheck:docs && npm run typecheck:bench && npm run jsdoc:docs-gaps && npm run jsdoc:core-slugs && npm run validate:runtime",
     "project:01": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/01-financial-risk-analysis/index.ts",
     "project:02": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/02-neural-image-classifier/index.ts",
     "project:03": "tsx --tsconfig docs/projects/tsconfig.json docs/projects/03-customer-churn-prediction/index.ts",
@@ -123,7 +123,8 @@
     "bench:python": "python benchmarks/python/01_dataframe.py && python benchmarks/python/02_datasets.py && python benchmarks/python/03_linalg.py && python benchmarks/python/04_metrics.py && python benchmarks/python/05_ml.py && python benchmarks/python/06_ndarray.py && python benchmarks/python/07_nn.py && python benchmarks/python/08_optim.py && python benchmarks/python/09_plot.py && python benchmarks/python/10_preprocess.py && python benchmarks/python/11_random.py && python benchmarks/python/12_stats.py",
     "bench:all": "npm run bench:deepbox && npm run bench:python && npm run bench:compare",
     "bench:ci": "npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/13-core.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/06-ndarray.ts && npx tsx --tsconfig benchmarks/tsconfig.json benchmarks/deepbox/11-random.ts",
-    "check:package": "node scripts/check-package.mjs"
+    "check:package": "node scripts/check-package.mjs",
+    "typecheck:bench": "tsc --noEmit -p benchmarks/tsconfig.json"
   },
   "exports": {
     ".": {
@@ -375,9 +376,10 @@
   },
   "packageManager": "npm@11.17.0",
   "engines": {
-    "node": ">=24.13.0"
+    "node": ">=22.12.0"
   },
   "allowScripts": {
+    "esbuild": true,
     "webgpu@0.4.0": true
   }
 }

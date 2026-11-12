@@ -13,7 +13,7 @@ Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating.
 
 ## Requirements
 
-- Node.js `>= 24.13.0` (matches `package.json` `engines` and CI; TypeScript targets ES2024)
+- Node.js `>= 22.12.0` (matches `package.json` `engines`; CI tests 22.12.0, 24.13.0 and the latest 24; TypeScript targets ES2024). Development uses the version in `.nvmrc`.
 - npm `>= 11`
 
 ## Setup
@@ -43,7 +43,7 @@ npm run validate:all     # the full CI gate
 npm run validate:fix     # same gate, but formats and fixes lint first
 ```
 
-`npm run validate:all` is the CI and release gate. It runs `format:check`, `lint:check`, `typecheck`, `typecheck:test`, `typecheck:docs`, the two JSDoc checks, then a build, the tests, a benchmark smoke run, every example, every project and coverage. `npm run all` is an alias for it. Keep it green before a PR is merged. `prose:check` is not part of `validate:all`, so run it yourself before you push.
+`npm run validate:all` is the CI and release gate. It runs `format:check`, `prose:check`, `lint:check`, `typecheck`, `typecheck:test`, `typecheck:docs`, the two JSDoc checks, then a build, a packed-types check (`check:package`), the tests, a benchmark smoke run, every example, every project and coverage. `npm run all` is an alias for it. Keep it green before a PR is merged.
 
 For a quick loop, run one file with `npx vitest run test/<file>.test.ts` and format only what you changed with `npx biome check --write <files>`.
 
