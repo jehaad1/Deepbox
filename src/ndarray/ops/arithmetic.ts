@@ -26,7 +26,13 @@ import {
 import { isFloatDType, toFloatDType } from "../../core/utils/dtype_utils";
 import type { NumericTypedArray } from "../../core/utils/typed_array_access";
 import { isContiguous } from "../tensor/strides";
-import { computeStrides, isBigIntArray, Tensor } from "../tensor/Tensor";
+import {
+  assertFitsNarrowInt,
+  computeStrides,
+  isBigIntArray,
+  type NarrowIntDType,
+  Tensor,
+} from "../tensor/Tensor";
 import { flatOffset, readNumbers, readNumericContiguous, roundHalfResult } from "./_internal";
 import {
   broadcastApply,
@@ -849,9 +855,10 @@ function scalarArithmetic(t: Tensor, s: number, op: "add" | "mul", name: string)
     return Tensor.fromTypedArray({ data: out, shape: t.shape, dtype, device: t.device });
   }
 
-  // int32 / uint8 / bool: wrap-around arithmetic on the scalar's low 32 bits
-  // (exactly what NumPy does after casting the scalar to the tensor dtype).
+  // int32 / uint8 / bool: the scalar must fit the result dtype (as when it becomes a tensor of
+  // that dtype); the element-wise result wraps around on overflow, like add() and mul().
   const outDtype: NumericDType = dtype === "bool" ? "int32" : dtype;
+  assertFitsNarrowInt(s, outDtype as NarrowIntDType, name);
   const src = readNumbers(t, name);
   const Ctor = dtypeToTypedArrayCtor(outDtype);
   const out = new Ctor(size) as Int32Array | Uint8Array;
@@ -868,8 +875,10 @@ function scalarArithmetic(t: Tensor, s: number, op: "add" | "mul", name: string)
  * Add a scalar value to all elements of a tensor.
  *
  * Float tensors keep their dtype. Integer tensors keep theirs for integer
- * scalars (wrapping on overflow); a fractional scalar gives a `float32` result,
- * as in PyTorch. `bool` tensors produce `int32` (or `float32`).
+ * scalars (the result wraps on overflow, as `add` does); a fractional scalar gives a
+ * `float32` result, as in PyTorch. `bool` tensors produce `int32` (or `float32`). For
+ * `int32` and `uint8` tensors the scalar must lie inside the dtype range, otherwise a
+ * `DTypeError` is thrown.
  *
  * @param t - Input tensor
  * @param s - Scalar value to add
