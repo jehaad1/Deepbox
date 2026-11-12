@@ -49,6 +49,8 @@ const x = db.ndarray.tensor([1, 2, 3]);
 const model = new db.ml.LinearRegression();
 ```
 
+ESM (`import`) and CommonJS (`require`) load separate builds. Use one format per process: a `Tensor` or an error created by the CommonJS build is not an `instanceof` the ESM classes, and the global seed, configuration and backend registry are kept separately for each build.
+
 ## Quick Start
 
 The samples below run as written. They import from the subpaths above.
