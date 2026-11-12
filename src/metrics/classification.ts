@@ -2598,6 +2598,17 @@ export function matthewsCorrcoef(
 }
 
 /**
+ * Options object accepted by {@link cohenKappaScore} in place of the class weights.
+ */
+export type CohenKappaOptions = WeightedMetricOptions & {
+  /**
+   * Disagreement weighting of the classes in ascending label order: `"linear"` (|i - j|),
+   * `"quadratic"` ((i - j)²) or `null` (default, all disagreements count the same).
+   */
+  readonly weights?: "linear" | "quadratic" | null;
+};
+
+/**
  * Cohen's kappa score.
  *
  * Computes Cohen's kappa, a statistic that measures inter-annotator agreement.
@@ -2616,15 +2627,21 @@ export function matthewsCorrcoef(
  * **Time Complexity**: O(n) unweighted, O(n + k²) weighted
  * **Space Complexity**: O(n + k) unweighted, O(n + k²) weighted
  *
+ * With `sampleWeight` every sample counts with its weight in the confusion matrix, as in
+ * scikit-learn.
+ *
  * @param yTrue - Ground truth labels (numeric, int64 or string)
  * @param yPred - Predicted labels (same label type as yTrue)
- * @param weights - Optional disagreement weighting: `"linear"`, `"quadratic"` or null (default)
+ * @param weights - Optional disagreement weighting: `"linear"`, `"quadratic"` or null (default),
+ *   or an options object {@link CohenKappaOptions} `{ weights, sampleWeight }`
  * @returns Kappa score in range [-1, 1]
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
  * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If numeric labels contain NaN or infinite values
- * @throws {InvalidParameterError} If weights is not 'linear', 'quadratic' or null
+ * @throws {InvalidParameterError} If weights is not 'linear', 'quadratic' or null, or
+ *   `sampleWeight` sums to zero
  *
  * @example
  * ```ts
@@ -2641,33 +2658,39 @@ export function matthewsCorrcoef(
 export function cohenKappaScore(
   yTrue: Tensor,
   yPred: Tensor,
-  weights: "linear" | "quadratic" | null = null
+  weights: "linear" | "quadratic" | null | CohenKappaOptions = null
 ): number {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
-  if (weights !== null && weights !== "linear" && weights !== "quadratic") {
+  const options: CohenKappaOptions =
+    weights !== null && typeof weights === "object" ? weights : { weights };
+  const kind = options.weights ?? null;
+  if (kind !== null && kind !== "linear" && kind !== "quadratic") {
+    const shown = typeof kind === "string" ? `'${kind}'` : JSON.stringify(kind);
     throw new InvalidParameterError(
-      `Invalid weights parameter: ${String(weights)}. Must be one of: 'linear', 'quadratic', or null`,
+      `Invalid weights parameter: ${shown}. Must be one of: 'linear', 'quadratic', or null`,
       "weights",
-      weights
+      kind
     );
   }
+  const sampleWeight = readSampleWeight(options.sampleWeight, yTrue.size);
 
-  const n = yTrue.size;
-  if (n === 0) return 0;
+  if (yTrue.size === 0) return 0;
+  const n = sampleWeight === undefined ? yTrue.size : nonZeroWeightSum(sampleWeight);
 
   const { classes, trueIdx, predIdx } = encodeLabels(yTrue, yPred);
   const k = classes.length;
   const trueCount = new Float64Array(k);
   const predCount = new Float64Array(k);
 
-  if (weights === null) {
+  if (kind === null) {
     let agree = 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < trueIdx.length; i++) {
       const a = trueIdx[i] as number;
       const b = predIdx[i] as number;
-      if (a === b) agree++;
-      trueCount[a] = (trueCount[a] as number) + 1;
-      predCount[b] = (predCount[b] as number) + 1;
+      const w = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+      if (a === b) agree += w;
+      trueCount[a] = (trueCount[a] as number) + w;
+      predCount[b] = (predCount[b] as number) + w;
     }
     const po = agree / n;
     let pe = 0;
@@ -2680,19 +2703,20 @@ export function cohenKappaScore(
   }
 
   const observed = new Float64Array(k * k);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < trueIdx.length; i++) {
     const a = trueIdx[i] as number;
     const b = predIdx[i] as number;
-    observed[a * k + b] = (observed[a * k + b] as number) + 1;
-    trueCount[a] = (trueCount[a] as number) + 1;
-    predCount[b] = (predCount[b] as number) + 1;
+    const w = sampleWeight === undefined ? 1 : (sampleWeight[i] as number);
+    observed[a * k + b] = (observed[a * k + b] as number) + w;
+    trueCount[a] = (trueCount[a] as number) + w;
+    predCount[b] = (predCount[b] as number) + w;
   }
   let weightedObserved = 0;
   let weightedExpected = 0;
   for (let a = 0; a < k; a++) {
     for (let b = 0; b < k; b++) {
       const distance = Math.abs(a - b);
-      const w = weights === "linear" ? distance : distance * distance;
+      const w = kind === "linear" ? distance : distance * distance;
       weightedObserved += w * (observed[a * k + b] as number);
       weightedExpected += (w * (trueCount[a] as number) * (predCount[b] as number)) / n;
     }

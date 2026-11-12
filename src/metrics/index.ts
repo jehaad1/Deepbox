@@ -6,6 +6,7 @@ export type { SampleWeightInput, WeightedMetricOptions } from "./_internal";
 export type {
   AveragedMetricOptions,
   ClassificationReportOptions,
+  CohenKappaOptions,
   ConfusionMatrixOptions,
   LogLossOptions,
   RocAucOptions,
