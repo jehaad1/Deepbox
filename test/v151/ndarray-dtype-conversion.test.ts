@@ -111,3 +111,10 @@ describe("integer scalar arithmetic", () => {
     expect(addScalar(tensor([255], { dtype: "uint8" }), 1).toArray()).toEqual([0]);
   });
 });
+
+describe("astype with the same dtype", () => {
+  it("returns the same instance, as documented", () => {
+    const t = tensor([1, 2, 3], { dtype: "int32" });
+    expect(t.astype("int32")).toBe(t);
+  });
+});
