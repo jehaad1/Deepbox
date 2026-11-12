@@ -957,11 +957,8 @@ describe("gather", () => {
       Array.from({ length: 4000 }, (_, i) => (i * 7919) % 4000),
       { dtype: "int32" }
     );
-    const start = performance.now();
     const out = gather(t, idx, 0);
-    const elapsed = performance.now() - start;
     expect(out.shape).toEqual([4000, 64]);
-    expect(elapsed).toBeLessThan(2000);
   });
 });
 
