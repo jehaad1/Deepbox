@@ -139,6 +139,11 @@ function groupStepParams(
  * import { Pipeline } from 'deepbox/ml';
  * import { StandardScaler } from 'deepbox/preprocess';
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  *
  * const pipe = new Pipeline([
  *   ['scaler', new StandardScaler()],
@@ -544,6 +549,13 @@ export class Pipeline {
  *
  * @example
  * ```ts
+ * import { makePipeline, LogisticRegression } from 'deepbox/ml';
+ * import { StandardScaler } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ *
  * const pipe = makePipeline(new StandardScaler(), new LogisticRegression());
  * pipe.fit(X, y);
  * ```
@@ -591,6 +603,9 @@ export function makePipeline(...estimators: Array<Estimator | Transformer>): Pip
  * ```ts
  * import { FeatureUnion } from 'deepbox/ml';
  * import { PolynomialFeatures, Binarizer } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
  *
  * const union = new FeatureUnion([
  *   ['poly', new PolynomialFeatures({ degree: 2 })],
@@ -786,6 +801,15 @@ const COLUMN_TRANSFORMER_OPTION_KEYS = optionKeys<
  * ```ts
  * import { ColumnTransformer } from 'deepbox/ml';
  * import { StandardScaler, OneHotEncoder } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * // Columns 0 to 2 are numeric, columns 3 and 4 hold category codes.
+ * const X = tensor([
+ *   [0.1, 1.2, 0.5, 0, 1],
+ *   [0.4, 0.9, 1.1, 1, 0],
+ *   [1.6, 0.2, 0.3, 2, 1],
+ *   [1.9, 0.4, 0.8, 0, 0],
+ * ]);
  *
  * const ct = new ColumnTransformer([
  *   ['num', new StandardScaler(), [0, 1, 2]],

@@ -367,6 +367,11 @@ const LOGISTIC_REGRESSION_OPTION_KEYS = optionKeys<
  * @example
  * ```ts
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  *
  * // Binary classification
  * const model = new LogisticRegression({ C: 1.0, maxIter: 100 });
@@ -377,7 +382,8 @@ const LOGISTIC_REGRESSION_OPTION_KEYS = optionKeys<
  *
  * // Multiclass classification
  * const multiModel = new LogisticRegression({ multiClass: 'multinomial' });
- * multiModel.fit(X_train_multi, y_train_multi);
+ * const yMulti = tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2], { dtype: 'int32' });
+ * multiModel.fit(X_train, yMulti);
  * ```
  *
  * @category Linear Models

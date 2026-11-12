@@ -36,6 +36,8 @@ export interface MultipleComparisonResult {
  *
  * @example
  * ```ts
+ * import { bonferroni } from 'deepbox/stats';
+ *
  * const result = bonferroni([0.01, 0.04, 0.03, 0.005], 0.05);
  * result.corrected;  // [0.04, 0.16, 0.12, 0.02]
  * result.rejected;   // [true, false, false, true]
@@ -66,6 +68,8 @@ export function bonferroni(pvalues: readonly number[], alpha = 0.05): MultipleCo
  *
  * @example
  * ```ts
+ * import { holm } from 'deepbox/stats';
+ *
  * const result = holm([0.01, 0.04, 0.03, 0.005], 0.05);
  * result.corrected;  // [0.03, 0.06, 0.06, 0.02]
  * ```
@@ -105,6 +109,8 @@ export function holm(pvalues: readonly number[], alpha = 0.05): MultipleComparis
  *
  * @example
  * ```ts
+ * import { hochberg } from 'deepbox/stats';
+ *
  * const result = hochberg([0.01, 0.04, 0.03, 0.005], 0.05);
  * result.corrected;  // [0.03, 0.04, 0.04, 0.02]
  * ```
@@ -143,6 +149,8 @@ export function hochberg(pvalues: readonly number[], alpha = 0.05): MultipleComp
  *
  * @example
  * ```ts
+ * import { benjaminiHochberg } from 'deepbox/stats';
+ *
  * const result = benjaminiHochberg([0.01, 0.04, 0.03, 0.005], 0.05);
  * result.corrected;  // [0.02, 0.04, 0.04, 0.02]
  * ```
@@ -171,6 +179,8 @@ export function benjaminiHochberg(
  *
  * @example
  * ```ts
+ * import { benjaminiYekutieli } from 'deepbox/stats';
+ *
  * const result = benjaminiYekutieli([0.01, 0.04, 0.03, 0.005], 0.05);
  * ```
  *
@@ -222,6 +232,8 @@ function fdrStepUp(
  *
  * @example
  * ```ts
+ * import { sidak } from 'deepbox/stats';
+ *
  * const result = sidak([0.01, 0.04, 0.03, 0.005], 0.05);
  * ```
  *

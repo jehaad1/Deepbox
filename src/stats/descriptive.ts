@@ -134,6 +134,9 @@ export interface KurtosisOptions {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { mean } from 'deepbox/stats';
+ *
  * const t = tensor([[1, 2, 3], [4, 5, 6]]);
  * mean(t);                         // Returns scalar tensor 3.5 - mean of all elements
  * mean(t, 0);                      // Returns tensor([2.5, 3.5, 4.5]) - column means
@@ -179,6 +182,9 @@ export function mean(t: Tensor, axisOrOptions?: AxisLike | MeanOptions, keepdims
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { median } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * median(t);  // Returns scalar tensor 3
  *
@@ -325,6 +331,9 @@ export function median(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { mode } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 2, 3, 3, 3]);
  * mode(t);  // Returns tensor([3]) - most frequent value
  *
@@ -446,6 +455,9 @@ export function mode(t: Tensor, axis?: AxisLike): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { std } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * std(t);                     // Population std (ddof=0)
  * std(t, 0, false, 1);        // Sample std (ddof=1, positional)
@@ -510,6 +522,9 @@ export function std(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { variance } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * variance(t);                  // Population variance: 2.0
  * variance(t, 0, false, 1);     // Sample variance: 2.5 (positional)
@@ -668,6 +683,9 @@ function standardizers(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { skewness } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * skewness(t);                    // Returns ~0 (symmetric)
  * skewness(t, undefined, false);  // Unbiased correction (positional)
@@ -807,6 +825,9 @@ export function skewness(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { kurtosis } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * kurtosis(t, undefined, true);   // Excess kurtosis (Fisher, positional)
  * kurtosis(t, undefined, false);  // Raw kurtosis (Pearson, positional)
@@ -946,6 +967,9 @@ export function kurtosis(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { quantile } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * quantile(t, 0.5);        // Returns tensor([3]) - median
  * quantile(t, [0.25, 0.75]); // Returns tensor([2, 4]) - quartiles
@@ -1116,6 +1140,9 @@ export function quantile(t: Tensor, q: number | number[], axis?: AxisLike): Tens
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { percentile } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * percentile(t, 50);       // Returns tensor([3]) - median
  * percentile(t, [25, 75]); // Returns tensor([2, 4]) - quartiles
@@ -1157,6 +1184,9 @@ export function percentile(t: Tensor, q: number | number[], axis?: AxisLike): Te
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { moment } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * moment(t, 1);  // Returns 0 (first moment about mean)
  * moment(t, 2);  // Returns 2 (population variance)
@@ -1242,6 +1272,9 @@ function fullReduceDenseF64(t: Tensor): Float64Array | null {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { geometricMean } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 4, 8]);
  * geometricMean(t);  // Returns ~2.83 (⁴√(1*2*4*8))
  *
@@ -1347,6 +1380,9 @@ export function geometricMean(t: Tensor, axis?: AxisLike): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { harmonicMean } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 4]);
  * harmonicMean(t);  // Returns ~1.71 (3 / (1/1 + 1/2 + 1/4))
  *
@@ -1467,6 +1503,9 @@ function blockSum(arr: Float64Array, from: number, to: number): number {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { mean, trimMean } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5, 100]); // 100 is outlier
  * mean(t);                    // Returns ~19.17 (affected by outlier)
  * trimMean(t, 0.2);          // Returns 3.5 (removes 1 and 100)
@@ -1606,6 +1645,9 @@ export function trimMean(t: Tensor, proportiontocut: number, axis?: AxisLike): T
  *
  * @example
  * ```ts
+ * import { zscore } from 'deepbox/stats';
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * zscore(tensor([1, 2, 3, 4, 5]));                  // (x - 3) / sqrt(2)
  * zscore(tensor([[1, 2], [3, 6]]), 0, 0);           // standardize each column
  * ```
@@ -1736,6 +1778,8 @@ function meanAndSampleVariance(x: readonly number[]): [number, number] {
  *
  * @example
  * ```ts
+ * import { cohenD } from 'deepbox/stats';
+ *
  * cohenD([1, 2, 3, 4, 5], [3, 4, 5, 6, 7]); // -2 / sqrt(2.5) ≈ -1.265
  * ```
  *
@@ -1802,6 +1846,8 @@ export interface BootstrapResult {
  *
  * @example
  * ```ts
+ * import { bootstrap } from 'deepbox/stats';
+ *
  * const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
  * const { estimate, ci } = bootstrap([2, 4, 4, 5, 7, 9], mean, { seed: 42 });
  * ```
@@ -1892,6 +1938,9 @@ export function bootstrap(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { sem } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * sem(t);  // Returns std(t, ddof=1) / sqrt(5) ≈ 0.7071
  * ```
@@ -1949,6 +1998,9 @@ export function sem(t: Tensor, axis?: AxisLike, ddof = 1): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { iqr } from 'deepbox/stats';
+ *
  * const t = tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
  * iqr(t);  // Returns 4.5 (a scalar tensor): Q3 (7.75) - Q1 (3.25)
  * ```

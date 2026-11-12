@@ -1876,6 +1876,11 @@ export class DecisionTreeRegressor implements Regressor {
  *
  * @example
  * ```ts
+ * import { DecisionTreeClassifier, exportText } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]]);
+ * const y = tensor([0, 0, 0, 1, 1, 1], { dtype: 'int32' });
  * const clf = new DecisionTreeClassifier({ maxDepth: 3 });
  * clf.fit(X, y);
  * console.log(exportText(clf));
@@ -1964,6 +1969,11 @@ export function export_text(
  *
  * @example
  * ```ts
+ * import { DecisionTreeClassifier, exportText } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]]);
+ * const y = tensor([0, 0, 0, 1, 1, 1], { dtype: 'int32' });
  * const clf = new DecisionTreeClassifier({ maxDepth: 3 });
  * clf.fit(X, y);
  * console.log(exportText(clf));

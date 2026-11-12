@@ -126,6 +126,11 @@ const ONE_VS_REST_CLASSIFIER_OPTION_KEYS = optionKeys<
  * @example
  * ```ts
  * import { OneVsRestClassifier, LogisticRegression } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  * const ovr = new OneVsRestClassifier({ estimator: new LogisticRegression() });
  * ovr.fit(X_train, y_train);
  * const pred = ovr.predict(X_test);
@@ -360,6 +365,11 @@ const ONE_VS_ONE_CLASSIFIER_OPTION_KEYS = optionKeys<
  * @example
  * ```ts
  * import { OneVsOneClassifier, LinearSVC } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  * const ovo = new OneVsOneClassifier({ estimator: new LinearSVC() });
  * ovo.fit(X_train, y_train);
  * const pred = ovo.predict(X_test);

@@ -78,10 +78,10 @@ export function reset_output(): void {
  *
  * @example
  * ```ts
- * const tags = getEstimatorTags(myClassifier);
- * if (tags.multiOutput) {
- *   // Can handle multi-output targets
- * }
+ * import { getEstimatorTags, LogisticRegression } from 'deepbox/ml';
+ *
+ * const tags = getEstimatorTags(new LogisticRegression());
+ * console.log(tags.estimatorType); // "classifier"
  * ```
  */
 export type EstimatorTags = {

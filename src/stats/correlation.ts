@@ -214,6 +214,9 @@ function pearsonFromDense(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { pearsonr } from 'deepbox/stats';
+ *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const y = tensor([2, 4, 6, 8, 10]);
  * const [r, p] = pearsonr(x, y);  // r = 1.0 (perfect linear)
@@ -276,6 +279,9 @@ export function pearsonr(
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { spearmanr } from 'deepbox/stats';
+ *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const y = tensor([2, 4, 6, 8, 10]);
  * const [rho, p] = spearmanr(x, y);  // rho = 1.0 (perfect monotonic)
@@ -501,6 +507,9 @@ const KENDALL_EXACT_MAX_WORK = 5e8;
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { kendalltau } from 'deepbox/stats';
+ *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const y = tensor([1, 3, 2, 4, 5]);
  * const [tau, p] = kendalltau(x, y);  // tau = 0.8, p = 0.0833 (exact)
@@ -760,6 +769,9 @@ function correlationOfColumns(cols: Float64Array[]): Float64Array {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { corrcoef } from 'deepbox/stats';
+ *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const y = tensor([2, 4, 5, 4, 5]);
  * corrcoef(x, y);  // Returns [[1.0, 0.7746], [0.7746, 1.0]]
@@ -850,6 +862,9 @@ export function corrcoef(x: Tensor, y?: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { cov } from 'deepbox/stats';
+ *
  * const x = tensor([1, 2, 3, 4, 5]);
  * const y = tensor([2, 4, 5, 4, 5]);
  * cov(x, y);  // Returns 2x2 covariance matrix
@@ -936,6 +951,9 @@ export function cov(x: Tensor, y?: Tensor, ddof = 1): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor } from 'deepbox/ndarray';
+ * import { pointbiserialr } from 'deepbox/stats';
+ *
  * const gender = tensor([0, 1, 1, 0, 1, 0]);
  * const score = tensor([72, 85, 91, 68, 88, 75]);
  * const [r, p] = pointbiserialr(gender, score);
@@ -996,9 +1014,12 @@ export function pointbiserialr(
  *
  * @example
  * ```ts
- * const age = tensor([25, 30, 35, 40, 45]);
- * const income = tensor([30, 40, 55, 60, 75]);
- * const education = tensor([12, 14, 16, 18, 20]);
+ * import { tensor } from 'deepbox/ndarray';
+ * import { partialcorr } from 'deepbox/stats';
+ *
+ * const age = tensor([25, 32, 35, 41, 47, 52]);
+ * const income = tensor([30, 41, 52, 60, 77, 80]);
+ * const education = tensor([12, 16, 14, 18, 17, 20]);
  * const [r, p] = partialcorr(income, age, education);
  * ```
  *

@@ -208,7 +208,7 @@ function contiguousM2(raw: NumericTypedArray, off: number, n: number): number {
  * Can be a single axis number/alias or an array of axis numbers/aliases.
  *
  * @example
- * ```ts
+ * ```ts fragment
  * const axis1: AxisLike = 0;        // Single axis
  * const axis2: AxisLike = [0, 1];   // Multiple axes
  * const axis3: AxisLike = "rows";   // Alias
@@ -229,7 +229,9 @@ export type AxisLike = Axis | readonly Axis[];
  *   of bounds for the given ndim
  *
  * @example
- * ```ts
+ * ```ts fragment
+ * import { normalizeAxes } from 'deepbox/core';
+ *
  * normalizeAxes([-1], 3);      // Returns [2]
  * normalizeAxes([1, 0, 1], 3); // Returns [0, 1] (sorted, deduplicated)
  * normalizeAxes(undefined, 3); // Returns []
@@ -266,7 +268,7 @@ export function normalizeAxes(axis: AxisLike | undefined, ndim: number): readonl
  * @throws {ShapeError} If shape dimensions are invalid
  *
  * @example
- * ```ts
+ * ```ts fragment
  * reducedShape([3, 4, 5], [1], false);    // [3, 5]
  * reducedShape([3, 4, 5], [1], true);     // [3, 1, 5]
  * reducedShape([3, 4, 5], [], false);     // []
@@ -307,7 +309,7 @@ export function reducedShape(shape: Shape, axes: readonly number[], keepdims: bo
  * @returns Array of strides for each dimension
  *
  * @example
- * ```ts
+ * ```ts fragment
  * computeStrides([3, 4, 5]); // Returns [20, 5, 1]
  * computeStrides([2, 3]);    // Returns [3, 1]
  * ```
@@ -334,7 +336,7 @@ export function computeStrides(shape: readonly number[]): readonly number[] {
  * @throws {InvalidParameterError} If tensors have different sizes
  *
  * @example
- * ```ts
+ * ```ts fragment
  * assertSameSize(tensor([1, 2, 3]), tensor([4, 5, 6]), "pearsonr"); // OK
  * assertSameSize(tensor([1, 2]), tensor([3, 4, 5]), "pearsonr");    // Throws
  * ```
@@ -361,7 +363,9 @@ export function assertSameSize(a: Tensor, b: Tensor, name: string): void {
  * @throws {DTypeError} If tensor has string dtype
  *
  * @example
- * ```ts
+ * ```ts fragment
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const t = tensor([1, 2, 3]);
  * getNumberAt(t, t.offset + 1); // Returns 2
  * ```
@@ -388,7 +392,7 @@ export function getNumberAt(t: Tensor, offset: number): number {
  * @returns Object containing ranks and tie sum
  *
  * @example
- * ```ts
+ * ```ts fragment
  * rankData(new Float64Array([10, 20, 10, 30]));
  * // { ranks: Float64Array [1.5, 3, 1.5, 4], tieSum: 6 }
  * ```
@@ -450,7 +454,9 @@ export function rankData(values: Float64Array): {
  * @param fn - Callback function receiving (offset, index) for each element
  *
  * @example
- * ```ts
+ * ```ts fragment
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2], [3, 4]]);
  * forEachIndexOffset(t, (offset, idx) => {
  *   console.log(`idx=${idx}, value=${t.data[offset]}`);
@@ -541,7 +547,9 @@ function outputAxisStrides(
  * @throws {DTypeError} If tensor has string dtype
  *
  * @example
- * ```ts
+ * ```ts fragment
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2], [3, 4]]);
  * reduceMean(t, undefined, false); // Returns scalar tensor(2.5)
  * reduceMean(t, 0, false);         // Returns tensor([2, 3])
@@ -635,7 +643,9 @@ export function reduceMean(t: Tensor, axis: AxisLike | undefined, keepdims: bool
  * @throws {DTypeError} If tensor has string dtype
  *
  * @example
- * ```ts
+ * ```ts fragment
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const t = tensor([1, 2, 3, 4, 5]);
  * reduceVariance(t, undefined, false, 1); // Sample variance
  * reduceVariance(t, undefined, false, 0); // Population variance
@@ -823,7 +833,7 @@ function logGammaOnePlus(x: number): number {
  * @returns ln|Γ(z)|
  *
  * @example
- * ```ts
+ * ```ts fragment
  * logGamma(5);    // Returns ln(4!) = ln(24) ≈ 3.178
  * logGamma(0.5);  // Returns ln(√π) ≈ 0.572
  * logGamma(-0.5); // Returns ln|Γ(-0.5)| ≈ 1.2655
@@ -1102,7 +1112,7 @@ function incompleteBetaXY(a: number, b: number, x: number, y: number): number {
  * @throws {InvalidParameterError} If parameters are outside their valid ranges
  *
  * @example
- * ```ts
+ * ```ts fragment
  * regularizedIncompleteBeta(2, 3, 0.5); // Returns 0.6875
  * ```
  */
@@ -1324,7 +1334,7 @@ function normalUpperTail(ax: number): number {
  * @returns Probability P(X <= x) where X ~ N(0, 1)
  *
  * @example
- * ```ts
+ * ```ts fragment
  * normalCdf(0);     // Returns 0.5
  * normalCdf(1.96);  // Returns ~0.975 (95th percentile)
  * normalCdf(-1.96); // Returns ~0.025 (5th percentile)
@@ -1383,7 +1393,7 @@ const PPF_D: readonly number[] = [
  * @returns z such that Φ(z) = p (`NaN` outside [0, 1])
  *
  * @example
- * ```ts
+ * ```ts fragment
  * normalPpf(0.5);   // Returns 0
  * normalPpf(0.975); // Returns ~1.95996
  * ```
@@ -1453,7 +1463,7 @@ function studentTTwoSided(t: number, df: number): number {
  * @throws {InvalidParameterError} If df is not greater than 0 (or is NaN)
  *
  * @example
- * ```ts
+ * ```ts fragment
  * studentTCdf(0, 10);      // Returns 0.5 (symmetric at 0)
  * studentTCdf(2.228, 10);  // Returns ~0.975 (95th percentile for df=10)
  * ```
@@ -1529,7 +1539,7 @@ export function correlationPValue(r: number, df: number): number {
  * @throws {InvalidParameterError} If k <= 0
  *
  * @example
- * ```ts
+ * ```ts fragment
  * chiSquareCdf(3.841, 1);  // Returns ~0.95 (95th percentile for df=1)
  * chiSquareCdf(0, 5);      // Returns 0
  * ```
@@ -1583,7 +1593,7 @@ export function chiSquareSf(x: number, k: number): number {
  * @throws {InvalidParameterError} If dfn <= 0 or dfd <= 0
  *
  * @example
- * ```ts
+ * ```ts fragment
  * fCdf(4.0, 5, 10);  // Returns F-distribution CDF at x=4
  * fCdf(0, 5, 10);    // Returns 0
  * ```

@@ -318,6 +318,10 @@ const BAGGING_CLASSIFIER_OPTION_KEYS = optionKeys<
  * import { BaggingClassifier } from 'deepbox/ml';
  * import { tensor } from 'deepbox/ndarray';
  *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
+ *
  * const clf = new BaggingClassifier({ nEstimators: 10, randomState: 0 });
  * clf.fit(X_train, y_train);
  * const predictions = clf.predict(X_test);
@@ -601,6 +605,10 @@ const BAGGING_REGRESSOR_OPTION_KEYS = optionKeys<
  * ```ts
  * import { BaggingRegressor } from 'deepbox/ml';
  * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y_train = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  *
  * const reg = new BaggingRegressor({ nEstimators: 10, randomState: 0 });
  * reg.fit(X_train, y_train);

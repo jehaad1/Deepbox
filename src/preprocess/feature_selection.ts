@@ -1045,6 +1045,10 @@ function runElimination(
  * ```ts
  * import { SelectFromModel } from 'deepbox/preprocess';
  * import { RandomForestClassifier } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const selector = new SelectFromModel({
  *   estimator: new RandomForestClassifier(),
@@ -1309,6 +1313,10 @@ function resolveNFeaturesToSelect(value: number | undefined, nFeatures: number):
  * ```ts
  * import { RFE } from 'deepbox/preprocess';
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const rfe = new RFE({
  *   estimator: new LogisticRegression(),
@@ -1610,6 +1618,10 @@ function makeFolds(nSamples: number, cv: number, labels: Float64Array | undefine
  * ```ts
  * import { RFECV } from 'deepbox/preprocess';
  * import { LogisticRegression } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const rfecv = new RFECV({
  *   estimator: new LogisticRegression(),

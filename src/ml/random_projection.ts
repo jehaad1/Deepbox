@@ -24,6 +24,8 @@ import type { Transformer } from "./base";
  *
  * @example
  * ```ts
+ * import { johnsonLindenstraussMinDim } from 'deepbox/ml';
+ *
  * johnsonLindenstraussMinDim(1e6, 0.5); // 663
  * ```
  */
@@ -105,6 +107,10 @@ const GAUSSIAN_RANDOM_PROJECTION_OPTION_KEYS = optionKeys<
  * @example
  * ```ts
  * import { GaussianRandomProjection } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X_train = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const X_test = tensor([[0.3, 1.1, 0.8], [2.0, 0.3, 0.4]]);
  *
  * const proj = new GaussianRandomProjection({ nComponents: 50, randomState: 0 });
  * proj.fit(X_train);

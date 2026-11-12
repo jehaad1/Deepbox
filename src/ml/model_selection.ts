@@ -456,6 +456,10 @@ export type CrossValScoreOptions = CvOptions & {
  * import { crossValScore } from 'deepbox/ml';
  * import { LogisticRegression } from 'deepbox/ml';
  * import { TimeSeriesSplit } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const scores = crossValScore(new LogisticRegression(), X, y, 5);
  * console.log('Mean CV score:', scores.reduce((a,b) => a+b, 0) / scores.length);
@@ -538,21 +542,26 @@ export type CrossValidateResult = {
  *
  * @example
  * ```ts
- * import { crossValidate } from 'deepbox/ml';
- * import { LogisticRegression } from 'deepbox/ml';
+ * import { crossValidate, LogisticRegression } from 'deepbox/ml';
+ * import { accuracy } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2], [0.4, 0.9], [1.6, 0.2], [1.9, 0.4], [0.3, 1.5], [2.1, 0.1], [0.2, 1.1], [1.7, 0.3], [0.5, 1.4], [2.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * // Single metric (uses estimator.score)
- * const result = crossValidate(new LogisticRegression(), X, y, { cv: 5 });
+ * const single = crossValidate(new LogisticRegression(), X, y, { cv: 5 });
+ * console.log(single.testScores['score']);
  *
  * // Multiple metrics
- * const result = crossValidate(new LogisticRegression(), X, y, {
+ * const multi = crossValidate(new LogisticRegression(), X, y, {
  *   cv: 5,
  *   scoring: {
- *     accuracy: (est, X, y) => est.score(X, y),
- *     custom: (est, X, y) => { ... },
+ *     score: (est, Xv, yv) => est.score(Xv, yv),
+ *     accuracy: (est, Xv, yv) => accuracy(yv, est.predict(Xv)),
  *   },
  * });
- * console.log(result.testScores['accuracy']);
+ * console.log(multi.testScores['accuracy']);
  * ```
  *
  * @deprecated Prefer {@link crossValidate}.
@@ -741,6 +750,10 @@ const GRID_SEARCH_CV_OPTION_KEYS = optionKeys<
  * ```ts
  * import { GridSearchCV } from 'deepbox/ml';
  * import { Ridge } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const gs = new GridSearchCV(new Ridge(), { alpha: [0.1, 1, 10] }, { cv: 5 });
  * gs.fit(X, y);
@@ -945,6 +958,10 @@ const RANDOMIZED_SEARCH_CV_OPTION_KEYS = optionKeys<
  * ```ts
  * import { RandomizedSearchCV } from 'deepbox/ml';
  * import { Ridge } from 'deepbox/ml';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const rs = new RandomizedSearchCV(
  *   new Ridge(),
@@ -1229,6 +1246,10 @@ export class RandomizedSearchCV {
  * import { crossValScore } from 'deepbox/ml';
  * import { LogisticRegression } from 'deepbox/ml';
  * import { TimeSeriesSplit } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2, 0.5], [0.4, 0.9, 1.1], [1.6, 0.2, 0.3], [1.9, 0.4, 0.8], [0.3, 1.5, 0.9], [2.1, 0.1, 0.4], [0.2, 1.1, 1.3], [1.7, 0.3, 0.2], [0.5, 1.4, 0.6], [2.2, 0.5, 0.7], [0.6, 1.0, 1.0], [1.8, 0.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * const scores = crossValScore(new LogisticRegression(), X, y, 5);
  * console.log('Mean CV score:', scores.reduce((a,b) => a+b, 0) / scores.length);
@@ -1256,21 +1277,26 @@ export const crossValScore = cross_val_score;
  *
  * @example
  * ```ts
- * import { crossValidate } from 'deepbox/ml';
- * import { LogisticRegression } from 'deepbox/ml';
+ * import { crossValidate, LogisticRegression } from 'deepbox/ml';
+ * import { accuracy } from 'deepbox/metrics';
+ * import { tensor } from 'deepbox/ndarray';
+ *
+ * const X = tensor([[0.1, 1.2], [0.4, 0.9], [1.6, 0.2], [1.9, 0.4], [0.3, 1.5], [2.1, 0.1], [0.2, 1.1], [1.7, 0.3], [0.5, 1.4], [2.2, 0.5]]);
+ * const y = tensor([0, 0, 1, 1, 0, 1, 0, 1, 0, 1], { dtype: 'int32' });
  *
  * // Single metric (uses estimator.score)
- * const result = crossValidate(new LogisticRegression(), X, y, { cv: 5 });
+ * const single = crossValidate(new LogisticRegression(), X, y, { cv: 5 });
+ * console.log(single.testScores['score']);
  *
  * // Multiple metrics
- * const result = crossValidate(new LogisticRegression(), X, y, {
+ * const multi = crossValidate(new LogisticRegression(), X, y, {
  *   cv: 5,
  *   scoring: {
- *     accuracy: (est, X, y) => est.score(X, y),
- *     custom: (est, X, y) => { ... },
+ *     score: (est, Xv, yv) => est.score(Xv, yv),
+ *     accuracy: (est, Xv, yv) => accuracy(yv, est.predict(Xv)),
  *   },
  * });
- * console.log(result.testScores['accuracy']);
+ * console.log(multi.testScores['accuracy']);
  * ```
  */
 export const crossValidate = cross_validate;

@@ -9,10 +9,9 @@
 //   - Prefer making an example runnable. Examples that write files must use os.tmpdir().
 //
 // Usage
-//   node scripts/check-jsdoc-examples.mjs [--no-skip] [--skip a,b] [--only substring] [--concurrency N] [--keep]
+//   node scripts/check-jsdoc-examples.mjs [--skip a,b] [--only substring] [--concurrency N] [--keep]
 //
-// TEMP_SKIP_DIRS lists src directories other agents are still fixing. It is applied by default;
-// pass --no-skip to run every directory, or --skip to replace the list.
+// Every src directory is checked. --skip excludes directories for a local run.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,16 +21,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const srcRoot = path.join(pkgRoot, "src");
 
-const TEMP_SKIP_DIRS = ["ml", "preprocess", "stats", "metrics"];
-
 const args = process.argv.slice(2);
 function flagValue(name) {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 }
-const skipDirs = args.includes("--no-skip")
-  ? []
-  : (flagValue("--skip")?.split(",").filter(Boolean) ?? TEMP_SKIP_DIRS);
+const skipDirs = flagValue("--skip")?.split(",").filter(Boolean) ?? [];
 const only = flagValue("--only");
 const keep = args.includes("--keep");
 const concurrency = Number(flagValue("--concurrency") ?? Math.max(1, os.cpus().length - 1));

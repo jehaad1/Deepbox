@@ -883,6 +883,9 @@ export class LabelEncoder {
  *
  * @example
  * ```js
+ * import { tensor } from 'deepbox/ndarray';
+ * import { OneHotEncoder } from 'deepbox/preprocess';
+ *
  * const X = tensor([['red', 'S'], ['blue', 'M'], ['red', 'L']]);
  * const encoder = new OneHotEncoder({ sparse: false });
  * encoder.fit(X);
@@ -1281,6 +1284,9 @@ export class OneHotEncoder {
  *
  * @example
  * ```js
+ * import { tensor } from 'deepbox/ndarray';
+ * import { OrdinalEncoder } from 'deepbox/preprocess';
+ *
  * const X = tensor([['low', 'red'], ['high', 'blue'], ['medium', 'red']]);
  * const encoder = new OrdinalEncoder();
  * encoder.fit(X);
@@ -1616,6 +1622,9 @@ function assertLabelSets(y: ReadonlyArray<ReadonlyArray<Category>>): void {
  *
  * @example
  * ```js
+ * import { tensor } from 'deepbox/ndarray';
+ * import { LabelBinarizer } from 'deepbox/preprocess';
+ *
  * const y = tensor([0, 1, 2, 0, 1]);
  * const binarizer = new LabelBinarizer();
  * const yBin = binarizer.fitTransform(y);
@@ -2011,6 +2020,8 @@ export class LabelBinarizer {
  *
  * @example
  * ```js
+ * import { MultiLabelBinarizer } from 'deepbox/preprocess';
+ *
  * const y = [['sci-fi', 'action'], ['comedy'], ['action', 'drama']];
  * const binarizer = new MultiLabelBinarizer();
  * const yBin = binarizer.fitTransform(y);
@@ -2374,6 +2385,7 @@ export class MultiLabelBinarizer {
  * @example
  * ```ts
  * import { TargetEncoder } from 'deepbox/preprocess';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * const enc = new TargetEncoder({ smooth: 10 });
  * enc.fit(tensor([[0],[1],[0],[1],[2]]), tensor([10, 20, 12, 18, 15]));

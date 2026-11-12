@@ -698,7 +698,7 @@ class Chi2Dist extends ContinuousBase {
   private quantile(p: number, q: number): number {
     if (p === 0) return 0;
     if (q === 0) return Number.POSITIVE_INFINITY;
-    // Wilson–Hilferty starting point for the bracket.
+    // Wilson-Hilferty starting point for the bracket.
     const guess = Math.max(
       0.01,
       this.df * (1 - 2 / (9 * this.df) + normalPpf(p) * Math.sqrt(2 / (9 * this.df))) ** 3
@@ -1279,6 +1279,8 @@ class PoissonDist extends DiscreteBase {
  *
  * @example
  * ```ts
+ * import { norm } from 'deepbox/stats';
+ *
  * const d = norm(0, 1);
  * d.cdf(1.96); // 0.9750021048517795
  * d.ppf(0.975); // 1.959963984540054
@@ -1300,6 +1302,8 @@ export function norm(loc = 0, scale = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { t } from 'deepbox/stats';
+ *
  * t(10).ppf(0.975); // 2.2281388519649385
  * ```
  */
@@ -1318,6 +1322,8 @@ export function t(df: number): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { chi2 } from 'deepbox/stats';
+ *
  * chi2(3).sf(100); // upper-tail p-value, about 1.1e-21, without cancellation
  * ```
  */
@@ -1339,6 +1345,8 @@ export function chi2(df: number): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { f } from 'deepbox/stats';
+ *
  * f(5, 10).ppf(0.95); // 3.325834530413012
  * ```
  */
@@ -1358,6 +1366,8 @@ export function f(dfn: number, dfd: number): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { uniform } from 'deepbox/stats';
+ *
  * uniform(2, 6).cdf(3); // 0.25
  * ```
  */
@@ -1376,6 +1386,8 @@ export function uniform(low = 0, high = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { expon } from 'deepbox/stats';
+ *
  * expon(2).mean(); // 0.5
  * ```
  */
@@ -1395,6 +1407,8 @@ export function expon(rate = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { beta } from 'deepbox/stats';
+ *
  * beta(2, 5).mean(); // 0.2857142857142857
  * ```
  */
@@ -1415,6 +1429,8 @@ export function beta(a: number, b: number): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { gamma } from 'deepbox/stats';
+ *
  * gamma(3, 2).mean(); // 1.5, same as scipy.stats.gamma(3, scale=0.5).mean()
  * ```
  */
@@ -1434,6 +1450,8 @@ export function gamma(shape: number, rate = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { binom } from 'deepbox/stats';
+ *
  * binom(10, 0.5).pmf(5); // 0.24609375
  * ```
  */
@@ -1454,6 +1472,8 @@ export function binom(n: number, p: number): DiscreteDistribution {
  *
  * @example
  * ```ts
+ * import { poisson } from 'deepbox/stats';
+ *
  * poisson(3).cdf(2); // 0.42319008112684353
  * ```
  */
@@ -1788,6 +1808,8 @@ class LaplaceDist extends ContinuousBase {
  *
  * @example
  * ```ts
+ * import { lognorm } from 'deepbox/stats';
+ *
  * lognorm(0, 1).ppf(0.5); // 1
  * ```
  */
@@ -1807,6 +1829,8 @@ export function lognorm(mu = 0, sigma = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { weibull } from 'deepbox/stats';
+ *
  * weibull(2, 1).cdf(1); // 0.6321205588285577
  * ```
  */
@@ -1826,6 +1850,8 @@ export function weibull(k: number, lam = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { pareto } from 'deepbox/stats';
+ *
  * pareto(3, 1).sf(2); // 0.125
  * ```
  */
@@ -1845,6 +1871,8 @@ export function pareto(alpha: number, xm = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { cauchy } from 'deepbox/stats';
+ *
  * cauchy(0, 1).ppf(0.75); // 1.0000000000000002 (tan of π/4)
  * ```
  */
@@ -1864,6 +1892,8 @@ export function cauchy(x0 = 0, gammaParam = 1): ContinuousDistribution {
  *
  * @example
  * ```ts
+ * import { laplace } from 'deepbox/stats';
+ *
  * laplace(0, 2).variance(); // 8
  * ```
  */
@@ -2182,6 +2212,8 @@ class HypergeometricDist extends DiscreteBase {
  *
  * @example
  * ```ts
+ * import { geom } from 'deepbox/stats';
+ *
  * geom(0.25).mean(); // 4
  * ```
  */
@@ -2203,6 +2235,8 @@ export function geom(p: number): DiscreteDistribution {
  *
  * @example
  * ```ts
+ * import { nbinom } from 'deepbox/stats';
+ *
  * nbinom(3, 0.5).mean(); // 3
  * ```
  */
@@ -2225,6 +2259,8 @@ export function nbinom(r: number, p: number): DiscreteDistribution {
  *
  * @example
  * ```ts
+ * import { hypergeom } from 'deepbox/stats';
+ *
  * hypergeom(52, 13, 5).pmf(2); // chance of two hearts in a five-card hand
  * ```
  */
