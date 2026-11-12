@@ -332,8 +332,10 @@ function tokenize(doc: string, opts: ResolvedTextOptions): string[] {
     return rawTokens;
   }
 
+  // No n-gram is longer than the document, so a large maxN costs nothing extra.
   const ngrams: string[] = [];
-  for (let n = minN; n <= maxN; n++) {
+  const longest = Math.min(maxN, rawTokens.length);
+  for (let n = minN; n <= longest; n++) {
     for (let i = 0; i <= rawTokens.length - n; i++) {
       ngrams.push(n === 1 ? (rawTokens[i] as string) : rawTokens.slice(i, i + n).join(" "));
     }
