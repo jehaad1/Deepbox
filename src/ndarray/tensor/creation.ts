@@ -808,10 +808,13 @@ export function linspace(
  * In linear space, the sequence starts at base^start and ends with base^stop.
  * Integer dtypes truncate the values toward zero.
  *
+ * The parameter order is `(start, stop, num, base, endpoint, opts)`. NumPy orders them
+ * `(start, stop, num, endpoint, base)`, so `base` comes before `endpoint` here.
+ *
  * @param start - base^start is the starting value
  * @param stop - base^stop is the final value
  * @param num - Number of samples to generate (default: 50)
- * @param base - The base of the log space (default: 10)
+ * @param base - The base of the log space, a finite number above 0 (default: 10)
  * @param endpoint - If true, stop is the last sample (default: true)
  * @param opts - Tensor options
  * @returns Tensor of shape (num,)
@@ -824,7 +827,8 @@ export function linspace(
  * // [1, 10, 100, 1000]
  * ```
  *
- * @throws {InvalidParameterError} If `num` is not a non-negative integer
+ * @throws {InvalidParameterError} If `num` is not a non-negative integer, or `base` is not a
+ *   finite number above 0
  *
  * @see {@link https://deepbox.dev/docs/ndarray-tensor | Deepbox Tensor Creation}
  */
@@ -836,6 +840,13 @@ export function logspace(
   endpoint = true,
   opts: TensorCreateOptions = {}
 ): Tensor {
+  if (typeof base !== "number" || !Number.isFinite(base) || base <= 0) {
+    throw new InvalidParameterError(
+      `logspace: base must be a finite number above 0 (the order is start, stop, num, base, endpoint); received ${String(base)}`,
+      "base",
+      base
+    );
+  }
   const exponent = linspaceValues(start, stop, num, endpoint);
 
   const config = getConfig();
