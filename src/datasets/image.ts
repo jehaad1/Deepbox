@@ -8,9 +8,16 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
-import { DeepboxError, InvalidParameterError } from "../core/errors";
+import { DataValidationError, DeepboxError, InvalidParameterError } from "../core/errors";
 import { type Tensor, Tensor as TensorClass } from "../ndarray";
 import { decompressGzip, extractTarFiles } from "./_archive";
+import {
+  DEFAULT_ARCHIVE_TIMEOUT_MS,
+  DEFAULT_MAX_DECOMPRESSED_BYTES,
+  downloadBytes,
+  validateChecksum,
+  validateDownloadLimits,
+} from "./_download";
 import { assertPositiveInt } from "./utils";
 
 /**
@@ -31,6 +38,14 @@ export type ImageDataset = {
   readonly description: string;
 };
 
+/** Expected SHA-256 digests (hexadecimal) of the two gzip files that {@link fetchMNIST} downloads. */
+export type MNISTChecksums = {
+  /** Digest of the `*-images-idx3-ubyte.gz` file. */
+  readonly images: string;
+  /** Digest of the `*-labels-idx1-ubyte.gz` file. */
+  readonly labels: string;
+};
+
 /** Options shared by {@link fetchMNIST} and {@link fetchCIFAR10}. */
 export type ImageFetchOptions = {
   /** Base URL override for custom mirrors. A trailing slash is optional. */
@@ -41,11 +56,31 @@ export type ImageFetchOptions = {
   readonly split?: "train" | "test";
   /** Abort signal forwarded to `fetch`. */
   readonly signal?: AbortSignal;
+  /** Fetch timeout in milliseconds for each download (`0` disables it). Default: 600 000. */
+  readonly timeout?: number;
+  /**
+   * Largest download accepted for one file, in bytes. A larger response is rejected before it is
+   * held in memory. Default: 512 MB.
+   */
+  readonly maxBytes?: number;
+  /**
+   * Largest size, in bytes, a gzip file may expand to. Decompression stops with a
+   * {@link MemoryError} when it is exceeded. Default: 1 GB.
+   */
+  readonly maxDecompressedBytes?: number;
+  /**
+   * Expected SHA-256 digest (64 hexadecimal characters) of the downloaded file, checked with
+   * `globalThis.crypto.subtle` before the file is decompressed. {@link fetchCIFAR10} takes a
+   * string for `cifar-10-binary.tar.gz`; {@link fetchMNIST} takes a {@link MNISTChecksums}
+   * object. No check runs when it is omitted.
+   */
+  readonly checksum?: string | MNISTChecksums;
 };
 
 const MNIST_BASE = "https://storage.googleapis.com/cvdf-datasets/mnist/";
 const CIFAR10_BASE = "https://www.cs.toronto.edu/~kriz/";
 
+const MNIST_CLASSES: readonly string[] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const MNIST_IMAGE_MAGIC = 0x00000803;
 const MNIST_LABEL_MAGIC = 0x00000801;
 
@@ -70,7 +105,43 @@ function resolveImageOptions(options: ImageFetchOptions): {
     );
   }
   if (options.maxSamples !== undefined) assertPositiveInt("maxSamples", options.maxSamples);
+  validateDownloadLimits(options);
   return { base: rawBase, split, maxSamples: options.maxSamples };
+}
+
+function singleChecksum(options: ImageFetchOptions): string | undefined {
+  const { checksum } = options;
+  if (checksum !== undefined && typeof checksum !== "string") {
+    throw new InvalidParameterError(
+      "checksum must be a SHA-256 hex string for fetchCIFAR10",
+      "checksum",
+      checksum
+    );
+  }
+  validateChecksum("checksum", checksum);
+  return checksum;
+}
+
+function pairChecksum(options: ImageFetchOptions): MNISTChecksums | undefined {
+  const { checksum } = options;
+  if (checksum === undefined) return undefined;
+  if (typeof checksum !== "object" || checksum === null) {
+    throw new InvalidParameterError(
+      "checksum must be an { images, labels } object of SHA-256 hex strings for fetchMNIST",
+      "checksum",
+      checksum
+    );
+  }
+  validateChecksum("checksum.images", checksum.images);
+  validateChecksum("checksum.labels", checksum.labels);
+  if (checksum.images === undefined || checksum.labels === undefined) {
+    throw new InvalidParameterError(
+      "checksum must contain both images and labels digests",
+      "checksum",
+      checksum
+    );
+  }
+  return checksum;
 }
 
 function withTrailingSlash(url: string): string {
@@ -87,9 +158,16 @@ function withTrailingSlash(url: string): string {
  * @param options.baseUrl - Mirror URL that serves the four `*-idx*-ubyte.gz` files.
  * @param options.maxSamples - Keep only the first `maxSamples` images.
  * @param options.split - `"train"` (60,000 images, default) or `"test"` (10,000 images).
+ * @param options.timeout - Per-download timeout in milliseconds (default 600 000, `0` disables).
+ * @param options.maxBytes - Largest download accepted per file (default 512 MB).
+ * @param options.maxDecompressedBytes - Largest size a file may expand to (default 1 GB).
+ * @param options.checksum - Expected SHA-256 digests `{ images, labels }` of the two gzip files.
  * @returns ImageDataset with MNIST data (`float32` pixels in [0, 1], `int32` labels)
  * @throws {@link InvalidParameterError} If an option is invalid.
- * @throws {@link DeepboxError} If the download fails or the IDX files are malformed or truncated.
+ * @throws {@link DeepboxError} If the download fails, times out or exceeds `maxBytes`, or the
+ *   IDX files are malformed or truncated.
+ * @throws {@link MemoryError} If a file expands beyond `maxDecompressedBytes`.
+ * @throws {@link DataValidationError} If a checksum does not match or a label is outside 0-9.
  *
  * @example
  * ```ts
@@ -106,33 +184,33 @@ export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<Image
 
   const imageFile = split === "train" ? "train-images-idx3-ubyte.gz" : "t10k-images-idx3-ubyte.gz";
   const labelFile = split === "train" ? "train-labels-idx1-ubyte.gz" : "t10k-labels-idx1-ubyte.gz";
-  const init: RequestInit = options.signal ? { signal: options.signal } : {};
+  const checksums = pairChecksum(options);
+  const maxOut = options.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
+  const download = (file: string, kind: string, checksum: string | undefined) =>
+    downloadBytes(
+      `${base}${file}`,
+      `MNIST ${kind}`,
+      {
+        timeout: options.timeout,
+        defaultTimeout: DEFAULT_ARCHIVE_TIMEOUT_MS,
+        maxBytes: options.maxBytes,
+        checksum,
+        abortSignal: options.signal,
+      },
+      (status, statusText) => `Failed to fetch MNIST ${kind}: ${status} ${statusText}`
+    );
 
   let imageBytes: Uint8Array;
   let labelBytes: Uint8Array;
 
   try {
-    const [imageResp, labelResp] = await Promise.all([
-      fetch(`${base}${imageFile}`, init),
-      fetch(`${base}${labelFile}`, init),
+    const [imageGz, labelGz] = await Promise.all([
+      download(imageFile, "images", checksums?.images),
+      download(labelFile, "labels", checksums?.labels),
     ]);
 
-    if (!imageResp.ok) {
-      throw new DeepboxError(
-        `Failed to fetch MNIST images: ${imageResp.status} ${imageResp.statusText}`
-      );
-    }
-    if (!labelResp.ok) {
-      throw new DeepboxError(
-        `Failed to fetch MNIST labels: ${labelResp.status} ${labelResp.statusText}`
-      );
-    }
-
-    const imageBuf = await imageResp.arrayBuffer();
-    const labelBuf = await labelResp.arrayBuffer();
-
-    imageBytes = await decompressGzip(new Uint8Array(imageBuf));
-    labelBytes = await decompressGzip(new Uint8Array(labelBuf));
+    imageBytes = await decompressGzip(imageGz, maxOut);
+    labelBytes = await decompressGzip(labelGz, maxOut);
   } catch (e) {
     if (e instanceof DeepboxError) throw e;
     throw new DeepboxError(
@@ -184,7 +262,13 @@ export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<Image
 
   const labels = new Int32Array(n);
   for (let i = 0; i < n; i++) {
-    labels[i] = labelBytes[8 + i] as number;
+    const label = labelBytes[8 + i] as number;
+    if (label >= MNIST_CLASSES.length) {
+      throw new DataValidationError(
+        `MNIST label ${label} at index ${i} is out of range; labels must be in [0, ${MNIST_CLASSES.length - 1}]`
+      );
+    }
+    labels[i] = label;
   }
 
   return {
@@ -200,8 +284,8 @@ export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<Image
       dtype: "int32",
       device: "cpu",
     }),
-    nClasses: 10,
-    classNames: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+    nClasses: MNIST_CLASSES.length,
+    classNames: [...MNIST_CLASSES],
     imageDims: [rows, cols, 1],
     description:
       "MNIST handwritten digits dataset. " +
@@ -223,9 +307,16 @@ export async function fetchMNIST(options: ImageFetchOptions = {}): Promise<Image
  * @param options.baseUrl - Mirror URL that serves `cifar-10-binary.tar.gz`.
  * @param options.maxSamples - Keep only the first `maxSamples` images.
  * @param options.split - `"train"` (50,000 images, default) or `"test"` (10,000 images).
+ * @param options.timeout - Download timeout in milliseconds (default 600 000, `0` disables).
+ * @param options.maxBytes - Largest download accepted (default 512 MB).
+ * @param options.maxDecompressedBytes - Largest size the archive may expand to (default 1 GB).
+ * @param options.checksum - Expected SHA-256 digest of `cifar-10-binary.tar.gz`.
  * @returns ImageDataset with CIFAR-10 data (`float32` pixels in [0, 1], `int32` labels)
  * @throws {@link InvalidParameterError} If an option is invalid.
- * @throws {@link DeepboxError} If the download fails or the archive is missing batch files or is malformed.
+ * @throws {@link DeepboxError} If the download fails, times out or exceeds `maxBytes`, or the
+ *   archive is missing batch files or is malformed.
+ * @throws {@link MemoryError} If the archive expands beyond `maxDecompressedBytes`.
+ * @throws {@link DataValidationError} If the checksum does not match.
  *
  * @example
  * ```ts
@@ -242,14 +333,26 @@ export async function fetchCIFAR10(options: ImageFetchOptions = {}): Promise<Ima
 
   const url = `${base}cifar-10-binary.tar.gz`;
 
+  const checksum = singleChecksum(options);
+
   let tarBytes: Uint8Array;
   try {
-    const resp = await fetch(url, options.signal ? { signal: options.signal } : {});
-    if (!resp.ok) {
-      throw new DeepboxError(`Failed to fetch CIFAR-10: ${resp.status} ${resp.statusText}`);
-    }
-    const buf = await resp.arrayBuffer();
-    tarBytes = await decompressGzip(new Uint8Array(buf));
+    const gz = await downloadBytes(
+      url,
+      "CIFAR-10",
+      {
+        timeout: options.timeout,
+        defaultTimeout: DEFAULT_ARCHIVE_TIMEOUT_MS,
+        maxBytes: options.maxBytes,
+        checksum,
+        abortSignal: options.signal,
+      },
+      (status, statusText) => `Failed to fetch CIFAR-10: ${status} ${statusText}`
+    );
+    tarBytes = await decompressGzip(
+      gz,
+      options.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES
+    );
   } catch (e) {
     if (e instanceof DeepboxError) throw e;
     throw new DeepboxError(

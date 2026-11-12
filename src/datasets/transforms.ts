@@ -54,6 +54,11 @@ function sampleWidth(t: Tensor): number {
   return w;
 }
 
+/** The integers `0..n-1`. */
+function range(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => i);
+}
+
 /**
  * Gather the optional `images` tensor alongside data/target and copy the metadata.
  */
@@ -238,7 +243,10 @@ function mappedTargetDtype(
  * The function receives one sample's features as a flat `number[]` (the values
  * of `data[i]` in row-major order) and its scalar target, and must return a
  * `{ data: number[]; target: number }` pair. All returned `data` arrays must
- * have the same length; the result `data` has shape `[nSamples, length]`.
+ * have the same length. When that length equals the source sample width, the
+ * result `data` keeps the trailing axes of the source (for example `[4, 2, 3]`
+ * stays `[4, 2, 3]`); otherwise it has shape `[nSamples, length]`. `images`,
+ * when present, are copied unchanged.
  *
  * The result keeps the float dtype of the source `data`. The target keeps the
  * dtype of the source target unless a returned value cannot be represented in
@@ -312,10 +320,12 @@ export function mapDataset(
 
   const srcDtype = dataset.data.dtype;
   const dataDtype = srcDtype === "float32" || srcDtype === "float64" ? srcDtype : undefined;
-  const dataTensor =
+  const sampleShape = outWidth === width ? dataset.data.shape.slice(1) : [outWidth];
+  const flatData =
     n === 0
-      ? reshape(tensor([], dataDtype ? { dtype: dataDtype } : {}), [0, width])
+      ? tensor([], dataDtype ? { dtype: dataDtype } : {})
       : tensor(newData, dataDtype ? { dtype: dataDtype } : {});
+  const dataTensor = reshape(flatData, [n, ...sampleShape]);
   const tDtype = mappedTargetDtype(newTargets, dataset.target.dtype);
 
   const mapped: Dataset = {
@@ -325,6 +335,9 @@ export function mapDataset(
     description: dataset.description,
   };
   if (dataset.targetNames) mapped.targetNames = [...dataset.targetNames];
+  if (dataset.images) {
+    mapped.images = gather(dataset.images, tensor(range(n), { dtype: "int32" }), 0);
+  }
   return mapped;
 }
 

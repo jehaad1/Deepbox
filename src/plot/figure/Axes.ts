@@ -38,7 +38,14 @@ import type {
 import { normalizeColor, parseHexColorToRGBA } from "../utils/colors";
 import { buildContourGrid } from "../utils/contours";
 import { buildLegendEntry } from "../utils/legend";
-import { tensorToFloat64Matrix2D, tensorToFloat64Vector1D } from "../utils/tensor";
+import {
+  type GridInput,
+  tensorToFloat64Matrix2D,
+  tensorToFloat64Vector1D,
+  toFloat64Grids,
+  toFloat64Vector,
+  type VectorInput,
+} from "../utils/tensor";
 import { estimateTextWidth } from "../utils/text";
 import { generateLogTicks, generateTicks, type Tick } from "../utils/ticks";
 import { computeAutoRange, makeTransform } from "../utils/transforms";
@@ -1295,42 +1302,62 @@ export class Axes {
 
   /**
    * 3D surface plot.
+   *
+   * @param xGrid - x coordinates as a 2D tensor, nested arrays or an array of typed arrays
+   * @param yGrid - y coordinates with the same shape as `xGrid`
+   * @param zGrid - Heights with the same shape as `xGrid`
+   * @throws {ShapeError} If a tensor is not 2D, or the grids are empty, ragged or differ in shape.
+   * @throws {DTypeError} If a tensor holds strings.
    */
   surface(
-    xGrid: Float64Array[],
-    yGrid: Float64Array[],
-    zGrid: Float64Array[],
+    xGrid: GridInput,
+    yGrid: GridInput,
+    zGrid: GridInput,
     options: Plot3DOptions = {}
   ): Surface3D {
-    const d = new Surface3D(xGrid, yGrid, zGrid, options);
+    const [x, y, z] = toFloat64Grids("surface", xGrid, yGrid, zGrid);
+    const d = new Surface3D(x, y, z, options);
     this.drawables.push(d);
     return d;
   }
 
   /**
    * 3D wireframe plot.
+   *
+   * @param xGrid - x coordinates as a 2D tensor, nested arrays or an array of typed arrays
+   * @param yGrid - y coordinates with the same shape as `xGrid`
+   * @param zGrid - Heights with the same shape as `xGrid`
+   * @throws {ShapeError} If a tensor is not 2D, or the grids are empty, ragged or differ in shape.
+   * @throws {DTypeError} If a tensor holds strings.
    */
   wireframe(
-    xGrid: Float64Array[],
-    yGrid: Float64Array[],
-    zGrid: Float64Array[],
+    xGrid: GridInput,
+    yGrid: GridInput,
+    zGrid: GridInput,
     options: Plot3DOptions = {}
   ): Wireframe3D {
-    const d = new Wireframe3D(xGrid, yGrid, zGrid, options);
+    const [x, y, z] = toFloat64Grids("wireframe", xGrid, yGrid, zGrid);
+    const d = new Wireframe3D(x, y, z, options);
     this.drawables.push(d);
     return d;
   }
 
   /**
    * 3D scatter plot.
+   *
+   * @param x - x coordinates as a 1D tensor or array
+   * @param y - y coordinates
+   * @param z - z coordinates
+   * @throws {ShapeError} If a tensor is not 1D or the inputs differ in length.
+   * @throws {DTypeError} If a tensor holds strings.
    */
   scatter3d(
-    x: Float64Array,
-    y: Float64Array,
-    z: Float64Array,
+    x: VectorInput,
+    y: VectorInput,
+    z: VectorInput,
     options: Plot3DOptions = {}
   ): Scatter3D {
-    const d = new Scatter3D(x, y, z, options);
+    const d = new Scatter3D(toFloat64Vector(x), toFloat64Vector(y), toFloat64Vector(z), options);
     this.drawables.push(d);
     return d;
   }

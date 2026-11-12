@@ -7,12 +7,20 @@
  * @see {@link https://deepbox.dev/docs/datasets-builtin | Deepbox documentation}
  */
 
-import { DeepboxError } from "../core/errors";
+import { DeepboxError, MemoryError } from "../core/errors";
 
 /**
  * Decompress gzip data using DecompressionStream (available in Node 18+ and modern browsers).
+ *
+ * @param data - Gzip bytes
+ * @param maxOutputBytes - Largest decompressed size to accept. Decompression stops with a
+ *   {@link MemoryError} as soon as the output would exceed it, so a small malicious stream
+ *   cannot expand without bound. Default: no limit.
  */
-export async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
+export async function decompressGzip(
+  data: Uint8Array,
+  maxOutputBytes = Number.POSITIVE_INFINITY
+): Promise<Uint8Array> {
   if (typeof DecompressionStream === "undefined") {
     throw new DeepboxError(
       "DecompressionStream is not available. Use Node.js 18+ or a modern browser."
@@ -34,8 +42,15 @@ export async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value as Uint8Array);
     totalLength += (value as Uint8Array).byteLength;
+    if (totalLength > maxOutputBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new MemoryError(
+        `Decompressed data exceeds the limit of ${maxOutputBytes} bytes. ` +
+          "Increase maxDecompressedBytes if the archive is trusted."
+      );
+    }
+    chunks.push(value as Uint8Array);
   }
 
   await writePromise;

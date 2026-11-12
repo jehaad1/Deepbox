@@ -22,7 +22,7 @@ export {
   makeSparseUncorrelated,
   makeSwissRoll,
 } from "./generators";
-export type { ImageDataset, ImageFetchOptions } from "./image";
+export type { ImageDataset, ImageFetchOptions, MNISTChecksums } from "./image";
 export { fetchCIFAR10, fetchMNIST } from "./image";
 // Kaggle integration
 export type {

@@ -44,7 +44,7 @@ export type {
 // Color palettes
 export { getPalette, getPaletteColor, listPalettes } from "./utils/colors";
 
-import { InvalidParameterError, ShapeError } from "../core";
+import { DeviceError, InvalidParameterError, ShapeError } from "../core";
 // Global plotting functions
 import { type Tensor, tensor } from "../ndarray";
 import { gaussianKde } from "../stats/kde";
@@ -55,7 +55,12 @@ import { gca, sca } from "./figure/state";
 import { getTheme, themeCycle, themePrimary } from "./figure/theme";
 import type { ViolinplotOptions } from "./plots/Violinplot";
 import type { LegendOptions, PlotOptions, RenderedPNG, RenderedSVG, TextOptions } from "./types";
-import { tensorToFloat64Matrix2D, tensorToFloat64Vector1D } from "./utils/tensor";
+import {
+  type GridInput,
+  tensorToFloat64Matrix2D,
+  tensorToFloat64Vector1D,
+  type VectorInput,
+} from "./utils/tensor";
 
 /**
  * Convert a 1D tensor to a Float64Array, naming the calling function and
@@ -140,6 +145,8 @@ export function show(
  * @param options - Optional figure (default: the current figure) and format
  * @throws {InvalidParameterError} If the path is empty, the format is unknown,
  *   or the file extension does not match the format.
+ * @throws {DeviceError} If the runtime has no file system (a browser). Use
+ *   `figure.renderSVG()` or `figure.renderPNG()` there instead.
  */
 export async function saveFig(
   path: string,
@@ -176,7 +183,16 @@ export async function saveFig(
     );
   }
   const fig = options.figure ?? gca().fig;
-  const { writeFile } = await import("node:fs/promises");
+  let writeFile: typeof import("node:fs/promises").writeFile;
+  try {
+    // The magic comments keep Vite and webpack from resolving the module at build time.
+    ({ writeFile } = await import(/* @vite-ignore */ /* webpackIgnore: true */ "node:fs/promises"));
+  } catch {
+    throw new DeviceError(
+      "saveFig writes to the file system and needs Node.js. In a browser, use " +
+        "figure.renderSVG() or await figure.renderPNG() and save the result yourself."
+    );
+  }
   if (fmt === "png") {
     const png = await fig.renderPNG();
     await writeFile(path, png.bytes);
@@ -1644,50 +1660,13 @@ export {
 } from "./plots/Surface3D";
 
 /**
- * Copy three rectangular grids into Float64Arrays, checking that they are
- * non-empty and share one shape.
- * @internal
- */
-function toGrids(
-  fn: string,
-  xGrid: ArrayLike<ArrayLike<number>>,
-  yGrid: ArrayLike<ArrayLike<number>>,
-  zGrid: ArrayLike<ArrayLike<number>>
-): [Float64Array[], Float64Array[], Float64Array[]] {
-  const rows = zGrid.length;
-  if (rows === 0 || xGrid.length !== rows || yGrid.length !== rows) {
-    throw new ShapeError(
-      `${fn}: xGrid, yGrid and zGrid must have the same, non-zero number of rows; received ${xGrid.length}, ${yGrid.length}, ${zGrid.length}`
-    );
-  }
-  const cols = zGrid[0]?.length ?? 0;
-  if (cols === 0) {
-    throw new ShapeError(`${fn}: grids must have at least one column`);
-  }
-  const copy = (grid: ArrayLike<ArrayLike<number>>, name: string): Float64Array[] => {
-    const out: Float64Array[] = [];
-    for (let r = 0; r < rows; r++) {
-      const row = grid[r];
-      if (row === undefined || row.length !== cols) {
-        throw new ShapeError(
-          `${fn}: ${name} must be a rectangular ${rows} x ${cols} grid; row ${r} has length ${row?.length ?? 0}`
-        );
-      }
-      out.push(Float64Array.from(row));
-    }
-    return out;
-  };
-  return [copy(xGrid, "xGrid"), copy(yGrid, "yGrid"), copy(zGrid, "zGrid")];
-}
-
-/**
  * Create a 3D surface plot on the current axes.
  *
- * @param xGrid - 2D array of x-coordinates (rows x cols)
+ * @param xGrid - x-coordinates (rows x cols) as a 2D tensor, nested arrays or typed-array rows
  * @param yGrid - 2D array of y-coordinates (rows x cols)
  * @param zGrid - 2D array of z-values (rows x cols)
  * @param options - 3D plot options (elevation, azimuth, color, etc.)
- * @throws {ShapeError} If the grids are empty, ragged, or differ in shape.
+ * @throws {ShapeError} If a tensor is not 2D, or the grids are empty, ragged, or differ in shape.
  *
  * @example
  * ```ts
@@ -1706,23 +1685,22 @@ function toGrids(
  * ```
  */
 export function surface(
-  xGrid: ArrayLike<ArrayLike<number>>,
-  yGrid: ArrayLike<ArrayLike<number>>,
-  zGrid: ArrayLike<ArrayLike<number>>,
+  xGrid: GridInput,
+  yGrid: GridInput,
+  zGrid: GridInput,
   options: import("./plots/Surface3D").Plot3DOptions = {}
 ): void {
-  const [xF, yF, zF] = toGrids("surface", xGrid, yGrid, zGrid);
-  gca().surface(xF, yF, zF, options);
+  gca().surface(xGrid, yGrid, zGrid, options);
 }
 
 /**
  * Create a 3D wireframe plot on the current axes.
  *
- * @param xGrid - 2D array of x-coordinates (rows x cols)
+ * @param xGrid - x-coordinates (rows x cols) as a 2D tensor, nested arrays or typed-array rows
  * @param yGrid - 2D array of y-coordinates (rows x cols)
  * @param zGrid - 2D array of z-values (rows x cols)
  * @param options - 3D plot options (elevation, azimuth, color, etc.)
- * @throws {ShapeError} If the grids are empty, ragged, or differ in shape.
+ * @throws {ShapeError} If a tensor is not 2D, or the grids are empty, ragged, or differ in shape.
  *
  * @example
  * ```ts
@@ -1735,23 +1713,22 @@ export function surface(
  * ```
  */
 export function wireframe(
-  xGrid: ArrayLike<ArrayLike<number>>,
-  yGrid: ArrayLike<ArrayLike<number>>,
-  zGrid: ArrayLike<ArrayLike<number>>,
+  xGrid: GridInput,
+  yGrid: GridInput,
+  zGrid: GridInput,
   options: import("./plots/Surface3D").Plot3DOptions = {}
 ): void {
-  const [xF, yF, zF] = toGrids("wireframe", xGrid, yGrid, zGrid);
-  gca().wireframe(xF, yF, zF, options);
+  gca().wireframe(xGrid, yGrid, zGrid, options);
 }
 
 /**
  * Create a 3D scatter plot on the current axes.
  *
- * @param x - 1D array of x-coordinates
- * @param y - 1D array of y-coordinates
- * @param z - 1D array of z-coordinates
+ * @param x - 1D tensor or array of x-coordinates
+ * @param y - 1D tensor or array of y-coordinates
+ * @param z - 1D tensor or array of z-coordinates
  * @param options - 3D plot options (elevation, azimuth, color, size, etc.)
- * @throws {ShapeError} If the arrays differ in length.
+ * @throws {ShapeError} If a tensor is not 1D or the inputs differ in length.
  *
  * @example
  * ```ts
@@ -1760,10 +1737,10 @@ export function wireframe(
  * ```
  */
 export function scatter3d(
-  x: ArrayLike<number>,
-  y: ArrayLike<number>,
-  z: ArrayLike<number>,
+  x: VectorInput,
+  y: VectorInput,
+  z: VectorInput,
   options: import("./plots/Surface3D").Plot3DOptions = {}
 ): void {
-  gca().scatter3d(Float64Array.from(x), Float64Array.from(y), Float64Array.from(z), options);
+  gca().scatter3d(x, y, z, options);
 }
