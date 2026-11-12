@@ -38,7 +38,7 @@ import {
   cellText,
   checkFillLimit,
   checkFillMethod,
-  compareStrings,
+  compareValues,
   compensatedSum,
   createKey,
   dedupeHeaders,
@@ -291,25 +291,6 @@ const drawRows = (
     }
   }
   return picked;
-};
-
-/**
- * Total order used by sort(): numbers and bigints numerically, strings by
- * UTF-16 code unit (locale independent, like pandas), dates by timestamp,
- * booleans false < true. Mixed types fall back to comparing their string forms.
- * Callers handle missing values first.
- */
-const compareValues = (a: unknown, b: unknown): number => {
-  if (
-    (typeof a === "number" || typeof a === "bigint") &&
-    (typeof b === "number" || typeof b === "bigint")
-  ) {
-    return a < b ? -1 : a > b ? 1 : 0;
-  }
-  if (typeof a === "string" && typeof b === "string") return compareStrings(a, b);
-  if (a instanceof Date && b instanceof Date) return compareNumbers(a.getTime(), b.getTime());
-  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
-  return compareStrings(String(a), String(b));
 };
 
 /** Sort order for labels in reshaped output: numbers ascending, otherwise by string form. */
@@ -1009,7 +990,9 @@ export class DataFrame {
    * The sort is stable. Missing values (null, undefined, NaN) always go last,
    * for both sort directions. Numbers and bigints compare numerically, strings
    * by UTF-16 code unit (the same locale independent order as `Series.sort` and
-   * pandas, so "B" sorts before "a"), dates by timestamp.
+   * pandas, so "B" sorts before "a"), dates by timestamp. A column that mixes types is ordered
+   * by type first (numbers and bigints, strings, booleans, dates, then other values), so a
+   * descending sort is the exact reverse of an ascending one.
    *
    * @param by - Column name or array of column names to sort by
    * @param ascending - Sort in ascending order (default: true). Pass an array with

@@ -165,6 +165,55 @@ export const sumSquaredDeviations = (values: ArrayLike<number>): number => {
  */
 export const compareStrings = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Position of a value's type in the order of {@link compareValues}. */
+const typeRank = (value: unknown): number => {
+  switch (typeof value) {
+    case "number":
+    case "bigint":
+      return 0;
+    case "string":
+      return 1;
+    case "boolean":
+      return 2;
+    default:
+      return value instanceof Date ? 3 : 4;
+  }
+};
+
+/**
+ * Ascending total order of two non-missing values, used by sort and sorted groupBy.
+ *
+ * Values of one type compare naturally: numbers and bigints numerically, strings by UTF-16 code
+ * unit (see {@link compareStrings}), booleans false before true, dates by timestamp, and any other
+ * values by their string form. Values of different types are ordered by type: numbers and bigints,
+ * then strings, then booleans, then dates, then everything else. The order is transitive, so
+ * a descending sort is exactly the reverse of an ascending one. Callers handle missing values first.
+ */
+export const compareValues = (a: unknown, b: unknown): number => {
+  const rankA = typeRank(a);
+  const rankB = typeRank(b);
+  if (rankA !== rankB) return rankA < rankB ? -1 : 1;
+  switch (rankA) {
+    case 0:
+      return (a as number | bigint) < (b as number | bigint)
+        ? -1
+        : (a as number | bigint) > (b as number | bigint)
+          ? 1
+          : 0;
+    case 1:
+      return compareStrings(a as string, b as string);
+    case 2:
+      return Number(a) - Number(b);
+    case 3: {
+      const ta = (a as Date).getTime();
+      const tb = (b as Date).getTime();
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    }
+    default:
+      return compareStrings(String(a), String(b));
+  }
+};
+
 /** Text of one cell in toString(): "null" for missing, ISO 8601 for dates. */
 export const cellText = (value: unknown): string => {
   if (value === null || value === undefined) return "null";

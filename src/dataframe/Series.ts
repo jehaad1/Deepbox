@@ -7,7 +7,7 @@ import {
   cellText,
   checkFillLimit,
   checkFillMethod,
-  compareStrings,
+  compareValues,
   compensatedSum,
   createKey,
   isPlainObject,
@@ -53,20 +53,6 @@ function isMissing(value: unknown): boolean {
     (typeof value === "number" && Number.isNaN(value)) ||
     (value instanceof Date && Number.isNaN(value.getTime()))
   );
-}
-
-/** Ascending comparison of two non-missing values. */
-function compareValues(a: unknown, b: unknown): number {
-  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : a > b ? 1 : 0;
-  if (typeof a === "string" && typeof b === "string") return compareStrings(a, b);
-  if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
-  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
-  if (a instanceof Date && b instanceof Date) {
-    const ta = a.getTime();
-    const tb = b.getTime();
-    return ta < tb ? -1 : ta > tb ? 1 : 0;
-  }
-  return compareStrings(String(a), String(b));
 }
 
 /**
@@ -430,7 +416,9 @@ export class Series<T = unknown> {
    * Preserves index-value mapping. The sort is stable. null, undefined, NaN and
    * invalid Dates always go last, in both directions. Numbers, bigints, booleans and Dates
    * compare by value; strings compare by UTF-16 code unit (locale
-   * independent, like pandas, so "B" sorts before "a").
+   * independent, like pandas, so "B" sorts before "a"). A column that mixes types is ordered by
+   * type first (numbers and bigints, strings, booleans, Dates, then other values), so a
+   * descending sort is the exact reverse of an ascending one.
    *
    * @param ascending - Sort in ascending order (default: true)
    * @returns New sorted Series with index reordered to match
