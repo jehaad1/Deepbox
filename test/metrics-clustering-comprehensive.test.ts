@@ -187,8 +187,7 @@ describe("Clustering Metrics tests", () => {
         [1, 0],
         [4, 2],
       ]);
-      const score = daviesBouldinScore(subsetX, singleCluster);
-      expect(typeof score).toBe("number");
+      expect(() => daviesBouldinScore(subsetX, singleCluster)).toThrow(/Number of labels is 1/);
     });
 
     it("should handle multiple clusters", () => {
@@ -241,8 +240,7 @@ describe("Clustering Metrics tests", () => {
         [1, 0],
         [4, 2],
       ]);
-      const score = calinskiHarabaszScore(subsetX, singleCluster);
-      expect(score).toBe(0);
+      expect(() => calinskiHarabaszScore(subsetX, singleCluster)).toThrow(/Number of labels is 1/);
     });
 
     it("should handle multiple clusters", () => {
@@ -535,8 +533,8 @@ describe("Clustering Metrics tests", () => {
       const emptyLabels = tensor([]);
 
       expect(() => silhouetteScore(emptyX, emptyLabels)).toThrow(/at least 2 samples/i);
-      expect(daviesBouldinScore(emptyX, emptyLabels)).toBe(0);
-      expect(calinskiHarabaszScore(emptyX, emptyLabels)).toBe(0);
+      expect(() => daviesBouldinScore(emptyX, emptyLabels)).toThrow(/Number of labels is 0/);
+      expect(() => calinskiHarabaszScore(emptyX, emptyLabels)).toThrow(/Number of labels is 0/);
     });
 
     it("should handle size mismatch", () => {
@@ -599,7 +597,7 @@ describe("Clustering Metrics tests", () => {
       expect(() => silhouetteScore(differentX, different)).toThrow(
         /2 <= n_clusters <= n_samples - 1/
       );
-      expect(typeof daviesBouldinScore(differentX, different)).toBe("number");
+      expect(() => daviesBouldinScore(differentX, different)).toThrow(/Number of labels is 6/);
     });
 
     it("should handle large number of clusters", () => {
@@ -758,7 +756,9 @@ describe("Clustering Metrics tests", () => {
       expect(() => silhouetteScore(manySmallX, manySmallLabels)).toThrow(
         /2 <= n_clusters <= n_samples - 1/
       );
-      expect(typeof daviesBouldinScore(manySmallX, manySmallLabels)).toBe("number");
+      expect(() => daviesBouldinScore(manySmallX, manySmallLabels)).toThrow(
+        /Number of labels is 6/
+      );
     });
 
     it("should handle imbalanced clusters", () => {
