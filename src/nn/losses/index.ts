@@ -7,15 +7,10 @@ import { DTypeError, InvalidParameterError, ShapeError, shapesEqual } from "../.
 import type { AnyTensor } from "../../ndarray";
 import {
   abs,
-  add,
-  clip,
   customOp,
   div,
   GradTensor,
-  log,
   mean,
-  mul,
-  neg,
   pow,
   reshape,
   sqrt,
@@ -175,6 +170,44 @@ function anyGrad(...operands: readonly AnyTensor[]): boolean {
   return operands.some((operand) => GradTensor.isGradTensor(operand));
 }
 
+/** Lower bound on the denominator of the binary cross-entropy gradient, as in PyTorch. */
+const BCE_GRAD_EPSILON = 1e-12;
+
+/** Natural logarithm clamped at -100, so a hard 0 or 1 prediction gives a finite loss. */
+function bceLog(x: number): number {
+  return Math.max(Math.log(x), -100);
+}
+
+/** Reject probabilities outside [0, 1] (NaN included). */
+function checkProbabilities(p: ArrayLike<number>): void {
+  for (let i = 0; i < p.length; i++) {
+    const v = p[i] ?? Number.NaN;
+    if (!(v >= 0 && v <= 1)) {
+      throw new InvalidParameterError(
+        `binaryCrossEntropyLoss predictions must be probabilities in [0, 1]; got ${v} at index ${i}. ` +
+          "Apply a sigmoid first, or use binaryCrossEntropyWithLogitsLoss for logits.",
+        "predictions",
+        v
+      );
+    }
+  }
+}
+
+/** Element-wise `-(t * log(p) + (1 - t) * log(1 - p))` with both logarithms clamped at -100. */
+function bceElementwise(
+  p: ArrayLike<number>,
+  t: ArrayLike<number>,
+  dtype: "float32" | "float64"
+): Float32Array | Float64Array {
+  const out = newLossBuffer(dtype, p.length);
+  for (let i = 0; i < p.length; i++) {
+    const pi = p[i] ?? 0;
+    const ti = t[i] ?? 0;
+    out[i] = -(ti * bceLog(pi) + (1 - ti) * bceLog(1 - pi));
+  }
+  return out;
+}
+
 /** Wrap `t` as a GradTensor (a constant when it is a plain tensor) cast to the float `dtype`. */
 function gradOperand(t: AnyTensor, dtype: "float32" | "float64"): GradTensor {
   const g = GradTensor.isGradTensor(t) ? t : GradTensor.fromTensor(t, { requiresGrad: false });
@@ -331,16 +364,19 @@ export function maeLoss(
  * - Predictions should be probabilities in (0, 1)
  *
  * **Properties:**
- * - Requires predictions in range (0, 1) - use sigmoid activation
+ * - Requires predictions in range [0, 1] - use sigmoid activation; other values (and NaN)
+ *   throw an `InvalidParameterError`
  * - Targets should be 0 or 1
- * - Predictions are clipped to `[1e-7, 1 - 1e-7]` before the logarithm, so the loss is
- *   finite (at most about 16.1 per element) and saturated predictions get no gradient.
+ * - Like PyTorch, each logarithm is clamped at -100, so the loss is finite (at most 100 per
+ *   element) when a prediction is exactly 0 or 1. The gradient with respect to the prediction
+ *   is `(p - t) / max(p * (1 - p), 1e-12)`.
  *   When you have logits, prefer `binaryCrossEntropyWithLogitsLoss`.
  *
  * @param predictions - Predicted probabilities (0 to 1)
  * @param targets - True binary labels (0 or 1)
  * @param reduction - How to reduce the loss: 'mean', 'sum', or 'none'
  * @returns Scalar loss value (or tensor if reduction='none')
+ * @throws {InvalidParameterError} If a prediction is outside [0, 1] or NaN
  *
  * @category Loss Functions
  */
@@ -368,16 +404,47 @@ export function binaryCrossEntropyLoss(
 
   if (GradTensor.isGradTensor(predictions)) {
     const [pred, tgt] = gradOperands(predictions, targets, "binaryCrossEntropyLoss");
-    const epsilon = 1e-7;
-    const predClamped = pred.clip(epsilon, 1 - epsilon);
-    const logPred = predClamped.log();
-    const term1 = tgt.mul(logPred);
-    const one = GradTensor.scalar(1, { dtype: numericDtype(pred, "binaryCrossEntropyLoss") });
-    const oneMinusTargets = one.sub(tgt);
-    const oneMinusPred = one.sub(predClamped);
-    const logOneMinusPred = oneMinusPred.log();
-    const term2 = oneMinusTargets.mul(logOneMinusPred);
-    return reduceGradLoss(term1.add(term2).neg(), reduction);
+    const p = numbersOf(pred.tensor, "binaryCrossEntropyLoss");
+    const t = numbersOf(tgt.tensor, "binaryCrossEntropyLoss");
+    checkProbabilities(p);
+    const dtype = lossDtypeOf(pred.tensor);
+    const loss = Tensor.fromTypedArray({
+      data: bceElementwise(p, t, dtype),
+      shape: pred.shape.slice(),
+      dtype,
+      device: pred.device,
+    });
+    const shape = pred.shape.slice();
+    const fromElements = (fn: (i: number) => number): Tensor => {
+      const out = newLossBuffer(dtype, pred.size);
+      for (let i = 0; i < pred.size; i++) out[i] = fn(i);
+      return Tensor.fromTypedArray({ data: out, shape, dtype, device: pred.device });
+    };
+    const elementwise = customOp(loss, [
+      [
+        pred,
+        (g: Tensor): Tensor => {
+          // d loss / d p = (p - t) / max(p * (1 - p), 1e-12), the PyTorch backward formula.
+          const go = numbersOf(g, "binaryCrossEntropyLoss");
+          return fromElements((i) => {
+            const pi = p[i] ?? 0;
+            const denominator = Math.max(pi * (1 - pi), BCE_GRAD_EPSILON);
+            return ((go[i] ?? 0) * (pi - (t[i] ?? 0))) / denominator;
+          });
+        },
+      ],
+      [
+        tgt,
+        (g: Tensor): Tensor => {
+          const go = numbersOf(g, "binaryCrossEntropyLoss");
+          return fromElements((i) => {
+            const pi = p[i] ?? 0;
+            return (go[i] ?? 0) * (bceLog(1 - pi) - bceLog(pi));
+          });
+        },
+      ],
+    ]);
+    return reduceGradLoss(elementwise, reduction);
   }
 
   let preds = predictions;
@@ -387,22 +454,18 @@ export function binaryCrossEntropyLoss(
   [preds, tgts] = alignShapes(preds, tgts);
   ensureSameShape(preds, tgts, "binaryCrossEntropyLoss");
 
-  const epsilon = 1e-7;
-  const predClamped = clip(preds, epsilon, 1 - epsilon);
-
-  const logPred = log(predClamped);
-  const term1 = mul(tgts, logPred);
-
-  const one = tensor(1, {
-    dtype: preds.dtype === "float64" ? "float64" : "float32",
-    device: preds.device,
-  });
-  const oneMinusTargets = sub(one, tgts);
-  const oneMinusPred = sub(one, predClamped);
-  const logOneMinusPred = log(oneMinusPred);
-  const term2 = mul(oneMinusTargets, logOneMinusPred);
-
-  return reduceLoss(neg(add(term1, term2)), reduction);
+  const p = numbersOf(preds, "binaryCrossEntropyLoss");
+  checkProbabilities(p);
+  const dtype = lossDtypeOf(preds);
+  return reduceLoss(
+    Tensor.fromTypedArray({
+      data: bceElementwise(p, numbersOf(tgts, "binaryCrossEntropyLoss"), dtype),
+      shape: preds.shape.slice(),
+      dtype,
+      device: preds.device,
+    }),
+    reduction
+  );
 }
 
 /**
