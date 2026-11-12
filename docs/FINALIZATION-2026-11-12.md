@@ -175,4 +175,4 @@ Format: id, priority, area, evidence, status.
 | ML-14 | P2 | ml | MultinomialNB, BernoulliNB, ComplementNB, CategoricalNB, QuantileRegressor, RANSAC, Bagging, GaussianProcess silently ignore a third `fit` argument from untyped code. | open |
 | ML-15 | P3 | ml | QDA `regParam` adds to the diagonal; sklearn uses `(1-reg)*S + reg*I`. LDA `shrinkage` differs from sklearn's lsqr estimator. | owner decision |
 | ML-16 | P2 | ml | `takeRows` in `model_selection.ts` rejects string tensors, so `crossValScore` cannot run a text Pipeline on raw strings. | open |
-| PP-8 | P3 | preprocess | `Binarizer` returns float64 for float32 input (sklearn keeps float32). | open |
+| PP-8 | P3 | preprocess | `Binarizer` returns float64 for float32 input (sklearn keeps float32). | fixed ec9f93f |
