@@ -61,7 +61,7 @@ Format: id, priority, area, evidence, status.
 | DOC-2 | P2 | repo | Five dead old-layout benchmark files (`benchmarks/0{2,3,5,6}-*/deepset.ts`, `benchmarks/07-scalability/deepbox.ts`) referenced nowhere. | fixed 6b9f026 |
 | DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | fixed da0e738 |
 | DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | fixed aceed4e |
-| DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | open |
+| DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | folded into PERF-3 (benchmark README regenerated on a quiet machine before release) |
 | DOC-6 | P3 | JSDoc | `src/ndarray/ops/radix.ts:21` links to a 404 docs page. | fixed (radix.ts link; every deepbox.dev/docs slug in src, docs, README and SKILL exists) |
 | DOC-7 | P3 | dataframe | `DataFrame.corr` returns `0.9999999999999998` for perfect correlation; pandas returns exactly 1. | fixed ae00f04 |
 | DF-1 | P0 | dataframe io | `readXlsx`: one far-right cell per row allocates 16384-wide rows; 46 KB file uses 1.2 GB RSS (verified), 233 KB file crashes the process with heap OOM. `src/dataframe/io/xlsx.ts:765`. | fixed 99aa89a |

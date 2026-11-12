@@ -96,9 +96,10 @@ listed under "Upgrading from 1.5".
 - Importing one subpath no longer pulls in every module: a minified browser bundle
   of `tensor` alone went from 342,456 to 127,321 bytes.
 - `deepbox/plot` and `deepbox/datasets` bundle for browsers.
-- `Ridge` with more features than samples solves the dual problem (p = 3000,
-  n = 100: 17.2 s to 19 ms). LDA and QDA use a symmetric eigensolver (1000 x 400:
-  18.5 s to 2.7 s for LDA).
+- `Ridge` with more features than samples solves the dual problem (n = 100,
+  p = 3000: 9.6 s in 1.5.0, 27 ms now). LDA and QDA use a symmetric eigensolver
+  (LDA on 1000 x 400: 2.6 s in 1.5.0, 0.5 s now). Single runs on an Apple M5 Pro.
+- Reading CSV is as fast as in 1.5.0 despite the pandas-compatible cell rules.
 - Many smaller fixes listed in `docs/FINALIZATION-2026-11-12.md`, each with a
   regression test.
 
