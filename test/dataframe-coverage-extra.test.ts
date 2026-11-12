@@ -179,8 +179,8 @@ describe("DataFrame - Coverage Extras (Strict)", () => {
     const bPct = pct.get("b", isNullableNumber).data;
     expect(bPct[0]).toBeNull();
     expect(bPct[1]).toBe(-1);
-    // previous is 0, code says: if previous !== 0 push (c-p)/p else null
-    expect(bPct[2]).toBeNull();
+    // previous is 0, so the change is Infinity like pandas
+    expect(bPct[2]).toBe(Infinity);
     expect(bPct[3]).toBe(0);
 
     const cumsum = df.cumsum();

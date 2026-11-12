@@ -93,10 +93,8 @@ describe("DataFrame regression contracts", () => {
     const df = new DataFrame({ a: [1, 2, 3] });
     expect(() => df.sample(1.5)).toThrow(/n must be a finite integer/);
     expect(() => df.sample(1, 1.2)).toThrow(/random_state must be a finite integer/);
-    expect(() => df.diff(-1)).toThrow(/periods must be a non-negative integer/);
-    expect(() => df.diff(1.5)).toThrow(/periods must be a non-negative integer/);
-    expect(() => df.pct_change(-1)).toThrow(/periods must be a non-negative integer/);
-    expect(() => df.pct_change(1.2)).toThrow(/periods must be a non-negative integer/);
+    expect(() => df.diff(1.5)).toThrow(/periods must be an integer/);
+    expect(() => df.pct_change(1.2)).toThrow(/periods must be an integer/);
   });
 
   it("handles diff and pct_change when periods exceed length", () => {

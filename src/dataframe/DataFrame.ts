@@ -3765,19 +3765,23 @@ export class DataFrame {
    * Calculate the difference between consecutive rows.
    * Time complexity: O(n × m).
    *
-   * @param periods - Number of periods to shift (default: 1)
+   * @param periods - Number of rows to look back (default: 1). A negative value
+   *   subtracts a following row instead, like pandas: `diff(-1)` is
+   *   `current - next`.
    * @returns New DataFrame with differences
+   * @throws {InvalidParameterError} If periods is not an integer
    *
    * @example
    * ```ts
    * const df = new DataFrame({ a: [1, 3, 6, 10] });
    * df.diff();  // [[null], [2], [3], [4]]
    * df.diff(2);  // [[null], [null], [5], [7]]
+   * df.diff(-1);  // [[-2], [-3], [-4], [null]]
    * ```
    */
   diff(periods: number = 1): DataFrame {
-    if (!Number.isFinite(periods) || !Number.isInteger(periods) || periods < 0) {
-      throw new InvalidParameterError("periods must be a non-negative integer", "periods", periods);
+    if (!Number.isFinite(periods) || !Number.isInteger(periods)) {
+      throw new InvalidParameterError("periods must be an integer", "periods", periods);
     }
     const newData: DataFrameData = newColumnMap();
 
@@ -3788,17 +3792,12 @@ export class DataFrame {
       const diffData: unknown[] = [];
 
       for (let i = 0; i < colData.length; i++) {
-        if (i < periods) {
-          diffData.push(null);
+        const current = colData[i];
+        const previous = i - periods >= 0 ? colData[i - periods] : undefined;
+        if (typeof current === "number" && typeof previous === "number") {
+          diffData.push(current - previous);
         } else {
-          const current = colData[i];
-          const previous = colData[i - periods];
-
-          if (typeof current === "number" && typeof previous === "number") {
-            diffData.push(current - previous);
-          } else {
-            diffData.push(null);
-          }
+          diffData.push(null);
         }
       }
 
@@ -3816,8 +3815,13 @@ export class DataFrame {
    * Calculate percentage change between consecutive rows.
    * Time complexity: O(n × m).
    *
-   * @param periods - Number of periods to shift (default: 1)
+   * A zero previous value gives `Infinity` or `-Infinity` for a non-zero
+   * change and `NaN` for 0/0, like pandas. A negative `periods` compares with a
+   * following row instead: `pctChange(-1)` is `(current - next) / next`.
+   *
+   * @param periods - Number of rows to look back (default: 1)
    * @returns New DataFrame with percentage changes
+   * @throws {InvalidParameterError} If periods is not an integer
    *
    * @example
    * ```ts
@@ -3826,8 +3830,8 @@ export class DataFrame {
    * ```
    */
   pctChange(periods: number = 1): DataFrame {
-    if (!Number.isFinite(periods) || !Number.isInteger(periods) || periods < 0) {
-      throw new InvalidParameterError("periods must be a non-negative integer", "periods", periods);
+    if (!Number.isFinite(periods) || !Number.isInteger(periods)) {
+      throw new InvalidParameterError("periods must be an integer", "periods", periods);
     }
     const newData: DataFrameData = newColumnMap();
 
@@ -3838,17 +3842,12 @@ export class DataFrame {
       const pctData: unknown[] = [];
 
       for (let i = 0; i < colData.length; i++) {
-        if (i < periods) {
-          pctData.push(null);
+        const current = colData[i];
+        const previous = i - periods >= 0 ? colData[i - periods] : undefined;
+        if (typeof current === "number" && typeof previous === "number") {
+          pctData.push((current - previous) / previous);
         } else {
-          const current = colData[i];
-          const previous = colData[i - periods];
-
-          if (typeof current === "number" && typeof previous === "number" && previous !== 0) {
-            pctData.push((current - previous) / previous);
-          } else {
-            pctData.push(null);
-          }
+          pctData.push(null);
         }
       }
 

@@ -55,8 +55,9 @@ describe("DataFrame camelCase methods match the snake_case ones", () => {
     const df = new DataFrame({ a: [100, 110, 121, 0, 5], b: [1, 2, 4, 8, 16] });
     expect(snapshot(df.pctChange())).toEqual(snapshot(df.pct_change()));
     expect(snapshot(df.pctChange(2))).toEqual(snapshot(df.pct_change(2)));
-    expect(() => df.pctChange(-1)).toThrow();
-    expect(() => df.pct_change(-1)).toThrow();
+    expect(snapshot(df.pctChange(-1))).toEqual(snapshot(df.pct_change(-1)));
+    expect(() => df.pctChange(1.5)).toThrow();
+    expect(() => df.pct_change(1.5)).toThrow();
   });
 
   it("memoryUsage", () => {
