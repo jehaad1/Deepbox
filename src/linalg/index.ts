@@ -4,6 +4,8 @@
 
 export {
   type CholeskyOptions,
+  type ComplexEig,
+  type ComplexEigvals,
   cholesky,
   type EigOptions,
   eig,

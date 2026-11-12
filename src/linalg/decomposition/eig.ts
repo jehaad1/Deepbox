@@ -418,6 +418,214 @@ function realifyBlock(T: Float64Array, Q: Float64Array | null, n: number, i: num
   T[j * n + i] = 0;
 }
 
+type GeneralEigenResult = {
+  readonly values: Float64Array;
+  readonly imag: Float64Array;
+  readonly vectors: Float64Array | null;
+  readonly vectorsImag: Float64Array | null;
+};
+
+type ComplexMatrix = { readonly re: Float64Array; readonly im: Float64Array };
+
+/**
+ * Eigenvectors of the quasi upper triangular real Schur form `T` (row-major n x n) in the Schur
+ * basis, as the columns of a complex matrix. `wi[p] > 0` marks a 2 x 2 block at rows (p, p + 1)
+ * with equal diagonal entries and off-diagonal entries of opposite sign; column p holds the
+ * eigenvector of a + i w and column p + 1 its conjugate. Every other column k solves
+ * (T - lambda_k I) x = 0 with x_k = 1 by block back-substitution (as LAPACK dtrevc does).
+ */
+function quasiTriangularEigenvectors(T: Float64Array, n: number, wi: Float64Array): ComplexMatrix {
+  let tnorm = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = Math.max(i - 1, 0); j < n; j++) tnorm += Math.abs(T[i * n + j] as number);
+  }
+  const eps = Number.EPSILON;
+  const smin = Math.max(eps * tnorm, Number.MIN_VALUE);
+  const Xr = new Float64Array(n * n);
+  const Xi = new Float64Array(n * n);
+  const xr = new Float64Array(n);
+  const xi = new Float64Array(n);
+
+  for (let k = n - 1; k >= 0; k--) {
+    const isPairSecond = k > 0 && (wi[k - 1] as number) > 0;
+    const first = isPairSecond ? k - 1 : k;
+    // Vector of the eigenvalue with non-negative imaginary part.
+    const lr = T[first * n + first] as number;
+    const li = isPairSecond ? (wi[first] as number) : 0;
+    xr.fill(0);
+    xi.fill(0);
+    if (isPairSecond) {
+      const b = T[first * n + k] as number;
+      const c = T[k * n + first] as number;
+      if (Math.abs(b) >= Math.abs(c)) {
+        xr[first] = 1;
+        xi[k] = li / b;
+      } else {
+        xr[k] = 1;
+        xi[first] = li / c;
+      }
+    } else {
+      xr[k] = 1;
+    }
+
+    for (let i = first - 1; i >= 0; i--) {
+      const blockStart = i > 0 && (wi[i - 1] as number) > 0 ? i - 1 : i;
+      let rr = 0;
+      let ri = 0;
+      for (let j = i + 1; j <= k; j++) {
+        const t = T[i * n + j] as number;
+        rr += t * (xr[j] as number);
+        ri += t * (xi[j] as number);
+      }
+      if (blockStart === i) {
+        // (T_ii - lambda) x_i = -r
+        let dr = (T[i * n + i] as number) - lr;
+        let di = -li;
+        if (Math.hypot(dr, di) < smin) {
+          dr = smin;
+          di = 0;
+        }
+        const den = dr * dr + di * di;
+        xr[i] = -(rr * dr + ri * di) / den;
+        xi[i] = -(ri * dr - rr * di) / den;
+      } else {
+        // 2 x 2 block at rows (i - 1, i): [[m11, m12], [m21, m22]] [x_a, x_b] = -[r_a, r_b].
+        const a = i - 1;
+        let sr = 0;
+        let si = 0;
+        for (let j = i + 1; j <= k; j++) {
+          const t = T[a * n + j] as number;
+          sr += t * (xr[j] as number);
+          si += t * (xi[j] as number);
+        }
+        const m11r = (T[a * n + a] as number) - lr;
+        const m22r = (T[i * n + i] as number) - lr;
+        const m12 = T[a * n + i] as number;
+        const m21 = T[i * n + a] as number;
+        // det = m11 m22 - m12 m21 with m11 = m11r - i li, m22 = m22r - i li.
+        let detr = m11r * m22r - li * li - m12 * m21;
+        let deti = -li * (m11r + m22r);
+        const cmax = Math.max(
+          Math.abs(m11r) + Math.abs(li),
+          Math.abs(m22r) + Math.abs(li),
+          Math.abs(m12),
+          Math.abs(m21)
+        );
+        if (Math.hypot(detr, deti) < smin * cmax) {
+          detr = smin * cmax;
+          deti = 0;
+        }
+        const den = detr * detr + deti * deti;
+        // x_a = (-s_a m22 + m12 r_i) / det, x_b = (-m11 r_i + m21 s_a) / det with s_a the
+        // row-a sum, r_i the row-i sum (both of the already known entries).
+        const nar = -(sr * m22r + si * li) + m12 * rr;
+        const nai = -(si * m22r - sr * li) + m12 * ri;
+        const nbr = -(rr * m11r + ri * li) + m21 * sr;
+        const nbi = -(ri * m11r - rr * li) + m21 * si;
+        xr[a] = (nar * detr + nai * deti) / den;
+        xi[a] = (nai * detr - nar * deti) / den;
+        xr[i] = (nbr * detr + nbi * deti) / den;
+        xi[i] = (nbi * detr - nbr * deti) / den;
+        i--;
+      }
+      // Rescale the partial solution before it can overflow.
+      const top = blockStart;
+      let mag = 0;
+      for (let j = top; j <= k; j++)
+        mag = Math.max(mag, Math.hypot(xr[j] as number, xi[j] as number));
+      if (eps * mag * mag > 1) {
+        for (let j = top; j <= k; j++) {
+          xr[j] = (xr[j] as number) / mag;
+          xi[j] = (xi[j] as number) / mag;
+        }
+      }
+    }
+
+    for (let i = 0; i <= k; i++) {
+      Xr[i * n + first] = xr[i] as number;
+      Xi[i * n + first] = xi[i] as number;
+      if (isPairSecond) {
+        Xr[i * n + k] = xr[i] as number;
+        Xi[i * n + k] = -(xi[i] as number);
+      }
+    }
+    if (isPairSecond) k--;
+  }
+  return { re: Xr, im: Xi };
+}
+
+/**
+ * Maps the Schur-basis eigenvectors `X` back to the (balanced) input basis, undoes the
+ * balancing and normalizes each column to unit Euclidean norm. As in LAPACK dgeev, the
+ * component of largest magnitude of a complex eigenvector is made real. The column of the
+ * second member of a conjugate pair is the conjugate of the first.
+ */
+function backTransformComplex(
+  Q: Float64Array,
+  X: ComplexMatrix,
+  dscale: Float64Array,
+  n: number,
+  wi: Float64Array
+): { readonly vectors: Float64Array; readonly vectorsImag: Float64Array } {
+  const Vr = new Float64Array(n * n);
+  const Vi = new Float64Array(n * n);
+  const col = new Float64Array(2 * n);
+  for (let k = 0; k < n; k++) {
+    const imagK = wi[k] as number;
+    if (imagK < 0) {
+      for (let i = 0; i < n; i++) {
+        Vr[i * n + k] = Vr[i * n + k - 1] as number;
+        Vi[i * n + k] = -(Vi[i * n + k - 1] as number);
+      }
+      continue;
+    }
+    for (let i = 0; i < n; i++) {
+      let sr = 0;
+      let si = 0;
+      for (let j = 0; j <= k + (imagK > 0 ? 1 : 0); j++) {
+        const q = Q[i * n + j] as number;
+        sr += q * (X.re[j * n + k] as number);
+        si += q * (X.im[j * n + k] as number);
+      }
+      const d = dscale[i] as number;
+      col[i] = sr * d;
+      col[n + i] = si * d;
+    }
+    const nrm = scaledNorm(col, 2 * n);
+    if (nrm > 0) {
+      const inv = 1 / nrm;
+      for (let i = 0; i < 2 * n; i++) col[i] = (col[i] as number) * inv;
+    }
+    if (imagK > 0) {
+      let best = 0;
+      let bestAbs = -1;
+      for (let i = 0; i < n; i++) {
+        const m = Math.hypot(col[i] as number, col[n + i] as number);
+        if (m > bestAbs) {
+          bestAbs = m;
+          best = i;
+        }
+      }
+      if (bestAbs > 0) {
+        const pr = (col[best] as number) / bestAbs;
+        const pi = -(col[n + best] as number) / bestAbs;
+        for (let i = 0; i < n; i++) {
+          const re = col[i] as number;
+          const im = col[n + i] as number;
+          col[i] = re * pr - im * pi;
+          col[n + i] = re * pi + im * pr;
+        }
+        col[n + best] = 0;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      Vr[i * n + k] = col[i] as number;
+      Vi[i * n + k] = col[n + i] as number;
+    }
+  }
+  return { vectors: Vr, vectorsImag: Vi };
+}
+
 /**
  * Eigenvalues (and optionally unit-norm eigenvectors) of a general real matrix
  * whose spectrum is real: balance, reduce to Hessenberg form, run Francis QR to
@@ -429,8 +637,9 @@ function generalEigen(
   n: number,
   maxIter: number,
   tol: number,
-  wantVectors: boolean
-): { readonly values: Float64Array; readonly vectors: Float64Array | null } {
+  wantVectors: boolean,
+  allowComplex: boolean
+): GeneralEigenResult {
   const T = new Float64Array(A);
   // Entries near 1e-200 or 1e200 would underflow/overflow inside the QR iteration;
   // eigenvectors are unaffected by a uniform scale, eigenvalues are rescaled below.
@@ -456,18 +665,23 @@ function generalEigen(
   // eigenvalue of a low-rank matrix) is indistinguishable from a repeated real eigenvalue, so it
   // is reported as one (the backward error is of the same size as the rounding error).
   const imagTol = 10 * n * Number.EPSILON * maxAbs;
+  let hasComplex = false;
   for (let i = 0; i < n; i++) {
     const im = wi[i] as number;
     if (im === 0) continue;
     if (!(im > 0 && im <= imagTol)) {
+      if (allowComplex) {
+        hasComplex = true;
+        i++;
+        continue;
+      }
       // Report the first offending eigenvalue, in the units of the input.
       const real = (wr[i] as number) * factor;
       const imag = Math.abs(im) * factor;
       throw new InvalidParameterError(
-        "Matrix has complex eigenvalues, which are not supported. " +
-          "Only matrices with real eigenvalues can be decomposed. " +
-          "Symmetric matrices always have real eigenvalues. " +
-          `Found the eigenvalue pair ${real} +/- ${imag}i.`,
+        "Matrix has complex eigenvalues. Pass { complex: true } to eig() or eigvals() " +
+          "to get the real and imaginary parts, or use a symmetric matrix, whose " +
+          `eigenvalues are always real. Found the eigenvalue pair ${real} +/- ${imag}i.`,
         "a",
         { real, imag }
       );
@@ -477,10 +691,20 @@ function generalEigen(
     wi[i + 1] = 0;
     i++;
   }
+  // Eigenvectors of a quasi-triangular T (complex pairs present) are computed in the scaled
+  // units of T, so they come before the eigenvalues are rescaled.
+  const complexVectors =
+    Q !== null && hasComplex
+      ? backTransformComplex(Q, quasiTriangularEigenvectors(T, n, wi), dscale, n, wi)
+      : null;
   if (factor !== 1) {
-    for (let i = 0; i < n; i++) wr[i] = (wr[i] as number) * factor;
+    for (let i = 0; i < n; i++) {
+      wr[i] = (wr[i] as number) * factor;
+      wi[i] = (wi[i] as number) * factor;
+    }
   }
-  if (Q === null) return { values: wr, vectors: null };
+  if (Q === null) return { values: wr, imag: wi, vectors: null, vectorsImag: null };
+  if (complexVectors !== null) return { values: wr, imag: wi, ...complexVectors };
 
   // T is upper triangular. Solve (T - λ_k I) x = 0 with x_k = 1 by back-substitution.
   let tnorm = 0;
@@ -530,7 +754,7 @@ function generalEigen(
       for (let i = 0; i < n; i++) V[i * n + k] = (V[i * n + k] as number) * inv;
     }
   }
-  return { values: wr, vectors: V };
+  return { values: wr, imag: wi, vectors: V, vectorsImag: new Float64Array(n * n) };
 }
 
 /**
@@ -542,10 +766,35 @@ function generalEigen(
  * - `tol`: relative threshold below which a sub-diagonal entry is treated as zero
  *   (default: machine epsilon, about 2.2e-16). Larger values deflate earlier at
  *   the cost of accuracy.
+ * - `complex`: when `true`, matrices with complex eigenvalues are accepted and the
+ *   result holds real and imaginary parts (see {@link ComplexEig} and
+ *   {@link ComplexEigvals}) instead of the default tuple or tensor (default: false).
  */
 export type EigOptions = {
   readonly maxIter?: number;
   readonly tol?: number;
+  readonly complex?: boolean;
+};
+
+/**
+ * Result of {@link eigvals} with `{ complex: true }`. `real[i] + imag[i] * i` is the
+ * i-th eigenvalue. Complex conjugate pairs are adjacent, the member with positive
+ * imaginary part first.
+ */
+export type ComplexEigvals = {
+  readonly real: Tensor;
+  readonly imag: Tensor;
+};
+
+/**
+ * Result of {@link eig} with `{ complex: true }`. Column `k` of `vectorsReal + vectorsImag * i`
+ * is the unit-norm eigenvector of the eigenvalue `real[k] + imag[k] * i`.
+ */
+export type ComplexEig = {
+  readonly real: Tensor;
+  readonly imag: Tensor;
+  readonly vectorsReal: Tensor;
+  readonly vectorsImag: Tensor;
 };
 
 function resolveEigOptions(options: EigOptions): { maxIter: number; tol: number } {
@@ -573,9 +822,9 @@ function resolveEigOptions(options: EigOptions): { maxIter: number; tol: number 
  *   returned in the order they appear on the diagonal of the Schur form.
  *
  * **Limitations**:
- * - Only real eigenvalues are supported. Non-symmetric matrices whose
- *   spectrum includes complex eigenvalues cause an
- *   {@link InvalidParameterError} to be thrown.
+ * - By default only real eigenvalues are supported. A non-symmetric matrix whose
+ *   spectrum includes complex eigenvalues causes an {@link InvalidParameterError}.
+ *   Pass `{ complex: true }` to get the real and imaginary parts instead (see below).
  * - A conjugate pair whose imaginary part is at rounding level (at most
  *   10 * N * eps * max|A| after balancing, as for the repeated zero eigenvalue of a
  *   low-rank matrix) is reported as a repeated real eigenvalue.
@@ -593,6 +842,11 @@ function resolveEigOptions(options: EigOptions): { maxIter: number; tol: number 
  * - eigenvalues: Real values of shape (N,)
  * - eigenvectors: Column vectors of shape (N, N) where eigenvectors[:,i] corresponds to eigenvalues[i]
  *
+ * With `{ complex: true }` the return value is a {@link ComplexEig} object
+ * `{ real, imag, vectorsReal, vectorsImag }` and complex eigenvalues are accepted.
+ * Conjugate pairs are adjacent (positive imaginary part first); as in `numpy.linalg.eig`
+ * the largest component of a complex eigenvector is real.
+ *
  * **Properties**:
  * - A @ v[:,i] = λ[i] * v[:,i]
  * - Each eigenvector has unit Euclidean norm (its sign is arbitrary)
@@ -606,34 +860,65 @@ function resolveEigOptions(options: EigOptions): { maxIter: number; tol: number 
  * const [eigenvalues, eigenvectors] = eig(A);
  *
  * // Verify: A @ eigenvectors[:,i] ≈ eigenvalues[i] * eigenvectors[:,i]
+ *
+ * // Complex eigenvalues: a rotation by 90 degrees has eigenvalues +i and -i.
+ * const R = tensor([[0, -1], [1, 0]]);
+ * const { real, imag, vectorsReal, vectorsImag } = eig(R, { complex: true });
  * ```
  *
  * @throws {ShapeError} If input is not square matrix
  * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
- * @throws {InvalidParameterError} If matrix has complex eigenvalues, or an option is invalid
+ * @throws {InvalidParameterError} If matrix has complex eigenvalues (and `complex` is not set), or an option is invalid
  * @throws {ConvergenceError} If the QR iteration does not converge within `maxIter` sweeps
  *
  * @see {@link https://deepbox.dev/docs/linalg-decompositions | Deepbox Linear Algebra}
  * @see Golub & Van Loan, "Matrix Computations", Algorithm 7.5.2
  */
-export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
+export function eig(
+  a: Tensor,
+  options?: EigOptions & { readonly complex?: false }
+): [Tensor, Tensor];
+export function eig(a: Tensor, options: EigOptions & { readonly complex: true }): ComplexEig;
+export function eig(a: Tensor, options: EigOptions): [Tensor, Tensor] | ComplexEig;
+export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] | ComplexEig {
   const n = getSquareMatrixSize(a, "eig");
   const { maxIter, tol } = resolveEigOptions(options);
+  const complex = options.complex === true;
   if (n === 0) {
-    return [fromDenseVector1D(new Float64Array(0)), fromDenseMatrix2D(0, 0, new Float64Array(0))];
+    const empty = fromDenseVector1D(new Float64Array(0));
+    const emptyMatrix = fromDenseMatrix2D(0, 0, new Float64Array(0));
+    return complex
+      ? { real: empty, imag: empty, vectorsReal: emptyMatrix, vectorsImag: emptyMatrix }
+      : [empty, emptyMatrix];
   }
 
   const { data: A } = toDenseMatrix2D(a, "eig()");
 
   if (isSymmetric(A, n, shortcutSymmetryTol(n))) {
     const { values, vectors } = symmetricEigen(A, n, "eig()");
+    if (complex) {
+      return {
+        real: fromDenseVector1D(values),
+        imag: fromDenseVector1D(new Float64Array(n)),
+        vectorsReal: fromDenseMatrix2D(n, n, vectors),
+        vectorsImag: fromDenseMatrix2D(n, n, new Float64Array(n * n)),
+      };
+    }
     return [fromDenseVector1D(values), fromDenseMatrix2D(n, n, vectors)];
   }
 
-  const { values, vectors } = generalEigen(A, n, maxIter, tol, true);
-  if (vectors === null) {
+  const { values, imag, vectors, vectorsImag } = generalEigen(A, n, maxIter, tol, true, complex);
+  if (vectors === null || vectorsImag === null) {
     throw new ShapeError("eig(): eigenvectors were not computed");
+  }
+  if (complex) {
+    return {
+      real: fromDenseVector1D(values),
+      imag: fromDenseVector1D(imag),
+      vectorsReal: fromDenseMatrix2D(n, n, vectors),
+      vectorsImag: fromDenseMatrix2D(n, n, vectorsImag),
+    };
   }
   return [fromDenseVector1D(values), fromDenseMatrix2D(n, n, vectors)];
 }
@@ -650,8 +935,12 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
  *
  * **Returns**: eigenvalues - Array of real eigenvalues
  *
+ * **Returns** with `{ complex: true }`: a {@link ComplexEigvals} object `{ real, imag }`.
+ * Matrices with complex eigenvalues are accepted; conjugate pairs are adjacent with the
+ * positive imaginary part first.
+ *
  * **Limitations**:
- * - Matrices with complex eigenvalues are not supported and will throw
+ * - Without `complex: true`, matrices with complex eigenvalues throw
  *   {@link InvalidParameterError}
  *
  * @example
@@ -662,24 +951,42 @@ export function eig(a: Tensor, options: EigOptions = {}): [Tensor, Tensor] {
  * const A = tensor([[1, 2], [2, 1]]);
  * const eigenvalues = eigvals(A);
  * console.log(eigenvalues);  // [-1, 3]
+ *
+ * const { real, imag } = eigvals(tensor([[0, -1], [1, 0]]), { complex: true });
+ * // real = [0, 0], imag = [1, -1]
  * ```
  *
  * @throws {ShapeError} If input is not square matrix
  * @throws {DTypeError} If input has string or complex dtype
  * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
- * @throws {InvalidParameterError} If matrix has complex eigenvalues, or an option is invalid
+ * @throws {InvalidParameterError} If matrix has complex eigenvalues (and `complex` is not set), or an option is invalid
  * @throws {ConvergenceError} If the QR iteration does not converge within `maxIter` sweeps
  */
-export function eigvals(a: Tensor, options: EigOptions = {}): Tensor {
+export function eigvals(a: Tensor, options?: EigOptions & { readonly complex?: false }): Tensor;
+export function eigvals(
+  a: Tensor,
+  options: EigOptions & { readonly complex: true }
+): ComplexEigvals;
+export function eigvals(a: Tensor, options: EigOptions): Tensor | ComplexEigvals;
+export function eigvals(a: Tensor, options: EigOptions = {}): Tensor | ComplexEigvals {
   const n = getSquareMatrixSize(a, "eigvals");
   const { maxIter, tol } = resolveEigOptions(options);
-  if (n === 0) return fromDenseVector1D(new Float64Array(0));
+  const complex = options.complex === true;
+  if (n === 0) {
+    const empty = fromDenseVector1D(new Float64Array(0));
+    return complex ? { real: empty, imag: empty } : empty;
+  }
 
   const { data: A } = toDenseMatrix2D(a, "eigvals()");
   if (isSymmetric(A, n, shortcutSymmetryTol(n))) {
-    return fromDenseVector1D(symmetricEigenvalues(A, n, "eigvals()"));
+    const values = fromDenseVector1D(symmetricEigenvalues(A, n, "eigvals()"));
+    return complex ? { real: values, imag: fromDenseVector1D(new Float64Array(n)) } : values;
   }
-  return fromDenseVector1D(generalEigen(A, n, maxIter, tol, false).values);
+  const result = generalEigen(A, n, maxIter, tol, false, complex);
+  if (complex) {
+    return { real: fromDenseVector1D(result.values), imag: fromDenseVector1D(result.imag) };
+  }
+  return fromDenseVector1D(result.values);
 }
 
 /**
