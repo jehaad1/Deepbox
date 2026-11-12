@@ -280,6 +280,8 @@ type ClassCounts = {
   totalTp: number;
   totalFp: number;
   totalFn: number;
+  /** Whether some sample has a true or predicted label that is not in `classes`. */
+  hasUnlisted: boolean;
 };
 
 /**
@@ -298,10 +300,12 @@ function classCounts(
   const fp = new Float64Array(k);
   const fn = new Float64Array(k);
   const support = new Float64Array(k);
+  let hasUnlisted = false;
   for (let i = 0; i < trueIdx.length; i++) {
     const a = trueIdx[i] as number;
     const b = predIdx[i] as number;
     const w = weights === undefined ? 1 : (weights[i] as number);
+    if (a < 0 || b < 0) hasUnlisted = true;
     if (a >= 0) support[a] = (support[a] as number) + w;
     if (a === b) {
       if (a >= 0) tp[a] = (tp[a] as number) + w;
@@ -318,7 +322,7 @@ function classCounts(
     totalFp += fp[c] as number;
     totalFn += fn[c] as number;
   }
-  return { classes, tp, fp, fn, support, totalTp, totalFp, totalFn };
+  return { classes, tp, fp, fn, support, totalTp, totalFp, totalFn, hasUnlisted };
 }
 
 /** Confusion counts for validated 0/1 labels (positive class = 1). */
@@ -374,10 +378,6 @@ function fbetaFromCounts(betaSq: number): CountScore {
     const denominator = (1 + betaSq) * tp + betaSq * fn + fp;
     return denominator === 0 ? Number.NaN : ((1 + betaSq) * tp) / denominator;
   };
-}
-
-function definedOrZero(value: number): number {
-  return Number.isNaN(value) ? 0 : value;
 }
 
 function parseAveragedArg(arg: AveragedArg): AveragedMetricOptions {
@@ -470,14 +470,26 @@ function averagedScore(
     );
   }
   if (mode === null) return perClass;
+  return averagePerClass(perClass, counts.support, mode, zeroDivision);
+}
 
-  if (k === 0) return zeroDivision;
+/**
+ * Macro (plain) or weighted (by support) mean of per-class scores. NaN scores are left out.
+ * Without any usable class the macro mean is NaN and the weighted mean is `zeroDivision`.
+ */
+function averagePerClass(
+  perClass: readonly number[],
+  support: Float64Array,
+  mode: "macro" | "weighted",
+  zeroDivision: number
+): number {
+  if (perClass.length === 0) return zeroDivision;
   let sum = 0;
   let totalWeight = 0;
-  for (let i = 0; i < k; i++) {
+  for (let i = 0; i < perClass.length; i++) {
     const value = perClass[i] as number;
     if (Number.isNaN(value)) continue;
-    const weight = mode === "macro" ? 1 : (counts.support[i] as number);
+    const weight = mode === "macro" ? 1 : (support[i] as number);
     sum += value * weight;
     totalWeight += weight;
   }
@@ -1056,22 +1068,52 @@ export function confusionMatrix(
 }
 
 /**
+ * Options for {@link classificationReport}.
+ */
+export type ClassificationReportOptions = {
+  /**
+   * Classes to report, in the order given. Samples whose true or predicted label is not
+   * listed still count as errors of the listed classes. When the list leaves out a label
+   * that occurs in the data, the accuracy row is replaced by a micro average over the
+   * listed classes, as in scikit-learn. Defaults to the sorted union of the labels in
+   * yTrue and yPred.
+   */
+  readonly labels?: ReadonlyArray<number | string | bigint>;
+  /** Display names of the classes, one per class in report order. Defaults to the labels. */
+  readonly targetNames?: ReadonlyArray<string>;
+  /** Number of decimals of the scores (an integer from 0 to 20). Default: 4. */
+  readonly digits?: number;
+  /**
+   * Value used for a score whose denominator is zero: `0`, `1`, `NaN` (left out of the
+   * macro and weighted averages) or `"warn"`, which acts as `0`. Default: `0`.
+   */
+  readonly zeroDivision?: number | "warn";
+  /** One weight per sample; every count and support is a weighted sum. */
+  readonly sampleWeight?: SampleWeightInput;
+};
+
+/**
  * Generates a text classification report showing main classification metrics.
  *
  * The report lists precision, recall, F1-score and support for each class,
- * followed by accuracy and the macro and weighted averages. Only binary
- * labels (0 or 1) are supported. int64 labels may be paired with numeric labels.
+ * followed by accuracy and the macro and weighted averages. Labels can be numbers,
+ * strings or int64 values with any number of classes. The numbers equal the output of
+ * scikit-learn's `classification_report`. int64 labels may be paired with numeric labels.
  *
- * **Time Complexity**: O(n)
- * **Space Complexity**: O(n)
+ * **Time Complexity**: O(n + k log k) where k is the number of classes
+ * **Space Complexity**: O(n + k)
  *
- * @param yTrue - Ground truth (correct) binary target values (0 or 1)
- * @param yPred - Estimated binary targets as returned by a classifier (0 or 1)
+ * @param yTrue - Ground truth (correct) target values
+ * @param yPred - Estimated targets as returned by a classifier
+ * @param options - Optional `labels`, `targetNames`, `digits`, `zeroDivision` and `sampleWeight`
  * @returns Formatted string report with per-class and aggregate classification metrics
  *
- * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors
+ * @throws {ShapeError} If yTrue and yPred have different sizes or are not 1D/column vectors, or
+ *   `sampleWeight` has the wrong length
+ * @throws {DTypeError} If yTrue and yPred use incompatible label types
  * @throws {DataValidationError} If labels contain NaN or infinite values
- * @throws {InvalidParameterError} If labels are strings or are not binary (0 or 1)
+ * @throws {InvalidParameterError} If `labels` is empty or has duplicates, `targetNames` does not
+ *   have one name per class, or `digits` or `zeroDivision` is invalid
  *
  * @example
  * ```ts
@@ -1090,33 +1132,65 @@ export function confusionMatrix(
  * // Accuracy                              0.8000      5
  * // Macro Avg     0.8333      0.8333      0.8000      5
  * // Weighted Avg  0.8667      0.8000      0.8000      5
+ *
+ * // String labels and display names
+ * classificationReport(tensor(["cat", "dog", "cat"]), tensor(["cat", "cat", "cat"]), {
+ *   targetNames: ["feline", "canine"],
+ * });
  * ```
  *
  * @see {@link https://deepbox.dev/docs/metrics-classification | Deepbox Classification Metrics}
  */
-export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
+export function classificationReport(
+  yTrue: Tensor,
+  yPred: Tensor,
+  options: ClassificationReportOptions = {}
+): string {
   assertSameSizeVectors(yTrue, yPred, "yTrue", "yPred");
+  const digits = options.digits ?? 4;
+  if (!Number.isInteger(digits) || digits < 0 || digits > 20) {
+    throw new InvalidParameterError("digits must be an integer from 0 to 20", "digits", digits);
+  }
+  const zeroDivision = resolveZeroDivision(options.zeroDivision, 0);
+  const weights = readSampleWeight(options.sampleWeight, yTrue.size);
+  const fixed =
+    options.labels === undefined
+      ? undefined
+      : normalizeLabelList(options.labels, assertComparableLabelTypes(yTrue, yPred));
 
-  if (yTrue.size === 0) return "Classification Report:\n  (empty)";
+  if (yTrue.size === 0 && fixed === undefined) return "Classification Report:\n  (empty)";
 
-  if (yTrue.dtype === "string" || yPred.dtype === "string") {
+  const counts = classCounts(yTrue, yPred, weights, fixed);
+  const classes = counts.classes;
+  const names = options.targetNames;
+  if (names !== undefined && names.length !== classes.length) {
     throw new InvalidParameterError(
-      "classificationReport requires binary numeric labels (0 or 1)",
-      "yTrue"
+      `targetNames has ${names.length} names but the report has ${classes.length} classes`,
+      "targetNames",
+      names
     );
   }
-  // Validates that every label is 0 or 1.
-  binaryLabels(yTrue, "yTrue");
-  binaryLabels(yPred, "yPred");
-
-  const counts = classCounts(yTrue, yPred);
-  const classes = counts.classes;
-  const n = yTrue.size;
   const f1FromCounts = fbetaFromCounts(1);
-  const acc = counts.totalTp / n;
+  const defined = (value: number): number => (Number.isNaN(value) ? zeroDivision : value);
+  const fmt = (value: number): string => value.toFixed(digits);
 
+  const precisionPerClass: number[] = [];
+  const recallPerClass: number[] = [];
+  const f1PerClass: number[] = [];
+  let totalSupport = 0;
+  for (let i = 0; i < classes.length; i++) {
+    const tp = counts.tp[i] as number;
+    const fp = counts.fp[i] as number;
+    const fn = counts.fn[i] as number;
+    precisionPerClass.push(defined(precisionFromCounts(tp, fp, fn)));
+    recallPerClass.push(defined(recallFromCounts(tp, fp, fn)));
+    f1PerClass.push(defined(f1FromCounts(tp, fp, fn)));
+    totalSupport += counts.support[i] as number;
+  }
+
+  const labelsOf = names ?? classes.map((c) => String(c));
   // The label column must also fit the summary rows ("Weighted Avg" is the longest).
-  const maxLabelLen = Math.max(...classes.map((c) => String(c).length), "Weighted Avg".length);
+  const maxLabelLen = Math.max(...labelsOf.map((c) => c.length), "Weighted Avg".length);
   const colWidth = maxLabelLen + 2;
 
   let report = "Classification Report:\n";
@@ -1128,71 +1202,47 @@ export function classificationReport(yTrue: Tensor, yPred: Tensor): string {
     "Support\n";
   report += `${"-".repeat(colWidth + 36 + 7)}\n`;
 
-  let totalSupport = 0;
-  let weightedPrec = 0;
-  let weightedRec = 0;
-  let weightedF1 = 0;
-  let macroPrec = 0;
-  let macroRec = 0;
-  let macroF1 = 0;
-
   for (let i = 0; i < classes.length; i++) {
-    const tp = counts.tp[i] as number;
-    const fp = counts.fp[i] as number;
-    const fn = counts.fn[i] as number;
-    const s = counts.support[i] as number;
-    // An undefined score (zero denominator) is reported as 0.
-    const p = definedOrZero(precisionFromCounts(tp, fp, fn));
-    const r = definedOrZero(recallFromCounts(tp, fp, fn));
-    const f1 = definedOrZero(f1FromCounts(tp, fp, fn));
-
-    totalSupport += s;
-    weightedPrec += p * s;
-    weightedRec += r * s;
-    weightedF1 += f1 * s;
-    macroPrec += p;
-    macroRec += r;
-    macroF1 += f1;
-
     report +=
-      String(classes[i]).padEnd(colWidth) +
-      p.toFixed(4).padEnd(12) +
-      r.toFixed(4).padEnd(12) +
-      f1.toFixed(4).padEnd(12) +
-      String(s) +
+      (labelsOf[i] as string).padEnd(colWidth) +
+      fmt(precisionPerClass[i] as number).padEnd(12) +
+      fmt(recallPerClass[i] as number).padEnd(12) +
+      fmt(f1PerClass[i] as number).padEnd(12) +
+      String(counts.support[i]) +
       "\n";
   }
 
   report += "\n";
 
-  const nClasses = classes.length;
-  macroPrec /= nClasses;
-  macroRec /= nClasses;
-  macroF1 /= nClasses;
-  weightedPrec = totalSupport === 0 ? 0 : weightedPrec / totalSupport;
-  weightedRec = totalSupport === 0 ? 0 : weightedRec / totalSupport;
-  weightedF1 = totalSupport === 0 ? 0 : weightedF1 / totalSupport;
-
-  report +=
-    "Accuracy".padEnd(colWidth) +
-    "".padEnd(12) +
-    "".padEnd(12) +
-    acc.toFixed(4).padEnd(12) +
-    String(totalSupport) +
-    "\n";
-  report +=
-    "Macro Avg".padEnd(colWidth) +
-    macroPrec.toFixed(4).padEnd(12) +
-    macroRec.toFixed(4).padEnd(12) +
-    macroF1.toFixed(4).padEnd(12) +
-    String(totalSupport) +
-    "\n";
-  report +=
-    "Weighted Avg".padEnd(colWidth) +
-    weightedPrec.toFixed(4).padEnd(12) +
-    weightedRec.toFixed(4).padEnd(12) +
-    weightedF1.toFixed(4).padEnd(12) +
+  const row = (label: string, p: number, r: number, f: number): string =>
+    label.padEnd(colWidth) +
+    fmt(p).padEnd(12) +
+    fmt(r).padEnd(12) +
+    fmt(f).padEnd(12) +
     String(totalSupport);
+
+  if (counts.hasUnlisted) {
+    report += `${row(
+      "Micro Avg",
+      defined(precisionFromCounts(counts.totalTp, counts.totalFp, counts.totalFn)),
+      defined(recallFromCounts(counts.totalTp, counts.totalFp, counts.totalFn)),
+      defined(f1FromCounts(counts.totalTp, counts.totalFp, counts.totalFn))
+    )}\n`;
+  } else {
+    const accuracyScore = totalSupport === 0 ? Number.NaN : counts.totalTp / totalSupport;
+    report += `${"Accuracy".padEnd(colWidth) + "".padEnd(12) + "".padEnd(12) + fmt(accuracyScore).padEnd(12) + String(totalSupport)}\n`;
+  }
+  const macro = (scores: readonly number[]): number =>
+    averagePerClass(scores, counts.support, "macro", zeroDivision);
+  const weighted = (scores: readonly number[]): number =>
+    averagePerClass(scores, counts.support, "weighted", zeroDivision);
+  report += `${row("Macro Avg", macro(precisionPerClass), macro(recallPerClass), macro(f1PerClass))}\n`;
+  report += row(
+    "Weighted Avg",
+    weighted(precisionPerClass),
+    weighted(recallPerClass),
+    weighted(f1PerClass)
+  );
 
   return report;
 }

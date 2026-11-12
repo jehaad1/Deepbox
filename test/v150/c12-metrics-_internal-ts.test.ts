@@ -377,7 +377,8 @@ describe("v1.5.0 metrics/classification: classificationReport", () => {
     expect(report).toContain("Accuracy");
     expect(report).toContain("1.0000");
     expect(classificationReport(int64([0n, 1n]), int64([0n, 1n]))).toContain("Weighted Avg");
-    expect(() => classificationReport(tensor(["a"]), tensor(["a"]))).toThrow(InvalidParameterError);
+    // String labels are accepted since 1.5.1.
+    expect(classificationReport(tensor(["a"]), tensor(["a"]))).toContain("Accuracy");
   });
 });
 

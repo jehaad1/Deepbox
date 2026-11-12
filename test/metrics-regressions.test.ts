@@ -32,7 +32,8 @@ describe("metrics regression contracts", () => {
     expect(() => recall(tensor([0, 2]), tensor([0, 1]), "binary")).toThrow(/binary/i);
     expect(() => f1Score(tensor([0, 2]), tensor([0, 1]), "binary")).toThrow(/binary/i);
     expect(() => fbetaScore(tensor([0, 2]), tensor([0, 1]), 1, "binary")).toThrow(/binary/i);
-    expect(() => classificationReport(tensor([0, 2]), tensor([0, 1]))).toThrow(/binary/i);
+    // classificationReport accepts any labels since 1.5.1.
+    expect(classificationReport(tensor([0, 2]), tensor([0, 1]))).toContain("Macro Avg");
   });
 
   it("uses only non-zero targets in mape denominator", () => {
