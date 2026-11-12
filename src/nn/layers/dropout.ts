@@ -12,7 +12,7 @@ import { isContiguous, offsetFromFlatIndex } from "../../ndarray/tensor/strides"
 import { computeStrides } from "../../ndarray/tensor/Tensor";
 import { __fillUniform } from "../../random/random";
 import { Module } from "../module/Module";
-import { allPlain, settle, toGradInput } from "./_shared";
+import { allPlain, settle, toGradInput, zeroed } from "./_shared";
 
 /** Materialize a numeric tensor into a contiguous logical-order Float64Array. */
 function denseFloat64Drop(t: Tensor): Float64Array {
@@ -57,8 +57,8 @@ function resultTensor(
 }
 
 function validateRate(layer: string, p: number): void {
-  if (!Number.isFinite(p) || p < 0 || p >= 1) {
-    throw new InvalidParameterError(`${layer} probability must be in [0, 1), got ${p}`, "p", p);
+  if (!Number.isFinite(p) || p < 0 || p > 1) {
+    throw new InvalidParameterError(`${layer} probability must be in [0, 1], got ${p}`, "p", p);
   }
 }
 
@@ -116,8 +116,8 @@ export class Dropout extends Module {
   /**
    * Create a new Dropout layer.
    *
-   * @param p - Probability of an element being zeroed (0 <= p < 1)
-   * @throws {InvalidParameterError} If p is not in valid range [0, 1)
+   * @param p - Probability of an element being zeroed (0 <= p <= 1)
+   * @throws {InvalidParameterError} If p is not in the range [0, 1]
    */
   constructor(p = 0.5) {
     super();
@@ -151,6 +151,8 @@ export class Dropout extends Module {
 
     // Use vectorized dropout implementation from autograd
     // This handles training/eval mode and mask generation
+    // p = 1 zeroes every element; dropoutGrad needs p < 1 because its scale is 1 / (1 - p).
+    if (this.p === 1) return this.training ? zeroed(inputTensor) : inputTensor;
     const active = this.training && this.p > 0;
     return dropoutGrad(active ? toFloatInput(inputTensor) : inputTensor, this.p, this.training);
   }
@@ -194,8 +196,8 @@ export class Dropout2d extends Module {
   private readonly p: number;
 
   /**
-   * @param p - Probability of a channel being zeroed (0 <= p < 1)
-   * @throws {InvalidParameterError} If p is not in [0, 1)
+   * @param p - Probability of a channel being zeroed (0 <= p <= 1)
+   * @throws {InvalidParameterError} If p is not in [0, 1]
    */
   constructor(p = 0.5) {
     super();
@@ -236,6 +238,8 @@ export class Dropout2d extends Module {
         `Dropout2d expects 4D input (N,C,H,W) or 3D input (C,H,W), got ${inputTensor.ndim}D`
       );
     }
+
+    if (this.p === 1) return zeroed(inputTensor);
 
     const shape = inputTensor.shape;
     const lead = inputTensor.ndim === 4 ? (shape[0] ?? 0) : 1;
@@ -341,8 +345,8 @@ export class AlphaDropout extends Module {
   /**
    * Create a new AlphaDropout layer.
    *
-   * @param p - Probability of an element being dropped (0 <= p < 1)
-   * @throws {InvalidParameterError} If p is not in valid range [0, 1)
+   * @param p - Probability of an element being dropped (0 <= p <= 1)
+   * @throws {InvalidParameterError} If p is not in the range [0, 1]
    */
   constructor(p = 0.5) {
     super();
@@ -376,6 +380,8 @@ export class AlphaDropout extends Module {
     if (!this.training || this.p === 0) {
       return inputTensor;
     }
+
+    if (this.p === 1) return zeroed(inputTensor);
 
     const alphaPrime = AlphaDropout.ALPHA_PRIME;
 
