@@ -1531,6 +1531,8 @@ function truthReduction(
  *
  * @example
  * ```ts
+ * import { any, tensor } from 'deepbox/ndarray';
+ *
  * any(tensor([0, 0, 1, 0]));  // true
  * any(tensor([0, 0, 0]));     // false
  * ```
@@ -1556,6 +1558,8 @@ export function any(t: Tensor, axis?: AxisArg, keepdims = false): Tensor {
  *
  * @example
  * ```ts
+ * import { all, tensor } from 'deepbox/ndarray';
+ *
  * all(tensor([1, 2, 3]));  // true
  * all(tensor([1, 0, 3]));  // false
  * ```

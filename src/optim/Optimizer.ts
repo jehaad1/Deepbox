@@ -236,6 +236,8 @@ function emptyParameterListError(): InvalidParameterError {
  *
  * @example
  * ```ts
+ * import { SGD } from 'deepbox/optim';
+ *
  * // Different learning rates per group
  * const optimizer = new SGD([
  *   { params: model.layer1.parameters(), lr: 0.01 },
@@ -516,6 +518,8 @@ export abstract class Optimizer<
    *
    * @example
    * ```ts
+   * import { SGD } from 'deepbox/optim';
+   *
    * const optimizer = new SGD(model.backbone.parameters(), { lr: 0.001 });
    * // Later, add classifier with higher learning rate
    * optimizer.addParamGroup({

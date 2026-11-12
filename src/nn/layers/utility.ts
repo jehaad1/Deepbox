@@ -17,6 +17,8 @@ import { allPlain, settle, toGradInput } from "./_shared";
  *
  * @example
  * ```ts
+ * import { Identity } from 'deepbox/nn';
+ *
  * const identity = new Identity();
  * const output = identity.forward(input); // output === input
  * ```
@@ -44,6 +46,8 @@ export class Identity extends Module {
  *
  * @example
  * ```ts
+ * import { Flatten } from 'deepbox/nn';
+ *
  * const flatten = new Flatten(); // default: startDim=1, endDim=-1
  * // input: (batch, C, H, W) -> output: (batch, C*H*W)
  * ```
@@ -142,6 +146,8 @@ export class Flatten extends Module {
  *
  * @example
  * ```ts
+ * import { Unflatten } from 'deepbox/nn';
+ *
  * const unflatten = new Unflatten(1, [2, 5, 5]);
  * // input: (batch, 50) -> output: (batch, 2, 5, 5)
  *

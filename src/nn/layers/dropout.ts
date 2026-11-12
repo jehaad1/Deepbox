@@ -184,6 +184,9 @@ export class Dropout extends Module {
  *
  * @example
  * ```ts
+ * import { Dropout2d } from 'deepbox/nn';
+ * import { tensor } from 'deepbox/ndarray';
+ *
  * const dropout2d = new Dropout2d(0.5);
  * const input = tensor([[[[1,2],[3,4]], [[5,6],[7,8]]]]);
  * dropout2d.train();

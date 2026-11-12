@@ -596,6 +596,8 @@ export function dot(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, transpose } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2], [3, 4]]);
  * const tT = transpose(t);  // [[1, 3], [2, 4]]
  * ```

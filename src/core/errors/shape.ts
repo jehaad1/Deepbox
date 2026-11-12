@@ -33,6 +33,7 @@ export type ShapeErrorDetails = {
  * @example
  * ```ts
  * import { ShapeError } from 'deepbox/core';
+ * import { tensor } from 'deepbox/ndarray';
  *
  * if (tensor.shape[0] !== expectedRows) {
  *   throw ShapeError.mismatch([expectedRows, cols], tensor.shape, 'matrix multiplication');

@@ -67,6 +67,8 @@ function isMissing(value: unknown): boolean {
  *
  * @example
  * ```ts
+ * import { Series } from 'deepbox/dataframe';
+ *
  * // Create a numeric series
  * const s = new Series([1, 2, 3, 4], { name: 'numbers' });
  *
@@ -99,6 +101,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([10, 20, 30], {
    *   index: ['a', 'b', 'c'],
    *   name: 'values'
@@ -177,6 +181,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series(['hello', 'world', null]);
    * s.str.upper();        // Series(['HELLO', 'WORLD', null])
    * s.str.contains('lo'); // Series([true, false, null])
@@ -197,6 +203,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([new Date('2024-01-15'), new Date('2024-06-20')]);
    * s.dt.year();       // Series([2024, 2024])
    * s.dt.month();      // Series([1, 6])
@@ -227,6 +235,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([10, 20, 30], { index: ['a', 'b', 'c'] });
    * s.get('a');  // 10
    * s.get('z');  // undefined
@@ -245,6 +255,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([10, 20], { index: ['a', 'b'] });
    * s.loc('a');  // 10
    * ```
@@ -264,6 +276,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([10, 20, 30]);
    * s.iloc(0);  // 10
    * s.iloc(2);  // 30
@@ -297,6 +311,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3, 4, 5, 6]);
    * s.head(3);  // Series([1, 2, 3])
    * ```
@@ -323,6 +339,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3, 4, 5, 6]);
    * s.tail(3);  // Series([4, 5, 6])
    * ```
@@ -352,6 +370,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3, 4, 5]);
    * s.filter(x => x > 2);  // Series([3, 4, 5])
    * ```
@@ -395,6 +415,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3]);
    * s.map(x => x * 2);  // Series([2, 4, 6])
    * ```
@@ -425,6 +447,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([3, 1, 2], { index: ['a', 'b', 'c'] });
    * s.sort();  // Series([1, 2, 3]) with index ['b', 'c', 'a']
    * ```
@@ -464,6 +488,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 2, 3, 1]);
    * s.unique();  // [1, 2, 3]
    * ```
@@ -495,6 +521,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series(['a', 'b', 'a', 'c', 'a']);
    * s.valueCounts();  // Series([3, 1, 1]) with index ['a', 'b', 'c']
    * s.valueCounts({ normalize: true });  // Series([0.6, 0.2, 0.2])
@@ -595,6 +623,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, null, null, 4]);
    * s.fillna(0);                                 // [1, 0, 0, 4]
    * s.fillna({ method: "ffill" });               // [1, 1, 1, 4]
@@ -630,6 +660,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * new Series([null, 1, null, null]).ffill();  // [null, 1, 1, 1]
    * ```
    */
@@ -649,6 +681,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * new Series([null, null, 3, null]).bfill();  // [3, 3, 3, null]
    * ```
    */
@@ -677,6 +711,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, null, 3, 4]);
    * s.sum();  // 10
    * ```
@@ -697,6 +733,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, null, 3, 4]);
    * s.mean();  // 2.5
    * ```
@@ -717,6 +755,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3, 4, 5]);
    * s.median();  // 3
    * ```
@@ -754,6 +794,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([2, 4, 6, 8]);
    * s.std();  // ~2.58
    * ```
@@ -776,6 +818,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([2, 4, 6, 8]);
    * s.var();  // ~6.67
    * ```
@@ -804,6 +848,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([5, 2, 8, 1, 9]);
    * s.min();  // 1
    * ```
@@ -828,6 +874,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([5, 2, 8, 1, 9]);
    * s.max();  // 9
    * ```
@@ -852,6 +900,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * new Series([1, null, NaN, 4]).isnull().toArray();  // [false, true, true, false]
    * ```
    */
@@ -866,6 +916,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * new Series([1, null, NaN, 4]).notnull().toArray();  // [true, false, false, true]
    * ```
    */
@@ -891,6 +943,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([1, 2, 3]);
    * const arr = s.toArray();  // [1, 2, 3]
    * ```
@@ -958,6 +1012,8 @@ export class Series<T = unknown> {
    *
    * @example
    * ```ts
+   * import { Series } from 'deepbox/dataframe';
+   *
    * const s = new Series([10, 20, 30], { name: 'values' });
    * s.toString();
    * // "0  10\n1  20\n2  30\nName: values, Length: 3"

@@ -147,6 +147,8 @@ export class SubsetRandomSampler implements Sampler {
  *
  * @example
  * ```ts
+ * import { WeightedRandomSampler } from 'deepbox/datasets';
+ *
  * // Over-sample minority class
  * const sampler = new WeightedRandomSampler(
  *   [0.1, 0.1, 0.4, 0.4],

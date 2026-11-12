@@ -520,6 +520,8 @@ export function tensor(
  *
  * @example
  * ```ts
+ * import { zeros } from 'deepbox/ndarray';
+ *
  * zeros([2, 3]); // 2x3 tensor of 0
  * ```
  */
@@ -549,6 +551,8 @@ export function zeros(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
  *
  * @example
  * ```ts
+ * import { ones } from 'deepbox/ndarray';
+ *
  * ones([2, 2]); // [[1, 1], [1, 1]]
  * ```
  */
@@ -622,6 +626,8 @@ export function empty(shape: Shape, opts: TensorCreateOptions = {}): Tensor {
  *
  * @example
  * ```ts
+ * import { full } from 'deepbox/ndarray';
+ *
  * full([2, 2], 7);                       // [[7, 7], [7, 7]]
  * full([3], 5, { dtype: "bool" });       // [1, 1, 1]
  * full([2], "x", { dtype: "string" });   // ["x", "x"]
@@ -682,6 +688,8 @@ export function full(
  *
  * @example
  * ```ts
+ * import { arange } from 'deepbox/ndarray';
+ *
  * arange(5);             // [0, 1, 2, 3, 4]
  * arange(1, 2, 0.25);    // [1, 1.25, 1.5, 1.75]
  * arange(3, 0, -1);      // [3, 2, 1]

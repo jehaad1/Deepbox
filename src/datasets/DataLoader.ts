@@ -200,6 +200,8 @@ export type StreamingDataLoaderOptions = {
  *
  * @example
  * ```ts
+ * import { DataLoader } from 'deepbox/datasets';
+ *
  * // Inference without labels
  * const testLoader = new DataLoader(X, undefined, {
  * batchSize: 4,

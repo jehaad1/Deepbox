@@ -883,6 +883,8 @@ export abstract class Module {
    *
    * @example
    * ```ts
+   * import { Linear } from 'deepbox/nn';
+   *
    * const model = new Linear(10, 5);
    * await model.to('webgpu'); // parameters now live in GPU memory
    * await model.to('cpu');    // ...and back

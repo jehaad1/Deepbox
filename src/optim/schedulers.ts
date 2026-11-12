@@ -460,6 +460,8 @@ export abstract class LRScheduler {
  *
  * @example
  * ```ts
+ * import { StepLR } from 'deepbox/optim';
+ *
  * const scheduler = new StepLR(optimizer, { stepSize: 30, gamma: 0.1 });
  * // lr = 0.1 for epochs 0-29
  * // lr = 0.01 for epochs 30-59
@@ -499,6 +501,8 @@ export class StepLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { ExponentialLR } from 'deepbox/optim';
+ *
  * const scheduler = new ExponentialLR(optimizer, { gamma: 0.95 });
  * // lr *= 0.95 each epoch
  * ```
@@ -529,6 +533,8 @@ export class ExponentialLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { CosineAnnealingLR } from 'deepbox/optim';
+ *
  * const scheduler = new CosineAnnealingLR(optimizer, { T_max: 100, etaMin: 0.001 });
  * ```
  *
@@ -578,6 +584,8 @@ export class CosineAnnealingLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { MultiStepLR } from 'deepbox/optim';
+ *
  * const scheduler = new MultiStepLR(optimizer, { milestones: [30, 80], gamma: 0.1 });
  * // lr = 0.1 for epochs 0-29
  * // lr = 0.01 for epochs 30-79
@@ -628,6 +636,8 @@ export class MultiStepLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { LinearLR } from 'deepbox/optim';
+ *
  * const scheduler = new LinearLR(optimizer, {
  *   startFactor: 0.1,
  *   endFactor: 0.01,
@@ -699,6 +709,8 @@ export type PlateauStateDict = {
  *
  * @example
  * ```ts
+ * import { ReduceLROnPlateau } from 'deepbox/optim';
+ *
  * const scheduler = new ReduceLROnPlateau(optimizer, {
  *   mode: 'min',
  *   factor: 0.1,
@@ -926,6 +938,8 @@ export class ReduceLROnPlateau {
  *
  * @example
  * ```ts
+ * import { CosineAnnealingLR } from 'deepbox/optim';
+ *
  * const baseScheduler = new CosineAnnealingLR(optimizer, { T_max: 100 });
  * const scheduler = new WarmupLR(optimizer, baseScheduler, { warmupEpochs: 5 });
  * ```
@@ -999,6 +1013,8 @@ export class WarmupLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { OneCycleLR } from 'deepbox/optim';
+ *
  * const scheduler = new OneCycleLR(optimizer, {
  *   maxLr: 0.1,
  *   totalSteps: 1000,
@@ -1141,6 +1157,8 @@ export class OneCycleLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { CosineAnnealingWarmRestarts } from 'deepbox/optim';
+ *
  * const scheduler = new CosineAnnealingWarmRestarts(optimizer, { T_0: 10, T_mult: 2 });
  * // restarts at epochs 10, 30, 70, ...
  * ```
@@ -1229,6 +1247,8 @@ export class CosineAnnealingWarmRestarts extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { CyclicLR } from 'deepbox/optim';
+ *
  * const scheduler = new CyclicLR(optimizer, { baseLr: 0.001, maxLr: 0.01, stepSizeUp: 100 });
  * ```
  *
@@ -1340,6 +1360,8 @@ export class CyclicLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { LambdaLR } from 'deepbox/optim';
+ *
  * // Halve the learning rate every 10 epochs
  * const scheduler = new LambdaLR(optimizer, {
  *   lrLambda: (epoch) => 0.5 ** Math.floor(epoch / 10)
@@ -1420,6 +1442,8 @@ export class LambdaLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { LinearLR } from 'deepbox/optim';
+ *
  * const scheduler1 = new LinearLR(optimizer, { startFactor: 0.1, totalIters: 5 });
  * const scheduler2 = new ExponentialLR(optimizer, { gamma: 0.9 });
  * const scheduler = new SequentialLR(optimizer, {
@@ -1549,6 +1573,8 @@ export class SequentialLR extends LRScheduler {
  *
  * @example
  * ```ts
+ * import { PolynomialLR } from 'deepbox/optim';
+ *
  * const scheduler = new PolynomialLR(optimizer, {
  *   totalIters: 100,
  *   power: 2.0

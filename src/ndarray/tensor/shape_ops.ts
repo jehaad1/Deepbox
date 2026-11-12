@@ -256,6 +256,8 @@ export function unsqueeze(t: Tensor, axis: number): Tensor {
  *
  * @example
  * ```ts
+ * import { expandDims, zeros } from 'deepbox/ndarray';
+ *
  * expandDims(zeros([2, 3]), 0).shape;       // [1, 2, 3]
  * expandDims(zeros([2, 3]), [0, 3]).shape;  // [1, 2, 3, 1]
  * ```

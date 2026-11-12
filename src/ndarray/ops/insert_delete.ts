@@ -199,6 +199,8 @@ function prepareValues(values: Tensor, ndim: number, ax: number, moveFront: bool
  *
  * @example
  * ```ts
+ * import { tensor, insert } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3, 4]);
  * insert(a, 2, 99);          // [1, 2, 99, 3, 4]
  * insert(a, [1, 3], 99);     // [1, 99, 2, 3, 99, 4]
@@ -415,6 +417,8 @@ function buildValues(
  *
  * @example
  * ```ts
+ * import { tensor, delete_ } from 'deepbox/ndarray';
+ *
  * const a = tensor([1, 2, 3, 4, 5]);
  * delete_(a, 2);           // [1, 2, 4, 5]
  * delete_(a, [0, 3]);      // [2, 3, 5]

@@ -394,6 +394,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix, tensor } from 'deepbox/ndarray';
+   *
    * const A = CSRMatrix.fromDense(tensor([[1, 0], [0, 2]]));
    * A.nnz; // 2
    * ```
@@ -618,6 +620,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const x = tensor([1, 2, 3]);
    * const y = sparse.matvec(x);  // y = A * x
    * ```
@@ -677,6 +681,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const B = tensor([[1, 2], [3, 4], [5, 6]]);
    * const C = sparse.matmul(B);  // C = A * B
    * ```
@@ -1006,6 +1012,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const I = CSRMatrix.eye(4);  // 4×4 identity
    * ```
    */
@@ -1029,6 +1037,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const D = CSRMatrix.diag(new Float64Array([1, 2, 3]));
    * ```
    */
@@ -1077,6 +1087,8 @@ export class CSRMatrix {
    *
    * @example
    * ```ts
+   * import { CSRMatrix } from 'deepbox/ndarray';
+   *
    * const sparse = CSRMatrix.fromCOO({
    *   rows: 3, cols: 3,
    *   rowIndices: new Int32Array([0, 1, 2]),

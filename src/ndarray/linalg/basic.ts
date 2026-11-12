@@ -258,6 +258,8 @@ function packMatrix(
  *
  * @example
  * ```ts
+ * import { tensor, tensordot } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2, 3], [4, 5, 6]]);
  * const b = tensor([[1, 4], [2, 5], [3, 6]]);
  * tensordot(a, b, 1);           // same as matmul: [[14, 32], [32, 77]]
@@ -549,6 +551,8 @@ function covarianceOf(obs: ObservationMatrix, ddof: number): Float64Array {
  *
  * @example
  * ```ts
+ * import { corrcoef, tensor } from 'deepbox/ndarray';
+ *
  * corrcoef(tensor([[1, 2, 3, 4], [4, 3, 2, 1]]));
  * // [[1, -1], [-1, 1]]
  * ```
@@ -617,6 +621,8 @@ export function corrcoef(x: Tensor, rowvar: boolean = true): Tensor {
  *
  * @example
  * ```ts
+ * import { cov, tensor } from 'deepbox/ndarray';
+ *
  * cov(tensor([[1, 2, 3], [4, 5, 6]])); // [[1, 1], [1, 1]]
  * cov(tensor([2, 4, 6]), 0);           // [[8 / 3]]
  * ```

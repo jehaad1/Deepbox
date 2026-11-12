@@ -570,6 +570,8 @@ function assertCanRequireGrad(dtype: DType): void {
  *
  * @example
  * ```ts
+ * import { parameter } from 'deepbox/ndarray';
+ *
  * const w = parameter([1, 2]);
  * const loss = w.mul(w).sum();
  * loss.backward();
@@ -1118,6 +1120,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 2], [3, 4]]);
    * x.sum([0, 1]).toArray(); // 10
    * x.sum(1, true).shape; // [2, 1]
@@ -1392,6 +1396,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter, ones } from 'deepbox/ndarray';
+   *
    * const a = parameter(ones([1, 2, 3]));
    * const b = parameter(ones([4, 3, 5]));
    * const y = a.matmul(b); // shape [4, 2, 5]
@@ -1772,6 +1778,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 2], [3, 4]]);
    * x.mean([0, 1]).toArray(); // 2.5
    * ```
@@ -1796,6 +1804,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 5], [3, 2]]);
    * x.max([0, 1]).toArray(); // 5
    * ```
@@ -1836,6 +1846,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const t = parameter([1, 2, 3, 4, 5, 6]);
    * const reshaped = t.reshape([2, 3]);
    * console.log(reshaped.shape); // [2, 3]
@@ -1873,6 +1885,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const matrix = parameter([[1, 2, 3], [4, 5, 6]]);
    * const flat = matrix.flatten();
    * console.log(flat.shape); // [6]
@@ -2003,6 +2017,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 5], [3, 2]]);
    * x.min(0).toArray(); // [1, 2]
    * ```
@@ -2296,6 +2312,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0, Math.PI]);
    * x.sin().sum().backward();
    * x.grad?.toArray(); // [1, -1]
@@ -2312,6 +2330,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.cos().toArray(); // [1]
    * ```
@@ -2327,6 +2347,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.tan().sum().backward();
    * x.grad?.toArray(); // [1]
@@ -2346,6 +2368,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0, 1]);
    * x.log1p().sum().backward();
    * x.grad?.toArray(); // [1, 0.5]
@@ -2364,6 +2388,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.expm1().sum().backward();
    * x.grad?.toArray(); // [1]
@@ -2391,6 +2417,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.logSigmoid().toArray(); // [-0.6931...]
    * ```
@@ -2407,6 +2435,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.swish().sum().backward();
    * x.grad?.toArray(); // [0.5]
@@ -2427,6 +2457,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0]);
    * x.mish().toArray(); // [0]
    * ```
@@ -2448,6 +2480,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1, 0]);
    * x.selu().toArray(); // [1.0507..., 0]
    * ```
@@ -2474,6 +2508,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 1], [0, 2]]);
    * x.softmax().toArray(); // [[0.5, 0.5], [0.119, 0.881]]
    * ```
@@ -2487,6 +2523,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 1]]);
    * x.logSoftmax().toArray(); // [[-0.6931..., -0.6931...]]
    * ```
@@ -2505,6 +2543,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1, 2, 3]);
    * const y = x.cumsum(); // [1, 3, 6]
    * y.sum().backward();
@@ -2533,6 +2573,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([2, 3, 4]);
    * x.prod().backward();
    * x.grad?.toArray(); // [12, 8, 6]
@@ -2580,6 +2622,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1, 2, 3, 4]);
    * x.var(undefined, false, 1).toArray(); // 1.666...
    * ```
@@ -2613,6 +2657,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([[1, 2], [3, 5]]);
    * x.std(0).toArray(); // [1, 1.5]
    * ```
@@ -2643,6 +2689,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const a = parameter([1, 5, 3]);
    * const b = parameter([4, 2, 3]);
    * a.maximum(b).toArray(); // [4, 5, 3]
@@ -2660,6 +2708,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const a = parameter([1, 5, 3]);
    * const b = parameter([4, 2, 3]);
    * a.minimum(b).toArray(); // [1, 2, 3]
@@ -2683,6 +2733,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter, GradTensor } from 'deepbox/ndarray';
+   *
    * const x = parameter([-1, 2, -3]);
    * const y = GradTensor.where(x.tensor.astype("bool"), x, x.neg());
    * y.toArray(); // [1, 2, 3]
@@ -2747,6 +2799,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1, 2, 3]);
    * const y = x.clone();
    * y.mul(y).sum().backward();
@@ -2765,6 +2819,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const loss = parameter([1, 2, 3]).sum();
    * console.log(loss.item()); // 6
    * ```
@@ -2781,6 +2837,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * parameter([[1, 2]]).squeeze().shape; // [2]
    * ```
    */
@@ -2796,6 +2854,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * parameter([1, 2]).unsqueeze(0).shape; // [1, 2]
    * ```
    */
@@ -2910,6 +2970,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1.7, -1.2]);
    * x.floor().toArray(); // [1, -2]
    * ```
@@ -2925,6 +2987,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1.2, -1.7]);
    * x.ceil().toArray(); // [2, -1]
    * ```
@@ -2942,6 +3006,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([0.5, 1.5, 2.5]);
    * x.round().toArray(); // [0, 2, 2]
    * ```
@@ -2960,6 +3026,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([1, 2, 3]);
    * x.flip().toArray(); // [3, 2, 1]
    * ```
@@ -2978,6 +3046,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const x = parameter([3, 1, 2]);
    * x.sort().toArray(); // [1, 2, 3]
    * ```
@@ -3043,6 +3113,8 @@ export class GradTensor {
    *
    * @example
    * ```ts
+   * import { parameter } from 'deepbox/ndarray';
+   *
    * const w = await parameter([1, 2, 3]).to("webgpu");
    * ```
    */

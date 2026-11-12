@@ -86,6 +86,8 @@ function selectSamples(dataset: Dataset, indices: readonly number[]): Dataset {
  *
  * @example
  * ```ts
+ * import { loadIris, Subset } from 'deepbox/datasets';
+ *
  * const iris = loadIris();
  * const sub = new Subset(iris, [0, 1, 2, 3, 4]);
  * console.log(sub.data.shape);  // [5, 4]
@@ -142,6 +144,8 @@ export class Subset {
  *
  * @example
  * ```ts
+ * import { loadIris, randomSplit } from 'deepbox/datasets';
+ *
  * const iris = loadIris();
  * const [train, test] = randomSplit(iris, [120, 30], 42);
  * console.log(train.data.shape);  // [120, 4]
@@ -261,6 +265,8 @@ function mappedTargetDtype(
  *
  * @example
  * ```ts
+ * import { loadIris, mapDataset } from 'deepbox/datasets';
+ *
  * const iris = loadIris();
  * // Scale features
  * const mapped = mapDataset(iris, (data, target) => ({
@@ -357,6 +363,8 @@ export function mapDataset(
  *
  * @example
  * ```ts
+ * import { loadIris, filterDataset } from 'deepbox/datasets';
+ *
  * const iris = loadIris();
  * // Keep only class 0 and 1
  * const filtered = filterDataset(iris, (_data, target) => target < 2);

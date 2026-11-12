@@ -188,6 +188,8 @@ export class ModuleList extends Module {
  *
  * @example
  * ```ts
+ * import { ModuleDict, Linear } from 'deepbox/nn';
+ *
  * const modules = new ModuleDict({ encoder: new Linear(10, 5), decoder: new Linear(5, 10) });
  * const enc = modules.get('encoder');
  * ```

@@ -163,6 +163,8 @@ function integerBinary(
  *
  * @example
  * ```ts
+ * import { tensor, gcd } from 'deepbox/ndarray';
+ *
  * const a = tensor([12, 15, 20]);
  * const b = tensor([8, 10, 25]);
  * gcd(a, b); // [4, 5, 5]
@@ -190,6 +192,8 @@ export function gcd(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { tensor, lcm } from 'deepbox/ndarray';
+ *
  * const a = tensor([4, 6, 12]);
  * const b = tensor([6, 8, 15]);
  * lcm(a, b); // [12, 24, 60]
@@ -294,6 +298,8 @@ function stringSetOperation(
  *
  * @example
  * ```ts
+ * import { union1d, tensor } from 'deepbox/ndarray';
+ *
  * union1d(tensor([1, 2, 3]), tensor([2, 3, 4])); // [1, 2, 3, 4]
  * ```
  */
@@ -322,6 +328,8 @@ export function union1d(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { intersect1d, tensor } from 'deepbox/ndarray';
+ *
  * intersect1d(tensor([1, 2, 3, 4]), tensor([2, 4, 6])); // [2, 4]
  * ```
  */
@@ -353,6 +361,8 @@ export function intersect1d(a: Tensor, b: Tensor): Tensor {
  *
  * @example
  * ```ts
+ * import { setdiff1d, tensor } from 'deepbox/ndarray';
+ *
  * setdiff1d(tensor([1, 2, 3, 4]), tensor([2, 4])); // [1, 3]
  * ```
  */

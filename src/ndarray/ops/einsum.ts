@@ -136,6 +136,8 @@ function numericBuffer(t: Tensor): ArrayLike<number> {
  *
  * @example
  * ```ts
+ * import { tensor, einsum } from 'deepbox/ndarray';
+ *
  * const a = tensor([[1, 2], [3, 4]]);
  * einsum("ij,jk->ik", a, a);  // [[7, 10], [15, 22]]
  * einsum("ii->", a);          // 5

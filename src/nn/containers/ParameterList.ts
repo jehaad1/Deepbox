@@ -139,6 +139,8 @@ export class ParameterList extends Module {
  *
  * @example
  * ```ts
+ * import { ParameterDict } from 'deepbox/nn';
+ *
  * const params = new ParameterDict({ weight: weightParam, bias: biasParam });
  * const w = params.get('weight');
  * ```

@@ -112,6 +112,8 @@ function buildAxisTable(
  *
  * @example
  * ```ts
+ * import { Upsample } from 'deepbox/nn';
+ *
  * const up = new Upsample({ scaleFactor: 2, mode: 'nearest' });
  * // input: (1, 3, 4, 4) -> output: (1, 3, 8, 8)
  *

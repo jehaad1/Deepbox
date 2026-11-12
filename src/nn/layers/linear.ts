@@ -181,6 +181,9 @@ export class Linear extends Module {
    *
    * @example
    * ```ts
+   * import { Linear } from 'deepbox/nn';
+   * import { tensor } from 'deepbox/ndarray';
+   *
    * const layer = new Linear(3, 2);
    * const out = layer.forward(tensor([[1, 2, 3]])); // GradTensor that tracks the weights
    * ```

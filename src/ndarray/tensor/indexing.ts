@@ -36,6 +36,8 @@ export type { SliceRange } from "./slice_helpers";
  *
  * @example
  * ```ts
+ * import { tensor, slice } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2, 3], [4, 5, 6]]);
  * slice(t, { start: 0, end: 1 });  // [[1, 2, 3]]
  * slice(t, 0, { start: 1 });       // [2, 3]
@@ -116,6 +118,8 @@ function gatherCopy<V>(
  *
  * @example
  * ```ts
+ * import { tensor, gather } from 'deepbox/ndarray';
+ *
  * const t = tensor([[1, 2], [3, 4], [5, 6]]);
  * const indices = tensor([0, 2]);
  * const result = gather(t, indices, 0);  // [[1, 2], [5, 6]]

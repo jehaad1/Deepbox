@@ -37,6 +37,8 @@ import { Module } from "../module/Module";
  *
  * @example
  * ```ts
+ * import { Sequential, Linear, ReLU } from 'deepbox/nn';
+ *
  * // Access individual layers
  * const model = new Sequential(
  *   new Linear(10, 5),
