@@ -118,8 +118,8 @@ export type TrainerResult = {
  * validation batches without recording an autograd graph. The loss function
  * must return a single-element loss. Input batches are wrapped in a
  * `GradTensor` during training so that the model's parameters receive
- * gradients. If the loss is a plain `Tensor` rather than a `GradTensor`, no
- * backward pass is run.
+ * gradients. The training loss must be a `GradTensor` that requires grad; a plain
+ * `Tensor` or detached loss would train nothing, so it throws an `InvalidParameterError`.
  *
  * `fit()` can be called again to continue training: the history restarts at
  * epoch 1 and early-stopping state is reset. The model is left in the mode it
@@ -271,7 +271,7 @@ export class Trainer {
    * @param trainData - Iterable of [input, target] tensor pairs (batches)
    * @param valData - Optional validation batches
    * @returns Training result with history and early stopping info
-   * @throws {InvalidParameterError} If an epoch yields no batches
+   * @throws {InvalidParameterError} If an epoch yields no batches, or the loss is not a GradTensor that requires grad
    * @throws {ShapeError} If the loss function does not return a single-element loss
    */
   fit(
@@ -317,7 +317,7 @@ export class Trainer {
    * @param trainData - Async or sync iterable of [input, target] batches.
    * @param valData - Optional validation batches (async or sync iterable).
    * @returns A promise of the training result with history and early-stopping info.
-   * @throws {InvalidParameterError} If an epoch yields no batches
+   * @throws {InvalidParameterError} If an epoch yields no batches, or the loss is not a GradTensor that requires grad
    * @throws {ShapeError} If the loss function does not return a single-element loss
    */
   async fitAsync(
@@ -374,14 +374,23 @@ export class Trainer {
     const loss = this.lossFn(output, y);
     const lossVal = scalarLoss(loss);
 
-    // Backward pass (if loss is a GradTensor). With accumulation each batch contributes
-    // 1 / accumulationSteps of its gradient, so the sum over a group is the mean.
-    if (GradTensor.isGradTensor(loss)) {
-      if (this.accumulationSteps === 1) {
-        loss.backward();
-      } else {
-        loss.backward(tensor([1 / this.accumulationSteps], { dtype: loss.dtype }));
-      }
+    if (!GradTensor.isGradTensor(loss) || !loss.requiresGrad) {
+      throw new InvalidParameterError(
+        "lossFn must return a GradTensor connected to the model parameters (one that requires " +
+          "grad). The returned loss is detached, so training would silently update nothing. " +
+          "Compute the loss from the model output with GradTensor-aware losses such as mseLoss " +
+          "and do not wrap it in noGrad or convert it to a plain Tensor.",
+        "lossFn",
+        GradTensor.isGradTensor(loss) ? "GradTensor without requiresGrad" : "Tensor"
+      );
+    }
+
+    // With accumulation each batch contributes 1 / accumulationSteps of its gradient, so the
+    // sum over a group is the mean.
+    if (this.accumulationSteps === 1) {
+      loss.backward();
+    } else {
+      loss.backward(tensor([1 / this.accumulationSteps], { dtype: loss.dtype }));
     }
 
     this.pending++;
