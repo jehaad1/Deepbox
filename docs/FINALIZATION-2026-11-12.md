@@ -41,7 +41,7 @@ Format: id, priority, area, evidence, status.
 | --- | --- | --- | --- | --- |
 | BASE-1 | P2 | tests | `test/v150/c22-ml-manifold.test.ts:346` wall-clock assertion fails under load (6178 ms vs 5000 ms). Flaky by design. | fixed 6b9f026 |
 | BASE-2 | P3 | docs | `CONTRIBUTING.md` says `prose:check` is not part of `validate:all`; `package.json` runs it first. | fixed 6b9f026 |
-| BENCHPRIV-1 | P2 | bench-private | `npm run docs:check` fails: `bench/docs.ts` older than DeepboxDocs. | open (after docs pass) |
+| BENCHPRIV-1 | P2 | bench-private | `npm run docs:check` fails: `bench/docs.ts` older than DeepboxDocs. | fixed (bench-private 16b824b, generated from the live docs and published 1.5.0) |
 | BENCHWEB-1 | P1 | bench-web | Uncommitted `src/app/components/LabLogo.tsx` corrupts the DeepSeek and MiniMax SVG paths. | dropped (D2) |
 | PKG-1 | P1 | packaging | Emitted `.d.ts` use extensionless relative imports; `moduleResolution: node16/nodenext` users get TS2834 errors, or untyped imports with `skipLibCheck`. attw flags all 14 entry points. Reproduced. | fixed bb0672f |
 | PKG-2 | P2 | packaging | `import {tensor} from "deepbox/ndarray"` bundles 342 KB minified; namespace `__export` objects share chunks with code. Marking them pure gives 127 KB. | fixed (tensor bundle 342,456 to 127,321 bytes) |
