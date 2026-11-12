@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { catchWarnings } from "../src/core";
 import { tensor } from "../src/ndarray";
 import { corrcoef, cov, kendalltau, pearsonr, spearmanr } from "../src/stats";
 
@@ -8,7 +9,14 @@ describe("stats correlation branch coverage extras", () => {
     expect(r).toBeCloseTo(1, 6);
     expect(p).toBe(1); // scipy returns exactly 1.0 for two samples
 
-    expect(() => pearsonr(tensor([1, 1, 1]), tensor([2, 2, 2]))).toThrow(/constant/);
+    // Constant input gives NaN and a warning, as in scipy.
+    let constant: [number, number] = [0, 0];
+    const warnings = catchWarnings(() => {
+      constant = pearsonr(tensor([1, 1, 1]), tensor([2, 2, 2]));
+    });
+    expect(constant[0]).toBeNaN();
+    expect(constant[1]).toBeNaN();
+    expect(warnings.length).toBe(1);
   });
 
   it("spearmanr handles df=0", () => {
