@@ -2,7 +2,8 @@
 // exec, and enforces taskTimeout with a TaskTimeoutError. Behavior is checked against the
 // documented contract (results keep input order; a failed chunk stops later chunks).
 import { describe, expect, it } from "vitest";
-import { DeepboxError, TaskTimeoutError, WorkerPool } from "../../src/core";
+import { DeepboxError } from "../../src/core";
+import { TaskTimeoutError, WorkerPool } from "../../src/core/parallel";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
