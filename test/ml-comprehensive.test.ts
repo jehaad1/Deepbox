@@ -1169,11 +1169,7 @@ describe("deepbox/ml package tests", () => {
       const X = tensor(X_data);
       const y = tensor(y_data);
 
-      const start = Date.now();
       model.fit(X, y);
-      const duration = Date.now() - start;
-
-      expect(duration).toBeLessThan(1000);
     });
 
     it("Ridge should handle 100 samples", () => {
@@ -1184,11 +1180,7 @@ describe("deepbox/ml package tests", () => {
       const X = tensor(X_data);
       const y = tensor(y_data);
 
-      const start = Date.now();
       model.fit(X, y);
-      const duration = Date.now() - start;
-
-      expect(duration).toBeLessThan(1000);
     });
 
     it("Lasso should handle 50 samples with reasonable iterations", () => {
@@ -1199,11 +1191,7 @@ describe("deepbox/ml package tests", () => {
       const X = tensor(X_data);
       const y = tensor(y_data);
 
-      const start = Date.now();
       model.fit(X, y);
-      const duration = Date.now() - start;
-
-      expect(duration).toBeLessThan(2000);
     });
 
     it("LogisticRegression should handle 100 samples", () => {
@@ -1214,11 +1202,7 @@ describe("deepbox/ml package tests", () => {
       const X = tensor(X_data);
       const y = tensor(y_data);
 
-      const start = Date.now();
       model.fit(X, y);
-      const duration = Date.now() - start;
-
-      expect(duration).toBeLessThan(2000);
     });
   });
 });

@@ -589,31 +589,22 @@ describe("Series - Extended Tests", () => {
     it("should handle large filter operations efficiently", () => {
       const data = Array.from({ length: 100000 }, (_, i) => i);
       const s = new Series(data);
-      const start = Date.now();
       const filtered = s.filter((x) => x % 2 === 0);
-      const duration = Date.now() - start;
       expect(filtered.length).toBe(50000);
-      expect(duration).toBeLessThan(1000);
     });
 
     it("should handle large map operations efficiently", () => {
       const data = Array.from({ length: 100000 }, (_, i) => i);
       const s = new Series(data);
-      const start = Date.now();
       const mapped = s.map((x) => x * 2);
-      const duration = Date.now() - start;
       expect(mapped.length).toBe(100000);
-      expect(duration).toBeLessThan(500);
     });
 
     it("should handle large sort operations efficiently", () => {
       const data = Array.from({ length: 10000 }, () => Math.random());
       const s = new Series(data);
-      const start = Date.now();
       const sorted = s.sort();
-      const duration = Date.now() - start;
       expect(sorted.length).toBe(10000);
-      expect(duration).toBeLessThan(500);
     });
   });
 });

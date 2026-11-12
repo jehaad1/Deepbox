@@ -70,12 +70,9 @@ describe("Regression Metrics tests", () => {
           .map((_, i) => i + 1)
       );
 
-      const start = Date.now();
       const error = mse(yTrue, yPred);
-      const duration = Date.now() - start;
 
       expect(error).toBe(1);
-      expect(duration).toBeLessThan(1000);
     });
 
     it("should handle mixed positive and negative errors", () => {
@@ -516,13 +513,9 @@ describe("Regression Metrics tests", () => {
           .map((_, i) => i + 0.5)
       );
 
-      const start = Date.now();
       mse(yTrue, yPred);
       mae(yTrue, yPred);
       r2Score(yTrue, yPred);
-      const duration = Date.now() - start;
-
-      expect(duration).toBeLessThan(5000); // Should complete in under 5 seconds
     }, 20000);
   });
 

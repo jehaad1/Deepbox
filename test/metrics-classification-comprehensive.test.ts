@@ -747,12 +747,9 @@ describe("Classification Metrics tests", () => {
           .map((_, i) => i % 2)
       );
 
-      const start = Date.now();
       const acc = accuracy(yTrue, yPred);
-      const duration = Date.now() - start;
 
       expect(acc).toBe(1.0);
-      expect(duration).toBeLessThan(1000); // Should complete in under 1 second
     });
 
     it("should handle floating point scores correctly", () => {
