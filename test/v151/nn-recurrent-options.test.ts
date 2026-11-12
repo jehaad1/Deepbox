@@ -73,25 +73,26 @@ describe("NN-10: recurrent inter-layer dropout", () => {
     expectClose(values(stateEval), ref.hEval);
   });
 
-  it.each(
-    cases
-  )("%s training with 0 < p < 1 changes the output but not the first layer's state", (name) => {
-    const ref = REF[name];
-    const layer = new { RNN, LSTM, GRU }[name](3, 4, { ...options, dropout: 0.5 });
-    load(layer, ref.params);
-    layer.eval();
-    const [outEval, hEval] = layer.forwardWithState(x);
-    layer.train();
-    const [outTrain, hTrain] = layer.forwardWithState(x);
-    const evalValues = values(outEval);
-    expect(values(outTrain).some((v, i) => Math.abs(v - (evalValues[i] as number)) > 1e-6)).toBe(
-      true
-    );
-    const finalEval = values(Array.isArray(hEval) ? hEval[0] : hEval);
-    const finalTrain = values(Array.isArray(hTrain) ? hTrain[0] : hTrain);
-    // The first layer's two directions (states 0 and 1) do not depend on dropout.
-    expectClose(finalTrain.slice(0, 16), finalEval.slice(0, 16));
-  });
+  it.each(cases)(
+    "%s training with 0 < p < 1 changes the output but not the first layer's state",
+    (name) => {
+      const ref = REF[name];
+      const layer = new { RNN, LSTM, GRU }[name](3, 4, { ...options, dropout: 0.5 });
+      load(layer, ref.params);
+      layer.eval();
+      const [outEval, hEval] = layer.forwardWithState(x);
+      layer.train();
+      const [outTrain, hTrain] = layer.forwardWithState(x);
+      const evalValues = values(outEval);
+      expect(values(outTrain).some((v, i) => Math.abs(v - (evalValues[i] as number)) > 1e-6)).toBe(
+        true
+      );
+      const finalEval = values(Array.isArray(hEval) ? hEval[0] : hEval);
+      const finalTrain = values(Array.isArray(hTrain) ? hTrain[0] : hTrain);
+      // The first layer's two directions (states 0 and 1) do not depend on dropout.
+      expectClose(finalTrain.slice(0, 16), finalEval.slice(0, 16));
+    }
+  );
 
   it.each(cases)("%s rejects an invalid dropout rate", (name) => {
     const Ctor = { RNN, LSTM, GRU }[name];

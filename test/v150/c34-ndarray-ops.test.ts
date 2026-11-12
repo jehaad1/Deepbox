@@ -39,16 +39,12 @@ describe("argsort descending is stable", () => {
   const data = [1, 2, 2, 3, 2, 1, 3];
   const expected = [3, 6, 1, 2, 4, 0, 5];
 
-  it.each([
-    "float64",
-    "float32",
-    "int32",
-    "uint8",
-    "int64",
-    "float16",
-  ] as const)("keeps ties in input order for %s", (dtype) => {
-    expect(argsort(tensor(data, { dtype }), -1, true).toArray()).toEqual(expected);
-  });
+  it.each(["float64", "float32", "int32", "uint8", "int64", "float16"] as const)(
+    "keeps ties in input order for %s",
+    (dtype) => {
+      expect(argsort(tensor(data, { dtype }), -1, true).toArray()).toEqual(expected);
+    }
+  );
 
   it("keeps NaN first and ties in input order", () => {
     const v = [3, Number.NaN, 1, Number.NaN, 3];

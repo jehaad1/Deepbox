@@ -464,7 +464,7 @@ describe("c54 PowerTransformer", () => {
   it("yeo-johnson matches scikit-learn", () => {
     // PowerTransformer(standardize=False).fit_transform(...): lambda -0.28481047267408793
     const pt = new PowerTransformer().fit(col(sample));
-    expect((pt.lambdas?.toArray() as number[])[0]).toBeCloseTo(-0.28481047267408793, 6);
+    expect((pt.lambdas!.toArray() as number[])[0]).toBeCloseTo(-0.28481047267408793, 6);
     expectClose(
       flat(pt.transform(col(sample))),
       [
@@ -477,7 +477,7 @@ describe("c54 PowerTransformer", () => {
 
   it("box-cox matches scikit-learn", () => {
     const pt = new PowerTransformer({ method: "box-cox" }).fit(col(sample));
-    expect((pt.lambdas?.toArray() as number[])[0]).toBeCloseTo(-0.10428706176309988, 6);
+    expect((pt.lambdas!.toArray() as number[])[0]).toBeCloseTo(-0.10428706176309988, 6);
   });
 
   it("standardised yeo-johnson on mixed-sign data matches scikit-learn", () => {
@@ -499,7 +499,7 @@ describe("c54 PowerTransformer", () => {
     const pt = new PowerTransformer({ method: "box-cox" }).fit(
       col([990, 995, 998, 999, 1000, 1000.5, 1001, 1001.2])
     );
-    const lambda = (pt.lambdas?.toArray() as number[])[0] as number;
+    const lambda = (pt.lambdas!.toArray() as number[])[0] as number;
     expect(lambda).toBeGreaterThan(90);
     expect(lambda).toBeLessThan(110);
     expect(flat(pt.transform(col([1000]))).every(Number.isFinite)).toBe(true);
@@ -508,8 +508,8 @@ describe("c54 PowerTransformer", () => {
   it("box-cox lambda is invariant to a change of scale", () => {
     const a = new PowerTransformer({ method: "box-cox" }).fit(col(sample));
     const b = new PowerTransformer({ method: "box-cox" }).fit(col(sample.map((v) => v * 1e-9)));
-    expect((a.lambdas?.toArray() as number[])[0]).toBeCloseTo(
-      (b.lambdas?.toArray() as number[])[0] as number,
+    expect((a.lambdas!.toArray() as number[])[0]).toBeCloseTo(
+      (b.lambdas!.toArray() as number[])[0] as number,
       6
     );
   });

@@ -29,10 +29,11 @@ const pairs: ReadonlyArray<readonly [Record<string, unknown>, string, string]> =
 ];
 
 describe("1.5.0 camelCase aliases", () => {
-  it.each(
-    pairs.map(([mod, snake, camel]) => [snake, camel, mod] as const)
-  )("%s is the same function as %s", (snake, camel, mod) => {
-    expect(typeof mod[camel]).toBe("function");
-    expect(mod[camel]).toBe(mod[snake]);
-  });
+  it.each(pairs.map(([mod, snake, camel]) => [snake, camel, mod] as const))(
+    "%s is the same function as %s",
+    (snake, camel, mod) => {
+      expect(typeof mod[camel]).toBe("function");
+      expect(mod[camel]).toBe(mod[snake]);
+    }
+  );
 });

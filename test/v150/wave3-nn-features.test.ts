@@ -1251,30 +1251,27 @@ describe("optimizers skip parameters whose grad is null", () => {
     expect(values(b)).toEqual(initialB);
   });
 
-  it.each([
-    "sgd",
-    "adam",
-    "adamw",
-    "rmsprop",
-    "adagrad",
-  ] as const)("%s matches PyTorch when the other parameter has no gradient", (name) => {
-    const { a, b } = makeParams();
-    const make = makers.find(([n]) => n.toLowerCase() === name)?.[1];
-    if (!make) throw new Error("missing optimizer");
-    const optimizer = make([a, b]);
-    for (let s = 0; s < 3; s++) {
-      a.setGrad(
-        f64(
-          [0.3, -0.2, 0.1].map((g) => g * (s + 1)),
-          [3]
-        )
-      );
-      optimizer.step();
+  it.each(["sgd", "adam", "adamw", "rmsprop", "adagrad"] as const)(
+    "%s matches PyTorch when the other parameter has no gradient",
+    (name) => {
+      const { a, b } = makeParams();
+      const make = makers.find(([n]) => n.toLowerCase() === name)?.[1];
+      if (!make) throw new Error("missing optimizer");
+      const optimizer = make([a, b]);
+      for (let s = 0; s < 3; s++) {
+        a.setGrad(
+          f64(
+            [0.3, -0.2, 0.1].map((g) => g * (s + 1)),
+            [3]
+          )
+        );
+        optimizer.step();
+      }
+      const expected = FIX.optim[name] as { a: number[]; b: number[] };
+      expectClose(values(a), expected.a, 1e-8);
+      expectClose(values(b), expected.b, 1e-12);
     }
-    const expected = FIX.optim[name] as { a: number[]; b: number[] };
-    expectClose(values(a), expected.a, 1e-8);
-    expectClose(values(b), expected.b, 1e-12);
-  });
+  );
 
   it("a parameter that gets its first gradient later starts with fresh optimizer state", () => {
     const { a, b } = makeParams();

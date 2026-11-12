@@ -641,27 +641,28 @@ describe("frozen parameters", () => {
 });
 
 describe("atomic optimizer steps", () => {
-  it.each(
-    stepFactories
-  )("%s changes nothing when a later gradient is not finite", (_name, make) => {
-    const a = makeParam([1, 2]);
-    const b = makeParam([3, 4, 5]);
-    a.setGrad(f64([0.5, 0.5]));
-    b.setGrad(f64([1, Number.NaN, 1]));
-    const opt = make([a, b]) as unknown as Optimizer<never, never> & { step(): unknown };
+  it.each(stepFactories)(
+    "%s changes nothing when a later gradient is not finite",
+    (_name, make) => {
+      const a = makeParam([1, 2]);
+      const b = makeParam([3, 4, 5]);
+      a.setGrad(f64([0.5, 0.5]));
+      b.setGrad(f64([1, Number.NaN, 1]));
+      const opt = make([a, b]) as unknown as Optimizer<never, never> & { step(): unknown };
 
-    expect(() => opt.step()).toThrow(InvalidParameterError);
-    expect(Array.from(a.tensor.data as Float64Array)).toEqual([1, 2]);
-    expect(Array.from(b.tensor.data as Float64Array)).toEqual([3, 4, 5]);
-    expect(opt.stateDict().state).toHaveLength(0);
-    expect(opt.stepCount).toBe(0);
+      expect(() => opt.step()).toThrow(InvalidParameterError);
+      expect(Array.from(a.tensor.data as Float64Array)).toEqual([1, 2]);
+      expect(Array.from(b.tensor.data as Float64Array)).toEqual([3, 4, 5]);
+      expect(opt.stateDict().state).toHaveLength(0);
+      expect(opt.stepCount).toBe(0);
 
-    // The optimizer is still usable after the failed step.
-    b.setGrad(f64([1, 1, 1]));
-    opt.step();
-    expect(opt.stepCount).toBe(1);
-    expect(Array.from(a.tensor.data as Float64Array)).not.toEqual([1, 2]);
-  });
+      // The optimizer is still usable after the failed step.
+      b.setGrad(f64([1, 1, 1]));
+      opt.step();
+      expect(opt.stepCount).toBe(1);
+      expect(Array.from(a.tensor.data as Float64Array)).not.toEqual([1, 2]);
+    }
+  );
 
   it("changes nothing when a parameter value is not finite", () => {
     const a = makeParam([1, 2]);

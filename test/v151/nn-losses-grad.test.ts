@@ -115,21 +115,22 @@ function leaf(t: Tensor): GradTensor {
 
 describe("NN-2: gaussianNLLLoss gradients", () => {
   const { input, target, cases } = REF.gaussian;
-  it.each(
-    cases.map((c) => [`${c.var} full=${c.full} ${c.reduction}`, c] as const)
-  )("%s", (_name, c) => {
-    const x = leaf(f64(input, [4, 3]));
-    const v = leaf(f64(c.varData, c.varShape));
-    const loss = gaussianNLLLoss(x, f64(target, [4, 3]), v, {
-      full: c.full,
-      reduction: c.reduction,
-    });
-    expect(GradTensor.isGradTensor(loss)).toBe(true);
-    expectClose(values(loss.tensor), c.loss);
-    backwardWeighted(loss);
-    expectClose(values(x.grad as Tensor), c.gradInput);
-    expectClose(values(v.grad as Tensor), c.gradVar);
-  });
+  it.each(cases.map((c) => [`${c.var} full=${c.full} ${c.reduction}`, c] as const))(
+    "%s",
+    (_name, c) => {
+      const x = leaf(f64(input, [4, 3]));
+      const v = leaf(f64(c.varData, c.varShape));
+      const loss = gaussianNLLLoss(x, f64(target, [4, 3]), v, {
+        full: c.full,
+        reduction: c.reduction,
+      });
+      expect(GradTensor.isGradTensor(loss)).toBe(true);
+      expectClose(values(loss.tensor), c.loss);
+      backwardWeighted(loss);
+      expectClose(values(x.grad as Tensor), c.gradInput);
+      expectClose(values(v.grad as Tensor), c.gradVar);
+    }
+  );
 
   it("keeps returning a plain Tensor for plain Tensor inputs", () => {
     const c = cases[0];
@@ -159,20 +160,21 @@ describe("NN-2: gaussianNLLLoss gradients", () => {
 
 describe("NN-2: poissonNLLLoss gradients", () => {
   const { target, cases } = REF.poisson;
-  it.each(
-    cases.map((c) => [`logInput=${c.logInput} full=${c.full} ${c.reduction}`, c] as const)
-  )("%s", (_name, c) => {
-    const x = leaf(f64(c.input, [4, 3]));
-    const loss = poissonNLLLoss(x, f64(target, [4, 3]), {
-      logInput: c.logInput,
-      full: c.full,
-      reduction: c.reduction,
-    });
-    expect(GradTensor.isGradTensor(loss)).toBe(true);
-    expectClose(values(loss.tensor), c.loss);
-    backwardWeighted(loss);
-    expectClose(values(x.grad as Tensor), c.grad);
-  });
+  it.each(cases.map((c) => [`logInput=${c.logInput} full=${c.full} ${c.reduction}`, c] as const))(
+    "%s",
+    (_name, c) => {
+      const x = leaf(f64(c.input, [4, 3]));
+      const loss = poissonNLLLoss(x, f64(target, [4, 3]), {
+        logInput: c.logInput,
+        full: c.full,
+        reduction: c.reduction,
+      });
+      expect(GradTensor.isGradTensor(loss)).toBe(true);
+      expectClose(values(loss.tensor), c.loss);
+      backwardWeighted(loss);
+      expectClose(values(x.grad as Tensor), c.grad);
+    }
+  );
 
   it("keeps returning a plain Tensor for plain Tensor inputs", () => {
     const c = cases[0];

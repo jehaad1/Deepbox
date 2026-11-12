@@ -77,18 +77,19 @@ function check(
 }
 
 describe("NN-10: Conv2d paddingMode", () => {
-  it.each(
-    REF.pm.map((c) => [`${c.mode} ${JSON.stringify(c.cfg)}`, c] as const)
-  )("%s matches torch", (_name, c) => {
-    const layer = new Conv2d(2, 3, 3, {
-      dtype: "float64",
-      paddingMode: c.mode,
-      ...(c.cfg.padding === undefined ? {} : { padding: c.cfg.padding }),
-      ...(c.cfg.stride === undefined ? {} : { stride: c.cfg.stride }),
-      ...(c.cfg.dilation === undefined ? {} : { dilation: c.cfg.dilation }),
-    });
-    check(layer, REF.x, [2, 2, 5, 4], c);
-  });
+  it.each(REF.pm.map((c) => [`${c.mode} ${JSON.stringify(c.cfg)}`, c] as const))(
+    "%s matches torch",
+    (_name, c) => {
+      const layer = new Conv2d(2, 3, 3, {
+        dtype: "float64",
+        paddingMode: c.mode,
+        ...(c.cfg.padding === undefined ? {} : { padding: c.cfg.padding }),
+        ...(c.cfg.stride === undefined ? {} : { stride: c.cfg.stride }),
+        ...(c.cfg.dilation === undefined ? {} : { dilation: c.cfg.dilation }),
+      });
+      check(layer, REF.x, [2, 2, 5, 4], c);
+    }
+  );
 
   it("rejects an unknown paddingMode", () => {
     const bad = "mirror" as unknown as "zeros";
@@ -103,19 +104,20 @@ describe("NN-10: Conv2d paddingMode", () => {
 });
 
 describe("NN-10: ConvTranspose2d groups", () => {
-  it.each(
-    REF.ct.map((c) => [JSON.stringify(c.cfg), c] as const)
-  )("%s matches torch", (_name, c) => {
-    const layer = new ConvTranspose2d(4, 6, 3, {
-      dtype: "float64",
-      groups: c.cfg.groups,
-      ...(c.cfg.stride === undefined ? {} : { stride: c.cfg.stride }),
-      ...(c.cfg.padding === undefined ? {} : { padding: c.cfg.padding }),
-      ...(c.cfg.output_padding === undefined ? {} : { outputPadding: c.cfg.output_padding }),
-    });
-    expect([...layer.weight.shape]).toEqual(c.wShape);
-    check(layer, REF.xt, [2, 4, 3, 3], c);
-  });
+  it.each(REF.ct.map((c) => [JSON.stringify(c.cfg), c] as const))(
+    "%s matches torch",
+    (_name, c) => {
+      const layer = new ConvTranspose2d(4, 6, 3, {
+        dtype: "float64",
+        groups: c.cfg.groups,
+        ...(c.cfg.stride === undefined ? {} : { stride: c.cfg.stride }),
+        ...(c.cfg.padding === undefined ? {} : { padding: c.cfg.padding }),
+        ...(c.cfg.output_padding === undefined ? {} : { outputPadding: c.cfg.output_padding }),
+      });
+      expect([...layer.weight.shape]).toEqual(c.wShape);
+      check(layer, REF.xt, [2, 4, 3, 3], c);
+    }
+  );
 
   it("rejects groups that do not divide the channel counts", () => {
     expect(() => new ConvTranspose2d(4, 6, 3, { groups: 4 })).toThrow(InvalidParameterError);

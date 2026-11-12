@@ -147,16 +147,14 @@ const EXPECTED_ROWS = Array.from({ length: 12 }, (_, i) => ({
 }));
 
 describe("parquet reader: files from other writers", () => {
-  it.each([
-    "snappy_dict",
-    "gzip",
-    "v2",
-    "multi",
-  ])("reads the %s pyarrow file (codecs, dictionary, v2 pages, row groups, logical types)", (name) => {
-    const out = readParquet(fromB64(FIXTURES[name]!));
-    expect(out.columns).toEqual(["i", "s", "b", "u", "ts", "d"]);
-    expect(out.data).toEqual(EXPECTED_ROWS);
-  });
+  it.each(["snappy_dict", "gzip", "v2", "multi"])(
+    "reads the %s pyarrow file (codecs, dictionary, v2 pages, row groups, logical types)",
+    (name) => {
+      const out = readParquet(fromB64(FIXTURES[name]!));
+      expect(out.columns).toEqual(["i", "s", "b", "u", "ts", "d"]);
+      expect(out.data).toEqual(EXPECTED_ROWS);
+    }
+  );
 
   it("returns unsigned 32-bit integers without wrapping to negatives", () => {
     const out = readParquet(fromB64(FIXTURES.snappy_dict!), { columns: ["u"] });
