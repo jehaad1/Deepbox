@@ -22,6 +22,13 @@ Priorities: P0 breaks users or loses data, P1 users will notice, P2 quality, P3 
 
 Each decision: what, why, how to undo.
 
+- D10. Biome stays on 2.5.x (`~2.5.0`, now 2.5.15). Why: 2.6 formats Markdown and would rewrite every document in one unrelated diff. Undo: `npm i -D @biomejs/biome@latest` and run `npm run format`.
+- D9. The docs site's canonical host is `https://www.deepbox.dev`, because Vercel serves `www` and redirects the apex there. Undo: set `SITE_URL` in Deepbox-Docs `src/lib/site.ts` back to the apex and make the apex primary in Vercel.
+- D8. The root entry (`dist/index.js`, `dist/index.cjs`) is written by `scripts/write-root-entry.mjs` as re-exports of the subpath builds, so subpath imports no longer carry every namespace object. Undo: put `index: "src/index.ts"` back into the tsup entries and drop the script from `build`.
+- D7. Declarations are post-processed by `scripts/fix-declarations.mjs` (explicit `.js` specifiers and `.d.cts` twins) instead of rewriting every import in `src`. Why: one build step instead of touching 300 files; attw verifies it. Undo: remove the script from `build` and the nested `types` conditions from `exports`.
+- D6. Release workflow split into a read-only `verify` job and a `publish` job that only publishes the verified tarball. Undo: revert 9a6b355.
+- D5. Defaults that differ from scikit-learn, pandas, NumPy or PyTorch stay as they are and are documented per class; changing them is listed for the owner as breaking.
+- D4. `engines.node` lowered from `>=24.13.0` to `>=22.12.0`. Why: the full suite passes on Node 22.23.4 and nothing in `src` needs Node 24. CI tests 22.12.0. Undo: revert ce103a0.
 - D3. bench-private: kept and committed the all-or-nothing scoring engine (local commit, not pushed). Evidence: `validate:all` there passes format, lint, typecheck, `next build`, `bench:check`, audit, strict discrimination, coverage, API coverage, policy, scorecard, calibration, rubrics and self-check (200 of 200 references score full marks). Only `docs:check` fails, because the generated prompt pack is older than the live docs; it is regenerated after the docs pass (Core, then Docs, then Bench). Undo: `git revert` that commit.
 - D2. bench-web: dropped the uncommitted `LabLogo.tsx` reformat (its only content change was corrupt SVG path data) and the stray `bun.lock` (the repo uses npm and `package-lock.json`). Undo: `git apply` the backup patch kept outside the repo during this session; the committed file is the correct one.
 - D1. Ledger replaces older audit and plan notes. No older audit or plan files remain in the library repo (`RELEASE-AUDIT-v1.0.0.md` is gone); nothing to consolidate there.
@@ -46,7 +53,7 @@ Format: id, priority, area, evidence, status.
 | PKG-8 | P3 | types | Public `.d.ts` need `WebAssembly` and `AbortSignal` types without referencing them. | kept: consumers get WebAssembly and AbortSignal from @types/node or the DOM lib; a triple-slash DOM reference would force DOM types on Node users |
 | PKG-9 | P3 | types | `any` in public signatures: `DataFrame.filter` row, `DataLoader` collate types. | owner decision: Record<string, unknown> rows would break typed user code such as row.age > 30; a generic row type is a 2.0 change |
 | SEC-1 | P2 | CI | `release.yml` grants `contents: write` and `id-token: write` during `npm ci` and the full test run; long-lived `NPM_TOKEN`; no check that the tag is on `main`; `ci.yml` has no `permissions` block; actions not SHA-pinned. | fixed 9a6b355 (trusted publishing is an owner action) |
-| SEC-2 | P3 | deps | `npm audit`: 7 dev-only advisories (vitest, vite, postcss, nanoid, source-map-js); 0 in the runtime tree. Three Dependabot branches unmerged since March. | open |
+| SEC-2 | P3 | deps | `npm audit`: 7 dev-only advisories (vitest, vite, postcss, nanoid, source-map-js); 0 in the runtime tree. Three Dependabot branches unmerged since March. | fixed 3284563 (npm audit: 0); stale Dependabot branches can be closed after the push |
 | SEC-3 | P3 | history | Five published commits on `main` (73a7d90, 0befc08, 2761140, fd8bac9, 49180bb) carry agent co-author trailers; author name spelled two ways. History is not rewritten (owner rule); `.mailmap` can unify names. | owner decision |
 | SEC-4 | P3 | repo | Issue chooser has no private security report link. | fixed 6b9f026 |
 | SEC-5 | P3 | deps | `allowScripts` covers `webgpu` only; `npm ci` warns about `esbuild`. | fixed ce103a0 |
@@ -55,7 +62,7 @@ Format: id, priority, area, evidence, status.
 | DOC-3 | P2 | dataframe | `df.concat([df])` throws raw `TypeError` (`other._data` undefined). Reproduced. | fixed da0e738 |
 | DOC-4 | P3 | prose | `prose:check` skips root config files; `tsup.config.ts:23` has an em dash; 22 en dashes in tracked files. | fixed aceed4e |
 | DOC-5 | P3 | docs | `benchmarks/README.md:115` matmul range does not match `RESULTS.md`. | open |
-| DOC-6 | P3 | JSDoc | `src/ndarray/ops/radix.ts:21` links to a 404 docs page. | open |
+| DOC-6 | P3 | JSDoc | `src/ndarray/ops/radix.ts:21` links to a 404 docs page. | fixed (radix.ts link; every deepbox.dev/docs slug in src, docs, README and SKILL exists) |
 | DOC-7 | P3 | dataframe | `DataFrame.corr` returns `0.9999999999999998` for perfect correlation; pandas returns exactly 1. | fixed ae00f04 |
 | DF-1 | P0 | dataframe io | `readXlsx`: one far-right cell per row allocates 16384-wide rows; 46 KB file uses 1.2 GB RSS (verified), 233 KB file crashes the process with heap OOM. `src/dataframe/io/xlsx.ts:765`. | fixed 99aa89a |
 | DF-2 | P0 | dataframe io | `readXlsx`: unterminated `<row>` tags make lazy regexes quadratic (1.2 MB file, 43 s) and return 0 rows with no error. `xlsx.ts:740,758,721`. Verified at 289 KB, 2.1 s, 0 rows. | fixed 99aa89a |
