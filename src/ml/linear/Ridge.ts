@@ -378,7 +378,8 @@ export class Ridge implements Regressor {
    * `minimize ||y - Xw||^2 + alpha * ||w||^2`, i.e. the normal equations
    * `(X^T X + alpha I) w = X^T y` on the centered data.
    *
-   * - `'auto'` and `'cholesky'` factor `X^T X + alpha I`. With `alpha > 0`, `'auto'` falls back
+   * - `'auto'` and `'cholesky'` factor `X^T X + alpha I`, or, with more features than samples,
+   *   the dual system `X X^T + alpha I` (as scikit-learn does). With `alpha > 0`, `'auto'` falls back
    *   to Gaussian elimination when the matrix is not numerically positive definite. When the
    *   system is singular or nearly so (`alpha = 0` with collinear features) both fall back to
    *   the SVD solution, which is the minimum-norm least-squares solution, as in scikit-learn.
@@ -387,7 +388,7 @@ export class Ridge implements Regressor {
    * - `'lsqr'` runs conjugate gradient on the normal equations.
    * - `'sag'` runs accelerated gradient descent that never forms `X^T X`.
    *
-   * **Time Complexity**: O(m n^2 + n^3) for the direct solvers, where m = samples, n = features
+   * **Time Complexity**: O(m n^2 + n^3) for the direct solvers, O(m^2 n + m^3) when n > m, where m = samples, n = features
    *
    * @param X - Training data of shape (n_samples, n_features)
    * @param y - Target values of shape (n_samples,)
@@ -499,52 +500,59 @@ export class Ridge implements Regressor {
     } else if (solver === "svd") {
       coef = this.solveSvd(Xc, yc, m, n, alpha);
     } else {
-      // Normal equations: gram = X^T X + alpha I, rhs = X^T y.
-      const gram = new Float64Array(n * n);
-      const rhs = new Float64Array(n);
-      for (let r = 0; r < m; r++) {
-        const base = r * n;
-        const yr = yc[r] as number;
-        for (let i = 0; i < n; i++) {
-          const xi = Xc[base + i] as number;
-          if (xi === 0) continue;
-          rhs[i] = (rhs[i] as number) + xi * yr;
-          const gRow = i * n;
-          for (let j = i; j < n; j++) {
-            gram[gRow + j] = (gram[gRow + j] as number) + xi * (Xc[base + j] as number);
-          }
-        }
-      }
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < i; j++) gram[i * n + j] = gram[j * n + i] as number;
-        gram[i * n + i] = (gram[i * n + i] as number) + alpha;
-      }
-
-      if (solver === "lsqr") {
-        const res = conjugateGradient(gram, rhs, n, maxIter, tol);
-        coef = res.x;
-        nIter = res.nIter;
-        converged = res.converged;
+      // With more features than samples the system is solved in its dual form (as scikit-learn
+      // does): (X X^T + alpha I) a = y has m unknowns instead of n, and w = X^T a.
+      const dual = n > m && solver !== "lsqr";
+      if (dual) {
+        coef = this.solveDual(Xc, yc, m, n, alpha, solver === "auto");
       } else {
-        // A singular system (alpha = 0 with collinear columns) falls back to the minimum-norm
-        // least-squares solution, as scikit-learn does. Without regularization X^T X is only
-        // positive semi-definite, so a pivot that is tiny next to the largest diagonal entry
-        // (rounding noise of a rank-deficient matrix, condition number above 1e12) also sends
-        // the fit to the SVD, which stays accurate where the normal equations do not.
-        let direct: Float64Array | undefined = choleskySolve(
-          gram,
-          rhs,
-          n,
-          alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
-        );
-        if (direct === undefined && solver === "auto" && alpha > 0) {
-          try {
-            direct = gaussianSolve(gram, rhs, n);
-          } catch (error) {
-            if (!(error instanceof DataValidationError)) throw error;
+        // Normal equations: gram = X^T X + alpha I, rhs = X^T y.
+        const gram = new Float64Array(n * n);
+        const rhs = new Float64Array(n);
+        for (let r = 0; r < m; r++) {
+          const base = r * n;
+          const yr = yc[r] as number;
+          for (let i = 0; i < n; i++) {
+            const xi = Xc[base + i] as number;
+            if (xi === 0) continue;
+            rhs[i] = (rhs[i] as number) + xi * yr;
+            const gRow = i * n;
+            for (let j = i; j < n; j++) {
+              gram[gRow + j] = (gram[gRow + j] as number) + xi * (Xc[base + j] as number);
+            }
           }
         }
-        coef = direct ?? this.solveSvd(Xc, yc, m, n, alpha);
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < i; j++) gram[i * n + j] = gram[j * n + i] as number;
+          gram[i * n + i] = (gram[i * n + i] as number) + alpha;
+        }
+
+        if (solver === "lsqr") {
+          const res = conjugateGradient(gram, rhs, n, maxIter, tol);
+          coef = res.x;
+          nIter = res.nIter;
+          converged = res.converged;
+        } else {
+          // A singular system (alpha = 0 with collinear columns) falls back to the minimum-norm
+          // least-squares solution, as scikit-learn does. Without regularization X^T X is only
+          // positive semi-definite, so a pivot that is tiny next to the largest diagonal entry
+          // (rounding noise of a rank-deficient matrix, condition number above 1e12) also sends
+          // the fit to the SVD, which stays accurate where the normal equations do not.
+          let direct: Float64Array | undefined = choleskySolve(
+            gram,
+            rhs,
+            n,
+            alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
+          );
+          if (direct === undefined && solver === "auto" && alpha > 0) {
+            try {
+              direct = gaussianSolve(gram, rhs, n);
+            } catch (error) {
+              if (!(error instanceof DataValidationError)) throw error;
+            }
+          }
+          coef = direct ?? this.solveSvd(Xc, yc, m, n, alpha);
+        }
       }
     }
 
@@ -578,6 +586,54 @@ export class Ridge implements Regressor {
     this.nIter_ = nIter;
     this.fitted = true;
     return this;
+  }
+
+  /**
+   * Ridge solution from the dual system `(X X^T + alpha I) a = y`, `w = X^T a`, for `n > m`.
+   * The same fallbacks as the primal system apply: Gaussian elimination (`'auto'` with
+   * `alpha > 0`), then the SVD when the kernel matrix is singular.
+   */
+  private solveDual(
+    Xc: Float64Array,
+    yc: Float64Array,
+    m: number,
+    n: number,
+    alpha: number,
+    allowGaussian: boolean
+  ): Float64Array {
+    const kernel = new Float64Array(m * m);
+    for (let i = 0; i < m; i++) {
+      const rowI = i * n;
+      for (let j = i; j < m; j++) {
+        const rowJ = j * n;
+        let dot = 0;
+        for (let k = 0; k < n; k++) dot += (Xc[rowI + k] as number) * (Xc[rowJ + k] as number);
+        kernel[i * m + j] = dot;
+        kernel[j * m + i] = dot;
+      }
+      kernel[i * m + i] = (kernel[i * m + i] as number) + alpha;
+    }
+    let a: Float64Array | undefined = choleskySolve(
+      kernel,
+      yc,
+      m,
+      alpha === 0 ? UNREGULARIZED_PIVOT_TOL : 0
+    );
+    if (a === undefined && allowGaussian && alpha > 0) {
+      try {
+        a = gaussianSolve(kernel, yc, m);
+      } catch (error) {
+        if (!(error instanceof DataValidationError)) throw error;
+      }
+    }
+    if (a === undefined) return this.solveSvd(Xc, yc, m, n, alpha);
+    const coef = new Float64Array(n);
+    for (let i = 0; i < m; i++) {
+      const ai = a[i] as number;
+      const row = i * n;
+      for (let k = 0; k < n; k++) coef[k] = (coef[k] as number) + ai * (Xc[row + k] as number);
+    }
+    return coef;
   }
 
   /**
