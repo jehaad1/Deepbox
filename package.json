@@ -324,6 +324,7 @@
     "@biomejs/biome": "^2.5.0",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.9",
+    "esbuild": "0.27.2",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
