@@ -24,6 +24,7 @@
  */
 
 import { DataValidationError, InvalidParameterError } from "../../core";
+import { dedupeHeaders } from "../utils";
 
 // ─── Mini ZIP Utilities (zero-dependency) ────────────────────────────────────
 
@@ -727,28 +728,6 @@ function parseCellValue(
       return NUMBER_RE.test(trimmed) ? Number(trimmed) : decodeText(raw);
     }
   }
-}
-
-/** Make header names unique the way pandas does: `a`, `a.1`, `a.2`. */
-function dedupeHeaders(names: string[]): string[] {
-  const used = new Set(names);
-  const seen = new Map<string, number>();
-  const first = new Set<string>();
-  return names.map((name) => {
-    if (!first.has(name)) {
-      first.add(name);
-      return name;
-    }
-    let k = seen.get(name) ?? 0;
-    let candidate: string;
-    do {
-      k++;
-      candidate = `${name}.${k}`;
-    } while (used.has(candidate));
-    seen.set(name, k);
-    used.add(candidate);
-    return candidate;
-  });
 }
 
 /** Set `obj[key]` without letting a `"__proto__"` column rewrite the prototype. */

@@ -39,6 +39,7 @@ export type {
   ConcatOptions,
   CorrelationMethod,
   CorrOptions,
+  CsvReadOptions,
   DataFrameData,
   DataFrameOptions,
   DataValue,

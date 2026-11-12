@@ -232,3 +232,25 @@ export const propagateFill = (
   }
   return out;
 };
+
+/** Make header names unique the way pandas does: `a`, `a.1`, `a.2`. */
+export function dedupeHeaders(names: string[]): string[] {
+  const used = new Set(names);
+  const seen = new Map<string, number>();
+  const first = new Set<string>();
+  return names.map((name) => {
+    if (!first.has(name)) {
+      first.add(name);
+      return name;
+    }
+    let k = seen.get(name) ?? 0;
+    let candidate: string;
+    do {
+      k++;
+      candidate = `${name}.${k}`;
+    } while (used.has(candidate));
+    seen.set(name, k);
+    used.add(candidate);
+    return candidate;
+  });
+}

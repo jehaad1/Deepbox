@@ -22,6 +22,7 @@ import type {
   ConcatOptions,
   CorrelationMethod,
   CorrOptions,
+  CsvReadOptions,
   DataFrameData,
   DataFrameOptions,
   FillMethod,
@@ -40,6 +41,7 @@ import {
   compareStrings,
   compensatedSum,
   createKey,
+  dedupeHeaders,
   isPlainObject,
   isRecord,
   isValidNumber,
@@ -116,6 +118,52 @@ const ensureUniqueLabels = (labels: readonly string[], labelName: string): void 
     }
     seen.add(label);
   }
+};
+
+/** Cell texts read as missing (null) by default; see `CsvReadOptions.naValues`. */
+const DEFAULT_CSV_NA_VALUES: readonly string[] = [
+  "null",
+  "undefined",
+  "NA",
+  "N/A",
+  "n/a",
+  "NULL",
+  "None",
+  "#N/A",
+  "#N/A N/A",
+  "#NA",
+  "-1.#IND",
+  "-1.#QNAN",
+  "-NaN",
+  "-nan",
+  "1.#IND",
+  "1.#QNAN",
+  "<NA>",
+];
+
+/**
+ * Convert one CSV cell to a value: null for empty or missing-marker cells,
+ * NaN, finite numbers (and the words Infinity and -Infinity), booleans, and
+ * otherwise the original text. Integers beyond the safe range, numbers that
+ * overflow to Infinity, and unsigned-part leading-zero tokens such as 007 or
+ * -007 stay text.
+ */
+const parseCsvCell = (value: string | undefined, naValues: ReadonlySet<string>): unknown => {
+  const trimmed = value === undefined ? "" : value.trim();
+  if (trimmed === "" || naValues.has(trimmed)) return null;
+  if (trimmed === "NaN" || trimmed === "nan") return NaN;
+  if (trimmed === "true" || trimmed === "True" || trimmed === "TRUE") return true;
+  if (trimmed === "false" || trimmed === "False" || trimmed === "FALSE") return false;
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed)) return value;
+  const unsigned = trimmed.startsWith("-") || trimmed.startsWith("+") ? trimmed.slice(1) : trimmed;
+  // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
+  if (unsigned !== "0" && unsigned.startsWith("0") && !unsigned.startsWith("0.")) return value;
+  if (!Number.isFinite(parsed)) {
+    return unsigned === "Infinity" ? parsed : value;
+  }
+  if (!Number.isSafeInteger(parsed) && /^[+-]?\d+$/.test(trimmed)) return value;
+  return parsed;
 };
 
 /** True for null, undefined and NaN (the values treated as "missing"). */
@@ -2329,10 +2377,20 @@ export class DataFrame {
    * Parse a CSV string into a DataFrame, inferring cell types and handling quoted fields.
    *
    * Cell types are inferred per cell: numbers (including `Infinity` and `NaN`),
-   * `true`/`false`, and strings. Empty cells and the words `null` and `undefined`
-   * become null. Strings with a leading zero such as `007` stay strings. Header
-   * cells that are empty are named `Unnamed: <position>`. Quoted fields may
-   * contain delimiters, line breaks and doubled quote characters.
+   * booleans (`true`, `True`, `TRUE` and the `false` spellings), and strings.
+   * Empty cells and the `naValues` markers (by default `null`, `undefined`,
+   * `NA`, `N/A`, `NULL`, `None` and the other pandas missing markers) become
+   * null. Text that cannot be a plain JavaScript number stays a string: tokens
+   * with a leading zero after the optional sign such as `007` or `-007`,
+   * numbers that overflow to infinity such as `1e400`, and all-digit integers
+   * beyond 2^53 - 1 (kept as their original digits instead of being silently
+   * rounded; pandas would keep an int64). Header cells that are empty are named
+   * `Unnamed: <position>` and repeated names get `.1`, `.2` suffixes like pandas.
+   * Rows shorter than the header are padded with null; longer rows throw. A
+   * quote character opens a quoted field only at the start of a field, so a
+   * quote inside an unquoted field such as `pipe 12" steel` is kept literally.
+   * Quoted fields may contain delimiters, line breaks and doubled quote
+   * characters.
    *
    * Time complexity: O(n) where n is number of characters.
    *
@@ -2343,18 +2401,11 @@ export class DataFrame {
    * @param options.hasHeader - Whether the first row holds column names (default: true).
    *   Without a header the columns are named col0, col1, ...
    * @param options.skipRows - Number of leading non-blank rows to skip (default: 0)
+   * @param options.naValues - Cell texts read as null, replacing the default list
    * @throws {InvalidParameterError} If an option is invalid
    * @throws {DataValidationError} If the CSV is malformed
    */
-  static fromCsvString(
-    csvString: string,
-    options: {
-      readonly delimiter?: string;
-      readonly quoteChar?: string;
-      readonly hasHeader?: boolean;
-      readonly skipRows?: number;
-    } = {}
-  ): DataFrame {
+  static fromCsvString(csvString: string, options: CsvReadOptions = {}): DataFrame {
     const delimiter = options.delimiter ?? ",";
     const quoteChar = options.quoteChar ?? '"';
     const hasHeader = options.hasHeader ?? true;
@@ -2367,6 +2418,15 @@ export class DataFrame {
         skipRows
       );
     }
+    const naValues = options.naValues ?? DEFAULT_CSV_NA_VALUES;
+    if (!Array.isArray(naValues) || naValues.some((v) => typeof v !== "string")) {
+      throw new InvalidParameterError(
+        "naValues must be an array of strings",
+        "naValues",
+        options.naValues
+      );
+    }
+    const naSet: ReadonlySet<string> = new Set(naValues.map((v) => v.trim()));
 
     // Strip a leading UTF-8 BOM (common in Excel-exported CSVs); otherwise the
     // first column name becomes "﻿<name>" and lookups fail.
@@ -2378,6 +2438,8 @@ export class DataFrame {
     let fields: string[] = [];
     let currentField = "";
     let inQuotes = false;
+    // True before the first character of a field; only there can a quote open quoting.
+    let atFieldStart = true;
     // True once the current row contained a quote character, so a row made of a
     // single quoted empty field ("") is data, not a blank line.
     let rowHadQuote = false;
@@ -2393,20 +2455,22 @@ export class DataFrame {
       const char = csvString[i];
       const nextChar = csvString[i + 1];
 
-      if (char === quoteChar) {
+      if (char === quoteChar && (inQuotes || atFieldStart)) {
         rowHadQuote = true;
+        atFieldStart = false;
         if (inQuotes && nextChar === quoteChar) {
           // Escaped quote
           currentField += quoteChar;
           i++;
         } else {
-          // Toggle quote state
+          // Open or close the quoted section
           inQuotes = !inQuotes;
         }
       } else if (char === delimiter && !inQuotes) {
         // Field separator
         fields.push(currentField);
         currentField = "";
+        atFieldStart = true;
       } else if ((char === "\n" || char === "\r") && !inQuotes) {
         // End of row (but not if inside quotes)
         if (char === "\r" && nextChar === "\n") {
@@ -2425,9 +2489,11 @@ export class DataFrame {
         }
         fields = [];
         rowHadQuote = false;
+        atFieldStart = true;
       } else {
-        // Regular character (including newlines inside quotes)
+        // Regular character (including newlines inside quotes and quotes inside unquoted fields)
         currentField += char;
+        atFieldStart = false;
       }
     }
 
@@ -2453,8 +2519,7 @@ export class DataFrame {
     if (hasHeader) {
       const firstRow = rows[0];
       if (!firstRow) throw new DataValidationError("CSV has no header row");
-      columns = firstRow.map((name, i) => (name === "" ? `Unnamed: ${i}` : name));
-      ensureUniqueLabels(columns, "column name");
+      columns = dedupeHeaders(firstRow.map((name, i) => (name === "" ? `Unnamed: ${i}` : name)));
       dataRows = rows.slice(1);
     } else {
       const numCols = rows[0]?.length ?? 0;
@@ -2464,7 +2529,7 @@ export class DataFrame {
 
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i];
-      if (row && row.length !== columns.length) {
+      if (row && row.length > columns.length) {
         throw new DataValidationError(
           `Row ${i + (hasHeader ? 2 : 1)} has ${row.length} fields, expected ${columns.length}`
         );
@@ -2475,28 +2540,8 @@ export class DataFrame {
     for (let colIdx = 0; colIdx < columns.length; colIdx++) {
       const colName = columns[colIdx] as string;
       const colData: unknown[] = [];
-
-      for (const row of dataRows) {
-        const value = row[colIdx];
-        const trimmed = value === undefined ? "" : value.trim();
-        if (trimmed === "" || trimmed === "null" || trimmed === "undefined") {
-          // Empty or whitespace-only cells are missing (null), NOT numeric 0.
-          colData.push(null);
-        } else if (trimmed === "NaN" || trimmed === "nan") {
-          colData.push(NaN);
-        } else if (
-          !Number.isNaN(Number(trimmed)) &&
-          // Preserve leading-zero strings like "007"/"01" (but keep "0", "0.5").
-          (trimmed === "0" || !trimmed.startsWith("0") || trimmed.startsWith("0."))
-        ) {
-          colData.push(Number(trimmed));
-        } else if (trimmed === "true" || trimmed === "false") {
-          colData.push(trimmed === "true");
-        } else {
-          colData.push(value);
-        }
-      }
-
+      // Empty or whitespace-only cells are missing (null), NOT numeric 0; short rows read as null.
+      for (const row of dataRows) colData.push(parseCsvCell(row[colIdx], naSet));
       data[colName] = colData;
     }
 
@@ -2507,15 +2552,7 @@ export class DataFrame {
    * Read CSV file - environment-aware (Node.js fs or browser fetch).
    * Time complexity: O(n) for file read + O(m) for parsing.
    */
-  static async readCsv(
-    path: string,
-    options: {
-      readonly delimiter?: string;
-      readonly quoteChar?: string;
-      readonly hasHeader?: boolean;
-      readonly skipRows?: number;
-    } = {}
-  ): Promise<DataFrame> {
+  static async readCsv(path: string, options: CsvReadOptions = {}): Promise<DataFrame> {
     let csvString: string;
 
     if (typeof process !== "undefined" && process.versions?.node) {

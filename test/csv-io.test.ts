@@ -149,10 +149,11 @@ describe("DataFrame CSV Operations", () => {
     /**
      * Test inconsistent row length error.
      */
-    it("should throw error for inconsistent row lengths", () => {
-      const csv = "a,b,c\n1,2,3\n4,5"; // Second row missing column
+    it("should throw error for rows longer than the header and pad short rows", () => {
+      const csv = "a,b,c\n1,2,3\n4,5,6,7"; // Second row has an extra column
 
       expect(() => DataFrame.fromCsvString(csv)).toThrow(/Row \d+ has \d+ fields, expected \d+/);
+      expect(DataFrame.fromCsvString("a,b,c\n1,2,3\n4,5").get("c").toArray()).toEqual([3, null]);
     });
 
     /**
@@ -166,9 +167,9 @@ describe("DataFrame CSV Operations", () => {
     /**
      * Test duplicate header error.
      */
-    it("should throw error for duplicate headers", () => {
+    it("should dedupe duplicate headers like pandas", () => {
       const csv = "a,a\n1,2";
-      expect(() => DataFrame.fromCsvString(csv)).toThrow(/Duplicate column name/);
+      expect(DataFrame.fromCsvString(csv).columns).toEqual(["a", "a.1"]);
     });
 
     /**

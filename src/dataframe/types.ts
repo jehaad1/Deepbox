@@ -213,3 +213,26 @@ export type ValueCountsOptions = {
   readonly sort?: boolean;
   readonly ascending?: boolean;
 };
+
+/** Options shared by {@link DataFrame.fromCsvString} and {@link DataFrame.readCsv}. */
+export type CsvReadOptions = {
+  /** Single-character field separator (default: ","). */
+  readonly delimiter?: string;
+  /** Single-character quote (default: '"'). */
+  readonly quoteChar?: string;
+  /**
+   * Whether the first row holds column names (default: true). Without a header
+   * the columns are named col0, col1, ...
+   */
+  readonly hasHeader?: boolean;
+  /** Number of leading non-blank rows to skip (default: 0). */
+  readonly skipRows?: number;
+  /**
+   * Cell texts (compared after trimming) that are read as missing (null). This
+   * list replaces the default one, which holds `null`, `undefined`, `NA`, `N/A`,
+   * `n/a`, `NULL`, `None`, `#N/A`, `#N/A N/A`, `#NA`, `<NA>` and the other
+   * missing markers pandas recognizes. Empty cells are always null. `NaN` and
+   * `nan` are not in the list because they are read as the number NaN.
+   */
+  readonly naValues?: readonly string[];
+};
