@@ -91,7 +91,7 @@ export type {
   WorkerPoolOptions,
 } from "./parallel/index";
 // Parallel
-export { availableCores, createWorkerPool, WorkerPool } from "./parallel/index";
+export { availableCores, createWorkerPool, TaskTimeoutError, WorkerPool } from "./parallel/index";
 // Serialization
 export type {
   SerializedEstimator,

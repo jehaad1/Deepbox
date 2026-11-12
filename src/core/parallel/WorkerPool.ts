@@ -5,7 +5,10 @@
  * calling thread, in order. No `worker_threads` or Web Workers are spawned:
  * callbacks are ordinary closures, receive their arguments by reference, and
  * may touch any outer state. It gives batching, ordering guarantees, status
- * counters and a termination switch, but not multi-core speedups.
+ * counters, a per-task timeout and a termination switch, but not multi-core
+ * speedups. A callback may return a promise: it is awaited before the next item
+ * starts, so asynchronous callbacks also run one at a time (use `all` to run
+ * asynchronous tasks concurrently).
  *
  * @module core/parallel
  * @see {@link https://deepbox.dev/docs/core-utils | Utilities, serialization & parallelism}
@@ -54,6 +57,24 @@ function detectCpuCount(): number {
 }
 
 /**
+ * Thrown when a {@link WorkerPool} task takes longer than the pool's `taskTimeout`.
+ */
+export class TaskTimeoutError extends DeepboxError {
+  /**
+   * Discriminator name for this error type.
+   */
+  override name = "TaskTimeoutError";
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/**
  * Result of a parallel task execution.
  */
 export type TaskResult<T> = {
@@ -70,8 +91,11 @@ export type WorkerPoolOptions = {
   readonly maxWorkers?: number;
   /**
    * Task timeout in milliseconds (positive). Default: 30000 (30s).
-   * Tasks run on the calling thread and cannot be pre-empted, so the value is
-   * stored in {@link WorkerPool.taskTimeoutMs} but not enforced.
+   * It applies to each callback call. A callback that returns a promise rejects with a
+   * {@link TaskTimeoutError} once the time has passed (the promise itself cannot be cancelled).
+   * A synchronous callback runs on the calling thread and cannot be pre-empted, so its duration
+   * is checked when it returns: one that ran longer than the timeout rejects with a
+   * {@link TaskTimeoutError} and its result is dropped.
    */
   readonly taskTimeout?: number;
 };
@@ -106,8 +130,8 @@ function splitIntoChunks<T>(
  * A pool that batches work into chunks and runs them in order on the
  * calling thread.
  *
- * Results always keep input order. A callback that throws rejects the
- * returned promise and later chunks are not started.
+ * Results always keep input order. A callback that throws, or runs longer than
+ * `taskTimeout`, rejects the returned promise and later chunks are not started.
  *
  * @example
  * ```ts
@@ -129,7 +153,7 @@ export class WorkerPool {
   private activeCount = 0;
   private completedCount = 0;
   private terminated = false;
-  /** Task timeout in milliseconds. Stored for callers; not enforced (see {@link WorkerPoolOptions}). */
+  /** Task timeout in milliseconds (see {@link WorkerPoolOptions.taskTimeout}). */
   readonly taskTimeoutMs: number;
 
   /**
@@ -174,20 +198,23 @@ export class WorkerPool {
   /**
    * Execute a function on a single item.
    *
-   * Runs inline: spawning a worker is never worth it for one item.
+   * Runs inline: spawning a worker is never worth it for one item. A returned promise is
+   * awaited.
    *
    * @param fn - Function to execute
    * @param arg - Argument to pass to the function
    * @returns Promise resolving to the function result with timing info
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If the call takes longer than `taskTimeout`
    */
-  async exec<T, R>(fn: (arg: T) => R, arg: T): Promise<TaskResult<R>> {
+  async exec<T, R>(fn: (arg: T) => R, arg: T): Promise<TaskResult<Awaited<R>>> {
     this.ensureNotTerminated();
     const start = Date.now();
     this.activeCount++;
-    let value: R;
+    let value: Awaited<R>;
     try {
-      value = fn(arg);
+      const result = this.callTask(() => fn(arg));
+      value = (isThenable(result) ? await result : result) as Awaited<R>;
     } finally {
       this.activeCount--;
     }
@@ -204,19 +231,24 @@ export class WorkerPool {
    *
    * Items are split into at most `maxWorkers` chunks. `fn` is called with the
    * item only (not the index or array), so functions such as `parseInt` behave
-   * as expected.
+   * as expected. When `fn` returns a promise it is awaited, so the result holds
+   * the resolved values.
    *
    * @param items - Array of input items
    * @param fn - Function to apply to each item
    * @returns Promise resolving to array of results (same order as input)
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If a call takes longer than `taskTimeout`
    */
-  async map<T, R>(items: readonly T[], fn: (item: T) => R): Promise<R[]> {
+  async map<T, R>(items: readonly T[], fn: (item: T) => R): Promise<Awaited<R>[]> {
     this.ensureNotTerminated();
-    const out: R[] = [];
+    const out: Awaited<R>[] = [];
     for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
-      this.runChunk(() => {
-        for (const item of chunk.items) out.push(fn(item));
+      await this.runChunk(async () => {
+        for (const item of chunk.items) {
+          const result = this.callTask(() => fn(item));
+          out.push((isThenable(result) ? await result : result) as Awaited<R>);
+        }
       });
     }
     return out;
@@ -228,23 +260,31 @@ export class WorkerPool {
    * Each chunk is reduced separately and the partial results are then
    * combined, so `fn` must be associative. `initial` is applied exactly once,
    * like `Array.prototype.reduce`, and is the left operand of the final
-   * combination.
+   * combination. A promise returned by `fn` is awaited.
    *
    * @param items - Array of values to reduce
    * @param fn - Associative reducer function
    * @param initial - Initial accumulator value
    * @returns Promise resolving to the reduced value
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If a call takes longer than `taskTimeout`
    */
-  async reduce<T>(items: readonly T[], fn: (a: T, b: T) => T, initial: T): Promise<T> {
+  async reduce<T>(items: readonly T[], fn: (a: T, b: T) => T | Promise<T>, initial: T): Promise<T> {
     this.ensureNotTerminated();
+
+    const combine = async (a: T, b: T): Promise<T> => {
+      const result = this.callTask(() => fn(a, b));
+      return isThenable(result) ? await result : result;
+    };
 
     let acc = initial;
     for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
-      this.runChunk(() => {
-        // Non-empty by construction, so the seedless reduce is safe.
-        const partial = chunk.items.reduce((a, b) => fn(a, b));
-        acc = fn(acc, partial);
+      await this.runChunk(async () => {
+        let partial = chunk.items[0] as T;
+        for (let j = 1; j < chunk.items.length; j++) {
+          partial = await combine(partial, chunk.items[j] as T);
+        }
+        acc = await combine(acc, partial);
       });
     }
     return acc;
@@ -257,14 +297,15 @@ export class WorkerPool {
    * @returns Promise resolving to array of results (same order as input);
    *   promises returned by tasks are awaited
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If a task takes longer than `taskTimeout`
    */
-  async all<T>(tasks: readonly (() => T)[]): Promise<T[]> {
+  async all<T>(tasks: readonly (() => T)[]): Promise<Awaited<T>[]> {
     this.ensureNotTerminated();
     return Promise.all(
       tasks.map(async (task) => {
         this.activeCount++;
         try {
-          return await task();
+          return await this.callTask(task);
         } finally {
           this.activeCount--;
           this.completedCount++;
@@ -274,38 +315,48 @@ export class WorkerPool {
   }
 
   /**
-   * Execute a function for each item, in order.
+   * Execute a function for each item, in order. A promise returned by `fn` is awaited.
    *
    * @param items - Array of input items
    * @param fn - Function to execute for each item (side-effect only)
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If a call takes longer than `taskTimeout`
    */
-  async forEach<T>(items: readonly T[], fn: (item: T, index: number) => void): Promise<void> {
+  async forEach<T>(
+    items: readonly T[],
+    fn: (item: T, index: number) => void | Promise<void>
+  ): Promise<void> {
     this.ensureNotTerminated();
     for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
-      this.runChunk(() => {
+      await this.runChunk(async () => {
         for (let j = 0; j < chunk.items.length; j++) {
-          fn(chunk.items[j] as T, chunk.start + j);
+          const result = this.callTask(() => fn(chunk.items[j] as T, chunk.start + j));
+          if (isThenable(result)) await result;
         }
       });
     }
   }
 
   /**
-   * Filter an array.
+   * Filter an array. A promise returned by `predicate` is awaited.
    *
    * @param items - Array of items to filter
    * @param predicate - Filter predicate, called with the item only
    * @returns Promise resolving to filtered array (preserving order)
    * @throws {DeepboxError} If the pool has been terminated
+   * @throws {TaskTimeoutError} If a call takes longer than `taskTimeout`
    */
-  async filter<T>(items: readonly T[], predicate: (item: T) => boolean): Promise<T[]> {
+  async filter<T>(
+    items: readonly T[],
+    predicate: (item: T) => boolean | Promise<boolean>
+  ): Promise<T[]> {
     this.ensureNotTerminated();
     const out: T[] = [];
     for (const chunk of splitIntoChunks(items, this.maxWorkers)) {
-      this.runChunk(() => {
+      await this.runChunk(async () => {
         for (const item of chunk.items) {
-          if (predicate(item)) out.push(item);
+          const result = this.callTask(() => predicate(item));
+          if (isThenable(result) ? await result : result) out.push(item);
         }
       });
     }
@@ -329,14 +380,49 @@ export class WorkerPool {
     return this.terminated;
   }
 
-  private runChunk(body: () => void): void {
+  private async runChunk(body: () => Promise<void>): Promise<void> {
     this.activeCount++;
     try {
-      body();
+      await body();
     } finally {
       this.activeCount--;
       this.completedCount++;
     }
+  }
+
+  /**
+   * Run one callback under the task timeout. A synchronous result is checked against the
+   * time it took; a promise is raced against a timer. Returns the value or the guarded promise.
+   */
+  private callTask<R>(task: () => R): R | Promise<Awaited<R>> {
+    const started = Date.now();
+    const result = task();
+    if (isThenable(result)) {
+      return new Promise<Awaited<R>>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(this.timeoutError(this.taskTimeoutMs));
+        }, this.taskTimeoutMs);
+        result.then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value as Awaited<R>);
+          },
+          (error: unknown) => {
+            clearTimeout(timer);
+            reject(error);
+          }
+        );
+      });
+    }
+    const elapsed = Date.now() - started;
+    if (elapsed > this.taskTimeoutMs) throw this.timeoutError(elapsed);
+    return result;
+  }
+
+  private timeoutError(elapsedMs: number): TaskTimeoutError {
+    return new TaskTimeoutError(
+      `WorkerPool task exceeded taskTimeout of ${this.taskTimeoutMs} ms (ran for ${elapsedMs} ms)`
+    );
   }
 
   private ensureNotTerminated(): void {

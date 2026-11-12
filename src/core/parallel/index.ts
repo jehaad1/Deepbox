@@ -10,6 +10,7 @@ export {
   createWorkerPool,
   type PoolStatus,
   type TaskResult,
+  TaskTimeoutError,
   WorkerPool,
   type WorkerPoolOptions,
 } from "./WorkerPool";
