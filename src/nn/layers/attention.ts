@@ -900,7 +900,9 @@ export class TransformerEncoderLayer extends Module {
  * 6. Add & Norm
  *
  * By default the self-attention is causal: position i only attends to positions
- * up to i. Pass `tgtMask` to `forward` to use a different mask. The layout is post-norm with
+ * up to i. Pass `tgtMask` to `forward` to use a different mask, or `causal: false` to the
+ * constructor to attend over the whole target sequence when no `tgtMask` is given (as
+ * PyTorch's decoder layer does without `tgt_mask`). The layout is post-norm with
  * a ReLU feed-forward network unless `normFirst` and `activation` say otherwise.
  *
  * Parameters are float32 unless the `dtype` option (or the global default dtype) says
@@ -941,6 +943,7 @@ export class TransformerDecoderLayer extends Module {
   private readonly paramDtype: LayerDType;
   private readonly activation: TransformerActivation;
   private readonly normFirst: boolean;
+  private readonly causal: boolean;
 
   /**
    * @param dModel - Model dimension
@@ -948,8 +951,10 @@ export class TransformerDecoderLayer extends Module {
    * @param dFF - Feed-forward width (default: 2048)
    * @param options - `{ dropout?: number (default 0.1), eps?: number (default 1e-5),
    *   dtype?: 'float32' | 'float64', activation?: 'relu' | 'gelu' (default 'relu'),
-   *   normFirst?: boolean (default false) }`. `activation: 'gelu'` is the exact erf GELU.
-   *   `normFirst: true` normalizes before each sub-block (pre-norm) instead of after it.
+   *   normFirst?: boolean (default false), causal?: boolean (default true) }`.
+   *   `activation: 'gelu'` is the exact erf GELU. `normFirst: true` normalizes before each
+   *   sub-block (pre-norm) instead of after it. `causal: false` removes the default causal
+   *   self-attention mask (a `tgtMask` passed to `forward` always takes precedence).
    * @throws {InvalidParameterError} If a dimension is not a positive integer, `nHead` does not divide
    *   `dModel`, `dropout` is outside [0, 1), or `activation` is not `'relu'` or `'gelu'`
    */
@@ -963,6 +968,7 @@ export class TransformerDecoderLayer extends Module {
       readonly dtype?: LayerDType;
       readonly activation?: TransformerActivation;
       readonly normFirst?: boolean;
+      readonly causal?: boolean;
     } = {}
   ) {
     super();
@@ -994,6 +1000,7 @@ export class TransformerDecoderLayer extends Module {
     this.eps = eps;
     this.activation = resolveActivation(options.activation);
     this.normFirst = options.normFirst ?? false;
+    this.causal = options.causal ?? true;
     this.paramDtype = resolveLayerDtype(options.dtype);
     const dtype = this.paramDtype;
 
@@ -1035,6 +1042,7 @@ export class TransformerDecoderLayer extends Module {
         dtype: this.paramDtype,
         activation: this.activation,
         normFirst: this.normFirst,
+        causal: this.causal,
       })
     );
   }
@@ -1045,7 +1053,8 @@ export class TransformerDecoderLayer extends Module {
    * @param tgt - Target sequence of shape (batch, tgtLen, dModel), or (tgtLen, dModel)
    * @param memory - Encoder output of shape (batch, srcLen, dModel); required
    * @param tgtMask - Optional mask for the self-attention (see {@link MultiheadAttention.forward}).
-   *   When omitted, a causal mask is used. When given, it replaces the causal mask.
+   *   When omitted, a causal mask is used unless the layer was built with `causal: false`.
+   *   When given, it replaces the causal mask.
    * @param memoryMask - Optional mask for the cross-attention, broadcastable to
    *   (batch, numHeads, tgtLen, srcLen)
    * @returns Output of same shape as `tgt`
@@ -1098,9 +1107,14 @@ export class TransformerDecoderLayer extends Module {
     // 1. Self-attention. By default each target position may only attend to itself
     // and earlier positions (prevents information leakage from future tokens
     // during autoregressive decoding).
-    const selfMask = tgtMask ?? causalMask(input.shape[input.ndim - 2] ?? 0);
+    const selfMask =
+      tgtMask ?? (this.causal ? causalMask(input.shape[input.ndim - 2] ?? 0) : undefined);
     const selfAttend = (x: GradTensor): GradTensor =>
-      this.dropout1.forward(this.selfAttn.forward(x, x, x, selfMask));
+      this.dropout1.forward(
+        selfMask === undefined
+          ? this.selfAttn.forward(x, x, x)
+          : this.selfAttn.forward(x, x, x, selfMask)
+      );
     // Cross-attention: query from the decoder, key and value from the encoder
     const crossAttend = (x: GradTensor): GradTensor => {
       const c =
@@ -1288,7 +1302,7 @@ export class TransformerDecoder extends Module {
   /**
    * @param tgt - Target sequence of shape (batch, tgtLen, dModel), or (tgtLen, dModel)
    * @param memory - Encoder output; required
-   * @param tgtMask - Optional self-attention mask; defaults to a causal mask
+   * @param tgtMask - Optional self-attention mask; defaults to a causal mask unless the layer was built with `causal: false`
    * @param memoryMask - Optional cross-attention mask
    * @returns Decoded sequence of the same shape as `tgt`
    * @throws {InvalidParameterError} If `memory` is missing
@@ -1383,7 +1397,8 @@ export class FullTransformer extends Module {
    * @param dFF - Feed-forward width (default: 2048)
    * @param options - `dropout` (default 0.1), `eps` (default 1e-5), `dtype` of the parameters,
    *   `activation` (`'relu'` or `'gelu'`, default `'relu'`), `normFirst` (pre-norm layers,
-   *   default false), and `finalNorm`: add a LayerNorm after the encoder stack and after the
+   *   default false), `causal` (decoder self-attention is causal when no `tgtMask` is given,
+   *   default true), and `finalNorm`: add a LayerNorm after the encoder stack and after the
    *   decoder stack (default: false)
    */
   constructor(
@@ -1399,13 +1414,17 @@ export class FullTransformer extends Module {
       readonly finalNorm?: boolean;
       readonly activation?: TransformerActivation;
       readonly normFirst?: boolean;
+      readonly causal?: boolean;
     } = {}
   ) {
     super();
 
-    const { finalNorm, ...layerOptions } = options;
+    const { finalNorm, causal, ...layerOptions } = options;
     const encLayer = new TransformerEncoderLayer(dModel, nHead, dFF, layerOptions);
-    const decLayer = new TransformerDecoderLayer(dModel, nHead, dFF, layerOptions);
+    const decLayer = new TransformerDecoderLayer(dModel, nHead, dFF, {
+      ...layerOptions,
+      ...(causal === undefined ? {} : { causal }),
+    });
     const eps = options.eps ?? 1e-5;
     const dtype = resolveLayerDtype(options.dtype);
 
@@ -1430,7 +1449,7 @@ export class FullTransformer extends Module {
    * @param src - Source sequence of shape (batch, srcLen, dModel)
    * @param tgt - Target sequence of shape (batch, tgtLen, dModel); required
    * @param srcMask - Optional encoder self-attention mask
-   * @param tgtMask - Optional decoder self-attention mask; defaults to a causal mask
+   * @param tgtMask - Optional decoder self-attention mask; defaults to a causal mask unless `causal: false` was given
    * @param memoryMask - Optional decoder cross-attention mask
    * @returns Decoder output of the same shape as `tgt`
    * @throws {InvalidParameterError} If `tgt` is missing
