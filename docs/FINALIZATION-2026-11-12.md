@@ -160,7 +160,7 @@ Format: id, priority, area, evidence, status.
 | DOCS-2 | P1 | docs site | Example and project pages show a one-line README description in a "Console output" frame; 0 of 59 match real output. | fixed and live (d401649) |
 | DOCS-3 | P1 | docs site | "How to run" fails for 6 pages that use top-level await without `"type": "module"`. | fixed and live (2865ea3) |
 | DOCS-4 | P1 | JSDoc | Doc examples that throw: `partialcorr` (collinear data), `inv` (imports `matmul` from ndarray), random `choice` (imports `tensor` from random), `AlphaDropout` (`Sequential([...])`). | fixed (5d3d9c1, 3e2b49f) |
-| DOCS-5 | P2 | JSDoc | 253 of 667 `@example` blocks do not run as pasted (195 have no import). | checker added de220e4 (jsdoc:examples in validate:all); 690 of 690 pass outside ml, preprocess, stats; the rest in progress |
+| DOCS-5 | P2 | JSDoc | 253 of 667 `@example` blocks do not run as pasted (195 have no import). | fixed: 970 of 970 examples run in jsdoc:examples (validate:all), 30 marked fragment |
 | DOCS-6 | P2 | docs site | og/twitter tags missing or site-default on subpages; 10000x5000 image declared 512x512; 5000x5000 favicon. | fixed and live (3b5a439) |
 | DOCS-7 | P2 | docs site | No Content-Security-Policy; `/favicon.ico` 404; HTML sends `access-control-allow-origin: *`. | fixed and live (df86ce6); HSTS includeSubDomains withheld while bench.deepbox.dev has an expired certificate |
 | DOCS-8 | P2 | docs site | Sitemap lists a redirect (`/docs`) and request-time `lastmod`; robots has `Host:`. | fixed and live (7a27860) |
