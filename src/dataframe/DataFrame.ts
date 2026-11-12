@@ -6544,6 +6544,24 @@ export class Expanding {
       };
     });
   }
+
+  /** Expanding median (the observations so far are kept sorted by binary insertion). */
+  median(): DataFrame {
+    return this.stream(() => {
+      const sorted: number[] = [];
+      return (v) => {
+        let lo = 0;
+        let hi = sorted.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if ((sorted[mid] as number) < v) lo = mid + 1;
+          else hi = mid;
+        }
+        sorted.splice(lo, 0, v);
+        return quantileSorted(sorted, 0.5);
+      };
+    });
+  }
 }
 
 /**
