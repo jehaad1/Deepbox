@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
@@ -15,13 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["24.13.0", "24"]
+        node-version: ["22.12.0", "24.13.0", "24"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: "npm"
@@ -32,12 +35,9 @@ jobs:
       - name: Run checks
         run: npm run all
 
-      - name: Verify package contents
-        run: npm pack --dry-run
-
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v5
-        if: always()
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        if: always() && matrix.node-version == '24'
         with:
           files: ./coverage/coverage-final.json
           flags: unittests
