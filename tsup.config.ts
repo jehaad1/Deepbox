@@ -20,8 +20,8 @@ export default defineConfig({
   format: ["cjs", "esm"],
   dts: false,
   splitting: true,
-  // Sourcemaps reference ../src which is not shipped in the npm package —
-  // emitting them only bloats the tarball with broken maps.
+  // Sourcemaps reference ../src, which is not shipped in the npm package, so
+  // emitting them would only add broken maps to the tarball.
   sourcemap: false,
   clean: true,
   treeshake: true,

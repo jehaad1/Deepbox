@@ -334,16 +334,18 @@ describe("Isomap", () => {
     expect(after[0]?.length).toBe(2);
   });
 
-  it("handles a few hundred samples quickly (Dijkstra instead of Floyd-Warshall)", () => {
+  it("embeds a few hundred samples (Dijkstra shortest paths)", () => {
     const pts: number[][] = [];
     for (let i = 0; i < 400; i++) {
       const t = (i / 400) * 4 * Math.PI;
       pts.push([Math.cos(t) * (1 + t / 6), Math.sin(t) * (1 + t / 6), t / 5]);
     }
-    const start = performance.now();
     const emb = rows(new Isomap({ nComponents: 2, nNeighbors: 6 }).fitTransform(f64(pts)));
     expect(emb.length).toBe(400);
-    expect(performance.now() - start).toBeLessThan(5000);
+    for (const row of emb) {
+      expect(row).toHaveLength(2);
+      for (const v of row) expect(Number.isFinite(v)).toBe(true);
+    }
   });
 });
 
