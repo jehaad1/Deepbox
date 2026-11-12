@@ -103,10 +103,51 @@ function workingEpsilon(...tensors: readonly Tensor[]): number {
 }
 
 /**
+ * Determinant of a matrix that holds NaN or infinite values: LU factorization with partial
+ * pivoting in plain IEEE arithmetic, the way LAPACK's getrf does it. A zero pivot skips the
+ * elimination of its column. Overwrites `lu`.
+ */
+function ieeeDeterminant(lu: Float64Array, n: number): number {
+  let sign = 1;
+  for (let k = 0; k < n; k++) {
+    let maxRow = k;
+    let maxVal = Math.abs(lu[k * n + k] as number);
+    for (let i = k + 1; i < n; i++) {
+      const v = Math.abs(lu[i * n + k] as number);
+      if (v > maxVal) {
+        maxVal = v;
+        maxRow = i;
+      }
+    }
+    if (maxRow !== k) {
+      for (let j = 0; j < n; j++) {
+        const tmp = lu[k * n + j] as number;
+        lu[k * n + j] = lu[maxRow * n + j] as number;
+        lu[maxRow * n + j] = tmp;
+      }
+      sign = -sign;
+    }
+    const pivot = lu[k * n + k] as number;
+    if (pivot === 0) continue;
+    for (let i = k + 1; i < n; i++) {
+      const factor = (lu[i * n + k] as number) / pivot;
+      for (let j = k + 1; j < n; j++) {
+        lu[i * n + j] = (lu[i * n + j] as number) - factor * (lu[k * n + j] as number);
+      }
+    }
+  }
+  let result = sign;
+  for (let i = 0; i < n; i++) result *= lu[i * n + i] as number;
+  return result;
+}
+
+/**
  * Compute the determinant of a matrix.
  *
  * Uses LU decomposition with partial pivoting for numerical stability.
  * The determinant is computed as: det(A) = pivSign * product(diag(U))
+ * NaN and infinite entries are not an error: the result is the IEEE value of the LU
+ * factorization, as in NumPy (a NaN entry gives NaN).
  *
  * **Algorithm**: LU decomposition
  * **Time Complexity**: O(N³) for N×N matrix
@@ -135,7 +176,6 @@ function workingEpsilon(...tensors: readonly Tensor[]): number {
  *
  * @throws {ShapeError} If input is not a 2D square matrix
  * @throws {DTypeError} If input has string or complex dtype
- * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  *
  * @see {@link https://deepbox.dev/docs/linalg-properties | Deepbox Linear Algebra}
  */
@@ -148,7 +188,8 @@ export function det(a: Tensor): number {
   const n = rows;
   if (n === 0) return 1;
 
-  const { data: A } = toDenseMatrix2D(a, "det()");
+  const { data: A } = toDenseMatrix2D(a, "det()", true);
+  if (A.some((v) => !Number.isFinite(v))) return ieeeDeterminant(A, n);
 
   try {
     const { lu, pivSign } = luFactorSquare(A, n);

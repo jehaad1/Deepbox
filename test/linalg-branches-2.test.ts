@@ -80,7 +80,7 @@ describe("linalg branches 2", () => {
     expect(Number(norm(v, 3))).toBeCloseTo((3 ** 3 + 4 ** 3) ** (1 / 3), 6);
     expect(Number(norm(v, 2))).toBeCloseTo(5, 6);
     const bad = tensor([1, NaN, 2]);
-    expect(() => norm(bad, 2)).toThrow(/non-finite/i);
+    expect(norm(bad, 2)).toBeNaN();
   });
 
   it("computes matrix Frobenius and axis-based norms", () => {
@@ -98,7 +98,7 @@ describe("linalg branches 2", () => {
       [1, 2],
       [3, Infinity],
     ]);
-    expect(() => norm(bad, "fro")).toThrow(/non-finite/i);
+    expect(norm(bad, "fro")).toBe(Infinity);
   });
 
   it("cond handles frobenius, empty, and singular matrices", () => {
@@ -113,7 +113,7 @@ describe("linalg branches 2", () => {
       [1, 2],
       [NaN, 4],
     ]);
-    expect(() => cond(bad)).toThrow(/non-finite/i);
+    expect(cond(bad)).toBeNaN();
 
     const empty = Tensor.fromTypedArray({
       data: new Float64Array(0),

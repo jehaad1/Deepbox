@@ -22,30 +22,30 @@ describe("linalg norms extra branches", () => {
     expect(cond(empty)).toBe(Infinity);
   });
 
-  it("rejects non-finite values in norm", () => {
+  it("returns IEEE results for non-finite values in norm", () => {
     const v = tensor([1, NaN, 2]);
-    expect(() => norm(v, 2)).toThrow(/non-finite/i);
+    expect(norm(v, 2)).toBeNaN();
     const m = tensor([
       [1, 2],
       [3, Infinity],
     ]);
-    expect(() => norm(m, "fro")).toThrow(/non-finite/i);
+    expect(norm(m, "fro")).toBe(Infinity);
   });
 
-  it("does not mask non-finite inputs in cond", () => {
+  it("returns NaN for NaN inputs in cond", () => {
     const bad = tensor([
       [1, NaN],
       [2, 3],
     ]);
-    expect(() => cond(bad)).toThrow(/non-finite/i);
+    expect(cond(bad)).toBeNaN();
   });
 
-  it("rejects non-finite values in non-contiguous views", () => {
+  it("returns IEEE results for non-finite values in non-contiguous views", () => {
     const m = tensor([
       [1, 2],
       [3, NaN],
     ]);
     const mt = transpose(m);
-    expect(() => norm(mt, "fro")).toThrow(/non-finite/i);
+    expect(norm(mt, "fro")).toBeNaN();
   });
 });

@@ -10,7 +10,7 @@ import {
 import { type Tensor, tensor } from "../ndarray";
 import { isContiguous } from "../ndarray/tensor/strides";
 import {
-  assertFiniteTensor,
+  classifyNonFinite,
   fromDenseMatrix2D,
   getDim,
   getStride,
@@ -40,6 +40,7 @@ function scaledNorm2(data: NumericData, base: number, stride: number, len: numbe
     if (a > max) max = a;
   }
   if (max === 0) return 0;
+  if (max === Number.POSITIVE_INFINITY) return max;
   let sum = 0;
   for (let k = 0; k < len; k++) {
     const r = Number(data[base + k * stride]) / max;
@@ -79,6 +80,7 @@ function vectorNormStrided(
       const v = Number(data[base + k * stride]);
       sum += v * v;
     }
+    if (Number.isNaN(sum)) return Number.NaN;
     if (sum >= SUMSQ_LOW && sum <= Number.MAX_VALUE) return Math.sqrt(sum);
     return scaledNorm2(data, base, stride, len);
   }
@@ -95,6 +97,7 @@ function vectorNormStrided(
 
   let sum = 0;
   for (let k = 0; k < len; k++) sum += Math.abs(Number(data[base + k * stride])) ** order;
+  if (Number.isNaN(sum)) return Number.NaN;
   if (sum >= SUMSQ_LOW && sum <= Number.MAX_VALUE) return sum ** (1 / order);
 
   // Scale by the dominant element (largest for p > 0, smallest for p < 0) so
@@ -105,6 +108,7 @@ function vectorNormStrided(
     ref = order > 0 ? Math.max(ref, a) : Math.min(ref, a);
   }
   if (ref === 0) return 0;
+  if (ref === Number.POSITIVE_INFINITY) return ref;
   let scaled = 0;
   for (let k = 0; k < len; k++) {
     scaled += (Math.abs(Number(data[base + k * stride])) / ref) ** order;
@@ -154,7 +158,13 @@ function singularValuesOf(
   const dense = new Float64Array(rows * cols);
   for (let i = 0; i < rows; i++) {
     for (let j = 0; j < cols; j++) {
-      dense[i * cols + j] = Number(data[base + i * sRow + j * sCol]);
+      const v = Number(data[base + i * sRow + j * sCol]);
+      if (!Number.isFinite(v)) {
+        throw new DataValidationError(
+          "norm(): the matrix orders 2, -2 and 'nuc' use the singular values and need finite values"
+        );
+      }
+      dense[i * cols + j] = v;
     }
   }
   return toDenseVector1D(svdvals(fromDenseMatrix2D(rows, cols, dense)));
@@ -183,6 +193,7 @@ function matrixNormSlice(
         sum += v * v;
       }
     }
+    if (Number.isNaN(sum)) return Number.NaN;
     if (sum >= SUMSQ_LOW && sum <= Number.MAX_VALUE) return Math.sqrt(sum);
     // Scaled recomputation (underflow or overflow of the plain sum).
     let max = 0;
@@ -192,6 +203,7 @@ function matrixNormSlice(
       }
     }
     if (max === 0) return 0;
+    if (max === Number.POSITIVE_INFINITY) return max;
     let scaled = 0;
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < cols; j++) {
@@ -275,6 +287,10 @@ function onesShapeResult(value: number, ndim: number): Tensor | number {
  * the plain sum would overflow or underflow, so `norm([3e200, 4e200])` is
  * `5e200` rather than `Infinity`.
  *
+ * NaN and Infinity follow IEEE rules, as in NumPy: a norm of input with a NaN is NaN, and
+ * input with an infinite value and no NaN gives Infinity for the orders that sum or take the
+ * maximum of magnitudes. The matrix orders 2, -2 and 'nuc' need the SVD and throw.
+ *
  * **Parameters**:
  * @param x - Input array (real numeric dtype)
  * @param ord - Order of the norm:
@@ -317,7 +333,8 @@ function onesShapeResult(value: number, ndim: number): Tensor | number {
  * ```
  *
  * @throws {DTypeError} If input has string or complex dtype
- * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
+ * @throws {DataValidationError} If a matrix norm of order 2, -2 or 'nuc' is asked for input that
+ *   contains non-finite values (NaN, Infinity)
  * @throws {InvalidParameterError} If norm order or axis values are invalid
  * @throws {ShapeError} If axis configuration is incompatible with input
  *
@@ -345,7 +362,9 @@ export function norm(
   if (x.dtype === "complex64" || x.dtype === "complex128") {
     throw new DTypeError("norm() does not support complex dtype");
   }
-  assertFiniteTensor(x, "norm()");
+  if (x.dtype === "string") {
+    throw new DTypeError("norm() does not support string dtype");
+  }
 
   const data = elementsOf(x);
   const ndim = x.ndim;
@@ -561,7 +580,8 @@ export function norm(
  *     computed from the singular values (any M, N)
  *   - 1, -1, Infinity, -Infinity: matrix norm of A times that of A^(-1) (square A only)
  *
- * **Returns**: Condition number (>= 1 for p != -2, Infinity for singular matrices).
+ * **Returns**: Condition number (>= 1 for p != -2, Infinity for singular matrices). Input with
+ * a NaN gives NaN and input with an infinite value (and no NaN) gives Infinity, as in NumPy.
  * Singular values at or below `max(M, N) * eps * largest singular value` count as zero,
  * and an empty matrix gives Infinity.
  *
@@ -577,7 +597,6 @@ export function norm(
  * @throws {ShapeError} If input is not a 2D matrix, or is not square for p in
  *   {1, -1, Infinity, -Infinity}
  * @throws {DTypeError} If input has string or complex dtype
- * @throws {DataValidationError} If input contains non-finite values (NaN, Infinity)
  * @throws {InvalidParameterError} If p is unsupported
  */
 export function cond(a: Tensor, p?: number | "fro" | "nuc"): number {
@@ -585,7 +604,7 @@ export function cond(a: Tensor, p?: number | "fro" | "nuc"): number {
   if (a.dtype === "complex64" || a.dtype === "complex128") {
     throw new DTypeError("cond() does not support complex dtype");
   }
-  assertFiniteTensor(a, "cond()");
+  const nonFinite = classifyNonFinite(a, "cond()");
 
   if (p !== undefined) {
     try {
@@ -604,6 +623,9 @@ export function cond(a: Tensor, p?: number | "fro" | "nuc"): number {
   const n = getDim(a, 1, "cond()");
   const k = Math.min(m, n);
   if (k === 0) return Infinity;
+  // As in NumPy: a NaN in the input gives NaN and an infinity gives Infinity.
+  if (nonFinite === "nan") return Number.NaN;
+  if (nonFinite === "infinity") return Infinity;
 
   if (p === 1 || p === -1 || p === Number.POSITIVE_INFINITY || p === Number.NEGATIVE_INFINITY) {
     if (m !== n) {
